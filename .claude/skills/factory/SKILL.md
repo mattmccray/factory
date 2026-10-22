@@ -1,7 +1,7 @@
 ---
 name: factory
-description: Run the Minerva software factory — a feature goes spec → build → parallel reviews → approve → merge, driven by subagents that talk only through markdown files; `queue` and `explore` feed its backlog. Use when the user invokes /factory with a feature, `next [M##|words]`, `queue <M##…|text>`, `explore <idea|M##|brief>`, `approve <job-id>`, or `rework <job-id> <note>`.
-argument-hint: "<feature> | next [M##|words] | queue <M##…|text> | explore <idea|M##|brief> | approve <job-id> | rework <job-id> <note>"
+description: Run the factory — a feature goes spec → build → parallel reviews → approve → merge, driven by subagents that talk only through markdown files; `queue` and `explore` feed its backlog. Use when the user invokes /factory with a feature, `next [words]`, `queue <text>`, `explore <idea|brief>`, `approve <job-id>`, or `rework <job-id> <note>`.
+argument-hint: "<feature> | next [words] | queue <text> | explore <idea|brief> | approve <job-id> | rework <job-id> <note>"
 ---
 
 # /factory — the orchestrator
@@ -12,8 +12,8 @@ specs, reviews, or decisions yourself; agents do, one file each. Other sessions 
 jobs at the same time; see **Running jobs side by side**.
 
 ```
-clear issue ── queue ───────────────────┐
-fuzzy issue/idea ── explore ── brief ───┴─► backlog.md ── next ─┐
+clear work ── queue ────────────────────┐
+fuzzy idea ── explore ── brief ─────────┴─► backlog.md ── next ─┐
                                                                 ▼
 feature → spec-writer → builder ⇄ [configured reviewers] → approver → merge | needs-human
 ```
@@ -27,19 +27,18 @@ feature → spec-writer → builder ⇄ [configured reviewers] → approver → 
 | `factory/config.json` — reviewer keys and the default `maxRound` | human |
 | `factory/.lock/` — a short mutex for claiming work and merging | you, briefly |
 | `factory/backlog.md` — queue for `/factory next` | human (you tick items off) |
-| `ISSUES.md` — closed through `bun run issues` when a merged job came from an issue | you |
 | `factory/briefs/<slug>.md` — decisions from an `explore` interview (tracked in git) | you, with the human |
 | `factory/jobs/<id>/feature.md` — the request, verbatim | you |
 | `factory/jobs/<id>/rework-<k>.md` — a human's rework note, verbatim | you |
 | `factory/jobs/<id>/spec.md` | `factory-spec-writer` |
 | `factory/jobs/<id>/build.md` | `factory-builder` |
-| `factory/jobs/<id>/round-<N>/review-<key>.md` | the configured reviewers (Minerva: security, ux, ui, code) |
+| `factory/jobs/<id>/round-<N>/review-<key>.md` | the configured reviewers (here: security, code, contract, ui) |
 | `factory/jobs/<id>/round-<N>/ui/*.png` — screenshots, when the change warrants a look | `factory-ui` |
 | `factory/jobs/<id>/decision.md` | `factory-approver` |
 | `factory/.worktrees/<id>/` — the job's checkout, branch `factory/<id>` | builder (code) |
 
 `jobs/`, `.lock/`, and `.worktrees/` are gitignored runtime state. Code lives on the
-branch; the main checkout stays on `master` so your files never move under you.
+branch; the main checkout stays on `main` so your files never move under you.
 Dashboard: `bun run factory` → http://localhost:8765/dashboard.html
 
 ## The board — events through the CLI
@@ -96,10 +95,10 @@ wait on the user or an agent. Two steps take the lock:
 
 **Overlap check** (the first step of a claim). Compare the new work with each live job's title
 and `feature.md`, and its `spec.md` Touchpoints if they're written yet. The question is whether
-they look likely to change the same area: the same feature slice, the editor, the same surface
+they look likely to change the same area: the same package, the contract, the same surface
 or component, the same doc. A judgment call at a glance is enough; no file-level analysis is
 needed. If they overlap, release the lock and ask the user in a sentence before starting:
-*"M79 (gap cursor) and live job 003-m75-code-block-caret both change the editor, so they'll
+*"The doctor command and live job 003-cli-package both change the CLI package, so they'll
 likely conflict at merge. Start it anyway, or take the next backlog line that doesn't
 overlap?"* Then do what they say. Most work won't overlap, so don't ask when it doesn't.
 
@@ -112,7 +111,7 @@ Agents get context from **files, not the conversation**. Every spawn prompt is j
 Factory job <id>. Your instructions are in your agent definition; all context is in these files.
 repo:     <R>
 job dir:  <R>/factory/jobs/<id>
-worktree: <R>/factory/.worktrees/<id>   (branch factory/<id>, base master)
+worktree: <R>/factory/.worktrees/<id>   (branch factory/<id>, base main)
 round:    <N>
 brief:    <R>/factory/briefs/<slug>.md      (spec-writer and approver, when the job has one)
 write:    <the one absolute path this agent writes>
@@ -124,7 +123,7 @@ files and to return them as text. Reviewers sometimes obey that and send the rev
 reply, which leaves no file.
 
 Don't pass `model` — each agent's frontmatter sets it (opus: spec-writer, builder, security,
-approver; sonnet: ux, ui, code). After each agent returns, confirm its file exists. A nudge
+contract, approver; sonnet: ui, code). After each agent returns, confirm its file exists. A nudge
 or re-spawn below stays inside the agent's original span: no new `agent.started`, and one
 `agent.finished` once the file lands. If the file doesn't exist:
 1. `SendMessage` the same agent: *"<path> doesn't exist. Create it now with the Write tool
@@ -144,7 +143,7 @@ agent to fix that first line to the exact format its definition gives (`VERDICT:
 **1 · Spec.** Board: `stage.entered stage=spec`. Spawn `factory-spec-writer` → `spec.md`
 (span `role=spec-writer`). Board: `job.titled title='<spec.md's # H1>'`.
 
-**2 · Worktree.** `git worktree add -b factory/<id> factory/.worktrees/<id> master`
+**2 · Worktree.** `git worktree add -b factory/<id> factory/.worktrees/<id> main`
 (if the branch already exists: `git worktree add factory/.worktrees/<id> factory/<id>`).
 
 **3 · Build.** Board: `stage.entered stage=build`. Spawn `factory-builder` (name it
@@ -157,7 +156,7 @@ to return.
 
 **4 · Review round N** (N = previous round + 1, starting at 1). `mkdir jobs/<id>/round-<N>/`,
 board: `round.started round=<N>` (the CLI fills in the reviewers from `factory/config.json`;
-Minerva: security, ux, ui, code). Then one `agent.started role=reviewer key=<key> round=<N>`
+here: security, code, contract, ui). Then one `agent.started role=reviewer key=<key> round=<N>`
 per configured reviewer, and spawn **all of them in one message**, in the background: `factory-<key>` writing `round-<N>/review-<key>.md`. As each one returns and
 its file exists, board: `agent.finished role=reviewer key=<key> round=<N>` (that sets its chip).
 
@@ -184,7 +183,7 @@ line:
 ## Merge
 
 Take `factory/.lock` first. Another session may be merging. From the main checkout (which
-must be on `master`; if it isn't, release the lock, stop, and ask):
+must be on `main`; if it isn't, release the lock, stop, and ask):
 
 ```bash
 git merge --no-ff factory/<id> -m '<Merge message: line from decision.md>' \
@@ -195,58 +194,51 @@ The merge message is the approver's text: keep it in single quotes and write any
 as `'\''` (as for board values), so `$` and backticks in it are never expanded.
 
 - Conflict or refusal → `git merge --abort` (if a merge is in progress), release the lock,
-  board: `merge.failed reason='merge conflict with master — /factory rework to rebase'`.
+  board: `merge.failed reason='merge conflict with main — /factory rework to rebase'`.
   Stop. (Refusal because of a stray `.git/index.lock` means something else is mid-commit;
   wait a few seconds and retry once before giving up.)
 - Success → board: `job.merged sha=<short sha>` **immediately**, before any cleanup, so git and
   the board never disagree. Then `git worktree remove factory/.worktrees/<id>` and
   `git branch -d factory/<id>`; if cleanup fails, report it and carry on (the merge stands). If
-  `master` had moved past the branch's base,
-  run `bun run test && bun run check` on master and report the result (don't auto-revert).
-- Then **bookkeeping**, so every job leaves `master` clean:
-  1. If `feature.md` cites an issue id (`M##`) that is still open, close it through the CLI:
-     `bun run issues note <M##> "Shipped by factory job <id> (merge <short sha>)."` then
-     `bun run issues done <M##>`.
-  2. Commit just the bookkeeping paths that changed, by pathspec, so nothing else of the
-     user's gets swept in: `git commit -m "chore(factory): close <M##> after job <id>" -m
-     "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md ISSUES.md`
-     (no issue → subject `chore(factory): record job <id>`; nothing changed → skip).
+  `main` had moved past the branch's base,
+  run `bun run test && bun run check` on main and report the result (don't auto-revert).
+- Then **bookkeeping**, so every job leaves `main` clean: commit just the backlog tick, by
+  pathspec, so nothing else of the user's gets swept in: `git commit -m "chore(factory): record
+  job <id>" -m "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md`
+  (nothing changed → skip).
 - Release the lock (`rmdir factory/.lock`).
-- Never push. Pushing and deploying stay human decisions (`/deploy`).
+- Never push. Pushing stays a human decision.
 
 ## Commands
 
 **`/factory <feature>`** — New job. **Claim** it under the lock (overlap check first). `id` =
 the next three-digit number after the highest `factory/jobs/NNN-*` dir (start at `001`) + a
-2–4 word kebab slug, e.g. `004-tag-picker-popover`. Board: `job.claimed` with
-`brief=factory/briefs/<slug>.md` and `issue=M##` when they apply (add `maxRound=<n>` only to
+2–4 word kebab slug, e.g. `004-factory-init-upgrade`. Board: `job.claimed` with
+`brief=factory/briefs/<slug>.md` when it applies (add `maxRound=<n>` only to
 override the config default); it creates the job dir. Write `feature.md` verbatim, release the
 lock, run the loop. If the text names a brief (`brief: factory/briefs/<slug>.md`), its `Status:`
 must be `ready` — a draft brief means the interview isn't done, so stop before claiming and say so.
 
-**`/factory queue <M##…|text>`** — Add ready work to the backlog without running it. For each
-issue id, read `bun run issues show <id>`. It is **ready** if it's open, not blocked by an open
-issue (a structured blocker *or* one stated in its notes — the CLI's `ready` misses the latter),
-not marked as needing grilling, and you can say in one line what "done" looks like.
-- Ready → append `- [ ] M##: <one line>`. The line carries what defines done — behaviors,
-  limits, must-nots (e.g. *full-path suggestions, no parent auto-creation, cap 25*) — and none
-  of the history or rationale; the spec-writer reads the full issue itself.
-- Not ready → don't queue it; say why in a sentence and suggest `/factory explore <id>`.
-- Free text instead of an id → distill it into one line the same way.
+**`/factory queue <text>`** — Add ready work to the backlog without running it. (This repo has
+no issue tracker yet; work arrives as text.) It is **ready** if it isn't blocked by unmerged
+work and you can say in one line what "done" looks like.
+- Ready → distill it into `- [ ] <one line>`. The line carries what defines done — behaviors,
+  limits, must-nots (e.g. *additive within v1, no new runtime dependency*) — and none of the
+  history or rationale.
+- Not ready → don't queue it; say why in a sentence and suggest `/factory explore <idea>`.
 
 Show the user the lines you added, then commit just the backlog by pathspec:
-`chore(factory): queue <ids or title>` (+ the Co-Authored-By trailer) `-- factory/backlog.md`.
+`chore(factory): queue <title>` (+ the Co-Authored-By trailer) `-- factory/backlog.md`.
 `queue` never starts a job.
 
-**`/factory explore <idea | M## | brief slug>`** — An interactive interview that turns a fuzzy
+**`/factory explore <idea | brief slug>`** — An interactive interview that turns a fuzzy
 idea into a brief, then queues it. Read [explore.md](explore.md) in this skill's folder and
 follow it. It runs entirely in this session with the user; it spawns no agents.
 
-**`/factory next [M## | words]`** — Under the lock, re-read `factory/backlog.md` (another
+**`/factory next [words]`** — Under the lock, re-read `factory/backlog.md` (another
 session may have just ticked a line) and pick a `- [ ]` item:
 - no argument → the first one;
-- an issue id → the line starting `M##:`;
-- words → the line they clearly describe (e.g. `gap cursor`), matched by meaning, not exact text.
+- words → the line they clearly describe (e.g. `doctor`), matched by meaning, not exact text.
 
 Claim it as `/factory <item text>` does, and tick it as `- [x] … → <id>` in the same step. If
 the overlap check stops you, leave the line unticked. Then run the loop.
@@ -281,7 +273,6 @@ continue at step 4 with round `<round> + 1` (round 1 if the job escalated before
   that claimed it, or, once it's `needs-human`, by whoever runs `approve`/`rework` on it.
   Finding another job in flight is never a reason to stop; it's only a reason for the overlap check.
 - Agents write only their own file (the UI reviewer also its `ui/` screenshots); you write only
-  your job's feature.md and rework notes, backlog ticks, events through the factory CLI, and
-  (after a merge) the issue close via the issues CLI. If an agent wrote somewhere else, note it and tell the user.
+  your job's feature.md and rework notes, backlog ticks, and events through the factory CLI. If an agent wrote somewhere else, note it and tell the user.
 - Keep the user posted with one short line per transition (`003 · review round 1: 3/4 in`).
 - Finish every command with the job's stage, decision, and where to read the files.

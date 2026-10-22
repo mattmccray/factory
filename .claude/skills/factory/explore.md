@@ -7,15 +7,15 @@ questions on decisions, not on facts.
 
 ## Start
 
-- **Free text idea** → new brief. Slug: 2–4 kebab words.
-- **`M##`** → read `bun run issues show <id>`. If its notes point at earlier thinking (a
-  wayfinder ticket, a plan doc, a prototype), read that too. Decisions already made there are
-  starting points to *confirm*, not questions to re-ask. Slug: `m##-<words>`.
+- **Free text idea** → new brief. Slug: 2–4 kebab words. If the idea points at earlier
+  thinking (a backlog line, `HANDOFF.md`, a note under `notes/`, a plan doc), read that too.
+  Decisions already made there are starting points to *confirm*, not questions to re-ask.
 - **An existing brief's slug** → resume it. Re-read it, summarize where it stands in a few
   lines, and pick up at its first open question.
 
-Do your homework before the first question. Read `CLAUDE.md`, the relevant `docs/prd/*.md`, and
-`DESIGN.md` + `docs/design/*.md` if the idea has a UI. Read the code it would touch. Anything you
+Do your homework before the first question. Read `CLAUDE.md`, the **Decisions** in
+`HANDOFF.md`, and the contract (`docs/contract/v1.md` once it exists, else
+`factory/CONTRACT.md`). Read the code it would touch. Anything you
 can look up, look up.
 
 ## Interview
@@ -26,14 +26,17 @@ Follow the user's `grilling` discipline:
 - Walk the decision tree in dependency order, settling the choices that decide other choices first.
 - **Facts are yours to find; decisions are the user's.** Never ask what the code or docs can answer.
 
-Minerva needs one extra pass, because these issues make the approver escalate after a whole
+This repo needs one extra pass, because these issues make the approver escalate after a whole
 build. Raise each one as a question while it's still cheap to settle:
-- PRD invariants (no save, unified documents, measures-as-numbers, media pool, local-first sync)
-- the anti-scope list, the domain language, EXPORT_FORMAT, and the Dexie schema/migrations
+- the `factory/v1` contract: event types and fields, transitions, `job.json`, `config.json`
+  keys, file layout, and the CLI surface (changes within v1 are additive only)
+- the boundary between managed files and the project overlay
+- source and state: jobs change source, never the installed copy (`.claude/`, `factory/`)
+- the binding decisions in `HANDOFF.md`, and its **Deferred** list (anti-scope for now)
 
 When the idea collides with one of them, put it to the user plainly. The choices are narrowing
-the idea, dropping that part, or amending the PRD (or EXPORT_FORMAT, or the schema). An
-amendment the user chooses becomes a **PRD call** in the brief.
+the idea, dropping that part, or amending the contract (or a decision). An amendment the user
+chooses becomes a **contract call** in the brief.
 
 **Size check.** A brief is **one factory job**: one branch, one reviewable diff. If the idea is
 bigger than that, propose splitting it into several briefs, in dependency order. Agree the
@@ -48,7 +51,6 @@ That way an interrupted session can resume. While questions remain it says `Stat
 # <Title>
 
 - Status: draft | ready
-- Issue: M## | —
 - Sources: <earlier thinking you read, e.g. plans/wayfinder/…/3-….md> | —
 - Date: <YYYY-MM-DD>
 
@@ -65,10 +67,10 @@ Two or three sentences in the user's terms: what changes for them, and why it ma
 ## Acceptance sketch
 Observable outcomes, in plain language. The spec-writer turns these into testable criteria.
 
-## PRD calls
+## Contract calls
 None. Otherwise list each one:
-"<the deviation or schema/format change>", approved by the user on <date>. The job must update
-`docs/prd/<doc>.md` §N (or EXPORT_FORMAT) to match.
+"<the contract change or decision amendment>", approved by the user on <date>. The job must
+update the contract doc (`docs/contract/v1.md`, or the doc the brief names) to match.
 
 ## Open
 None. A ready brief has none.
@@ -79,9 +81,8 @@ None. A ready brief has none.
 1. Play the brief back to the user in a few lines and ask whether you've got it right. Don't
    mark it ready until they confirm.
 2. Set `Status: ready`. Append a backlog line:
-   `- [ ] <M##: >Title — <one line on what done looks like> — brief: factory/briefs/<slug>.md`
-   Keep the `M##:` prefix when the brief came from an issue, so the merge closes that issue.
+   `- [ ] Title — <one line on what done looks like> — brief: factory/briefs/<slug>.md`
 3. Commit the brief and the backlog line together by pathspec:
    `specs(factory): add brief <slug>` (+ the Co-Authored-By trailer).
-4. Ask whether to run it now. If yes, continue as `/factory next <M## or the brief's title>`,
+4. Ask whether to run it now. If yes, continue as `/factory next <the brief's title>`,
    which picks that line even if it isn't first.
