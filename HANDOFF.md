@@ -2,8 +2,9 @@
 
 - Date: 2026-10-22
 - From: an interview session in Minerva v3 (`/Users/mattm/Projects/Personal/Apps/minerva-v3`)
-- Status: **not yet seeded.** This folder holds only this handoff and `notes/`. Don't start
-  building until the Minerva prerequisites below are done.
+- Status: **not yet seeded.** This folder holds only this handoff and `notes/`. Prerequisite 1
+  is done (Minerva `a4a84d3..cffe6ab`, 2026-10-22); prerequisite 2 is underway. Don't seed until
+  it's done.
 
 ## What this project is
 
@@ -36,10 +37,10 @@ All of these are in Minerva, at `/Users/mattm/Projects/Personal/Apps/minerva-v3/
 | The explore interview | `.claude/skills/factory/explore.md` |
 | Role agents (Minerva-specific) | `.claude/agents/factory-{spec-writer,builder,security,ux,ui,code,approver}.md` |
 | **The state contract (draft v1)** | `factory/CONTRACT.md` ← the starting spec for this repo |
-| Contract code + CLI (after the plan lands) | `factory/lib/{contract,project,store}.ts`, `factory/cli.ts`, `factory/config.json` |
+| Contract code + CLI | `factory/lib/{contract,project,store,fields,show}.ts` (each with a `*.test.ts`), `factory/cli.ts`, `factory/config.json` |
 | Dashboard server / page | `factory/serve.ts`, `factory/dashboard.html` |
 | Backlog and brief formats | `factory/backlog.md`, `factory/briefs/*.md` |
-| Real job runs (gitignored, local) | `factory/jobs/001…/` (legacy, without event logs) and later jobs (with `events.jsonl`) |
+| Real job runs (gitignored, local) | `factory/jobs/001…018/` (legacy, without event logs); `019…` onward have `events.jsonl` |
 | The plan that adds the event log, CLI and timers | `docs/superpowers/plans/2026-10-22-factory-observability.md` |
 
 Source notes are in this repo: `notes/factory-app.md` (the original wishlist) and
@@ -48,11 +49,12 @@ from).
 
 ## Prerequisites (in Minerva, before seeding)
 
-1. Implement Minerva's observability plan by hand. This covers the CLI as the only writer, the
+1. ✅ Implement Minerva's observability plan by hand. This covers the CLI as the only writer, the
    `events.jsonl` log, the derived `job.json`, `config.json`, and the dashboard (viewport
-   board, live timers, Settled dialog).
-2. Run **3–5 real Minerva jobs** on it, ideally including a multi-round job and an escalation.
-   Note any contract friction in Minerva's `factory/CONTRACT.md`.
+   board, live timers, Settled dialog, timing in the job drawer).
+2. ⏳ Run **3–5 real Minerva jobs** on it, ideally including a multi-round job, an escalation
+   followed by a rework, and a failed merge followed by `/factory approve`. So far 019 and 020
+   have merged cleanly. Note any contract friction in Minerva's `factory/CONTRACT.md`.
 
 ## Decisions (from the 2026-10-22 interview; binding unless revisited with Matt)
 
@@ -73,7 +75,10 @@ from).
    - live timers show time in stage, total time, each reviewer's time, and how long a
      needs-human job has been waiting;
    - "settled" is a view: merged jobs older than `settleAfterHours` (default 24) move to a
-     Settled dialog.
+     Settled dialog;
+   - the job drawer carries the timing (a summary line under the title, plus a "timing" view
+     with a stage bar, a stage table and an agent table), so a settled job's timing stays
+     reachable after its card and chips are gone.
 6. **Personal now, publishable later.**
 7. **Names:**
    - "factory" is the contract identifier: `/factory`, a `factory/` folder in each project,
@@ -136,6 +141,36 @@ from).
     - **ui**, for Andon changes; it simply PASSes when Andon isn't touched. Conditional
       reviewers can wait.
 
+## Lessons from the Minerva build (keep these through the extraction)
+
+The contract was amended while it was built; `CONTRACT.md` is current. These are the changes
+and findings most likely to be lost in a rewrite:
+
+- **Span labels can't be harness agent IDs.** `agent.started` runs *before* the spawn, so the
+  agent's ID doesn't exist yet, and Claude Code's Agent tool has no name parameter. The builder
+  span is always labeled `builder-<id>`; the returned agent ID is only the resume target. Any
+  harness adapter must keep span identity independent of the harness's own agent IDs.
+- **Escalation is allowed from any working stage,** not just approve. That's the recovery path
+  when an agent never writes its file. Escalating closes any open agent spans, and the
+  escalation or merge-failure reason becomes the card's note.
+- **`job.merged` is recorded right after `git merge` succeeds,** before worktree and branch
+  cleanup, so a failed cleanup can't leave git and the board disagreeing.
+- **`job.human-approved` is idempotent while needs-human,** so a session that dies between
+  approving and merging can retry.
+- **The CLI's value parsing is narrow on purpose.** Only `round`, `maxRound` and `k` are
+  integers, `reviewers` is a JSON array and `null` is null; everything else is a string, so an
+  all-digit short sha stays a sha. Free-text values are single-quoted in the skill.
+- **The CLI defends itself.** It takes a per-job lock (`.events.lock`), refuses legacy jobs and
+  a log with a torn last line, creates nothing when it rejects an event, and checks job IDs
+  before building any path.
+- **Typecheck from day one.** Minerva's `factory/` has no typecheck gate because `@types/bun`
+  doesn't resolve there; agents ran strict `tsc` by hand. Give this repo a `tsconfig` (strict,
+  `noUncheckedIndexedAccess`) and Bun types in its gate.
+- **Known gaps, deliberately deferred:** the stale-lock break has a check-then-act race; a
+  spec-writer rerun after a spec-stage rework is timed under `build`; reviewer chips overflow
+  past about 5 reviewers; there's no end-to-end CLI test (exit codes and argument parsing are
+  covered only by smoke runs); the dashboard was verified in Chromium only, not Safari.
+
 ## Seeding steps (do these by hand, once the prerequisites are done)
 
 1. Lay out the repo:
@@ -147,7 +182,7 @@ from).
 
    Use Bun workspaces, TypeScript strict and `bun test`.
 2. **Vendor v0.** Copy Minerva's `.claude/skills/factory/` and `.claude/agents/factory-*.md` into
-   this repo's `.claude/`, and Minerva's `factory/{cli.ts,lib/,serve.ts,dashboard.html,CONTRACT.md}`
+   this repo's `.claude/`, and Minerva's `factory/{cli.ts,lib/,config.json,serve.ts,dashboard.html,CONTRACT.md}`
    into `factory/`. Then strip the Minerva specifics:
    - PRD and DESIGN.md references;
    - `bun run issues` and the `M##` handling;
