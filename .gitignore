@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+
+# Factory runtime state (see .claude/skills/factory/SKILL.md)
+factory/.lock/
+factory/jobs/
+factory/.worktrees/

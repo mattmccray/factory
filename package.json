@@ -1,0 +1,21 @@
+{
+  "name": "factory",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "bun test --pass-with-no-tests ./packages ./apps",
+    "check": "tsc --noEmit",
+    "factory": "bun factory/serve.ts",
+    "factory:event": "bun factory/cli.ts event",
+    "factory:test": "bun test factory/"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.0"
+  }
+}
