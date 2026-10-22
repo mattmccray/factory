@@ -1,0 +1,45 @@
+# The factory
+
+This repo is the factory itself: the `factory/v1` contract, the CLI (the only writer of job
+state), the managed core (the `/factory` skill and role templates), the installer and
+guardrails (`init`, `customize`, `doctor`, `upgrade`), harness adapters, and Andon (the
+dashboard). `HANDOFF.md` records the project's binding decisions and its deferred list.
+
+Write in American English (en-US).
+
+## Source and state
+
+The factory being built is never the factory doing the building.
+
+- **Source** is `packages/` and `apps/`. Jobs change source, plus `docs/` or root tooling
+  config (`package.json`, `tsconfig.json`) when the work calls for it.
+- **The installed copy** is `.claude/` (the skill and agents) and `factory/` (the CLI, its
+  `lib/`, the dashboard, `CONTRACT.md`, and the overlay: `config.json`, later
+  `roles/<role>.md`). It runs the jobs. **Jobs never change `.claude/` or `factory/`.**
+- **Runtime state** is `factory/jobs/`, `factory/.lock/`, and `factory/.worktrees/`
+  (gitignored). Only the factory CLI writes job state.
+
+## Promotion
+
+Until `factory upgrade` exists (backlog item 4), the installed copy is the vendored v0 from
+Minerva, and it is **frozen**. Promoting new code into it is a deliberate, human-approved step
+outside any job. After item 4 lands, promotion is `factory upgrade` run against this repo,
+after a merge, never mid-job.
+
+## The contract
+
+`factory/v1` is specified in `factory/CONTRACT.md` until backlog item 1 promotes it to
+`docs/contract/v1.md`. Contract changes are versioned (additive only within v1) and are
+reviewed by the contract reviewer (`factory-contract`). A change to the contract's surface
+updates the contract doc in the same diff.
+
+## Gate
+
+`bun run test && bun run check` — `bun test` over `packages/` and `apps/`, and strict `tsc`
+(`noUncheckedIndexedAccess`, Bun types). `bun run factory:test` tests the installed copy.
+
+## Conventions
+
+- TypeScript strict; no `any`, `as`, or `@ts-ignore` — narrow `unknown`.
+- Tests are `bun:test`, colocated as `*.test.ts`.
+- Conventional Commits. The main branch is `main`; never push without being asked.
