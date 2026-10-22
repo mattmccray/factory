@@ -6,7 +6,7 @@ const base = { schema: 'factory/v1', reviewers: ['security', 'ux'], maxRound: 2,
 
 describe('parseConfig', () => {
   test('accepts the shipped config', () => {
-    expect(parseConfig(shipped).reviewers).toEqual(['security', 'ux', 'ui', 'code']);
+    expect(parseConfig(shipped).reviewers).toEqual(['security', 'code', 'contract', 'ui']);
   });
   test('rejects violations', () => {
     expect(() => parseConfig({ ...base, reviewers: [] })).toThrow();
@@ -49,7 +49,7 @@ describe('parseEventInput', () => {
   test('round.started fills reviewers from config when omitted', () => {
     const ctx = { id: '019-x', config: parseConfig(shipped) };
     expect(parseEventInput('round.started', { round: 1 }, ctx)).toEqual({
-      type: 'round.started', round: 1, reviewers: ['security', 'ux', 'ui', 'code'],
+      type: 'round.started', round: 1, reviewers: ['security', 'code', 'contract', 'ui'],
     });
     expect(parseEventInput('round.started', { round: 1, reviewers: ['ux'] }, ctx)).toEqual({
       type: 'round.started', round: 1, reviewers: ['ux'],

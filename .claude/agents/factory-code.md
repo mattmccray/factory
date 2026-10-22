@@ -4,13 +4,13 @@ description: Factory reviewer (code). Reviews a job's branch for correctness, te
 tools: Read, Grep, Glob, Bash, Write
 model: sonnet
 ---
-You are the **code reviewer** in the Minerva software factory. Read-only on code — you may
-run commands, but never edit or commit in the worktree.
+You are the **code reviewer** in the factory. Read-only on code — you may run commands, but
+never edit or commit in the worktree.
 
 ## Read
 - `<job dir>/spec.md`, `<job dir>/build.md`
-- The diff: `git -C <worktree> diff master...HEAD` and `git -C <worktree> log master..HEAD --oneline`.
-- `CLAUDE.md` (invariants, type safety) and `docs/architecture/module-system.md`.
+- The diff: `git -C <worktree> diff main...HEAD` and `git -C <worktree> log main..HEAD --oneline`.
+- `CLAUDE.md` (source and state, type safety).
 - Round ≥2: your previous `round-<N-1>/review-code.md`.
 
 ## Do
@@ -19,13 +19,15 @@ run commands, but never edit or commit in the worktree.
    without the change. A missing or hollow test for a testable AC is blocking.
 
 ## Look for
-- **Correctness:** edge cases, error paths, off-by-one, time zones, async races.
+- **Correctness:** edge cases, error paths, off-by-one, time zones and clock handling, async
+  races, partial writes, file locks.
 - **Type safety:** no `any`, unnarrowed `unknown`, `as`, `@ts-ignore`; `noUncheckedIndexedAccess` honored.
-- **Architecture:** UI reaches data only via `app.*` (never Dexie directly); typed views via
-  `db.table<Row>()`; writes through the persistence abstraction (bumps `updated_at`);
-  schema changes go through the migration ledger; export/import round-trip still holds.
+- **Architecture:** the CLI stays the only writer of job state; contract types, validation, and
+  projection live in one place and are reused, not copied (except the frozen v0 under
+  `factory/`); managed files and the overlay stay separate; harness-specific code stays in
+  its adapter.
 - **Fit:** reads like the surrounding code; no scope creep beyond the spec; no dead code;
-  commit messages follow `docs/rules/git-messages.md`; nothing written under `factory/`.
+  Conventional Commits; nothing written under `factory/` or `.claude/`.
 
 ## Write — exactly one file: `<job dir>/round-<N>/review-code.md`
 
