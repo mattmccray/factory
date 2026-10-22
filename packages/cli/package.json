@@ -2,5 +2,11 @@
   "name": "@factory/cli",
   "version": "0.0.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "bin": {
+    "factory": "src/main.ts"
+  },
+  "dependencies": {
+    "@factory/contract": "workspace:*"
+  }
 }
