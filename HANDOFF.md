@@ -171,34 +171,53 @@ and findings most likely to be lost in a rewrite:
   past about 5 reviewers; there's no end-to-end CLI test (exit codes and argument parsing are
   covered only by smoke runs); the dashboard was verified in Chromium only, not Safari.
 
-## Seeding steps (do these by hand, once the prerequisites are done)
+## Seeding steps (by hand, in a session opened in this repo; nothing is needed from Minerva's side)
 
-1. Lay out the repo:
-   - `packages/contract` (types, validation, projection; lifted from Minerva's `factory/lib`);
+Seeding is the last hand-written step and is **not** a `/factory` job: there is no factory here
+until it's done. Read Minerva's files by absolute path; never edit Minerva from this repo.
+
+1. **Repo skeleton.** Bun workspaces, TypeScript strict (`noUncheckedIndexedAccess`) with Bun
+   types, `bun test`, and a `check` script that typechecks. Create empty workspace stubs:
+   - `packages/contract` (types, validation, projection);
    - `packages/cli`;
    - `packages/templates` (the skill and role templates, made project-neutral);
    - `packages/andon-agent`;
-   - `apps/andon`, holding the Svelte UI and Tiny JS shell (empty until its jobs run).
+   - `apps/andon` (Svelte UI and Tiny JS shell).
 
-   Use Bun workspaces, TypeScript strict and `bun test`.
-2. **Vendor v0.** Copy Minerva's `.claude/skills/factory/` and `.claude/agents/factory-*.md` into
-   this repo's `.claude/`, and Minerva's `factory/{cli.ts,lib/,config.json,serve.ts,dashboard.html,CONTRACT.md}`
-   into `factory/`. Then strip the Minerva specifics:
-   - PRD and DESIGN.md references;
-   - `bun run issues` and the `M##` handling;
-   - the UX reviewer.
-
-   Write this repo's `factory/config.json` with reviewers `["security","code","contract","ui"]`
-   and the gate `bun test && bun run check`. Write the role rules (including the new
-   `factory-contract` agent) in the same style as Minerva's agents.
-3. Write a `CLAUDE.md` for this repo. Include the source/state separation rule, the
-   self-upgrade rule, and "contract changes are versioned and reviewed by the contract
-   reviewer".
-4. Write `factory/backlog.md` with the initial backlog below, commit, and run `/factory next`.
+   Add a `.gitignore` covering `factory/jobs/`, `factory/.lock/` and `factory/.worktrees/`, and
+   root `package.json` scripts matching Minerva's: `factory` (`bun factory/serve.ts`),
+   `factory:event` (`bun factory/cli.ts event`) and `factory:test` (`bun test factory/`).
+2. **Vendor v0, the installed copy.** Copy Minerva's `.claude/skills/factory/` and
+   `.claude/agents/factory-*.md` into this repo's `.claude/`, and Minerva's
+   `factory/{cli.ts,lib/,config.json,serve.ts,dashboard.html,CONTRACT.md}` into `factory/`.
+   Make `factory:test` pass here before changing anything. Then adapt it to this repo:
+   - **Branch name:** the skill hard-codes `master` (about 8 places). This repo's branch is
+     `main`; replace them.
+   - **Strip Minerva specifics:** PRD, DESIGN.md, mockup and OpenSpec references; `bun run
+     issues` and all `M##` handling (no issue tracker yet: merge bookkeeping just commits the
+     backlog tick); Minerva's name in the skill description and dashboard title; the UX
+     reviewer.
+   - **Gate:** Minerva's skill and agents run `bun run test && bun run check`. Use this repo's
+     equivalent. The gate stays in the skill and agent text for now; v1's `config.json` rejects
+     unknown keys, so don't add a `gate` key until the contract grows one.
+   - **Reviewers:** set `factory/config.json` reviewers to `["security","code","contract","ui"]`.
+     Write the new `factory-contract` agent in the same style as Minerva's reviewers: it checks
+     every change against `CONTRACT.md` and its versioning rules. `factory-ui` judges Andon
+     changes and writes `VERDICT: PASS` with a one-line note when Andon isn't touched.
+3. **`CLAUDE.md`** for this repo, including:
+   - **source and state:** jobs change `packages/` and `apps/` only, never `.claude/` or
+     `factory/` (the installed copy and runtime state);
+   - **promotion:** until `factory upgrade` exists (backlog item 4), the installed v0 copy is
+     frozen. Promoting new code into it is a deliberate, human-approved step outside any job.
+     After item 4 lands, promotion is `factory upgrade` run against this repo;
+   - contract changes are versioned and reviewed by the contract reviewer;
+   - American English.
+4. Write `factory/backlog.md` with the initial backlog below, commit everything, and **stop for
+   Matt's review** before the first `/factory next`.
 
 ## Initial backlog (in dependency order; refine with `/factory explore` where fuzzy)
 
-1. **Contract package.** Lift `factory/lib` into `packages/contract`. Promote CONTRACT.md to
+1. **Contract package.** Copy (don't move) `factory/lib` into `packages/contract`; the installed copy under `factory/` stays until promotion. Promote CONTRACT.md to
    `docs/contract/v1.md` with its versioning rules (additive changes only within v1; how
    readers handle unknown fields).
 2. **CLI package.** Run the vendored `factory/cli.ts` on `packages/cli`. Add `doctor`.
