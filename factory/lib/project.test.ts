@@ -63,6 +63,7 @@ describe('project', () => {
     const events = log(twoRound);
     const s = project(events);
     const merged = events[events.length - 1];
+    if (!merged) throw new Error('empty log');
     expect(s.stage).toBe('merged');
     expect(s.round).toBe(2);
     expect(s.title).toBe('Example');
@@ -70,9 +71,9 @@ describe('project', () => {
     expect(s.history).toEqual([{ round: 1, reviews: { security: 'CHANGES', ux: 'PASS', ui: 'PASS', code: 'PASS' } }]);
     expect(s.reviews).toEqual({ security: 'PASS', ux: 'PASS', ui: 'PASS', code: 'PASS' });
     expect(s.decision).toBe('APPROVE');
-    expect(s.endedAt).toBe(merged?.ts ?? null);
-    expect(s.updated).toBe(merged?.ts ?? null);
-    expect(s.stageEnteredAt).toBe(merged?.ts ?? null);
+    expect(s.endedAt).toBe(merged.ts);
+    expect(s.updated).toBe(merged.ts);
+    expect(s.stageEnteredAt).toBe(merged.ts);
     expect(s.timing.stages.map((x) => x.stage)).toEqual([
       'claimed', 'spec', 'build', 'review', 'build', 'review', 'approve', 'merged',
     ]);
