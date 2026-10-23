@@ -30,7 +30,7 @@ export function run(argv: readonly string[], io: Io): Promise<number> {
   return guarded(io, async () => {
     const [cmd, ...rest] = argv;
     if (cmd === 'init') {
-      await init(io.root, { force: parseForce(rest, USAGE.init), stdout: io.stdout });
+      await init(io.root, { force: parseForce(rest, USAGE.init), stdout: io.stdout, registry: io.registry });
       return 0;
     }
     if (cmd === 'upgrade') {

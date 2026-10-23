@@ -14,6 +14,7 @@ export interface Io {
   root: string; // the factory/ directory
   stdout: (line: string) => void;
   stderr: (line: string) => void;
+  registry?: string; // the Andon registry file `init` registers in (source CLI only); absent: none
   now?: () => Date; // drives `show`'s open spans; event timestamps always come from the store's clock
 }
 

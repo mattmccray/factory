@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, open, readFile, realpath, rename, rm, unlink } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
-import { parseConfig, parseManifest } from '@factory/contract';
+import { addRoot, parseConfig, parseManifest } from '@factory/contract';
 import type { Config, Manifest } from '@factory/contract';
 import { VERSION } from '@factory/templates';
 import { buildRelease } from './bundle';
@@ -14,6 +14,8 @@ import { isNotFound, locate, protectedReason } from './paths';
 export interface InstallOptions {
   force: boolean;
   stdout: (line: string) => void;
+  /** The Andon registry file (`$ANDON_HOME/projects.json`) `init` registers the project in. Absent: no registration. */
+  registry?: string;
 }
 
 /** The config `init` writes when the project has none. `/factory customize` will own this later. */
@@ -172,6 +174,17 @@ export async function init(root: string, opts: InstallOptions): Promise<void> {
   if (ignore !== null) await writeAtomic(ignoreAt, ignore);
   await writeAtomic(manifestAt, manifestText(manifestFor(files)));
   opts.stdout(`installed factory ${VERSION}: ${Object.keys(files).length} managed files${conflicts.length > 0 ? `, ${conflicts.length} overwritten` : ''}`);
+  if (opts.registry !== undefined) await register(opts.registry, repo, opts.stdout);
+}
+
+// The last step of a successful `init`: list the project in the Andon registry. A failure here
+// never fails `init`; it prints one `note:` line naming the reason.
+async function register(registry: string, repo: string, stdout: (line: string) => void): Promise<void> {
+  try {
+    await addRoot(registry, await realpath(repo));
+  } catch (e) {
+    stdout(`note: not registered with Andon (${registry}): ${message(e)}`);
+  }
 }
 
 /** `factory upgrade [--force]`. `root` is the project's `factory/` directory. */

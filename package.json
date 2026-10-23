@@ -11,6 +11,7 @@
     "test": "bun test --pass-with-no-tests ./packages ./apps",
     "check": "tsc --noEmit",
     "factory": "bun factory/serve.ts",
+    "andon": "bun packages/andon-agent/src/main.ts",
     "factory:event": "bun factory/cli.ts event",
     "factory:test": "bun test factory/"
   },
