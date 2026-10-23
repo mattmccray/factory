@@ -12,7 +12,7 @@ Write in American English (en-US).
 The factory being built is never the factory doing the building.
 
 - **Source** is `packages/` and `apps/`. Jobs change source, plus `docs/` or root tooling
-  config (`package.json`, `tsconfig.json`) when the work calls for it.
+  config (`package.json`, `tsconfig.json`) or the 'README.md' when the work calls for it.
 - **The installed copy** is `.claude/` (the skill and agents) and `factory/` (the CLI, its
   `lib/`, the dashboard, `CONTRACT.md`, and the overlay: `config.json`, later
   `roles/<role>.md`). It runs the jobs. **Jobs never change `.claude/` or `factory/`.**
