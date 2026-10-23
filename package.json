@@ -9,9 +9,11 @@
   ],
   "scripts": {
     "test": "bun test --pass-with-no-tests ./packages ./apps",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && bun run --cwd apps/andon check",
     "factory": "bun factory/serve.ts",
     "andon": "bun packages/andon-agent/src/main.ts",
+    "andon:build": "bun run --cwd apps/andon build",
+    "andon:dev": "bun run --cwd apps/andon dev",
     "factory:event": "bun factory/cli.ts event",
     "factory:test": "bun test factory/"
   },
