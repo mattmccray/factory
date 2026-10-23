@@ -42,6 +42,20 @@ describe('doctor: config (AC5)', () => {
     expect(r.out).toEqual(['ok    config.json', 'note  unstamped install: no managed.json, hash checks skipped']);
   });
 
+  test('a config with a valid gate is ok', async () => {
+    await writeConfig({ ...CONFIG, gate: ['bun test', 'tsc --noEmit'] });
+    const r = await doctor();
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('ok    config.json');
+  });
+
+  test('a config with a malformed gate fails with the reason', async () => {
+    await writeConfig({ ...CONFIG, gate: [] });
+    const r = await doctor();
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('FAIL  config.json: config: gate must be a non-empty array of command strings');
+  });
+
   test('missing config.json', async () => {
     await rm(join(root, 'config.json'));
     const r = await doctor();
