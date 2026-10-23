@@ -9,9 +9,9 @@
     ".claude/agents/factory-security.md": "a40ec1d9d37df5df86cf121771b8eb3bd62b95d585c1547105d15ec427ee8ffa",
     ".claude/agents/factory-spec-writer.md": "92aaa0c034fd1e8135e8c49d623735a9ced6fd151ea71b995359488c43484a3a",
     ".claude/agents/factory-ui.md": "7c3f92a32d8d5fcdf549ad1979218d0b99dc73e3bf1d977f451f85b916e3bbe0",
-    ".claude/skills/factory/SKILL.md": "3dd80f09540c317f6cace987a66b1bfadafcd95d9c85630d17abd77c5f1b7b3e",
+    ".claude/skills/factory/SKILL.md": "b4909fc450d1cde5ea5a242a2f14f131dddc7e83d2bdf1c690c34693aa01ffa2",
     ".claude/skills/factory/explore.md": "e423590610db5a5614f1deeb70767dc89fda9e87dbf72c2605ec72203cf3e09f",
-    "factory/CONTRACT.md": "f6d60893f345a20c4f8215aca0baacd5a09124c82de025c04f7e42442edf5d35",
+    "factory/CONTRACT.md": "0e6fd6b420d93bd8533933aeafafb16f866efe537d97d25d41451b71b0ef450f",
     "factory/cli.ts": "d33f7197d156ebd2e94961e37e88c5ac9e542d68b5b1125fde18340f2648e8ea"
   }
 }

@@ -287,8 +287,8 @@ bun factory/cli.ts event <id> <type> [field=value …]   # validate, append, reb
 bun factory/cli.ts rebuild <id> | --all                # regenerate job.json from the log
 bun factory/cli.ts show <id>                           # human-readable timing summary
 bun factory/cli.ts doctor                              # validate config.json, verify managed hashes
-bun packages/cli/src/main.ts init [--force]            # (source only) install the managed core
-bun packages/cli/src/main.ts upgrade [--force]         # (source only) replace the managed core
+factory init [--force]                                 # (source only) install the managed core
+factory upgrade [--force]                              # (source only) replace the managed core
 ```
 
 Alias: `bun run factory:event …` for `event`. Value parsing is fixed, not guessed: `round`, `maxRound`,
@@ -309,9 +309,9 @@ exit non-zero with a one-line reason on rejection.
 
 `doctor` exits 0 when nothing failed and 1 otherwise.
 
-The CLI's source is `packages/cli` (entry `src/main.ts`, run from the repo root, which finds the
-factory at `<cwd>/factory`). An installed copy that predates `doctor` gains it when the CLI is
-promoted.
+The CLI's source is `packages/cli` (entry `src/main.ts`, linked onto the PATH as `factory` by
+`bun link` in `packages/cli`; run from the repo root, it finds the factory at `<cwd>/factory`).
+An installed copy that predates `doctor` gains it when the CLI is promoted.
 
 The installed `factory/cli.ts` is a single self-contained file (the source CLI bundled with its
 contract code), so it runs with `bun` alone, with no workspace packages or `node_modules`. It
@@ -322,8 +322,8 @@ installed CLI prints the vendored
 `usage: event <id> <type> [k=v …] | rebuild <id>|--all | show <id>`, and the source CLI prints
 that line followed by ` | doctor | init [--force] | upgrade [--force]`.
 The same source always bundles to the same bytes. It does not offer `init` or `upgrade`: those
-run from the factory's source against a project, as `bun <factory repo>/packages/cli/src/main.ts
-init` with the project root as the cwd.
+run from the factory's source against a project, as the linked `factory init` with the project
+root as the cwd.
 
 ### `init` and `upgrade`
 
