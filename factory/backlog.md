@@ -16,7 +16,7 @@ Lines are in dependency order. Fuzzy ones should go through `/factory explore` f
 - [x] `/factory customize` (alias `init`) — an interview that writes only the overlay, refuses anything that would break the contract, and ends by running `doctor` → 005-factory-customize
 - [x] Per-role `runner` config — the Claude runner first; design and document how a non-Claude CLI fills a role (reads these paths, writes this one file); implementation of other runners later → 006-role-runner-config
 - [x] `andon-agent` — a Bun daemon that watches registered projects' `factory/` trees (no polling), reuses the contract code, serves the board and docs, and streams changes over server-sent events; `factory init` registers a project with it → 007-andon-agent
-- [ ] Andon UI (Svelte) — port the Minerva dashboard (viewport board, live timers, Settled dialog, drawer timing) and add a project switcher or all-projects view
+- [x] Andon UI (Svelte) — port the Minerva dashboard (viewport board, live timers, Settled dialog, drawer timing) and add a project switcher or all-projects view → 008-andon-ui
 - [ ] Tiny JS shell — thin wrapper around the UI: tray badge with the needs-human count, native notifications on escalate and merge, auto-start of the local agent; no contract code runs in it
 - [ ] Migrate Minerva to the installed factory — run `init` against Minerva, move Minerva's reviewer rules into its overlay, run `doctor`, retire Minerva's vendored copy
 - [ ] Rewrite `notes/factory-prompt.md` as a one-page "describe the factory" README once contract v1 is final
