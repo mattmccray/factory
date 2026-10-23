@@ -1,9 +1,17 @@
 // factory 0.1.0 · managed file, do not edit: it is replaced on upgrade. Project settings go in the overlay: factory/config.json
 // packages/cli/src/core.ts
 import { readFile as readFile3 } from "fs/promises";
-import { join as join4 } from "path";
+import { dirname as dirname3, join as join4, resolve as resolve3 } from "path";
 
 // packages/contract/src/contract.ts
+var CURRENT_TARGET = "current";
+var BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+function isTargetBranch(name) {
+  return BRANCH_PATTERN.test(name) && !name.includes("..") && !name.includes("//") && !name.includes("/.") && !name.endsWith("/") && !name.endsWith(".") && !name.endsWith(".lock");
+}
+function mergeTarget(config) {
+  return config.merge?.target ?? CURRENT_TARGET;
+}
 var MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$/;
 var RUNNERS = ["claude"];
 var SCHEMA = "factory/v1";
@@ -22,7 +30,7 @@ function noExtraKeys(obj, allowed, what) {
 function parseConfig(raw) {
   if (!isRecord(raw))
     throw new Error("config: must be a JSON object");
-  noExtraKeys(raw, ["schema", "reviewers", "maxRound", "dashboard", "gate", "roles"], "config");
+  noExtraKeys(raw, ["schema", "reviewers", "maxRound", "dashboard", "gate", "roles", "merge"], "config");
   if (raw.schema !== SCHEMA)
     throw new Error(`config: schema must be "${SCHEMA}"`);
   const { reviewers, maxRound, dashboard } = raw;
@@ -51,7 +59,24 @@ function parseConfig(raw) {
     config.gate = parseGate(raw.gate);
   if (raw.roles !== undefined)
     config.roles = parseRoles(raw.roles, keys);
+  if (raw.merge !== undefined)
+    config.merge = parseMerge(raw.merge);
   return config;
+}
+function parseMerge(merge) {
+  if (!isRecord(merge))
+    throw new Error("config: merge must be an object { target? }");
+  noExtraKeys(merge, ["target"], "config.merge");
+  if (merge.target === undefined)
+    return {};
+  const target = merge.target;
+  if (typeof target !== "string" || target.trim() === "") {
+    throw new Error(`config: merge.target must be "${CURRENT_TARGET}" or a non-empty branch name`);
+  }
+  if (!isTargetBranch(target)) {
+    throw new Error(`config: merge.target ${JSON.stringify(target)} is not an allowed branch name (want ${BRANCH_PATTERN.source}, no '..', no '.lock' suffix)`);
+  }
+  return { target };
 }
 function parseRoles(roles, reviewers) {
   if (!isRecord(roles))
@@ -146,8 +171,13 @@ function parseEventInput(type, fields, ctx) {
       allow("brief", "issue", "maxRound");
       if (!ctx)
         throw new Error("job.claimed: needs the job id and config from the CLI");
+      if (ctx.target !== undefined && !isTargetBranch(ctx.target))
+        throw new Error(`job.claimed: target ${JSON.stringify(ctx.target)} is not an allowed branch name`);
       const maxRound = fields.maxRound === undefined ? ctx.config.maxRound : posInt(fields, "maxRound");
-      return { type, schema: SCHEMA, id: ctx.id, maxRound, brief: nullableStr(fields, "brief"), issue: nullableStr(fields, "issue") };
+      const claimed = { type, schema: SCHEMA, id: ctx.id, maxRound, brief: nullableStr(fields, "brief"), issue: nullableStr(fields, "issue") };
+      if (ctx.target !== undefined)
+        claimed.target = ctx.target;
+      return claimed;
     }
     case "job.titled":
       allow("title");
@@ -438,6 +468,7 @@ function project(events) {
     id: first.id,
     title: first.id,
     branch: `factory/${first.id}`,
+    target: typeof first.target === "string" ? first.target : null,
     builder: null,
     stage: "claimed",
     round: 0,
@@ -872,6 +903,50 @@ async function doctor(root) {
   return [await checkConfig(root), ...await checkManaged(root)];
 }
 
+// packages/cli/src/git.ts
+function gitEnv() {
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined && k !== "GIT_DIR" && k !== "GIT_WORK_TREE")
+      env[k] = v;
+  }
+  return env;
+}
+async function git(repo, args) {
+  let proc;
+  try {
+    proc = Bun.spawn(["git", "-C", repo, ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: gitEnv() });
+  } catch (e) {
+    throw new Error(`merge.target: cannot run git: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  return { code, out: out.trim(), err: err.trim().split(`
+`)[0] ?? "" };
+}
+function allowed(configured, branch) {
+  if (!isTargetBranch(branch)) {
+    throw new Error(`merge.target '${configured}': branch ${JSON.stringify(branch)} is not an allowed target name (want ${BRANCH_PATTERN.source}, no '..', no '.lock' suffix)`);
+  }
+  return branch;
+}
+async function resolveTarget(repo, configured) {
+  if (configured === CURRENT_TARGET) {
+    const r = await git(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    if (r.code === 0 && r.out !== "")
+      return allowed(configured, r.out);
+    if (r.code === 1)
+      throw new Error(`merge.target '${CURRENT_TARGET}': the checkout at ${repo} has a detached HEAD (no branch to target)`);
+    throw new Error(`merge.target '${CURRENT_TARGET}': git failed in ${repo}: ${r.err || `exit ${r.code}`}`);
+  }
+  allowed(configured, configured);
+  const r = await git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${configured}`]);
+  if (r.code === 0)
+    return configured;
+  if (r.code === 1)
+    throw new Error(`merge.target '${configured}': no branch refs/heads/${configured} in ${repo}`);
+  throw new Error(`merge.target '${configured}': git failed in ${repo}: ${r.err || `exit ${r.code}`}`);
+}
+
 // packages/cli/src/core.ts
 var USAGE = {
   event: "usage: event <id> <type> [field=value \u2026]",
@@ -893,7 +968,12 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       const [id, type, ...kv] = rest;
       if (!id || !type)
         throw new Error(USAGE.event);
-      const input = parseEventInput(type, parseFields(kv), { id, config });
+      const fields = parseFields(kv);
+      let input = parseEventInput(type, fields, { id, config });
+      if (input.type === "job.claimed") {
+        const target = await resolveTarget(dirname3(resolve3(io.root)), mergeTarget(config));
+        input = parseEventInput(type, fields, { id, config, target });
+      }
       io.stdout((await appendEvent(io.root, id, input)).stage);
       return 0;
     }

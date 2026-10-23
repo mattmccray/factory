@@ -15,9 +15,10 @@ changes which file you write, its path, or its format. A missing file is normal,
 then the defaults in this file are all there is.
 
 ## Where you work
-- **Code:** only inside the job worktree (`<worktree>`, branch `factory/<job id>`). Run every
-  command from there (`cd <worktree> && …`). Never touch the main checkout's code, never
-  check out or commit to `main`, never merge, never push.
+- **Code:** only inside the job worktree (`<worktree>`, branch `factory/<job id>`, based on
+  `<base>`, the job's target branch from the `base:` line on your card). Run every command from
+  there (`cd <worktree> && …`). Never touch the main checkout's code, never check out or commit
+  to `<base>`, never merge, never push.
 - **Not the factory:** never change `factory/` (the factory's config, CLI, and job state) or
   any managed file (one listed in `factory/managed.json`, or stamped as managed). They are the
   installed factory that is running this job.

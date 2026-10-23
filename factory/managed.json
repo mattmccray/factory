@@ -2,16 +2,16 @@
   "schema": "factory/v1",
   "version": "0.1.0",
   "files": {
-    ".claude/agents/factory-approver.md": "43648fa69e295a28470483fe608607a2349bd8dc7131a81fb5e662c4c36ab709",
-    ".claude/agents/factory-builder.md": "9c71e03cb053cf8a4cb00487bce9b34e85ddd58f3dd4c7d3366a692decebc80b",
-    ".claude/agents/factory-code.md": "013dd855966686bbe06acb291925981f33c9e206dec091a7da01ab8a91e92078",
-    ".claude/agents/factory-contract.md": "8a0a714351d31dbc41b1dc601a8a01fdf8b8425b1429fc2d2f61ce9893a82318",
-    ".claude/agents/factory-security.md": "a40ec1d9d37df5df86cf121771b8eb3bd62b95d585c1547105d15ec427ee8ffa",
+    ".claude/agents/factory-approver.md": "061bbfa32a69e71392487e72c784be2f8bc8f2d42eb014cc3a8667514f208b33",
+    ".claude/agents/factory-builder.md": "6219d31829c717a6d1a171229b116202df79b1f27565196213cb2aef083b628b",
+    ".claude/agents/factory-code.md": "a41dc8d308ed2dff5cda999647e91894f161f7c9c210546b2afa8d97a54fce10",
+    ".claude/agents/factory-contract.md": "3964ad2bf4e7039c16c732dd32abe1160b4bca04bfbe7a5009a81779eef6835b",
+    ".claude/agents/factory-security.md": "afdb6c8ffb9a8cf6faab2ac3533660d6d7f346c4f0ec373a735b8d06d2d4e8d6",
     ".claude/agents/factory-spec-writer.md": "92aaa0c034fd1e8135e8c49d623735a9ced6fd151ea71b995359488c43484a3a",
-    ".claude/agents/factory-ui.md": "7c3f92a32d8d5fcdf549ad1979218d0b99dc73e3bf1d977f451f85b916e3bbe0",
-    ".claude/skills/factory/SKILL.md": "b4909fc450d1cde5ea5a242a2f14f131dddc7e83d2bdf1c690c34693aa01ffa2",
+    ".claude/agents/factory-ui.md": "16bbb8a87db71dd2ed0c99bc094138cb287e25d7415e5895c91114bccee04808",
+    ".claude/skills/factory/SKILL.md": "d4aacc949ee31c589e2741c41e8cfa83b4841eb3c356dcf4fdc9f302dfa7f52f",
     ".claude/skills/factory/explore.md": "e423590610db5a5614f1deeb70767dc89fda9e87dbf72c2605ec72203cf3e09f",
-    "factory/CONTRACT.md": "0e6fd6b420d93bd8533933aeafafb16f866efe537d97d25d41451b71b0ef450f",
-    "factory/cli.ts": "d33f7197d156ebd2e94961e37e88c5ac9e542d68b5b1125fde18340f2648e8ea"
+    "factory/CONTRACT.md": "2a56ead2baeee3bffe3e6accc4093b33e5f973eb4ee1a044569743369845a763",
+    "factory/cli.ts": "7386640685bf0b96ab69f90c0a1349285c064a001b2ab52bfd0637520262b3c8"
   }
 }

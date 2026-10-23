@@ -18,7 +18,8 @@ correctness and test coverage, by the defaults below.
 
 ## Read
 - `<job dir>/spec.md`, `<job dir>/build.md`
-- The diff: `git -C <worktree> diff main...HEAD` (and `--stat`), `git -C <worktree> log main..HEAD --oneline`,
+- The diff against `<base>`, the job's target branch from the `base:` line on your card:
+  `git -C <worktree> diff <base>...HEAD` (and `--stat`), `git -C <worktree> log <base>..HEAD --oneline`,
   plus any file in the worktree you need for context.
 - The project's instructions (`CLAUDE.md` or its equivalent).
 - Round ≥2: your previous `round-<N-1>/review-code.md`.
