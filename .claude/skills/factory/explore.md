@@ -1,3 +1,4 @@
+<!-- factory 0.1.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/config.json and factory/roles/<role>.md -->
 # /factory explore — interview an idea into a brief
 
 The factory's agents can't talk to the user, so the thinking that needs a human happens here,
@@ -8,15 +9,15 @@ questions on decisions, not on facts.
 ## Start
 
 - **Free text idea** → new brief. Slug: 2–4 kebab words. If the idea points at earlier
-  thinking (a backlog line, `HANDOFF.md`, a note under `notes/`, a plan doc), read that too.
-  Decisions already made there are starting points to *confirm*, not questions to re-ask.
+  thinking (a backlog line, a design note, a plan doc), read that too. Decisions already made
+  there are starting points to *confirm*, not questions to re-ask.
 - **An existing brief's slug** → resume it. Re-read it, summarize where it stands in a few
   lines, and pick up at its first open question.
 
-Do your homework before the first question. Read `CLAUDE.md`, the **Decisions** in
-`HANDOFF.md`, and the contract (`docs/contract/v1.md` once it exists, else
-`factory/CONTRACT.md`). Read the code it would touch. Anything you
-can look up, look up.
+Do your homework before the first question. Read the project's instructions (`CLAUDE.md` or
+its equivalent) and any decision records or contracts they name as binding, and the project's
+role rules under `factory/roles/` (the spec-writer's and approver's rules say what makes a job
+escalate). Read the code it would touch. Anything you can look up, look up.
 
 ## Interview
 
@@ -26,13 +27,12 @@ Follow the user's `grilling` discipline:
 - Walk the decision tree in dependency order, settling the choices that decide other choices first.
 - **Facts are yours to find; decisions are the user's.** Never ask what the code or docs can answer.
 
-This repo needs one extra pass, because these issues make the approver escalate after a whole
-build. Raise each one as a question while it's still cheap to settle:
-- the `factory/v1` contract: event types and fields, transitions, `job.json`, `config.json`
-  keys, file layout, and the CLI surface (changes within v1 are additive only)
-- the boundary between managed files and the project overlay
-- source and state: jobs change source, never the installed copy (`.claude/`, `factory/`)
-- the binding decisions in `HANDOFF.md`, and its **Deferred** list (anti-scope for now)
+Make one extra pass for the things that make the approver escalate after a whole build, and
+raise each one as a question while it's still cheap to settle:
+- a public interface, data format, or contract the project treats as fixed or versioned
+- a binding decision the project has recorded, and anything it lists as deferred (anti-scope
+  for now)
+- an escalation trigger in the project's approver rules (`factory/roles/approver.md`, if it exists)
 
 When the idea collides with one of them, put it to the user plainly. The choices are narrowing
 the idea, dropping that part, or amending the contract (or a decision). An amendment the user
@@ -51,7 +51,7 @@ That way an interrupted session can resume. While questions remain it says `Stat
 # <Title>
 
 - Status: draft | ready
-- Sources: <earlier thinking you read, e.g. plans/wayfinder/…/3-….md> | —
+- Sources: <earlier thinking you read, e.g. a plan doc's path> | —
 - Date: <YYYY-MM-DD>
 
 ## Intent
@@ -70,7 +70,7 @@ Observable outcomes, in plain language. The spec-writer turns these into testabl
 ## Contract calls
 None. Otherwise list each one:
 "<the contract change or decision amendment>", approved by the user on <date>. The job must
-update the contract doc (`docs/contract/v1.md`, or the doc the brief names) to match.
+update the doc that records it (the brief names it) to match.
 
 ## Open
 None. A ready brief has none.
