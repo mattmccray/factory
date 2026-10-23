@@ -15,3 +15,7 @@
   `packages/contract`, once.
 - **A change to the contract surface** updates `docs/contract/v1.md` in the same diff.
 - **Commits:** Conventional Commits, e.g. `feat(cli): add the doctor command`.
+- **Nothing outside the worktree:** a job never changes machine-wide state (`~/.bun`, global
+  links or installs, `~/.andon`, shell config). To exercise an install, link, or registry step,
+  point it at a throwaway location (a temporary `BUN_INSTALL`, `HOME`, or `ANDON_HOME`) and
+  remove it afterward.
