@@ -109,8 +109,8 @@ describe('usage and show (AC3)', () => {
   const usage = async (argv: string[], line: string): Promise<void> => {
     expect(await cli(...argv)).toEqual({ code: 1, out: [], err: [line] });
   };
-  test('no command', () => usage([], USAGE.all));
-  test('unknown command', () => usage(['frobnicate'], USAGE.all));
+  test('no command', () => usage([], USAGE.source));
+  test('unknown command', () => usage(['frobnicate'], USAGE.source));
   test('event with no args', () => usage(['event'], USAGE.event));
   test('event with only an id', () => usage(['event', ID], USAGE.event));
   test('rebuild with no target', () => usage(['rebuild'], USAGE.rebuild));
@@ -122,6 +122,9 @@ describe('usage and show (AC3)', () => {
       rebuild: 'usage: rebuild <id> | --all',
       show: 'usage: show <id>',
       all: 'usage: event <id> <type> [k=v …] | rebuild <id>|--all | show <id>',
+      init: 'usage: init [--force]',
+      upgrade: 'usage: upgrade [--force]',
+      source: 'usage: event <id> <type> [k=v …] | rebuild <id>|--all | show <id> | doctor | init [--force] | upgrade [--force]',
     });
   });
 

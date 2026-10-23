@@ -109,3 +109,24 @@ export function renderClaudeCode(input: { config: Config; templates?: Readonly<T
   for (const [path, text] of Object.entries(files)) hashes[path] = sha256(text);
   return { files, manifest: { schema: 'factory/v1', version: VERSION, files: hashes } };
 }
+
+/** The installed CLI's stamp: a `//` comment, so it is the first line of `factory/cli.ts`. */
+export function cliStampLine(): string {
+  return `// factory ${VERSION} · managed file, do not edit: it is replaced on upgrade. Project settings go in the overlay: factory/config.json`;
+}
+
+/** The installed contract's stamp: an HTML comment, so it is the first line of `factory/CONTRACT.md`. */
+export function contractStampLine(): string {
+  return `<!-- factory ${VERSION} · managed file, do not edit: it is replaced on upgrade. This is the installed copy of the factory/v1 contract -->`;
+}
+
+/** Stamps the bundled CLI. A leading `// @bun` pragma is dropped, since the stamp must come first. */
+export function stampCli(bundle: string): string {
+  const body = bundle.startsWith('// @bun\n') ? bundle.slice('// @bun\n'.length) : bundle;
+  return `${cliStampLine()}\n${body}`;
+}
+
+/** Stamps the contract text (`docs/contract/v1.md`) for installation as `factory/CONTRACT.md`. */
+export function stampContract(text: string): string {
+  return `${contractStampLine()}\n${text}`;
+}

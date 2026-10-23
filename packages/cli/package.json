@@ -11,6 +11,7 @@
     "factory": "src/main.ts"
   },
   "dependencies": {
-    "@factory/contract": "workspace:*"
+    "@factory/contract": "workspace:*",
+    "@factory/templates": "workspace:*"
   }
 }

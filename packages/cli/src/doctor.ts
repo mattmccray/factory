@@ -2,17 +2,17 @@
 // verifies managed-file hashes against factory/managed.json. It reports every finding instead of
 // stopping at the first, and never reads a path outside the repo.
 import { createHash } from 'node:crypto';
-import { readFile, realpath } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { parseConfig, parseManifest } from '@factory/contract';
 import type { Manifest } from '@factory/contract';
+import { isNotFound, locate } from './paths';
 
 export interface Finding {
   ok: boolean;
   line: string;
 }
 
-const isNotFound = (e: unknown): boolean => typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT';
 const firstLine = (e: unknown): string => (e instanceof Error ? e.message : String(e)).split('\n')[0] ?? '';
 
 const ok = (what: string): Finding => ({ ok: true, line: `ok    ${what}` });
@@ -49,22 +49,16 @@ async function checkConfig(root: string): Promise<Finding> {
   return ok('config.json');
 }
 
-// Resolves a checked manifest path and confirms, after following symlinks, that it is still
-// inside the repo. Returns null when the file is missing.
+// Reads a checked manifest path through the shared containment rule (`paths.ts`): it never reads
+// a file that resolves outside the repo. Returns null when the file is missing.
 async function safeRead(repo: string, rel: string): Promise<Buffer | null> {
-  const repoReal = await realpath(repo);
-  let real: string;
+  const at = await locate(repo, rel);
   try {
-    real = await realpath(resolve(repo, rel));
+    return await readFile(at);
   } catch (e) {
     if (isNotFound(e)) return null;
     throw e;
   }
-  const back = relative(repoReal, real);
-  if (back === '' || back === '..' || back.startsWith(`..${sep}`) || isAbsolute(back)) {
-    throw new Error('resolves outside the repo');
-  }
-  return readFile(real);
 }
 
 async function checkManaged(root: string): Promise<Finding[]> {

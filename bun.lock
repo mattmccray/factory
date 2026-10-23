@@ -25,6 +25,7 @@
       },
       "dependencies": {
         "@factory/contract": "workspace:*",
+        "@factory/templates": "workspace:*",
       },
     },
     "packages/contract": {
