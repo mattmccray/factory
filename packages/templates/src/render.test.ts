@@ -427,9 +427,10 @@ describe('the customize interview in SKILL.md', () => {
   test('AC5: every file except SKILL.md renders byte-identical to before this job', () => {
     // sha256 of each file rendered from config() on the base this job started from. Job 014
     // (configurable target branch) updated the builder, approver, and reviewer hashes: those
-    // agents now diff against the card's `<base>` instead of a literal `main`.
+    // agents now diff against the card's `<base>` instead of a literal `main`. Job 015 (brief
+    // done status) updated the EXPLORE hash: the brief format gains `done` and the `- Job:` line.
     const before: Record<string, string> = {
-      [EXPLORE]: 'e423590610db5a5614f1deeb70767dc89fda9e87dbf72c2605ec72203cf3e09f',
+      [EXPLORE]: 'f963a37517018fd21bfec5dd62c829fa0cc92d8edcd502b34bf4789cab97e528',
       [agent('spec-writer')]: '92aaa0c034fd1e8135e8c49d623735a9ced6fd151ea71b995359488c43484a3a',
       [agent('builder')]: '6219d31829c717a6d1a171229b116202df79b1f27565196213cb2aef083b628b',
       [agent('approver')]: '061bbfa32a69e71392487e72c784be2f8bc8f2d42eb014cc3a8667514f208b33',
@@ -486,8 +487,9 @@ describe('per-role model from config.roles', () => {
     // sha256 of each file rendered from config() on the base this job started from. SKILL.md is
     // excluded: its template text changes in this job (the customize interview covers roles).
     // Job 014 updated the builder, approver, and reviewer hashes (`<base>` instead of `main`).
+    // Job 015 updated the EXPLORE hash (the brief format gains `done` and the `- Job:` line).
     const before: Record<string, string> = {
-      [EXPLORE]: 'e423590610db5a5614f1deeb70767dc89fda9e87dbf72c2605ec72203cf3e09f',
+      [EXPLORE]: 'f963a37517018fd21bfec5dd62c829fa0cc92d8edcd502b34bf4789cab97e528',
       [agent('spec-writer')]: '92aaa0c034fd1e8135e8c49d623735a9ced6fd151ea71b995359488c43484a3a',
       [agent('builder')]: '6219d31829c717a6d1a171229b116202df79b1f27565196213cb2aef083b628b',
       [agent('approver')]: '061bbfa32a69e71392487e72c784be2f8bc8f2d42eb014cc3a8667514f208b33',
@@ -634,5 +636,127 @@ describe('the target branch: no literal main', () => {
     }
     expect(mainsIn('`git -C <worktree> show main:docs/x.md`')).not.toEqual([]);
     expect(mainsIn('the main checkout stays put')).toEqual([]);
+  });
+});
+
+describe('marking a brief done when its job merges (job 015)', () => {
+  const flat = (s: string): string => s.replace(/\s+/g, ' ');
+  const configs = [config(), config({ reviewers: ['q'] }), config({ reviewers: ['zeta', 'eta-1', 'theta'], merge: { target: 'develop' } })];
+  const render = (c: Config = config(), templates: Readonly<Templates> = TEMPLATES): Record<string, string> =>
+    renderClaudeCode({ config: c, templates }).files;
+  // The `## <name>` section of a rendered file, up to the next `## ` heading, flattened.
+  const sectionOf = (text: string, name: string): string => {
+    const start = text.indexOf(`\n## ${name}`);
+    if (start < 0) throw new Error(`no ## ${name} section`);
+    const end = text.indexOf('\n## ', start + 1);
+    return flat(end < 0 ? text.slice(start) : text.slice(start, end));
+  };
+  const mergeOf = (files: Record<string, string>): string => sectionOf(at(files, SKILL), 'Merge');
+  // The `/factory <feature>` entry in Commands, flattened.
+  const claimOf = (files: Record<string, string>): string => {
+    const commands = sectionOf(at(files, SKILL), 'Commands');
+    const start = commands.indexOf('**`/factory <feature>`**');
+    if (start < 0) throw new Error('no /factory <feature> entry');
+    const end = commands.indexOf('**`/factory ', start + 1);
+    return end < 0 ? commands.slice(start) : commands.slice(start, end);
+  };
+  const JOB_LINE = '- Job: <id> (merged <short sha>, <YYYY-MM-DD>)';
+  const BOTH_PATHS = '-- factory/backlog.md factory/briefs/<slug>.md';
+  // What the Merge bookkeeping must say; returns what's missing (empty when the text is current).
+  const bookkeepingGaps = (merge: string): string[] =>
+    [
+      'When `job.json` has a non-null `brief`',
+      "set that brief's `Status:` line to `done`",
+      `add \`${JOB_LINE}\` right below it`,
+      '"chore(factory): record job <id>"',
+      BOTH_PATHS,
+      'With no brief, commit the backlog only',
+      'nothing changed → skip',
+    ].filter((want) => !merge.includes(want));
+  // The bookkeeping bullet as it read on the base this job started from.
+  const OLD_BOOKKEEPING = [
+    '- Then **bookkeeping**, so every job leaves `<target>` clean: commit just the backlog tick, by',
+    '  pathspec, so nothing else of the user\'s gets swept in: `git commit -m "chore(factory): record',
+    '  job <id>" -m "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md`',
+    '  (nothing changed → skip).',
+  ].join('\n');
+
+  test('AC1: the Merge bookkeeping marks the brief done and commits it with the backlog', () => {
+    for (const c of configs) {
+      const merge = mergeOf(render(c));
+      expect(bookkeepingGaps(merge)).toEqual([]);
+      expect(merge).toContain(`-- factory/backlog.md\``);
+      // the brief is marked after job.merged is logged, and before the lock is released
+      expect(merge.indexOf('`job.merged sha=<short sha>`')).toBeLessThan(merge.indexOf(JOB_LINE));
+      expect(merge.indexOf(BOTH_PATHS)).toBeLessThan(merge.indexOf('Release the lock'));
+      expect(merge).toContain('the `<short sha>` you passed to `job.merged`');
+    }
+  });
+
+  test('AC2: the check fails on the base text (backlog-only pathspec) and passes on the new', () => {
+    const lines = TEMPLATES.skill.split('\n');
+    const first = lines.findIndex((line) => line.startsWith('- Then **bookkeeping**'));
+    expect(first).toBeGreaterThanOrEqual(0);
+    const last = lines.findIndex((line, i) => i > first && line.startsWith('- '));
+    expect(last).toBeGreaterThan(first);
+    const regressed = [...lines.slice(0, first), OLD_BOOKKEEPING, ...lines.slice(last)].join('\n');
+    expect(regressed).not.toBe(TEMPLATES.skill);
+    const old = mergeOf(render(config(), { ...TEMPLATES, skill: regressed }));
+    expect(old).toContain('-- factory/backlog.md` (nothing changed → skip)');
+    expect(bookkeepingGaps(old)).toContain(BOTH_PATHS);
+    expect(bookkeepingGaps(mergeOf(render()))).toEqual([]);
+  });
+
+  test('AC3: claim refuses a done brief with its own message, and the draft refusal stays separate', () => {
+    for (const c of configs) {
+      const claim = claimOf(render(c));
+      expect(claim).toContain('`brief <slug> is done (job <id>)`');
+      expect(claim).toContain('a draft brief means the interview isn\'t done, so stop before claiming and say so');
+      const done = claim.indexOf('is `done`');
+      expect(done).toBeGreaterThanOrEqual(0);
+      expect(claim.slice(done)).toContain('stop before claiming');
+      // separate rules: the done refusal and the draft refusal are different sentences
+      const sentences = claim.split(/(?<=\.) /);
+      const doneRule = sentences.find((s) => s.includes('is done (job <id>)')) ?? '';
+      const draftRule = sentences.find((s) => s.includes('a draft brief')) ?? '';
+      expect(doneRule).not.toBe('');
+      expect(draftRule).not.toBe('');
+      expect(doneRule).not.toBe(draftRule);
+      expect(draftRule).not.toContain('done (job');
+    }
+  });
+
+  test('AC4: the brief format shows draft | ready | done and the Job: line only the merge writes', () => {
+    for (const c of configs) {
+      const text = at(render(c), EXPLORE);
+      expect(text).toContain('- Status: draft | ready | done\n');
+      expect(text).toContain(`${JOB_LINE}`);
+      const format = text.slice(text.indexOf('```\n# <Title>'), text.indexOf('```', text.indexOf('```\n# <Title>') + 3));
+      expect(format).toContain('- Status: draft | ready | done');
+      expect(format).toContain(JOB_LINE);
+      expect(format.indexOf('- Status:')).toBeLessThan(format.indexOf('- Job:'));
+      expect(flat(text)).toContain('Only the factory\'s Merge step writes the `- Job:` line');
+    }
+  });
+
+  test('AC5: an existing done brief is not reopened: name the job, offer a new brief citing it', () => {
+    for (const c of configs) {
+      const start = sectionOf(at(render(c), EXPLORE), 'Start');
+      expect(start).toContain('If its `Status:` is `done`, don\'t reopen it');
+      expect(start).toContain('name the job that carried it out');
+      expect(start).toContain('offer a new brief that lists the old one under `Sources:`');
+    }
+  });
+
+  test('AC6: SKILL.md and explore.md stay neutral and fully filled for several configs', () => {
+    const BANNED = ['Minerva', 'Andon', 'andon', 'packages/', 'apps/', 'bun run test', 'bun run check'];
+    for (const c of configs) {
+      const files = render(c);
+      const touched = [mergeOf(files), claimOf(files), flat(at(files, EXPLORE))];
+      for (const s of touched) {
+        for (const word of BANNED) expect({ word, found: s.includes(word) }).toEqual({ word, found: false });
+        expect(s).not.toMatch(/\{\{[^}]*\}\}/);
+      }
+    }
   });
 });
