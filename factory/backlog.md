@@ -10,7 +10,7 @@ One feature per line — what "done" looks like, not the history. Add lines with
 Lines are in dependency order. Fuzzy ones should go through `/factory explore` first.
 
 - [x] Contract package — copy (don't move) `factory/lib` and its tests into `packages/contract` (the installed copy under `factory/` stays until promotion); promote `factory/CONTRACT.md` to `docs/contract/v1.md` with its versioning rules (additive changes only within v1; how readers handle unknown fields); `factory/` untouched → 001-contract-package
-- [ ] CLI package — the vendored `factory/cli.ts` runs on `packages/cli` (on `packages/contract`, not `factory/lib`), with the same commands, value parsing, and exit codes; add `factory doctor` (verifies managed hashes, validates config)
+- [x] CLI package — the vendored `factory/cli.ts` runs on `packages/cli` (on `packages/contract`, not `factory/lib`), with the same commands, value parsing, and exit codes; add `factory doctor` (verifies managed hashes, validates config) → 002-cli-package
 - [ ] Managed templates and overlay — the vendored skill and agents become project-neutral templates in `packages/templates` with overlay hooks (`factory/roles/<role>.md`, config-driven reviewers and gates) and version + hash stamps
 - [ ] `factory init` / `upgrade` — install into a project (Claude Code adapter: render to `.claude/skills` and `.claude/agents`); `upgrade` replaces only managed files and leaves the overlay alone; supports self-upgrade of this repo
 - [ ] `/factory customize` (alias `init`) — an interview that writes only the overlay, refuses anything that would break the contract, and ends by running `doctor`
