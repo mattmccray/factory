@@ -20,6 +20,12 @@
     "packages/cli": {
       "name": "@factory/cli",
       "version": "0.0.0",
+      "bin": {
+        "factory": "src/main.ts",
+      },
+      "dependencies": {
+        "@factory/contract": "workspace:*",
+      },
     },
     "packages/contract": {
       "name": "@factory/contract",

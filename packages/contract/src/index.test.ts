@@ -4,11 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   appendEvent,
+  checkManifestPath,
   checkTransition,
   formatShow,
   parseConfig,
   parseEventInput,
   parseFields,
+  parseManifest,
   project,
   readLog,
   readVerdict,
@@ -18,8 +20,8 @@ import type { Config, EventInput, FactoryEvent, JobSnapshot } from '@factory/con
 
 describe('@factory/contract index', () => {
   test('exports every public function', () => {
-    const fns: unknown[] = [parseConfig, parseEventInput, checkTransition, project, readLog, readVerdict, appendEvent, rebuild, parseFields, formatShow];
-    expect(fns).toHaveLength(10);
+    const fns: unknown[] = [parseConfig, parseEventInput, checkTransition, project, readLog, readVerdict, appendEvent, rebuild, parseFields, formatShow, parseManifest, checkManifestPath];
+    expect(fns).toHaveLength(12);
     for (const fn of fns) expect(typeof fn).toBe('function');
   });
 
