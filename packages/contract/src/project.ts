@@ -165,7 +165,7 @@ export function project(events: FactoryEvent[]): JobSnapshot {
     id: first.id,
     title: first.id,
     branch: `factory/${first.id}`,
-    target: first.target ?? null,
+    target: typeof first.target === 'string' ? first.target : null,
     builder: null,
     stage: 'claimed',
     round: 0,

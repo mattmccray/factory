@@ -202,6 +202,11 @@ describe('target branch (job.claimed)', () => {
     await refuses(/^merge\.target 'current': .*detached HEAD/);
   });
 
+  test('a checkout on a branch with shell metacharacters refuses the claim and writes nothing', async () => {
+    gitIn(repo, 'checkout', '--quiet', '-b', "x';$(id)");
+    await refuses(/^merge\.target 'current': branch ".*" is not an allowed target name/);
+  });
+
   test('a caller-supplied target is rejected as an extra field and nothing is written', async () => {
     const r = await cli('event', ID, 'job.claimed', 'target=develop');
     expect(r.code).toBe(1);

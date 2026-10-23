@@ -133,6 +133,15 @@ describe('parseConfig: merge (target branch)', () => {
       [{ target: '  ' }, /^config: merge\.target must be/],
       [{ target: 1 }, /^config: merge\.target must be/],
       [{ target: null }, /^config: merge\.target must be/],
+      [{ target: ' develop' }, /^config: merge\.target " develop" is not an allowed branch name/],
+      [{ target: "a'b" }, /is not an allowed branch name/],
+      [{ target: 'x$(id)' }, /is not an allowed branch name/],
+      [{ target: 'a;b' }, /is not an allowed branch name/],
+      [{ target: 'a b' }, /is not an allowed branch name/],
+      [{ target: '-x' }, /is not an allowed branch name/],
+      [{ target: 'a..b' }, /is not an allowed branch name/],
+      [{ target: 'topic.lock' }, /is not an allowed branch name/],
+      [{ target: 'a/' }, /is not an allowed branch name/],
     ];
     for (const [merge, want] of cases) {
       let message = '';
@@ -178,6 +187,7 @@ describe('parseEventInput', () => {
     });
     expect(() => parseEventInput('job.claimed', { target: 'develop' }, ctx)).toThrow(/extra field 'target'|unknown key 'target'/);
     expect('target' in parseEventInput('job.claimed', {}, { id: '019-x', config: parseConfig(shipped) })).toBe(false);
+    expect(() => parseEventInput('job.claimed', {}, { ...ctx, target: "x'; rm -rf ~" })).toThrow(/not an allowed branch name/);
   });
   test('round.started fills reviewers from config when omitted', () => {
     const ctx = { id: '019-x', config: parseConfig(shipped) };

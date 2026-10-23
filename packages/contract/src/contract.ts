@@ -49,6 +49,25 @@ export interface MergePolicy {
 /** The `merge.target` value meaning "the branch the main checkout is on". */
 export const CURRENT_TARGET = 'current';
 
+/**
+ * The branch names a target may have: a conservative subset of git's ref names, so a target can
+ * never carry shell metacharacters, quotes, or whitespace into the commands that use it.
+ */
+export const BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+
+/** True when `name` is a branch name a target may use (see `BRANCH_PATTERN`). */
+export function isTargetBranch(name: string): boolean {
+  return (
+    BRANCH_PATTERN.test(name) &&
+    !name.includes('..') &&
+    !name.includes('//') &&
+    !name.includes('/.') &&
+    !name.endsWith('/') &&
+    !name.endsWith('.') &&
+    !name.endsWith('.lock')
+  );
+}
+
 /** The effective `merge.target`: `"current"` when `merge` or `merge.target` is absent. */
 export function mergeTarget(config: Config): string {
   return config.merge?.target ?? CURRENT_TARGET;
@@ -119,6 +138,9 @@ function parseMerge(merge: unknown): MergePolicy {
   const target = merge.target;
   if (typeof target !== 'string' || target.trim() === '') {
     throw new Error(`config: merge.target must be "${CURRENT_TARGET}" or a non-empty branch name`);
+  }
+  if (!isTargetBranch(target)) {
+    throw new Error(`config: merge.target ${JSON.stringify(target)} is not an allowed branch name (want ${BRANCH_PATTERN.source}, no '..', no '.lock' suffix)`);
   }
   return { target };
 }
@@ -220,7 +242,7 @@ export function parseEventInput(
     case 'job.claimed': {
       allow('brief', 'issue', 'maxRound');
       if (!ctx) throw new Error('job.claimed: needs the job id and config from the CLI');
-      if (ctx.target !== undefined && ctx.target === '') throw new Error('job.claimed: the resolved target must be a non-empty branch name');
+      if (ctx.target !== undefined && !isTargetBranch(ctx.target)) throw new Error(`job.claimed: target ${JSON.stringify(ctx.target)} is not an allowed branch name`);
       const maxRound = fields.maxRound === undefined ? ctx.config.maxRound : posInt(fields, 'maxRound');
       const claimed: Extract<EventInput, { type: 'job.claimed' }> = { type, schema: SCHEMA, id: ctx.id, maxRound, brief: nullableStr(fields, 'brief'), issue: nullableStr(fields, 'issue') };
       if (ctx.target !== undefined) claimed.target = ctx.target;

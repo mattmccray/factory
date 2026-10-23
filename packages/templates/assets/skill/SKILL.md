@@ -46,8 +46,10 @@ Dashboard: Andon, one agent per machine. Run `bun run andon` in the factory clon
 `job.json`. The CLI resolves it once, at `job.claimed`, from `merge.target` in
 `<R>/factory/config.json`: `current` (the default when `merge` or `merge.target` is absent) is
 the branch the main checkout is on at that moment, and any other value names a branch that
-must exist. A detached HEAD or a missing branch refuses the claim, writing nothing; tell the
-user the CLI's one-line reason and stop. Read `target` from `job.json` after the claim and use
+must exist. The CLI accepts only a plain branch name (letters, digits, `.`, `_`, `/`, `-`), so a
+target never carries quotes or shell metacharacters. A detached HEAD, a missing branch, or a
+disallowed name refuses the claim, writing nothing; tell the user the CLI's one-line reason and
+stop. Read `target` from `job.json` after the claim and use
 it as `<target>` everywhere below, even if the checkout or the config changes mid-job.
 If `target` is `null` (a job claimed before the CLI recorded it), resolve it whenever you need
 it from the current config: `merge.target` if it names a branch, else (`current`, or no key)
@@ -160,7 +162,7 @@ agent to fix that first line to the exact format its definition gives (`VERDICT:
 **1 · Spec.** Board: `stage.entered stage=spec`. Spawn `factory-spec-writer` → `spec.md`
 (span `role=spec-writer`). Board: `job.titled title='<spec.md's # H1>'`.
 
-**2 · Worktree.** `git worktree add -b factory/<id> factory/.worktrees/<id> <target>`
+**2 · Worktree.** `git worktree add -b factory/<id> factory/.worktrees/<id> '<target>'`
 (if the branch already exists: `git worktree add factory/.worktrees/<id> factory/<id>`).
 
 **3 · Build.** Board: `stage.entered stage=build`. Spawn `factory-builder` (name it
@@ -205,8 +207,9 @@ main checkout, which must be on the job's `<target>`. Check it first with
 `git symbolic-ref --short HEAD`. If it is on another branch `<x>` (or detached: `<x>` is
 `detached HEAD`), release the lock, board:
 `merge.failed reason='checkout is on <x>, job targets <target>'` (the job goes to
-`needs-human`), and stop: tell the user to switch the main checkout to `<target>` themselves and
-retry with `/factory approve <id>`. Never run `git checkout` or `git switch` here. The main
+`needs-human`; `<x>` is whatever the checkout's branch is called, so write any apostrophe
+in it as `'\''`, as for every board value), and stop: tell the user to switch the main
+checkout to `<target>` themselves and retry with `/factory approve <id>`. Never run `git checkout` or `git switch` here. The main
 checkout is the user's working tree, maybe with uncommitted work.
 
 ```bash
@@ -348,7 +351,8 @@ breaks one is refused: tell the user which rule and why, and ask again. Nothing 
   non-empty harness model name matching `^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$` (no spaces or `#`).
   Dropping a reviewer means dropping its `roles` entry too.
 - `merge`, when present, is an object holding only `target`. `target`, when present, is a
-  non-empty string: `current` or the name of a branch. No `merge` key (or no `target`) means
+  non-empty string: `current` or the name of a branch matching `^[A-Za-z0-9][A-Za-z0-9._/-]*$`,
+  with no `..` and no `.lock` suffix. No `merge` key (or no `target`) means
   `current`. A branch literally named `current` can't be targeted. The branch has to exist when
   a job is claimed, or the claim is refused.
 - A role file exists only for a fixed role or a configured reviewer key. Dropping a reviewer

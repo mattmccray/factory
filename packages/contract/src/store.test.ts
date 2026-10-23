@@ -177,6 +177,14 @@ describe('target', () => {
     expect(snap.target).toBe('develop');
     expect((await readLog(root, '020-other'))[0]).toMatchObject({ type: 'job.claimed', target: 'develop' });
   });
+
+  test('a hand-edited non-string target projects null on rebuild', async () => {
+    await mkdir(jobDir(), { recursive: true });
+    const line = { ts: '2026-10-23T14:00:00.000Z', type: 'job.claimed', schema: 'factory/v1', id: ID, maxRound: 2, brief: null, issue: null, target: 5 };
+    await writeFile(join(jobDir(), 'events.jsonl'), `${JSON.stringify(line)}\n`);
+    await rebuild(root, ID);
+    expect(JSON.parse(await readFile(join(jobDir(), 'job.json'), 'utf8')).target).toBeNull();
+  });
 });
 
 describe('job id', () => {

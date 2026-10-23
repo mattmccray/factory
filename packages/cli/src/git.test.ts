@@ -28,6 +28,33 @@ describe('resolveTarget', () => {
     await expect(resolveTarget(repo, 'release')).rejects.toThrow("merge.target 'release': no branch refs/heads/release");
   });
 
+  test('a checkout branch with shell metacharacters is refused, even when it exists', async () => {
+    initRepo(repo, 'main');
+    for (const name of ["a'b", 'x$(id)', 'a;b']) {
+      gitIn(repo, 'checkout', '--quiet', '-b', name);
+      let message = '';
+      try {
+        await resolveTarget(repo, 'current');
+      } catch (e) {
+        message = e instanceof Error ? e.message : String(e);
+      }
+      expect(message).toMatch(/^merge\.target 'current': branch ".*" is not an allowed target name/);
+      expect(message).not.toContain('\n');
+    }
+  });
+
+  test('an inherited GIT_DIR does not redirect resolution', async () => {
+    initRepo(repo, 'master');
+    const before = process.env.GIT_DIR;
+    process.env.GIT_DIR = join(repo, 'nowhere');
+    try {
+      expect(await resolveTarget(repo, 'current')).toBe('master');
+    } finally {
+      if (before === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = before;
+    }
+  });
+
   test('a detached HEAD refuses current with a one-line reason', async () => {
     initRepo(repo, 'main');
     gitIn(repo, 'checkout', '--quiet', '--detach');

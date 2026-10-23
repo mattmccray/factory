@@ -583,7 +583,7 @@ describe('the target branch: no literal main', () => {
     const text = skillOf();
     expect(text).toMatch(/^base: +<target>$/m);
     expect(text).toContain('worktree: <R>/factory/.worktrees/<id>   (branch factory/<id>)\n');
-    expect(text).toContain('`git worktree add -b factory/<id> factory/.worktrees/<id> <target>`');
+    expect(text).toContain("`git worktree add -b factory/<id> factory/.worktrees/<id> '<target>'`");
   });
 
   test('AC6: the merge step states the precondition, the merge.failed record, no checkout, and the null fallback', () => {
@@ -614,6 +614,8 @@ describe('the target branch: no literal main', () => {
     expect(s).toContain('`merge` (only `target`)');
     expect(s).toContain('`merge`, when present, is an object holding only `target`');
     expect(s).toContain('A branch literally named `current` can\'t be targeted');
+    expect(s).toContain('a branch matching `^[A-Za-z0-9][A-Za-z0-9._/-]*$`, with no `..` and no `.lock` suffix');
+    expect(s).toContain('accepts only a plain branch name');
   });
 
   test('AC6: the check fails on the old text', () => {
