@@ -1,6 +1,7 @@
 # README — what the factory is, and how to install, upgrade, and use it
 
-- Status: ready
+- Status: done
+- Job: 011-readme (merged f2d1e0a, 2026-10-23)
 - Sources: factory/backlog.md (item "Rewrite `notes/factory-prompt.md`…"), notes/factory-prompt.md, notes/factory-app.md, HANDOFF.md, docs/upgrade.md, docs/runners.md, docs/contract/v1.md
 - Date: 2026-10-23
 

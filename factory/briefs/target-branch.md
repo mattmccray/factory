@@ -1,6 +1,7 @@
 # Configurable target branch
 
-- Status: ready
+- Status: done
+- Job: 014-configurable-target-branch (merged c0a944d, 2026-10-23)
 - Sources: `HANDOFF.md` (Decision 8: "merge policy" is a planned overlay setting), `docs/contract/v1.md`, `packages/templates/assets/{skill/SKILL.md,agents/*.md}`, `packages/templates/overlays/factory/roles/{ui,contract}.md`
 - Date: 2026-10-23
 
