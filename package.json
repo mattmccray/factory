@@ -14,6 +14,8 @@
     "andon": "bun packages/andon-agent/src/main.ts",
     "andon:build": "bun run --cwd apps/andon build",
     "andon:dev": "bun run --cwd apps/andon dev",
+    "andon:shell:build": "bun run andon:build && bun run --cwd apps/andon-shell build",
+    "andon:shell": "bun run --cwd apps/andon-shell dev",
     "factory:event": "bun factory/cli.ts event",
     "factory:test": "bun test factory/"
   },

@@ -8,3 +8,8 @@ factory/.worktrees/
 
 # Andon UI build output (bun run andon:build)
 apps/andon/dist/
+
+# Andon shell build output (bun run andon:shell:build): the bundled backend, Tiny's dev and dist dirs
+apps/andon-shell/build/
+apps/andon-shell/.build/
+apps/andon-shell/dist/
