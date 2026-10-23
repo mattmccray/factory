@@ -94,6 +94,7 @@ const num = (name: string): number => Number(name.match(/\d+/)?.[0] ?? 0);
 async function docs(p: Project, id: string): Promise<{ files: Array<{ path: string; text: string }> }> {
   const { reviewers } = await readConfig(p);
   const dir = join(p.factory, 'jobs', id);
+  if ((await lstat(dir).catch(() => null))?.isDirectory() !== true) return { files: [] }; // never through a symlinked job dir
   const top = (await entries(dir)).filter((d) => d.isFile()).map((d) => d.name);
   const reworks = top.filter((f) => /^rework-\d+\.md$/.test(f)).sort((a, b) => num(a) - num(b));
   const paths = ['feature.md', 'spec.md', 'build.md', ...reworks, 'decision.md'].filter((f) => top.includes(f)).map((f) => `jobs/${id}/${f}`);
@@ -296,7 +297,19 @@ export async function startAgent(opts: AgentOptions): Promise<Agent> {
     return new Response(stream, { headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' } });
   }
 
+  // DNS-rebinding guard: loopback binding alone does not stop a page whose hostname resolves to
+  // 127.0.0.1, so the Host must name this agent, and an Origin, when sent, must be this agent's.
+  let boundPort = 0;
+  function trusted(req: Request): boolean {
+    const hosts = [`127.0.0.1:${boundPort}`, `localhost:${boundPort}`];
+    const host = req.headers.get('host');
+    if (host === null || !hosts.includes(host.toLowerCase())) return false;
+    const origin = req.headers.get('origin');
+    return origin === null || hosts.some((h) => origin.toLowerCase() === `http://${h}`);
+  }
+
   async function handle(req: Request): Promise<Response> {
+    if (!trusted(req)) return text('Forbidden', 403);
     if (req.method !== 'GET') return text('Method not allowed', 405);
     const { pathname } = new URL(req.url);
     if (pathname === '/projects') return json({ projects: list() });
@@ -333,6 +346,7 @@ export async function startAgent(opts: AgentOptions): Promise<Agent> {
     idleTimeout: 0, // an event stream stays open with no traffic
     fetch: handle,
   });
+  boundPort = server.port ?? 0;
 
   return {
     url: `http://${HOSTNAME}:${server.port}`,

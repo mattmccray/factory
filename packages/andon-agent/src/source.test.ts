@@ -95,6 +95,7 @@ test('docs/contract/v1.md documents the registry, init registration, and the age
     '`error`: `{ project: <pid>, reason: "config.json: <reason>" }`',
     '`127.0.0.1`',
     '8766',
+    'is a 403 (a guard against DNS rebinding)',
   ]) {
     expect({ want, found: doc.includes(want) }).toEqual({ want, found: true });
   }

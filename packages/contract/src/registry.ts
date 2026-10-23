@@ -49,6 +49,7 @@ export function parseRegistry(raw: unknown): Registry {
     if (typeof p.root !== 'string') throw new Error(`registry: projects[${i}].root must be a string`);
     const why = checkRoot(p.root);
     if (why !== null) throw new Error(`registry: projects[${i}]: ${why}`);
+    if (resolve(p.root) !== p.root) throw new Error(`registry: projects[${i}]: root ${JSON.stringify(p.root)} must be normalized (${JSON.stringify(resolve(p.root))})`);
     if (seen.has(p.root)) throw new Error(`registry: projects[${i}]: root ${JSON.stringify(p.root)} is listed twice`);
     seen.add(p.root);
     projects.push({ root: p.root });

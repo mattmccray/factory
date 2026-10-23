@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { addRoot, appendEvent, parseConfig, parseEventInput, registryPath } from '@factory/contract';
@@ -203,6 +203,11 @@ describe('HTTP endpoints (AC3)', () => {
       expect({ bad, status: r.status }).toEqual({ bad, status: 404 });
       expect(JSON.stringify(r.body)).not.toContain('secret');
     }
+    // A symlinked job dir is never read through.
+    await writeAt(join(tmp, 'outside', 'spec.md'), 'secret');
+    await symlink(join(tmp, 'outside'), join(a, 'factory', 'jobs', '009-linked-job'));
+    const linked = await getJson(`${url}/projects/${pid}/jobs/009-linked-job/docs`);
+    expect(linked.body).toEqual({ files: [] });
     expect((await getJson(`${url}/nope`)).status).toBe(404);
     expect((await fetch(`${url}/projects`, { method: 'POST' })).status).toBe(405);
   });
@@ -239,6 +244,29 @@ describe('HTTP endpoints (AC3)', () => {
     await addRoot(registry, bare);
     const { url } = await start();
     expect((await getJson(`${url}/projects`)).body).toEqual({ projects: [{ id: projectId(bare), name: basename(bare), root: bare }] });
+  });
+});
+
+describe('DNS-rebinding guard', () => {
+  test('a foreign Host or Origin is a 403 on every endpoint, including /events', async () => {
+    const a = await makeProject('alpha', ['001-first-job']);
+    await addRoot(registry, a);
+    const { url } = await start();
+    const port = new URL(url).port;
+    const paths = ['/projects', `/projects/${projectId(a)}/board`, `/projects/${projectId(a)}/jobs/001-first-job/docs`, '/events'];
+    for (const path of paths) {
+      const bad: Array<Record<string, string>> = [{ host: 'evil.example' }, { host: `evil.example:${port}` }, { host: `127.0.0.1:${port}`, origin: 'http://evil.example' }, { host: `localhost:${port}`, origin: `http://evil.example:${port}` }];
+      for (const headers of bad) {
+        const res = await fetch(`${url}${path}`, { headers });
+        expect({ path, headers, status: res.status }).toEqual({ path, headers, status: 403 });
+        await res.body?.cancel();
+      }
+    }
+    const good: Array<Record<string, string>> = [{ host: `localhost:${port}` }, { host: `127.0.0.1:${port}`, origin: `http://127.0.0.1:${port}` }, { host: `localhost:${port}`, origin: `http://localhost:${port}` }];
+    for (const headers of good) {
+      const res = await fetch(`${url}/projects`, { headers });
+      expect({ headers, status: res.status }).toEqual({ headers, status: 200 });
+    }
   });
 });
 
@@ -284,11 +312,14 @@ describe('the event stream (AC4, AC5)', () => {
     const client = await connect(url);
     await client.next((e) => e.event === 'projects');
     await settle(150);
+    // Late fs events from the fixture setup may still yield a legitimate board event: only what
+    // follows the bad write counts.
     await writeFile(join(a, 'factory', 'config.json'), '{"schema": "factory/v1", "nope": 1}');
     const ev = await client.next((e) => e.event === 'error');
     expect(field(ev.data, 'project')).toBe(projectId(a));
     expect(String(field(ev.data, 'reason'))).toStartWith('config.json: ');
-    expect(client.seen.some((e) => e.event === 'board')).toBe(false);
+    await settle(300);
+    expect(client.seen.slice(client.seen.indexOf(ev)).some((e) => e.event === 'board')).toBe(false);
     client.close();
   });
 
@@ -311,7 +342,14 @@ describe('the event stream (AC4, AC5)', () => {
     ]);
     await settle(150);
 
-    // Writes under the new project's .worktrees/ and .lock/ produce nothing.
+    // Writes under the new project's .worktrees/ and .lock/ produce nothing. First wait for a
+    // quiet window, so late fs events from the fixture setup are not counted.
+    let settled = client.seen.length;
+    for (let i = 0; i < 10; i++) {
+      await settle(200);
+      if (client.seen.length === settled) break;
+      settled = client.seen.length;
+    }
     const quietFrom = client.seen.length;
     await writeAt(join(c, 'factory', '.worktrees', '001-third-job', 'src', 'x.ts'), 'x');
     await writeAt(join(c, 'factory', '.worktrees', '001-third-job', 'y.ts'), 'y');

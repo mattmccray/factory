@@ -59,6 +59,7 @@ describe('registry (AC1)', () => {
     ['missing schema', { projects: [] }, 'schema must be'],
     ['unknown project key', { schema: 'factory/v1', projects: [{ root: '/a', name: 'x' }] }, "unknown key 'name'"],
     ['relative root in file', { schema: 'factory/v1', projects: [{ root: 'a' }] }, 'absolute'],
+    ['non-normalized root', { schema: 'factory/v1', projects: [{ root: '/a/' }] }, 'must be normalized'],
     ['duplicate root', { schema: 'factory/v1', projects: [{ root: '/a' }, { root: '/a' }] }, 'listed twice'],
     ['projects not an array', { schema: 'factory/v1', projects: {} }, 'must be an array'],
   ];
