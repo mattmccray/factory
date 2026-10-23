@@ -368,8 +368,10 @@ describe('the event stream (AC4, AC5)', () => {
     await addRoot(registry, a);
     const { url } = await start();
     await writeFile(registry, '{"schema":"factory/v2","projects":[]}');
-    await settle(400);
-    expect(field((await getJson(`${url}/projects`)).body, 'projects')).toEqual([{ id: projectId(a), name: 'alpha', root: a }]);
+    // Wait for the agent to reload and log the rejection (deadline 2 s), not a fixed delay.
+    const deadline = Date.now() + 2000;
+    while (!logs.some((l) => l.includes('schema')) && Date.now() < deadline) await settle(20);
     expect(logs.some((l) => l.includes('schema'))).toBe(true);
+    expect(field((await getJson(`${url}/projects`)).body, 'projects')).toEqual([{ id: projectId(a), name: 'alpha', root: a }]);
   });
 });
