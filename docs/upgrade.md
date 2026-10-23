@@ -9,10 +9,9 @@ is specified in [`docs/contract/v1.md`](contract/v1.md), "CLI" → "`init` and `
 Once per clone of this repo:
 
 ```sh
-cd /path/to/factory
+cd /path/to/factory          # the clone's root
 bun install
-cd packages/cli
-bun link                     # puts `factory` on your PATH (~/.bun/bin), running this clone's source
+bun run cli:link             # puts `factory` on your PATH (~/.bun/bin), running this clone's source
 ```
 
 After pulling a new release, run `bun install` again; the link follows the clone.
@@ -58,7 +57,17 @@ checkout, so the source it installs is the source on `main`.
 
 **First time (adopting the vendored v0).** The vendored v0 is unstamped (there is no
 `factory/managed.json`), and its files differ from the render, so plain `init` refuses and
-names them. Adopt it with `--force`:
+names them. Before promoting, check that `factory` is linked to this checkout:
+
+```sh
+readlink -f "$(which factory)"   # must print a path inside this checkout: …/packages/cli/src/main.ts
+```
+
+Use `-f`: plain `readlink` stops at Bun's global link (`../install/global/node_modules/…`)
+and never shows the clone. If it prints a path in another clone, or nothing, rerun
+`bun run cli:link` from this checkout's root, then check again.
+
+Then adopt it with `--force`:
 
 ```sh
 cd /path/to/factory          # this repo's root, on main, with no job running
@@ -74,7 +83,17 @@ imports `factory/lib/`. Remove the orphans by hand once nothing uses them: `bun 
 still serves the old dashboard until Andon replaces it. The root `tsconfig.json` excludes
 `factory/cli.ts`, since it is generated, untyped bundle output.
 
-**Later releases.**
+**Later releases.** Before promoting, check that `factory` is linked to this checkout:
+
+```sh
+readlink -f "$(which factory)"   # must print a path inside this checkout: …/packages/cli/src/main.ts
+```
+
+Use `-f`: plain `readlink` stops at Bun's global link (`../install/global/node_modules/…`)
+and never shows the clone. If it prints a path in another clone, or nothing, rerun
+`bun run cli:link` from this checkout's root, then check again.
+
+Then upgrade:
 
 ```sh
 cd /path/to/factory
