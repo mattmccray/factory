@@ -1,0 +1,13 @@
+{
+  "$schema": "https://tinyjs.app/schema/tinyjs.schema.json",
+  "name": "andon",
+  "title": "Andon",
+  "size": "1280x820",
+  "id": "dev.factory.andon",
+  "version": "0.1.0",
+  "minTinyjsVersion": "0.57.0",
+  "activation": "accessory",
+  "url": "http://127.0.0.1:8766/",
+  "api": { "disable": ["*"] },
+  "backend": "build/backend.js"
+}

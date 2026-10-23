@@ -20,6 +20,10 @@
         "vite": "^8.3.5",
       },
     },
+    "apps/andon-shell": {
+      "name": "@factory/andon-shell",
+      "version": "0.0.0",
+    },
     "packages/andon-agent": {
       "name": "@factory/andon-agent",
       "version": "0.0.0",
@@ -60,6 +64,8 @@
     "@factory/andon": ["@factory/andon@workspace:apps/andon"],
 
     "@factory/andon-agent": ["@factory/andon-agent@workspace:packages/andon-agent"],
+
+    "@factory/andon-shell": ["@factory/andon-shell@workspace:apps/andon-shell"],
 
     "@factory/cli": ["@factory/cli@workspace:packages/cli"],
 
