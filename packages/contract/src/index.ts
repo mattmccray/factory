@@ -8,3 +8,5 @@ export { parseFields } from './fields';
 export { formatShow } from './show';
 export type { Manifest } from './manifest';
 export { checkManifestPath, parseManifest } from './manifest';
+export type { Registry, RegistryProject } from './registry';
+export { addRoot, checkRoot, parseRegistry, readRegistry, registryPath, registryText, removeRoot } from './registry';

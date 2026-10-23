@@ -16,6 +16,12 @@
     "packages/andon-agent": {
       "name": "@factory/andon-agent",
       "version": "0.0.0",
+      "bin": {
+        "andon-agent": "src/main.ts",
+      },
+      "dependencies": {
+        "@factory/contract": "workspace:*",
+      },
     },
     "packages/cli": {
       "name": "@factory/cli",
