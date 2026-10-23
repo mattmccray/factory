@@ -3,8 +3,8 @@
 // every path and refusal before anything is written, so a refusal writes nothing. Writes go to a
 // temp file and are renamed into place; `managed.json` is written last.
 import { createHash } from 'node:crypto';
-import { mkdir, open, readFile, rename, rm, unlink } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { mkdir, open, readFile, realpath, rename, rm, unlink } from 'node:fs/promises';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { parseConfig, parseManifest } from '@factory/contract';
 import type { Config, Manifest } from '@factory/contract';
 import { VERSION } from '@factory/templates';
@@ -54,14 +54,20 @@ async function readOrNull(at: string): Promise<Buffer | null> {
 
 // Locates a path the installer will touch, turning any containment failure into a refusal that
 // names the path. `managed` paths must also not be overlay or runtime state.
+// The deny-list is checked on the lexical path and again on where it resolves, so an in-repo
+// directory symlink can't route a managed write or delete into the overlay or runtime state.
 async function place(repo: string, rel: string, cmd: string, managed: boolean): Promise<string> {
   const deny = managed ? protectedReason(rel) : null;
   if (deny !== null) throw new Error(`${cmd}: refusing ${rel}: ${deny}`);
+  let at: string;
   try {
-    return await locate(repo, rel);
+    at = await locate(repo, rel);
   } catch (e) {
     throw new Error(`${cmd}: refusing ${rel}: ${message(e)}`);
   }
+  const resolvedDeny = managed ? protectedReason(relative(await realpath(repo), at).split(sep).join('/')) : null;
+  if (resolvedDeny !== null) throw new Error(`${cmd}: refusing ${rel}: resolves to a path that ${resolvedDeny}`);
+  return at;
 }
 
 // Writes to a fresh temp file beside the target (`wx`: never through an existing file or link),

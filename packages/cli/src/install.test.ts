@@ -274,6 +274,18 @@ describe('upgrade (AC4)', () => {
     expect(await text(tmp, 'victim.txt')).toBe('keep');
   });
 
+  test('a managed path routed into the overlay by an in-repo directory symlink is refused', async () => {
+    await mkdir(join(dir, 'factory', 'roles', 'sub'), { recursive: true });
+    await writeAt(dir, 'factory/roles/sub/factory-gone.md', 'overlay\n');
+    await symlink(join(dir, 'factory', 'roles', 'sub'), join(dir, '.claude', 'linked'));
+    await crafted({ '.claude/linked/factory-gone.md': sha('overlay\n') });
+    const before = await snapshot(dir);
+    const r = await cli(dir, 'upgrade', '--force');
+    expect(r.code).toBe(1);
+    expect(r.err[0]).toStartWith('upgrade: refusing .claude/linked/factory-gone.md: resolves to a path that is overlay');
+    expect(await snapshot(dir)).toEqual(before);
+  });
+
   test('an old manifest listing overlay or runtime state is refused, even with --force', async () => {
     for (const rel of ['factory/config.json', 'factory/roles/alpha.md', 'factory/./Backlog.md', 'factory/jobs/001-a-b/events.jsonl', '.git/HEAD']) {
       await writeFile(join(dir, 'factory/managed.json'), JSON.stringify({ ...(await manifestOf(dir)), files: { [rel]: sha('x') } }));
