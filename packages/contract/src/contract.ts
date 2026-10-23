@@ -34,6 +34,7 @@ export interface Config {
   reviewers: string[];
   maxRound: number;
   dashboard: { settleAfterHours: number };
+  gate?: string[]; // shell commands run in order from the worktree root; green only when all exit 0
 }
 
 const SCHEMA = 'factory/v1';
@@ -55,7 +56,7 @@ function noExtraKeys(obj: Record<string, unknown>, allowed: readonly string[], w
 
 export function parseConfig(raw: unknown): Config {
   if (!isRecord(raw)) throw new Error('config: must be a JSON object');
-  noExtraKeys(raw, ['schema', 'reviewers', 'maxRound', 'dashboard'], 'config');
+  noExtraKeys(raw, ['schema', 'reviewers', 'maxRound', 'dashboard', 'gate'], 'config');
   if (raw.schema !== SCHEMA) throw new Error(`config: schema must be "${SCHEMA}"`);
   const { reviewers, maxRound, dashboard } = raw;
   if (!Array.isArray(reviewers) || reviewers.length === 0) throw new Error('config: reviewers must be a non-empty array');
@@ -71,7 +72,20 @@ export function parseConfig(raw: unknown): Config {
   noExtraKeys(dashboard, ['settleAfterHours'], 'config.dashboard');
   const settle = dashboard.settleAfterHours;
   if (typeof settle !== 'number' || !(settle > 0)) throw new Error('config: dashboard.settleAfterHours must be a positive number');
-  return { schema: SCHEMA, reviewers: keys, maxRound, dashboard: { settleAfterHours: settle } };
+  const config: Config = { schema: SCHEMA, reviewers: keys, maxRound, dashboard: { settleAfterHours: settle } };
+  if (raw.gate !== undefined) config.gate = parseGate(raw.gate);
+  return config;
+}
+
+// Optional `gate`: a non-empty array of non-empty shell command strings, kept in order.
+function parseGate(gate: unknown): string[] {
+  if (!Array.isArray(gate) || gate.length === 0) throw new Error('config: gate must be a non-empty array of command strings');
+  const commands: string[] = [];
+  for (const [i, c] of gate.entries()) {
+    if (typeof c !== 'string' || c.trim() === '') throw new Error(`config: gate[${i}] must be a non-empty command string`);
+    commands.push(c);
+  }
+  return commands;
 }
 
 // ---- event input ----

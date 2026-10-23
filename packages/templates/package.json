@@ -1,6 +1,16 @@
 {
   "name": "@factory/templates",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@factory/contract": "workspace:*"
+  },
+  "devDependencies": {
+    "@factory/cli": "workspace:*"
+  }
 }

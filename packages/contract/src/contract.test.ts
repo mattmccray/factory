@@ -22,6 +22,32 @@ describe('parseConfig', () => {
   });
 });
 
+describe('parseConfig: gate', () => {
+  test('accepts an ordered gate, and a config without one', () => {
+    expect(parseConfig({ ...base, gate: ['bun test', 'tsc --noEmit'] }).gate).toEqual(['bun test', 'tsc --noEmit']);
+    const none = parseConfig(base);
+    expect(none.gate).toBeUndefined();
+    expect('gate' in none).toBe(false);
+  });
+
+  test('rejects a malformed gate with a one-line reason', () => {
+    for (const gate of [[], [''], ['  '], 'bun test', ['bun test', 1], [null], {}, null]) {
+      let message = '';
+      try {
+        parseConfig({ ...base, gate });
+      } catch (e) {
+        message = e instanceof Error ? e.message : String(e);
+      }
+      expect(message).toMatch(/^config: gate/);
+      expect(message).not.toContain('\n');
+    }
+  });
+
+  test('still rejects unknown keys alongside a gate', () => {
+    expect(() => parseConfig({ ...base, gate: ['bun test'], gates: ['x'] })).toThrow(/'gates'/);
+  });
+});
+
 describe('parseEventInput', () => {
   test('accepts valid input', () => {
     expect(parseEventInput('agent.finished', { role: 'reviewer', key: 'ux', round: 1 })).toEqual({
