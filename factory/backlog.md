@@ -15,7 +15,7 @@ Lines are in dependency order. Fuzzy ones should go through `/factory explore` f
 - [x] `factory init` / `upgrade` — install into a project (Claude Code adapter: render to `.claude/skills` and `.claude/agents`); `upgrade` replaces only managed files and leaves the overlay alone; supports self-upgrade of this repo → 004-factory-init-upgrade
 - [x] `/factory customize` (alias `init`) — an interview that writes only the overlay, refuses anything that would break the contract, and ends by running `doctor` → 005-factory-customize
 - [x] Per-role `runner` config — the Claude runner first; design and document how a non-Claude CLI fills a role (reads these paths, writes this one file); implementation of other runners later → 006-role-runner-config
-- [ ] `andon-agent` — a Bun daemon that watches registered projects' `factory/` trees (no polling), reuses the contract code, serves the board and docs, and streams changes over server-sent events; `factory init` registers a project with it
+- [x] `andon-agent` — a Bun daemon that watches registered projects' `factory/` trees (no polling), reuses the contract code, serves the board and docs, and streams changes over server-sent events; `factory init` registers a project with it → 007-andon-agent
 - [ ] Andon UI (Svelte) — port the Minerva dashboard (viewport board, live timers, Settled dialog, drawer timing) and add a project switcher or all-projects view
 - [ ] Tiny JS shell — thin wrapper around the UI: tray badge with the needs-human count, native notifications on escalate and merge, auto-start of the local agent; no contract code runs in it
 - [ ] Migrate Minerva to the installed factory — run `init` against Minerva, move Minerva's reviewer rules into its overlay, run `doctor`, retire Minerva's vendored copy
