@@ -24,7 +24,7 @@ feature → spec-writer → builder ⇄ [configured reviewers] → approver → 
 |---|---|
 | `factory/jobs/<id>/events.jsonl` — the job's append-only event log, the truth | the factory CLI, when you run it |
 | `factory/jobs/<id>/job.json` — derived from the log; the dashboard polls it | the factory CLI (never by hand) |
-| `factory/config.json` — reviewer keys, the default `maxRound`, and the gate | human (or `customize`, with the human) |
+| `factory/config.json` — reviewer keys, the default `maxRound`, the gate, and per-role runners | human (or `customize`, with the human) |
 | `factory/roles/<role>.md` — the project's rules for one role (optional) | human (or `customize`, with the human) |
 | `factory/.lock/` — a short mutex for claiming work and merging | you, briefly |
 | `factory/backlog.md` — queue for `/factory next` | human (you tick items off) |
@@ -127,7 +127,8 @@ Keep the `deliver:` line. Claude Code tells every subagent not to write findings
 files and to return them as text. Reviewers sometimes obey that and send the review as their
 reply, which leaves no file.
 
-Don't pass `model` — each agent's frontmatter sets it. After each agent returns, confirm its
+Don't pass `model` — each agent's frontmatter sets it (from `roles` in `factory/config.json`,
+rendered by `factory upgrade`). After each agent returns, confirm its
 file exists. A nudge or re-spawn below stays inside the agent's original span: no new
 `agent.started`, and one `agent.finished` once the file lands. If the file doesn't exist:
 1. `SendMessage` the same agent: *"<path> doesn't exist. Create it now with the Write tool
@@ -302,21 +303,29 @@ are facts; which of them gate a merge is a decision). Cover only the v1 overlay,
 2. `maxRound` — the default review budget for a new job.
 3. `dashboard.settleAfterHours` — how long a merged job stays in the Merged column.
 4. `gate` — the shell commands, in order, that must all exit 0; or no gate.
-5. `factory/roles/<role>.md` — for `spec-writer`, `builder`, `approver`, and each configured
+5. `roles` — for any role that should not run on the default model (`opus`): its runner
+   (`claude`, the only runner in v1) and, optionally, the harness model name (e.g. a cheaper
+   model for a narrow reviewer). No entry, or no `roles` key at all, keeps the default.
+6. `factory/roles/<role>.md` — for `spec-writer`, `builder`, `approver`, and each configured
    reviewer key: the project's own rules for that role, or no file (the managed defaults apply).
 
-Anything else (per-role models or runners, a tracker, a merge policy, conditional reviewers) is
-not in v1. Say so in a sentence and move on; never write it into the overlay.
+Anything else (a runner other than `claude`, per-role tools or effort, a tracker, a merge policy,
+conditional reviewers) is not in v1. Say so in a sentence and move on; never write it into the overlay.
 
 **Refusal rules.** Check every change against these before anything is written. A change that
 breaks one is refused: tell the user which rule and why, and ask again. Nothing is written for it.
 - No key outside v1. `config.json` holds only `schema` (`"factory/v1"`), `reviewers`,
-  `maxRound`, `dashboard` (only `settleAfterHours`), and `gate`.
+  `maxRound`, `dashboard` (only `settleAfterHours`), `gate`, and `roles`.
 - Each reviewer key matches `^[a-z][a-z0-9-]*$`, is unique, and is never a fixed role name
   (`spec-writer`, `builder`, `approver`). There is at least one reviewer.
 - `maxRound` is a positive integer, and `dashboard.settleAfterHours` is a positive number.
 - `gate`, when present, is a non-empty array of non-empty command strings. No gate means
   leaving the key out, never an empty array.
+- `roles`, when present, is an object. Each entry is keyed by a known role: a fixed role
+  (`spec-writer`, `builder`, `approver`) or a configured reviewer key. An entry holds only
+  `runner` and `model`; `runner` is required and is `claude`; `model`, when present, is a
+  non-empty harness model name matching `^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$` (no spaces or `#`).
+  Dropping a reviewer means dropping its `roles` entry too.
 - A role file exists only for a fixed role or a configured reviewer key. Dropping a reviewer
   whose role file exists means deleting that file too, or keeping the reviewer; ask which.
 - Role rules add rules only. They never change which file an agent writes, its path, or its
@@ -336,8 +345,8 @@ agreed to drop. Write nothing else.
   `git add -A -- <those paths>`, then `git commit -m "chore(factory): customize overlay"
   -m "Co-Authored-By: Claude <noreply@anthropic.com>" -- <those paths>`. Never push.
 
-**When `reviewers` changed.** A new reviewer key has no agent until the managed files are
-re-rendered. Tell the user to run `factory upgrade` before the next job; never run it yourself,
+**When `reviewers` or `roles` changed.** A new reviewer key has no agent, and a new model
+takes no effect, until the managed files are re-rendered. Tell the user to run `factory upgrade` before the next job; never run it yourself,
 because upgrade writes managed files. If live jobs exist, warn that a later `round.started` in
 those jobs reads the new `reviewers`.
 

@@ -22,7 +22,9 @@ overlay, refuses changes that would break `factory/v1`, runs doctor, and commits
 
 ## Upgrading a project
 
-After pulling a new factory release (and after changing `reviewers` in `factory/config.json`):
+After pulling a new factory release, and after changing `reviewers` or `roles` in
+`factory/config.json` (both are rendered into the managed agents, so a new reviewer has no agent
+and a new model takes no effect until you upgrade):
 
 ```sh
 cd /path/to/project

@@ -56,6 +56,24 @@ describe('doctor: config (AC5)', () => {
     expect(r.out).toContain('FAIL  config.json: config: gate must be a non-empty array of command strings');
   });
 
+  test('a config with valid roles is ok', async () => {
+    await writeConfig({ ...CONFIG, roles: { builder: { runner: 'claude', model: 'sonnet' }, code: { runner: 'claude' } } });
+    const r = await doctor();
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('ok    config.json');
+  });
+
+  test('a config with bad roles fails with the parser\'s reason', async () => {
+    await writeConfig({ ...CONFIG, roles: { code: { runner: 'codex' } } });
+    let r = await doctor();
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('FAIL  config.json: config: roles.code: runner must be "claude"');
+    await writeConfig({ ...CONFIG, roles: { ux: { runner: 'claude' } } });
+    r = await doctor();
+    expect(r.code).toBe(1);
+    expect(r.out.some((l) => l.startsWith('FAIL  config.json: config: roles.ux: unknown role'))).toBe(true);
+  });
+
   test('missing config.json', async () => {
     await rm(join(root, 'config.json'));
     const r = await doctor();

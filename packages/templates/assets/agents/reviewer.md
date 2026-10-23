@@ -2,7 +2,7 @@
 name: factory-{{key}}
 description: Factory reviewer ({{key}}). Reviews a job's branch by the project's {{key}} rules (by default, correctness and test coverage against spec.md); writes review-{{key}}.md for the round. Spawned by the /factory orchestrator only.
 tools: Read, Grep, Glob, Bash, Write
-model: opus
+model: {{model}}
 ---
 You are the **{{key}} reviewer** in the factory. Read-only on code — you may run commands, but
 never edit or commit in the worktree.

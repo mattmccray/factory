@@ -35,7 +35,23 @@ export interface Config {
   maxRound: number;
   dashboard: { settleAfterHours: number };
   gate?: string[]; // shell commands run in order from the worktree root; green only when all exit 0
+  roles?: Record<string, RoleRunner>; // keyed by a fixed role or a configured reviewer key
 }
+
+/** The runners a role may be filled by. Widened additively within v1 as runners ship. */
+export type Runner = 'claude';
+
+/** How one role is run: by which runner, and optionally on which harness model (default `opus`). */
+export interface RoleRunner {
+  runner: Runner;
+  model?: string;
+}
+
+/** A role's model is an opaque harness model name, constrained so it can't break YAML frontmatter. */
+export const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$/;
+/** The model a role runs on when `roles` gives it none. */
+export const DEFAULT_MODEL = 'opus';
+const RUNNERS: readonly Runner[] = ['claude'];
 
 const SCHEMA = 'factory/v1';
 const JOB_ID = /^\d{3}-[a-z0-9-]+$/;
@@ -56,7 +72,7 @@ function noExtraKeys(obj: Record<string, unknown>, allowed: readonly string[], w
 
 export function parseConfig(raw: unknown): Config {
   if (!isRecord(raw)) throw new Error('config: must be a JSON object');
-  noExtraKeys(raw, ['schema', 'reviewers', 'maxRound', 'dashboard', 'gate'], 'config');
+  noExtraKeys(raw, ['schema', 'reviewers', 'maxRound', 'dashboard', 'gate', 'roles'], 'config');
   if (raw.schema !== SCHEMA) throw new Error(`config: schema must be "${SCHEMA}"`);
   const { reviewers, maxRound, dashboard } = raw;
   if (!Array.isArray(reviewers) || reviewers.length === 0) throw new Error('config: reviewers must be a non-empty array');
@@ -74,7 +90,36 @@ export function parseConfig(raw: unknown): Config {
   if (typeof settle !== 'number' || !(settle > 0)) throw new Error('config: dashboard.settleAfterHours must be a positive number');
   const config: Config = { schema: SCHEMA, reviewers: keys, maxRound, dashboard: { settleAfterHours: settle } };
   if (raw.gate !== undefined) config.gate = parseGate(raw.gate);
+  if (raw.roles !== undefined) config.roles = parseRoles(raw.roles, keys);
   return config;
+}
+
+// Optional `roles`: role name (a fixed role or a configured reviewer key) -> { runner, model? }.
+// Validated after `reviewers`, since the valid role names depend on them.
+function parseRoles(roles: unknown, reviewers: readonly string[]): Record<string, RoleRunner> {
+  if (!isRecord(roles)) throw new Error('config: roles must be an object mapping a role name to { runner, model? }');
+  const out: Record<string, RoleRunner> = {};
+  for (const [name, entry] of Object.entries(roles)) {
+    const what = `config: roles.${REVIEWER_KEY.test(name) ? name : JSON.stringify(name)}`;
+    if (!RESERVED_KEYS.includes(name) && !reviewers.includes(name)) {
+      throw new Error(`${what}: unknown role (want ${[...RESERVED_KEYS, ...reviewers].join(', ')})`);
+    }
+    if (!isRecord(entry)) throw new Error(`${what}: must be an object { runner, model? }`);
+    noExtraKeys(entry, ['runner', 'model'], what);
+    if (entry.runner === undefined) throw new Error(`${what}: runner is required`);
+    const runner = RUNNERS.find((r) => r === entry.runner);
+    if (runner === undefined) throw new Error(`${what}: runner must be ${RUNNERS.map((r) => `"${r}"`).join(' or ')}`);
+    const parsed: RoleRunner = { runner };
+    if (entry.model !== undefined) {
+      const model = entry.model;
+      if (typeof model !== 'string' || !MODEL_PATTERN.test(model)) {
+        throw new Error(`${what}: model must be a non-empty string matching ${MODEL_PATTERN.source}`);
+      }
+      parsed.model = model;
+    }
+    out[name] = parsed;
+  }
+  return out;
 }
 
 // Optional `gate`: a non-empty array of non-empty shell command strings, kept in order.

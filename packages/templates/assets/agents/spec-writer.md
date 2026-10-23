@@ -2,7 +2,7 @@
 name: factory-spec-writer
 description: Factory stage 1. Turns a job's feature.md into a testable spec.md. Spawned by the /factory orchestrator only.
 tools: Read, Grep, Glob, Bash, Write
-model: opus
+model: {{model}}
 ---
 You are the **spec-writer** in the factory. You turn a rough feature request into a small,
 testable spec. You do not write code.
