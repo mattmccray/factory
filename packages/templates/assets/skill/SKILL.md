@@ -1,7 +1,7 @@
 ---
 name: factory
-description: Run the factory — a feature goes spec → build → parallel reviews → approve → merge, driven by subagents that talk only through markdown files; `queue` and `explore` feed its backlog. Use when the user invokes /factory with a feature, `next [words]`, `queue <text>`, `explore <idea|brief>`, `approve <job-id>`, or `rework <job-id> <note>`.
-argument-hint: "<feature> | next [words] | queue <text> | explore <idea|brief> | approve <job-id> | rework <job-id> <note>"
+description: Run the factory — a feature goes spec → build → parallel reviews → approve → merge, driven by subagents that talk only through markdown files; `queue` and `explore` feed its backlog, and `customize` (alias `init`) tailors the project's overlay. Use when the user invokes /factory with a feature, `next [words]`, `queue <text>`, `explore <idea|brief>`, `customize`, `init`, `approve <job-id>`, or `rework <job-id> <note>`.
+argument-hint: "<feature> | next [words] | queue <text> | explore <idea|brief> | customize | init | approve <job-id> | rework <job-id> <note>"
 ---
 
 # /factory — the orchestrator
@@ -24,8 +24,8 @@ feature → spec-writer → builder ⇄ [configured reviewers] → approver → 
 |---|---|
 | `factory/jobs/<id>/events.jsonl` — the job's append-only event log, the truth | the factory CLI, when you run it |
 | `factory/jobs/<id>/job.json` — derived from the log; the dashboard polls it | the factory CLI (never by hand) |
-| `factory/config.json` — reviewer keys, the default `maxRound`, and the gate | human |
-| `factory/roles/<role>.md` — the project's rules for one role (optional) | human |
+| `factory/config.json` — reviewer keys, the default `maxRound`, and the gate | human (or `customize`, with the human) |
+| `factory/roles/<role>.md` — the project's rules for one role (optional) | human (or `customize`, with the human) |
 | `factory/.lock/` — a short mutex for claiming work and merging | you, briefly |
 | `factory/backlog.md` — queue for `/factory next` | human (you tick items off) |
 | `factory/briefs/<slug>.md` — decisions from an `explore` interview (tracked in git) | you, with the human |
@@ -242,6 +242,11 @@ Show the user the lines you added, then commit just the backlog by pathspec:
 idea into a brief, then queues it. Read [explore.md](explore.md) in this skill's folder and
 follow it. It runs entirely in this session with the user; it spawns no agents.
 
+**`/factory customize`** (alias **`/factory init`**) — An interactive interview that tailors
+the project's overlay (`factory/config.json` and `factory/roles/<role>.md`), then runs doctor
+and commits it. Follow **Customize** below. It runs entirely in this session with the user; it
+spawns no agents, claims no job, and never runs the `factory init` or `factory upgrade` installer.
+
 **`/factory next [words]`** — Under the lock, re-read `factory/backlog.md` (another
 session may have just ticked a line) and pick a `- [ ]` item:
 - no argument → the first one;
@@ -274,6 +279,71 @@ commit."* If that builder isn't alive in this session, spawn a fresh `factory-bu
 `builder-<id>` with the card plus the rework path (everything it needs is in files). Then
 continue at step 4 with round `<round> + 1` (round 1 if the job escalated before any review).
 
+## Customize — the overlay interview
+
+`/factory customize` (or `/factory init`) writes only `factory/config.json` and
+`factory/roles/<role>.md`, the overlay. It never edits managed files (`.claude/**`,
+`factory/cli.ts`, `factory/CONTRACT.md`, `factory/managed.json`) or runtime state
+(`factory/jobs/`, `factory/.lock/`, `factory/.worktrees/`), and it writes no events.
+
+**Do your homework first.** Read `factory/config.json` and save its exact bytes (you may need to put
+them back), every `factory/roles/*.md`, the contract (`factory/CONTRACT.md`, "`config.json`"
+and "Role overlays"), the project's instructions (`CLAUDE.md` or its equivalent), and how the
+project builds, tests, and checks itself. Run `bun factory/cli.ts doctor` once to see where the
+install stands. List the live jobs (every `factory/jobs/*/job.json` with a stage other than
+`merged`; read-only).
+
+**Interview.** Use the same discipline as `explore`: ask **one question at a time**, in prose,
+each with your **recommended answer** and the reason for it. Facts are yours to find; decisions
+are the user's. Never ask what the code or docs can answer (the project's test and check commands
+are facts; which of them gate a merge is a decision). Cover only the v1 overlay, in this order:
+1. `reviewers` — the ordered reviewer keys, one per review concern (e.g. correctness and test
+   coverage, security, contract).
+2. `maxRound` — the default review budget for a new job.
+3. `dashboard.settleAfterHours` — how long a merged job stays in the Merged column.
+4. `gate` — the shell commands, in order, that must all exit 0; or no gate.
+5. `factory/roles/<role>.md` — for `spec-writer`, `builder`, `approver`, and each configured
+   reviewer key: the project's own rules for that role, or no file (the managed defaults apply).
+
+Anything else (per-role models or runners, a tracker, a merge policy, conditional reviewers) is
+not in v1. Say so in a sentence and move on; never write it into the overlay.
+
+**Refusal rules.** Check every change against these before anything is written. A change that
+breaks one is refused: tell the user which rule and why, and ask again. Nothing is written for it.
+- No key outside v1. `config.json` holds only `schema` (`"factory/v1"`), `reviewers`,
+  `maxRound`, `dashboard` (only `settleAfterHours`), and `gate`.
+- Each reviewer key matches `^[a-z][a-z0-9-]*$`, is unique, and is never a fixed role name
+  (`spec-writer`, `builder`, `approver`). There is at least one reviewer.
+- `maxRound` is a positive integer, and `dashboard.settleAfterHours` is a positive number.
+- `gate`, when present, is a non-empty array of non-empty command strings. No gate means
+  leaving the key out, never an empty array.
+- A role file exists only for a fixed role or a configured reviewer key. Dropping a reviewer
+  whose role file exists means deleting that file too, or keeping the reviewer; ask which.
+- Role rules add rules only. They never change which file an agent writes, its path, or its
+  first line, and they never tell an agent to write job state or edit managed files.
+
+**Write.** Once the user agrees to the whole set, write `factory/config.json` (two-space
+JSON, keys in the order above) and the agreed role files, and delete any role file the user
+agreed to drop. Write nothing else.
+
+**Doctor last.** Run `bun factory/cli.ts doctor` from the repo root.
+- If it reports `FAIL` on `config.json`, restore the bytes `config.json` had before the
+  interview, and tell the user the reason doctor printed. Commit nothing.
+- If it reports `FAIL` on a managed file, that predates this interview: report it, keep the
+  overlay as written, and commit nothing. A human restores the managed file first.
+- When doctor exits 0, commit only the overlay paths you wrote or deleted, by pathspec, so
+  nothing else of the user's gets swept in:
+  `git add -A -- <those paths>`, then `git commit -m "chore(factory): customize overlay"
+  -m "Co-Authored-By: Claude <noreply@anthropic.com>" -- <those paths>`. Never push.
+
+**When `reviewers` changed.** A new reviewer key has no agent until the managed files are
+re-rendered. Tell the user to run `factory upgrade` before the next job; never run it yourself,
+because upgrade writes managed files. If live jobs exist, warn that a later `round.started` in
+those jobs reads the new `reviewers`.
+
+Finish with what changed, doctor's result, the commit (or why there is none), and whether
+`factory upgrade` is needed.
+
 ## Ground rules
 
 - One job per session; as many sessions as the user likes. A job is driven only by the session
@@ -281,7 +351,7 @@ continue at step 4 with round `<round> + 1` (round 1 if the job escalated before
   Finding another job in flight is never a reason to stop; it's only a reason for the overlap check.
 - Agents write only their own file (a reviewer also its `round-<N>/<key>/` supporting files);
   you write only your job's feature.md and rework notes, backlog ticks, and events through the
-  factory CLI. If an agent wrote somewhere else, note it and tell the user.
+  factory CLI (and, in `customize`, the overlay). If an agent wrote somewhere else, note it and tell the user.
 - The managed files (this skill and the `factory-*` agents) are never edited by hand. A
   project's own rules for a role live in its overlay, `factory/roles/<role>.md`, which each
   agent reads at run time.

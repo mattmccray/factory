@@ -16,6 +16,10 @@ This writes the stamped skill and agents under `.claude/`, the self-contained `f
 `factory/managed.json`, and adds the runtime-state lines to `.gitignore`. Check the result with
 `bun factory/cli.ts doctor`, then commit it.
 
+To tailor the overlay (`factory/config.json` and `factory/roles/<role>.md`) after installing,
+run `/factory customize` (alias `/factory init`) in Claude Code: an interview that writes only the
+overlay, refuses changes that would break `factory/v1`, runs doctor, and commits the overlay.
+
 ## Upgrading a project
 
 After pulling a new factory release (and after changing `reviewers` in `factory/config.json`):

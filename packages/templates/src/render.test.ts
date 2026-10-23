@@ -282,3 +282,124 @@ describe('CLI and contract stamps', () => {
     expect(contractStampLine()).toContain('do not edit');
   });
 });
+
+describe('the customize interview in SKILL.md', () => {
+  const skillOf = (c: Config = config()): string => at(renderClaudeCode({ config: c }).files, SKILL);
+  // The `## Customize` section, up to the next `## ` heading.
+  const section = (c: Config = config()): string => {
+    const text = skillOf(c);
+    const start = text.indexOf('\n## Customize');
+    if (start < 0) throw new Error('no ## Customize section');
+    const end = text.indexOf('\n## ', start + 1);
+    return end < 0 ? text.slice(start) : text.slice(start, end);
+  };
+  // Collapses line breaks so assertions don't depend on where the prose wraps.
+  const flat = (s: string): string => s.replace(/\s+/g, ' ');
+
+  test('AC1: customize and its init alias are in the frontmatter and Commands', () => {
+    const { frontmatter, body } = splitFrontmatter(skillOf());
+    const hint = /^argument-hint: (.+)$/m.exec(frontmatter)?.[1] ?? '';
+    const description = /^description: (.+)$/m.exec(frontmatter)?.[1] ?? '';
+    for (const word of ['customize', 'init']) {
+      expect({ word, hint: hint.includes(word) }).toEqual({ word, hint: true });
+      expect({ word, description: description.includes(word) }).toEqual({ word, description: true });
+    }
+    const commands = body.slice(body.indexOf('\n## Commands'), body.indexOf('\n## ', body.indexOf('\n## Commands') + 1));
+    const entry = /\*\*`\/factory customize`\*\*[^\n]*(\n(?!\*\*`\/factory)[^\n]*)*/.exec(commands)?.[0] ?? '';
+    expect(entry).not.toBe('');
+    expect(flat(entry)).toContain('`/factory init`');
+    expect(flat(entry)).toContain('alias');
+  });
+
+  test('AC1: the set of rendered paths is unchanged', () => {
+    for (const reviewers of [['alpha', 'beta-2'], ['q'], ['zeta', 'eta-1', 'theta']]) {
+      const { files } = renderClaudeCode({ config: config({ reviewers }) });
+      const want = [SKILL, EXPLORE, agent('spec-writer'), agent('builder'), agent('approver'), ...reviewers.map(agent)];
+      expect(Object.keys(files).sort()).toEqual(want.sort());
+    }
+  });
+
+  test('AC2: it writes only the overlay and never managed files or runtime state', () => {
+    const s = flat(section());
+    expect(s).toContain('writes only `factory/config.json` and `factory/roles/<role>.md`');
+    for (const path of ['`.claude/**`', '`factory/cli.ts`', '`factory/CONTRACT.md`', '`factory/managed.json`']) {
+      expect({ path, named: s.includes(path) }).toEqual({ path, named: true });
+    }
+    for (const path of ['`factory/jobs/`', '`factory/.lock/`', '`factory/.worktrees/`']) {
+      expect({ path, named: s.includes(path) }).toEqual({ path, named: true });
+    }
+    expect(s).toContain('never edits managed files');
+    expect(s).toContain('runtime state');
+  });
+
+  test('AC2: it follows the explore discipline: homework, one question at a time, a recommended answer', () => {
+    const s = flat(section());
+    expect(s).toContain('homework');
+    expect(s).toContain('one question at a time');
+    expect(s).toContain('recommended answer');
+    expect(s).toContain('Facts are yours to find; decisions are the user');
+    for (const key of ['`reviewers`', '`maxRound`', '`dashboard.settleAfterHours`', '`gate`']) {
+      expect({ key, covered: s.includes(key) }).toEqual({ key, covered: true });
+    }
+  });
+
+  test('AC3: it states every refusal rule, checked before any write', () => {
+    const s = flat(section());
+    const rules = [
+      'before anything is written',
+      'No key outside v1',
+      '`^[a-z][a-z0-9-]*$`',
+      'unique',
+      'at least one reviewer',
+      'never a fixed role name (`spec-writer`, `builder`, `approver`)',
+      '`maxRound` is a positive integer',
+      '`dashboard.settleAfterHours` is a positive number',
+      '`gate`, when present, is a non-empty array of non-empty command strings',
+      'A role file exists only for a fixed role or a configured reviewer key',
+      'never change which file an agent writes, its path, or its first line',
+      'never tell an agent to write job state or edit managed files',
+    ];
+    for (const rule of rules) expect({ rule, stated: s.includes(rule) }).toEqual({ rule, stated: true });
+  });
+
+  test('AC4: it ends with doctor, restores config.json on FAIL, and leaves upgrade to the user', () => {
+    const raw = section();
+    const s = flat(raw);
+    expect(s).toContain('`bun factory/cli.ts doctor`');
+    expect(s).toContain('`FAIL` on `config.json`');
+    expect(s).toContain('restore the bytes `config.json` had before the interview');
+    expect(s).toContain('`factory upgrade` before the next job');
+    expect(s).toContain('never run it yourself');
+    expect(s).toContain('`round.started`');
+    expect(s).toContain('chore(factory): customize overlay');
+    expect(s).toContain('Co-Authored-By');
+    expect(s).toContain('Never push');
+    // doctor comes after the refusal rules and the writes
+    expect(raw.lastIndexOf('bun factory/cli.ts doctor')).toBeGreaterThan(raw.indexOf('No key outside v1'));
+    expect(raw.lastIndexOf('bun factory/cli.ts doctor')).toBeGreaterThan(raw.indexOf('**Write.**'));
+  });
+
+  test('AC5: the customize section stays neutral for several configs', () => {
+    const BANNED = ['Minerva', 'Andon', 'andon', 'packages/', 'apps/', 'bun run test', 'bun run check', 'here:'];
+    for (const reviewers of [['alpha', 'beta-2'], ['q'], ['zeta', 'eta-1', 'theta']]) {
+      const s = section(config({ reviewers }));
+      for (const word of BANNED) expect({ word, found: s.includes(word) }).toEqual({ word, found: false });
+    }
+  });
+
+  test('AC5: every file except SKILL.md renders byte-identical to before this job', () => {
+    // sha256 of each file rendered from config() on the base this job started from.
+    const before: Record<string, string> = {
+      [EXPLORE]: 'e423590610db5a5614f1deeb70767dc89fda9e87dbf72c2605ec72203cf3e09f',
+      [agent('spec-writer')]: '92aaa0c034fd1e8135e8c49d623735a9ced6fd151ea71b995359488c43484a3a',
+      [agent('builder')]: '9c71e03cb053cf8a4cb00487bce9b34e85ddd58f3dd4c7d3366a692decebc80b',
+      [agent('approver')]: '43648fa69e295a28470483fe608607a2349bd8dc7131a81fb5e662c4c36ab709',
+      [agent('alpha')]: '4dc1cc5dcc5acc8affc62884167c8c4be970eb79281965eff463c02931b787bb',
+      [agent('beta-2')]: '1eea5964d08aacbeaa53866332e615ba6b11947f0030aaf455a738268c3faffd',
+    };
+    const { files } = renderClaudeCode({ config: config() });
+    const now: Record<string, string> = {};
+    for (const [path, text] of Object.entries(files)) if (path !== SKILL) now[path] = sha(text);
+    expect(now).toEqual(before);
+  });
+});
