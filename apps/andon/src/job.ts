@@ -1,7 +1,10 @@
 // The UI's view of the agent's JSON (docs/contract/v1.md "`job.json` — the derived snapshot" and
 // "Andon agent"). The UI is a tolerant reader: it narrows `unknown` into the fields it shows,
 // ignores fields it doesn't know, and treats a job with no `timing` (or no `startedAt`) as legacy.
-// It never imports `@factory/contract` runtime code, so it runs in a browser.
+// It imports `@factory/contract` with `import type` only (erased under `verbatimModuleSyntax`), to
+// check its shapes against the contract's at compile time; it never runs contract code, so it
+// runs in a browser (and later under txiki.js).
+import type { AgentSpan as ContractAgentSpan, Config, JobSnapshot, StageSpan as ContractStageSpan } from '@factory/contract';
 
 export type ReviewState = string; // 'PASS' | 'CHANGES' | 'pending', or a value a later v1 adds
 
@@ -45,6 +48,19 @@ export interface BoardConfig {
   reviewers: string[];
   settleAfterHours: number;
 }
+
+// Compile-time drift checks, one way: a real contract value must be accepted by the UI's wider
+// shape. Narrowing a UI field so it no longer accepts the contract's type fails `bun run check`.
+// (`ProjectInfo` is unchecked: the contract exports no type for the agent's project entries.)
+type Assignable<From, To> = [From] extends [To] ? true : false;
+type Expect<T extends true> = T;
+export type ContractShapesChecked = [
+  Expect<Assignable<JobSnapshot, Job>>,
+  Expect<Assignable<ContractStageSpan, StageSpan>>,
+  Expect<Assignable<ContractAgentSpan, AgentSpan>>,
+  Expect<Assignable<Config['reviewers'], BoardConfig['reviewers']>>,
+  Expect<Assignable<Config['dashboard']['settleAfterHours'], BoardConfig['settleAfterHours']>>,
+];
 
 export interface ProjectInfo {
   id: string;

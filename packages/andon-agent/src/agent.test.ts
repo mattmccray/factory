@@ -465,6 +465,38 @@ describe('the built UI (AC5)', () => {
     }
   });
 
+  test('successful UI route responses carry the CSP; API, SSE, 404, 403, and 405 responses do not', async () => {
+    const csp =
+      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+    expect(csp).not.toContain('unsafe-');
+    const a = await makeProject('alpha', ['001-first-job']);
+    await addRoot(registry, a);
+    const { url } = await start(await makeUi());
+    const port = new URL(url).port;
+    for (const path of ['/', '/assets/app-abc123.js']) {
+      const res = await fetch(`${url}${path}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-security-policy')).toBe(csp);
+    }
+    const none = async (res: Response, status: number, body?: string): Promise<void> => {
+      expect(res.status).toBe(status);
+      expect(res.headers.get('content-security-policy')).toBeNull();
+      if (body !== undefined) expect(await res.text()).toBe(body);
+    };
+    await none(await fetch(`${url}/projects`), 200);
+    await none(await fetch(`${url}/projects/${projectId(a)}/board`), 200);
+    await none(await fetch(`${url}/projects/${projectId(a)}/jobs/001-first-job/docs`), 200);
+    await none(await fetch(`${url}/missing.js`), 404, 'Not found');
+    await none(await fetch(`${url}/`, { headers: { host: `evil.example:${port}` } }), 403, 'Forbidden');
+    await none(await fetch(`${url}/`, { method: 'POST' }), 405, 'Method not allowed');
+    const ctl = new AbortController();
+    const sse = await fetch(`${url}/events`, { signal: ctl.signal });
+    expect(sse.status).toBe(200);
+    expect(sse.headers.get('content-type')).toContain('text/event-stream');
+    expect(sse.headers.get('content-security-policy')).toBeNull();
+    ctl.abort();
+  });
+
   test('the API wins over a build file of the same name', async () => {
     const ui = await makeUi();
     await writeAt(join(ui, 'projects'), 'not the API');

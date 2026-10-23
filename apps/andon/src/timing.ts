@@ -57,6 +57,7 @@ export interface AgentRow {
 }
 
 export interface TimingView {
+  line: string; // "Claimed <t> · merged <t> · total <d>", rendered as is
   claimed: string;
   merged: string | null;
   total: string;
@@ -65,6 +66,10 @@ export interface TimingView {
   stages: StageRow[];
   agents: AgentRow[];
 }
+
+/** The timing view's header line; the "merged" part appears only for a merged job. */
+export const timingLine = (claimed: string, merged: string | null, total: string): string =>
+  [`Claimed ${claimed}`, ...(merged !== null ? [`merged ${merged}`] : []), `total ${total}`].join(' · ');
 
 const roundLabel = (r: number | null): string => (r !== null && r > 0 ? `R${r}` : '—');
 
@@ -101,10 +106,14 @@ export function timingView(j: Job, now: number): TimingView | null {
       open: a.finishedAt === null,
     };
   });
+  const claimed = when(time(t.startedAt));
+  const merged = j.endedAt !== null ? when(time(j.endedAt)) : null;
+  const total = fmt(totalMs(j, t.startedAt, now));
   return {
-    claimed: when(time(t.startedAt)),
-    merged: j.endedAt !== null ? when(time(j.endedAt)) : null,
-    total: fmt(totalMs(j, t.startedAt, now)),
+    line: timingLine(claimed, merged, total),
+    claimed,
+    merged,
+    total,
     bar,
     legend,
     stages: stageRows,

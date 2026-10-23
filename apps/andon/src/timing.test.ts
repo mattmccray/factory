@@ -1,8 +1,12 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { NOW, before, job } from './fixtures';
-import { NO_TIMING, summary, timingView } from './timing';
+import { when } from './time';
+import { NO_TIMING, summary, timingLine, timingView } from './timing';
 
 const M = 60_000;
+const HOUR_MS = 60 * M;
 // Claimed 60m ago: spec 10m, build 20m, review R1 5m, build R2 10m, then review R2 open for 15m.
 const timed = job({
   id: '001-a',
@@ -94,5 +98,41 @@ describe('drawer timing (AC2)', () => {
     expect(summary(legacy, NOW)).toEqual({ recorded: false, text: NO_TIMING });
     expect(NO_TIMING).toStartWith('no timing recorded');
     expect(timingView(legacy, NOW)).toBeNull();
+  });
+});
+
+describe('the timing view header line (009 AC1)', () => {
+  // Afternoon local times, so the formatted times end in PM (the case Svelte used to squash).
+  const claimedAt = new Date(2026, 9, 22, 13, 5).getTime();
+  const mergedAt = new Date(2026, 9, 22, 15, 35).getTime();
+  const spaced = (line: string): void => {
+    for (const sep of line.matchAll(/·/g)) {
+      const i = sep.index;
+      expect(line.slice(i - 2, i + 3)).toMatch(/^\S · \S$/);
+    }
+  };
+
+  test('a merged job reads "Claimed <t> · merged <t> · total <d>", one space each side of every ·', () => {
+    const j = job({ id: '001-a', stage: 'merged', round: 1, startedAt: new Date(claimedAt).toISOString(), endedAt: new Date(mergedAt).toISOString(), timing: { stages: [], agents: [] } });
+    const v = timingView(j, mergedAt + HOUR_MS);
+    expect(v?.line).toBe(`Claimed ${when(claimedAt)} · merged ${when(mergedAt)} · total 2h 30m`);
+    expect(v?.line.match(/·/g)?.length).toBe(2);
+    spaced(v?.line ?? '');
+  });
+
+  test('an unmerged job reads "Claimed <t> · total <d>" with no merged part', () => {
+    const j = job({ id: '001-a', stage: 'build', round: 1, startedAt: new Date(claimedAt).toISOString(), timing: { stages: [], agents: [] } });
+    const v = timingView(j, claimedAt + 20 * M);
+    expect(v?.line).toBe(`Claimed ${when(claimedAt)} · total 20m 0s`);
+    expect(v?.line).not.toContain('merged');
+    spaced(v?.line ?? '');
+  });
+
+  test('timingLine joins its parts with " · " and TimingView.svelte renders the line as is', () => {
+    expect(timingLine('1:05 PM', '3:35 PM', '2h 30m')).toBe('Claimed 1:05 PM · merged 3:35 PM · total 2h 30m');
+    expect(timingLine('1:05 PM', null, '20m 0s')).toBe('Claimed 1:05 PM · total 20m 0s');
+    const svelte = readFileSync(join(import.meta.dir, 'TimingView.svelte'), 'utf8');
+    expect(svelte).toContain('<p>{view.line}</p>');
+    expect(svelte).not.toContain('· merged');
   });
 });
