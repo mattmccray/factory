@@ -48,6 +48,64 @@ describe('parseConfig: gate', () => {
   });
 });
 
+describe('parseConfig: roles', () => {
+  const withCode = { ...base, reviewers: ['code', 'ux'] };
+  const message = (raw: unknown): string => {
+    try {
+      parseConfig(raw);
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+    return '';
+  };
+
+  test('accepts roles for fixed roles and configured reviewer keys', () => {
+    const roles = { builder: { runner: 'claude', model: 'sonnet' }, code: { runner: 'claude' } };
+    expect(parseConfig({ ...withCode, roles }).roles).toEqual({
+      builder: { runner: 'claude', model: 'sonnet' },
+      code: { runner: 'claude' },
+    });
+    const none = parseConfig(withCode);
+    expect('roles' in none).toBe(false);
+  });
+
+  test('accepts an empty roles object and pattern-valid models', () => {
+    expect(parseConfig({ ...withCode, roles: {} }).roles).toEqual({});
+    for (const model of ['opus', 'claude-sonnet-4-5', 'claude-opus-4-1[1m]', 'gpt-5.1:high', 'A_b']) {
+      expect(parseConfig({ ...withCode, roles: { approver: { runner: 'claude', model } } }).roles).toEqual({
+        approver: { runner: 'claude', model },
+      });
+    }
+  });
+
+  test('rejects malformed roles with a one-line config: reason naming the role', () => {
+    const cases: Array<[unknown, RegExp]> = [
+      [[], /^config: roles must be an object/],
+      ['builder', /^config: roles must be an object/],
+      [null, /^config: roles must be an object/],
+      [{ reviewer: { runner: 'claude' } }, /^config: roles\.reviewer: unknown role/],
+      [{ security: { runner: 'claude' } }, /^config: roles\.security: unknown role/],
+      [{ builder: 'claude' }, /^config: roles\.builder: must be an object/],
+      [{ builder: { runner: 'claude', tools: 'x' } }, /^config: roles\.builder: unknown key 'tools'/],
+      [{ builder: {} }, /^config: roles\.builder: runner is required/],
+      [{ builder: { model: 'sonnet' } }, /^config: roles\.builder: runner is required/],
+      [{ code: { runner: 'codex' } }, /^config: roles\.code: runner must be "claude"/],
+      [{ code: { runner: 1 } }, /^config: roles\.code: runner must be "claude"/],
+      [{ builder: { runner: 'claude', model: '' } }, /^config: roles\.builder: model/],
+      [{ builder: { runner: 'claude', model: 'son net' } }, /^config: roles\.builder: model/],
+      [{ builder: { runner: 'claude', model: 'sonnet\nx: y' } }, /^config: roles\.builder: model/],
+      [{ builder: { runner: 'claude', model: 'sonnet#x' } }, /^config: roles\.builder: model/],
+      [{ builder: { runner: 'claude', model: '-sonnet' } }, /^config: roles\.builder: model/],
+      [{ builder: { runner: 'claude', model: 3 } }, /^config: roles\.builder: model/],
+    ];
+    for (const [roles, want] of cases) {
+      const m = message({ ...withCode, roles });
+      expect(m).toMatch(want);
+      expect(m).not.toContain('\n');
+    }
+  });
+});
+
 describe('parseEventInput', () => {
   test('accepts valid input', () => {
     expect(parseEventInput('agent.finished', { role: 'reviewer', key: 'ux', round: 1 })).toEqual({

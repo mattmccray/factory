@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { run } from '@factory/cli';
-import { type Config, parseConfig, parseManifest } from '@factory/contract';
+import { type Config, MODEL_PATTERN, parseConfig, parseManifest } from '@factory/contract';
 import { TEMPLATES, VERSION, cliStampLine, contractStampLine, fill, renderClaudeCode, splitFrontmatter, stamp, stampCli, stampContract } from './index';
 
 const config = (extra: Record<string, unknown> = {}): Config =>
@@ -161,10 +161,10 @@ describe('stamp (AC6)', () => {
   test('frontmatter files keep their frontmatter; the stamp follows it once', () => {
     const originals: Record<string, string> = {
       [SKILL]: TEMPLATES.skill,
-      [agent('spec-writer')]: fill(TEMPLATES.specWriter, { role: 'spec-writer' }, 't'),
-      [agent('builder')]: fill(TEMPLATES.builder, { role: 'builder' }, 't'),
-      [agent('approver')]: fill(TEMPLATES.approver, { role: 'approver' }, 't'),
-      [agent('alpha')]: fill(TEMPLATES.reviewer, { key: 'alpha' }, 't'),
+      [agent('spec-writer')]: fill(TEMPLATES.specWriter, { role: 'spec-writer', model: 'opus' }, 't'),
+      [agent('builder')]: fill(TEMPLATES.builder, { role: 'builder', model: 'opus' }, 't'),
+      [agent('approver')]: fill(TEMPLATES.approver, { role: 'approver', model: 'opus' }, 't'),
+      [agent('alpha')]: fill(TEMPLATES.reviewer, { key: 'alpha', model: 'opus' }, 't'),
     };
     for (const [path, original] of Object.entries(originals)) {
       const text = at(files, path);
@@ -379,6 +379,23 @@ describe('the customize interview in SKILL.md', () => {
     expect(raw.lastIndexOf('bun factory/cli.ts doctor')).toBeGreaterThan(raw.indexOf('**Write.**'));
   });
 
+  test('roles: an interview step, refusal rules matching the parser, and no "not in v1" for models or runners', () => {
+    const raw = section();
+    const s = flat(raw);
+    expect(raw).toMatch(/\n\d\. `roles` — /);
+    expect(s).toContain('`dashboard` (only `settleAfterHours`), `gate`, and `roles`');
+    expect(s).toContain('`roles`, when present, is an object');
+    expect(s).toContain('a fixed role (`spec-writer`, `builder`, `approver`) or a configured reviewer key');
+    expect(s).toContain('holds only `runner` and `model`');
+    expect(s).toContain('`runner` is required and is `claude`');
+    expect(s).toContain(`matching \`${MODEL_PATTERN.source}\``);
+    expect(s).toContain('default model (`opus`)');
+    expect(s).toContain('**When `reviewers` or `roles` changed.**');
+    expect(s).not.toContain('per-role models or runners');
+    expect(s).not.toMatch(/models? or runners?[^.]*not in v1/);
+    expect(flat(skillOf())).toContain("Don't pass `model`");
+  });
+
   test('AC5: the customize section stays neutral for several configs', () => {
     const BANNED = ['Minerva', 'Andon', 'andon', 'packages/', 'apps/', 'bun run test', 'bun run check', 'here:'];
     for (const reviewers of [['alpha', 'beta-2'], ['q'], ['zeta', 'eta-1', 'theta']]) {
@@ -401,5 +418,56 @@ describe('the customize interview in SKILL.md', () => {
     const now: Record<string, string> = {};
     for (const [path, text] of Object.entries(files)) if (path !== SKILL) now[path] = sha(text);
     expect(now).toEqual(before);
+  });
+});
+
+describe('per-role model from config.roles', () => {
+  const modelOf = (text: string): string | undefined => /^model: (.+)$/m.exec(splitFrontmatter(text).frontmatter)?.[1];
+  const AGENTS = [agent('spec-writer'), agent('builder'), agent('approver'), agent('alpha'), agent('beta-2')];
+
+  test('AC3: without roles, every agent and explore renders byte-identical to before, still on model: opus', () => {
+    // sha256 of each file rendered from config() on the base this job started from. SKILL.md is
+    // excluded: its template text changes in this job (the customize interview covers roles).
+    const before: Record<string, string> = {
+      [EXPLORE]: 'e423590610db5a5614f1deeb70767dc89fda9e87dbf72c2605ec72203cf3e09f',
+      [agent('spec-writer')]: '92aaa0c034fd1e8135e8c49d623735a9ced6fd151ea71b995359488c43484a3a',
+      [agent('builder')]: '9c71e03cb053cf8a4cb00487bce9b34e85ddd58f3dd4c7d3366a692decebc80b',
+      [agent('approver')]: '43648fa69e295a28470483fe608607a2349bd8dc7131a81fb5e662c4c36ab709',
+      [agent('alpha')]: '4dc1cc5dcc5acc8affc62884167c8c4be970eb79281965eff463c02931b787bb',
+      [agent('beta-2')]: '1eea5964d08aacbeaa53866332e615ba6b11947f0030aaf455a738268c3faffd',
+    };
+    for (const c of [config(), config({ roles: {} }), config({ roles: { builder: { runner: 'claude' } } })]) {
+      const { files } = renderClaudeCode({ config: c });
+      const now: Record<string, string> = {};
+      for (const [path, text] of Object.entries(files)) if (path !== SKILL) now[path] = sha(text);
+      expect(now).toEqual(before);
+      for (const path of AGENTS) expect({ path, model: modelOf(at(files, path)) }).toEqual({ path, model: 'opus' });
+    }
+  });
+
+  test('AC3: a configured model changes only that agent\'s frontmatter and manifest hash', () => {
+    const plain = renderClaudeCode({ config: config() });
+    const tuned = renderClaudeCode({
+      config: config({ roles: { builder: { runner: 'claude', model: 'sonnet' }, 'beta-2': { runner: 'claude', model: 'sonnet' } } }),
+    });
+    const changed = [agent('builder'), agent('beta-2')];
+    for (const path of Object.keys(plain.files)) {
+      const a = at(plain.files, path);
+      const b = at(tuned.files, path);
+      if (changed.includes(path)) {
+        expect(modelOf(b)).toBe('sonnet');
+        expect(b).toBe(a.replace(/^model: opus$/m, 'model: sonnet'));
+        expect(tuned.manifest.files[path]).not.toBe(plain.manifest.files[path]);
+      } else {
+        expect({ path, same: b === a }).toEqual({ path, same: true });
+        expect(tuned.manifest.files[path]).toBe(plain.manifest.files[path]);
+      }
+      expect(tuned.manifest.files[path]).toBe(sha(b));
+    }
+  });
+
+  test('refuses a hand-built config whose model would break the frontmatter', () => {
+    const base = config();
+    expect(() => renderClaudeCode({ config: { ...base, roles: { builder: { runner: 'claude', model: 'a\nb' } } } })).toThrow(/model/);
   });
 });

@@ -4,7 +4,7 @@
 // always gives the same bytes. The overlay (`factory/roles/<role>.md`) is read by each agent at
 // run time and never inlined here, so a managed file's bytes never depend on it.
 import { createHash } from 'node:crypto';
-import type { Config, Manifest } from '@factory/contract';
+import { type Config, DEFAULT_MODEL, MODEL_PATTERN, type Manifest } from '@factory/contract';
 import pkg from '../package.json';
 import approver from '../assets/agents/approver.md' with { type: 'text' };
 import builder from '../assets/agents/builder.md' with { type: 'text' };
@@ -74,6 +74,14 @@ export function stamp(text: string, overlay: string): string {
 
 const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
 
+// The harness model an agent's frontmatter names: `roles.<role>.model`, else the default. Checked
+// again here so a hand-built config can't break the frontmatter.
+function modelFor(config: Config, role: string): string {
+  const model = config.roles?.[role]?.model ?? DEFAULT_MODEL;
+  if (!MODEL_PATTERN.test(model)) throw new Error(`render: bad model ${JSON.stringify(model)} for role '${role}' (want ${MODEL_PATTERN.source})`);
+  return model;
+}
+
 function checkReviewerKey(key: string): void {
   if (!REVIEWER_KEY.test(key)) throw new Error(`render: bad reviewer key ${JSON.stringify(key)} (want ^[a-z][a-z0-9-]*$)`);
   if (FIXED_ROLES.includes(key)) throw new Error(`render: reviewer key '${key}' is reserved`);
@@ -99,11 +107,11 @@ export function renderClaudeCode(input: { config: Config; templates?: Readonly<T
     ['approver', t.approver],
   ];
   for (const [role, template] of fixed) {
-    add(`${AGENT_DIR}/factory-${role}.md`, template, { role }, `factory/roles/${role}.md`);
+    add(`${AGENT_DIR}/factory-${role}.md`, template, { role, model: modelFor(input.config, role) }, `factory/roles/${role}.md`);
   }
   for (const key of input.config.reviewers) {
     checkReviewerKey(key);
-    add(`${AGENT_DIR}/factory-${key}.md`, t.reviewer, { key }, `factory/roles/${key}.md`);
+    add(`${AGENT_DIR}/factory-${key}.md`, t.reviewer, { key, model: modelFor(input.config, key) }, `factory/roles/${key}.md`);
   }
   const hashes: Record<string, string> = {};
   for (const [path, text] of Object.entries(files)) hashes[path] = sha256(text);

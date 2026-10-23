@@ -245,6 +245,31 @@ describe('upgrade (AC4)', () => {
     expect(await snapshot(dir)).toEqual(settled);
   });
 
+  test('a roles change rewrites only the affected agents, and managed.json matches them', async () => {
+    const roles = { builder: { runner: 'claude', model: 'sonnet' }, alpha: { runner: 'claude', model: 'sonnet' } };
+    await writeAt(dir, 'factory/config.json', `${JSON.stringify({ ...DEFAULT_CONFIG, reviewers: ['alpha'], roles })}\n`);
+    const before = await snapshot(dir);
+    const oldManifest = await manifestOf(dir);
+    const r = await cli(dir, 'upgrade');
+    expect(r.err).toEqual([]);
+    expect(r.code).toBe(0);
+
+    const after = await snapshot(dir);
+    const changed = Object.keys(after).filter((rel) => after[rel] !== before[rel]).sort();
+    expect(changed).toEqual([agent('alpha'), agent('builder'), 'factory/managed.json'].sort());
+    expect(await text(dir, agent('builder'))).toContain('\nmodel: sonnet\n');
+    expect(await text(dir, agent('alpha'))).toContain('\nmodel: sonnet\n');
+    expect(await text(dir, agent('approver'))).toContain('\nmodel: opus\n');
+
+    const newManifest = await manifestOf(dir);
+    for (const [rel, hash] of Object.entries(newManifest.files)) {
+      expect({ rel, hash }).toEqual({ rel, hash: sha(await readFile(join(dir, rel))) });
+      if (rel !== agent('alpha') && rel !== agent('builder')) expect({ rel, hash }).toEqual({ rel, hash: oldManifest.files[rel] ?? '' });
+    }
+    expect(Object.keys(newManifest.files).sort()).toEqual(Object.keys(oldManifest.files).sort());
+    expect(await doctorCode(dir)).toBe(0);
+  });
+
   const crafted = async (extra: Record<string, string>): Promise<void> => {
     const m = await manifestOf(dir);
     await writeFile(join(dir, 'factory/managed.json'), JSON.stringify({ ...m, files: { ...m.files, ...extra } }));
