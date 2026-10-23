@@ -52,20 +52,19 @@ The rules that hold it together, from the `factory/v1` contract:
 You need [Bun](https://bun.sh), git, and Claude Code. In a clone of this repo:
 
 ```sh
-cd /path/to/factory
+cd /path/to/factory      # the clone's root
 bun install
-cd packages/cli
-bun link
+bun run cli:link
 ```
 
-`bun link` puts a `factory` command on your PATH (in `~/.bun/bin`) that runs this clone's source
+`bun run cli:link` puts a `factory` command on your PATH (in `~/.bun/bin`) that runs this clone's source
 CLI. Then install the factory into a project from that project's root:
 
 ```sh
 cd /path/to/project      # a git repo
 factory init
 bun factory/cli.ts doctor
-git add -A && git commit -m "chore(factory): install the factory"
+git add .claude factory .gitignore && git commit -m "chore(factory): install the factory"
 ```
 
 There are two CLIs, and they do different jobs:
@@ -90,7 +89,7 @@ clone, so there is nothing to relink. Then, in each project:
 cd /path/to/project
 factory upgrade
 bun factory/cli.ts doctor
-git add -A && git commit -m "chore(factory): upgrade the factory"
+git add .claude factory .gitignore && git commit -m "chore(factory): upgrade the factory"
 ```
 
 Run `factory upgrade` also after you change `reviewers` or `roles` in `factory/config.json`:
@@ -126,7 +125,7 @@ Check the install and commit what `init` wrote:
 
 ```sh
 bun factory/cli.ts doctor        # one line per check; exits 0 when nothing failed
-git add -A && git commit -m "chore(factory): install the factory"
+git add .claude factory .gitignore && git commit -m "chore(factory): install the factory"
 ```
 
 If `customize` changed `reviewers` or `roles`, run `factory upgrade` before the first job.
