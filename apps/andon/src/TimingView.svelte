@@ -7,7 +7,7 @@
 </script>
 
 <h1>Timing</h1>
-<p>Claimed {view.claimed}{#if view.merged !== null} · merged {view.merged}{/if} · total {view.total}</p>
+<p>{view.line}</p>
 {#if view.bar.length > 0}
   <div class="tbar" role="img" aria-label="Time per stage: {view.bar.map((s) => s.title).join(', ')}">
     {#each view.bar as seg, i (i)}<span class="seg {seg.stage}" style:flex-grow={seg.grow} title={seg.title}></span>{/each}

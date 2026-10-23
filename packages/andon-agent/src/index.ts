@@ -128,6 +128,10 @@ const json = (body: unknown): Response => Response.json(body, { headers: NO_STOR
 const text = (body: string, status: number): Response => new Response(body, { status, headers: NO_STORE });
 const notFound = (): Response => text('Not found', 404);
 
+/** The Content-Security-Policy sent on successful UI route responses only (docs/contract/v1.md "Andon agent"). */
+export const UI_CSP =
+  "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
 // A file of the built UI. `/` is its index.html. The decoded path must resolve inside `uiDir`,
 // before and after following symlinks, and name a regular file; anything else is a 404 (null).
 async function uiFile(uiDir: string, pathname: string): Promise<Response | null> {
@@ -148,7 +152,7 @@ async function uiFile(uiDir: string, pathname: string): Promise<Response | null>
   if (real === null || !inside(real)) return null; // missing, or a symlink out of the build
   if ((await stat(real).catch(() => null))?.isFile() !== true) return null;
   const file = Bun.file(real);
-  return new Response(file, { headers: { ...NO_STORE, 'content-type': file.type } });
+  return new Response(file, { headers: { ...NO_STORE, 'content-type': file.type, 'content-security-policy': UI_CSP } });
 }
 
 type Client = ReadableStreamDefaultController<Uint8Array>;

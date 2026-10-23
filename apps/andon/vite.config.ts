@@ -17,5 +17,6 @@ export default defineConfig({
   plugins: [svelte()],
   base: '/',
   build: { outDir: 'dist', emptyOutDir: true },
-  server: { proxy: { '/projects': toAgent, '/events': toAgent } },
+  // Loopback only, and no CORS: the dev server is as local as the agent it proxies to.
+  server: { host: '127.0.0.1', cors: false, proxy: { '/projects': toAgent, '/events': toAgent } },
 });
