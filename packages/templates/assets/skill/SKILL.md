@@ -40,7 +40,7 @@ feature → spec-writer → builder ⇄ [configured reviewers] → approver → 
 
 `jobs/`, `.lock/`, and `.worktrees/` are gitignored runtime state. Code lives on the
 branch; the main checkout stays on `main` so your files never move under you.
-Dashboard: `bun factory/serve.ts` → http://localhost:8765/dashboard.html
+Dashboard: Andon, one agent per machine. Run `bun run andon` in the factory clone (not in this project), then open http://127.0.0.1:8766/. `factory init` registers the project with Andon.
 
 **Reviewers come from config.** The reviewer keys are `reviewers` in `<R>/factory/config.json`,
 in order. Read them when a round starts; never assume a list. Each key `<key>` is the agent
