@@ -68,12 +68,32 @@ describe('renderClaudeCode (AC1)', () => {
 describe('neutrality and placeholders (AC2)', () => {
   const configs = [config(), config({ reviewers: ['q'] }), config({ reviewers: ['zeta', 'eta-1', 'theta'], gate: ['x'] })];
   const BANNED = ['Minerva', 'Andon', 'andon', 'packages/', 'apps/', 'bun run test', 'bun run check', 'here:'];
+  // Andon is the factory's own dashboard name (HANDOFF Decision 7): only the skill may name it.
+  const ALLOWED_IN: Record<string, string[]> = { Andon: [SKILL], andon: [SKILL] };
   const FIXED = ['spec-writer', 'builder', 'approver'];
 
   test('no rendered file carries a project-specific detail', () => {
     for (const c of configs) {
       for (const [path, text] of Object.entries(renderClaudeCode({ config: c }).files)) {
-        for (const word of BANNED) expect({ path, word, found: text.includes(word) }).toEqual({ path, word, found: false });
+        for (const word of BANNED) {
+          if (ALLOWED_IN[word]?.includes(path)) continue;
+          expect({ path, word, found: text.includes(word) }).toEqual({ path, word, found: false });
+        }
+      }
+    }
+  });
+
+  test('only SKILL.md may name Andon; every other banned word stays out of SKILL.md too', () => {
+    expect(Object.keys(ALLOWED_IN).sort()).toEqual(['Andon', 'andon']);
+    for (const c of configs) {
+      const { files } = renderClaudeCode({ config: c });
+      for (const [path, text] of Object.entries(files)) {
+        if (path === SKILL) continue;
+        for (const word of ['Andon', 'andon']) expect({ path, word, found: text.includes(word) }).toEqual({ path, word, found: false });
+      }
+      const skill = at(files, SKILL);
+      for (const word of BANNED.filter((w) => w !== 'Andon' && w !== 'andon')) {
+        expect({ path: SKILL, word, found: skill.includes(word) }).toEqual({ path: SKILL, word, found: false });
       }
     }
   });
@@ -418,6 +438,41 @@ describe('the customize interview in SKILL.md', () => {
     const now: Record<string, string> = {};
     for (const [path, text] of Object.entries(files)) if (path !== SKILL) now[path] = sha(text);
     expect(now).toEqual(before);
+  });
+});
+
+describe('the dashboard pointer in SKILL.md', () => {
+  const configs = [config(), config({ reviewers: ['q'] }), config({ reviewers: ['zeta', 'eta-1', 'theta'], gate: ['x'] })];
+  const OLD = ['serve.ts', 'dashboard.html', '8765', 'localhost:8765'];
+  const OLD_LINE = 'Dashboard: `bun factory/serve.ts` → http://localhost:8765/dashboard.html';
+  // The old v0 dashboard text a rendered skill still carries; empty when the pointer is current.
+  const staleIn = (text: string): string[] => OLD.filter((word) => text.includes(word));
+  const flat = (s: string): string => s.replace(/\s+/g, ' ');
+  const skillOf = (c: Config, templates = TEMPLATES): string => at(renderClaudeCode({ config: c, templates }).files, SKILL);
+
+  test('AC1: the skill points to Andon: `bun run andon` in the factory clone, at http://127.0.0.1:8766/', () => {
+    for (const c of configs) {
+      const text = skillOf(c);
+      expect(text).toContain('`bun run andon`');
+      expect(text).toContain('http://127.0.0.1:8766/');
+      expect(text).toContain('Andon');
+      const pointer = text.split('\n').find((line) => line.includes('bun run andon')) ?? '';
+      expect(flat(pointer)).toContain('in the factory clone');
+      expect(pointer).toContain('http://127.0.0.1:8766/');
+    }
+  });
+
+  test('AC2: the skill carries none of the old v0 dashboard text', () => {
+    for (const c of configs) expect(staleIn(skillOf(c))).toEqual([]);
+  });
+
+  test('AC3: the check reports the old pointer when a template regresses to it', () => {
+    const lines = TEMPLATES.skill.split('\n');
+    const index = lines.findIndex((line) => line.includes('bun run andon'));
+    expect(index).toBeGreaterThanOrEqual(0);
+    const regressed = [...lines.slice(0, index), OLD_LINE, ...lines.slice(index + 1)].join('\n');
+    expect(regressed).not.toBe(TEMPLATES.skill);
+    expect(staleIn(skillOf(config(), { ...TEMPLATES, skill: regressed }))).toEqual(OLD);
   });
 });
 
