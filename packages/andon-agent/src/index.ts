@@ -5,6 +5,7 @@
 //   GET /projects/<pid>/board            → { jobs, config } (a bad config is a 500 carrying the reason)
 //   GET /projects/<pid>/jobs/<id>/docs   → { files: [{ path, text }] }, that job's markdown in reading order
 //   GET /events                          → text/event-stream of `projects`, `board`, and `error` events
+//   GET /, GET /<asset>                  → the built Andon UI (`uiDir`), read-only; a path outside it is a 404
 // Changes are found with fs.watch, never by polling: one recursive watch on each project's
 // `factory/jobs/`, one non-recursive watch on its `factory/` (for `config.json`), and one on the
 // registry file's directory. `.worktrees/` and `.lock/` are never watched or served.
@@ -12,8 +13,8 @@
 import { createHash } from 'node:crypto';
 import { watch } from 'node:fs';
 import type { FSWatcher } from 'node:fs';
-import { lstat, mkdir, readFile, readdir } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { lstat, mkdir, readFile, readdir, realpath, stat } from 'node:fs/promises';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { parseConfig, readRegistry } from '@factory/contract';
 import type { Config } from '@factory/contract';
 
@@ -22,6 +23,7 @@ export interface AgentOptions {
   registryPath: string; // `$ANDON_HOME/projects.json`
   debounceMs?: number; // the burst window before one `board` event per project (default 50)
   log?: (line: string) => void; // diagnostics (default: stderr)
+  uiDir?: string; // the Andon UI build (`apps/andon/dist`), served at `/`; absent or unbuilt: `/` is a 404
 }
 
 export interface Agent {
@@ -125,6 +127,29 @@ const NO_STORE = { 'cache-control': 'no-store' };
 const json = (body: unknown): Response => Response.json(body, { headers: NO_STORE });
 const text = (body: string, status: number): Response => new Response(body, { status, headers: NO_STORE });
 const notFound = (): Response => text('Not found', 404);
+
+// A file of the built UI. `/` is its index.html. The decoded path must resolve inside `uiDir`,
+// before and after following symlinks, and name a regular file; anything else is a 404 (null).
+async function uiFile(uiDir: string, pathname: string): Promise<Response | null> {
+  let rel: string;
+  try {
+    rel = decodeURIComponent(pathname);
+  } catch {
+    return null; // malformed escape
+  }
+  if (rel.includes('\0')) return null;
+  if (rel === '/') rel = '/index.html';
+  const root = await realpath(uiDir).catch(() => null);
+  if (root === null) return null; // no build
+  const inside = (p: string): boolean => p.startsWith(root + sep);
+  const target = resolve(root, `.${rel}`);
+  if (!inside(target)) return null;
+  const real = await realpath(target).catch(() => null);
+  if (real === null || !inside(real)) return null; // missing, or a symlink out of the build
+  if ((await stat(real).catch(() => null))?.isFile() !== true) return null;
+  const file = Bun.file(real);
+  return new Response(file, { headers: { ...NO_STORE, 'content-type': file.type } });
+}
 
 type Client = ReadableStreamDefaultController<Uint8Array>;
 const encoder = new TextEncoder();
@@ -337,6 +362,7 @@ export async function startAgent(opts: AgentOptions): Promise<Agent> {
         return text(`config.json: ${message(e)}`, 500);
       }
     }
+    if (opts.uiDir !== undefined) return (await uiFile(opts.uiDir, pathname)) ?? notFound();
     return notFound();
   }
 

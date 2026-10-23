@@ -5,3 +5,6 @@ node_modules/
 factory/.lock/
 factory/jobs/
 factory/.worktrees/
+
+# Andon UI build output (bun run andon:build)
+apps/andon/dist/

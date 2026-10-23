@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { connect as tcp } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { addRoot, appendEvent, parseConfig, parseEventInput, registryPath } from '@factory/contract';
@@ -23,8 +24,8 @@ afterEach(async () => {
   await rm(tmp, { recursive: true, force: true });
 });
 
-const start = async (): Promise<Agent> => {
-  agent = await startAgent({ port: 0, registryPath: registry, log: (l) => logs.push(l) });
+const start = async (uiDir?: string): Promise<Agent> => {
+  agent = await startAgent({ port: 0, registryPath: registry, log: (l) => logs.push(l), ...(uiDir === undefined ? {} : { uiDir }) });
   return agent;
 };
 const writeAt = async (path: string, text: string): Promise<void> => {
@@ -373,5 +374,101 @@ describe('the event stream (AC4, AC5)', () => {
     while (!logs.some((l) => l.includes('schema')) && Date.now() < deadline) await settle(20);
     expect(logs.some((l) => l.includes('schema'))).toBe(true);
     expect(field((await getJson(`${url}/projects`)).body, 'projects')).toEqual([{ id: projectId(a), name: 'alpha', root: a }]);
+  });
+});
+
+// A request sent as raw bytes, so the path reaches the server exactly as written (fetch would
+// normalize `..`). Resolves to the response's status code.
+function rawStatus(url: string, path: string): Promise<number> {
+  const { hostname, port } = new URL(url);
+  return new Promise((done, fail) => {
+    const sock = tcp({ host: hostname, port: Number(port) }, () => {
+      sock.write(`GET ${path} HTTP/1.1\r\nHost: ${hostname}:${port}\r\nConnection: close\r\n\r\n`);
+    });
+    let buf = '';
+    sock.on('data', (d) => {
+      buf += d.toString();
+      const m = buf.match(/^HTTP\/1\.1 (\d{3})/);
+      if (m !== null) {
+        sock.destroy();
+        done(Number(m[1]));
+      }
+    });
+    sock.on('error', fail);
+  });
+}
+
+describe('the built UI (AC5)', () => {
+  async function makeUi(): Promise<string> {
+    const ui = join(tmp, 'ui', 'dist');
+    await writeAt(join(ui, 'index.html'), '<!doctype html><title>Andon</title>');
+    await writeAt(join(ui, 'assets', 'app-abc123.js'), 'console.log("andon")');
+    await writeAt(join(tmp, 'ui', 'secret.txt'), 'outside the build');
+    await writeAt(join(tmp, 'outside', 'leak.txt'), 'outside the build');
+    await symlink(join(tmp, 'outside', 'leak.txt'), join(ui, 'assets', 'leak.txt'));
+    await symlink(join(tmp, 'outside'), join(ui, 'linked'));
+    return ui;
+  }
+
+  test('GET / is index.html and an asset path is its file, both no-store', async () => {
+    const { url } = await start(await makeUi());
+    const index = await fetch(`${url}/`);
+    expect(index.status).toBe(200);
+    expect(index.headers.get('cache-control')).toBe('no-store');
+    expect(index.headers.get('content-type')).toContain('text/html');
+    expect(await index.text()).toContain('<title>Andon</title>');
+    const asset = await fetch(`${url}/assets/app-abc123.js`);
+    expect(asset.status).toBe(200);
+    expect(asset.headers.get('cache-control')).toBe('no-store');
+    expect(asset.headers.get('content-type')).toContain('javascript');
+    expect(await asset.text()).toBe('console.log("andon")');
+  });
+
+  test('a path escaping the build by .., encoded .., or a symlink is a 404', async () => {
+    const { url } = await start(await makeUi());
+    const escapes = ['/../secret.txt', '/assets/../../secret.txt', '/%2e%2e/secret.txt', '/..%2fsecret.txt', '/assets/..%2f..%2fsecret.txt', '/%2E%2E%2Fsecret.txt', '/assets/leak.txt', '/linked/leak.txt', '/assets/%00x', '/%E0%A4%A'];
+    for (const path of escapes) expect({ path, status: await rawStatus(url, path) }).toEqual({ path, status: 404 });
+    for (const path of escapes) {
+      const res = await fetch(`${url}${path}`);
+      expect({ path, status: res.status }).toEqual({ path, status: 404 });
+      expect(res.headers.get('cache-control')).toBe('no-store');
+    }
+    expect(await rawStatus(url, '/assets/app-abc123.js')).toBe(200); // the raw client itself works
+    expect((await fetch(`${url}/assets`)).status).toBe(404); // a directory is not a file
+    expect((await fetch(`${url}/missing.js`)).status).toBe(404);
+  });
+
+  test('the guards still apply: a foreign Host or Origin is a 403, a non-GET is a 405', async () => {
+    const { url } = await start(await makeUi());
+    const port = new URL(url).port;
+    for (const path of ['/', '/assets/app-abc123.js']) {
+      expect((await fetch(`${url}${path}`, { headers: { host: `evil.example:${port}` } })).status).toBe(403);
+      expect((await fetch(`${url}${path}`, { headers: { origin: 'http://evil.example' } })).status).toBe(403);
+      for (const method of ['POST', 'PUT', 'DELETE']) expect((await fetch(`${url}${path}`, { method })).status).toBe(405);
+    }
+  });
+
+  test('with no build present, GET / is a 404 and the API is unchanged', async () => {
+    const a = await makeProject('alpha', ['001-first-job']);
+    await addRoot(registry, a);
+    for (const uiDir of [undefined, join(tmp, 'never-built')]) {
+      const { url } = await start(uiDir);
+      const root = await fetch(`${url}/`);
+      expect(root.status).toBe(404);
+      expect(root.headers.get('cache-control')).toBe('no-store');
+      expect((await fetch(`${url}/index.html`)).status).toBe(404);
+      expect(field((await getJson(`${url}/projects`)).body, 'projects')).toEqual([{ id: projectId(a), name: 'alpha', root: a }]);
+      expect((await getJson(`${url}/projects/${projectId(a)}/board`)).status).toBe(200);
+      expect((await getJson(`${url}/projects/nope/board`)).status).toBe(404);
+      await agent?.stop();
+      agent = null;
+    }
+  });
+
+  test('the API wins over a build file of the same name', async () => {
+    const ui = await makeUi();
+    await writeAt(join(ui, 'projects'), 'not the API');
+    const { url } = await start(ui);
+    expect(field((await getJson(`${url}/projects`)).body, 'projects')).toEqual([]);
   });
 });
