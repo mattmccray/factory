@@ -1,72 +1,42 @@
-// The factory CLI — the only writer of job state (docs/contract/v1.md "CLI").
-//   event <id> <type> [field=value …]
-//   rebuild <id> | --all
-//   show <id>
-//   doctor
+// The factory CLI from source (docs/contract/v1.md "CLI"): the core commands (`core.ts`) plus the
+// installer, which runs only from source:
+//   init [--force]      install the managed core into the project
+//   upgrade [--force]   replace the managed core with a new render
 // `run` is the whole command surface as a testable function; `main.ts` is the process entry.
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { appendEvent, formatShow, parseConfig, parseEventInput, parseFields, project, readLog, rebuild } from '@factory/contract';
-import { doctor } from './doctor';
+import { USAGE as CORE_USAGE, dispatchCore, guarded } from './core';
+import type { Io } from './core';
+import { init, upgrade } from './install';
 
-export interface Io {
-  root: string; // the factory/ directory
-  stdout: (line: string) => void;
-  stderr: (line: string) => void;
-  now?: () => Date; // drives `show`'s open spans; event timestamps always come from the store's clock
-}
+export type { Io } from './core';
 
 export const USAGE = {
-  event: 'usage: event <id> <type> [field=value …]',
-  rebuild: 'usage: rebuild <id> | --all',
-  show: 'usage: show <id>',
-  // The vendored CLI's exact top-level usage line; `doctor` is documented in docs/contract/v1.md.
-  all: 'usage: event <id> <type> [k=v …] | rebuild <id>|--all | show <id>',
+  ...CORE_USAGE,
+  init: 'usage: init [--force]',
+  upgrade: 'usage: upgrade [--force]',
+  // The source CLI's top-level line: the vendored line plus the installer commands.
+  source: `${CORE_USAGE.all} | doctor | init [--force] | upgrade [--force]`,
 };
 
-async function dispatch(argv: readonly string[], io: Io): Promise<number> {
-  const [cmd, ...rest] = argv;
-  if (cmd === 'doctor') {
-    // A bad config.json is a finding here, not a crash before dispatch.
-    const findings = await doctor(io.root);
-    for (const f of findings) io.stdout(f.line);
-    return findings.every((f) => f.ok) ? 0 : 1;
-  }
-  const config = parseConfig(JSON.parse(await readFile(join(io.root, 'config.json'), 'utf8')));
-  switch (cmd) {
-    case 'event': {
-      const [id, type, ...kv] = rest;
-      if (!id || !type) throw new Error(USAGE.event);
-      const input = parseEventInput(type, parseFields(kv), { id, config });
-      io.stdout((await appendEvent(io.root, id, input)).stage);
-      return 0;
-    }
-    case 'rebuild': {
-      const [target] = rest;
-      if (!target) throw new Error(USAGE.rebuild);
-      const ids = await rebuild(io.root, target === '--all' ? undefined : target);
-      io.stdout(`rebuilt ${ids.length}: ${ids.join(' ')}`);
-      return 0;
-    }
-    case 'show': {
-      const [id] = rest;
-      if (!id) throw new Error(USAGE.show);
-      const log = await readLog(io.root, id);
-      if (log.length === 0) throw new Error(`${id}: no events.jsonl (legacy or unknown job)`);
-      for (const line of formatShow(project(log), (io.now ?? (() => new Date()))())) io.stdout(line);
-      return 0;
-    }
-    default:
-      throw new Error(USAGE.all);
-  }
+// `init` and `upgrade` take only `--force`; anything else is a usage error.
+function parseForce(rest: readonly string[], usage: string): boolean {
+  if (rest.length === 0) return false;
+  if (rest.length === 1 && rest[0] === '--force') return true;
+  throw new Error(usage);
 }
 
 // Returns the exit code: 0 on success, 1 on any rejection or usage error (one stderr line).
-export async function run(argv: readonly string[], io: Io): Promise<number> {
-  try {
-    return await dispatch(argv, io);
-  } catch (e) {
-    io.stderr((e instanceof Error ? e.message : String(e)).split('\n')[0] ?? '');
-    return 1;
-  }
+// `init` and `upgrade` dispatch before any config read, as `doctor` does.
+export function run(argv: readonly string[], io: Io): Promise<number> {
+  return guarded(io, async () => {
+    const [cmd, ...rest] = argv;
+    if (cmd === 'init') {
+      await init(io.root, { force: parseForce(rest, USAGE.init), stdout: io.stdout });
+      return 0;
+    }
+    if (cmd === 'upgrade') {
+      await upgrade(io.root, { force: parseForce(rest, USAGE.upgrade), stdout: io.stdout });
+      return 0;
+    }
+    return dispatchCore(argv, io, USAGE.source);
+  });
 }

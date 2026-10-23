@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { run } from '@factory/cli';
 import { type Config, parseConfig, parseManifest } from '@factory/contract';
-import { TEMPLATES, VERSION, fill, renderClaudeCode, splitFrontmatter, stamp } from './index';
+import { TEMPLATES, VERSION, cliStampLine, contractStampLine, fill, renderClaudeCode, splitFrontmatter, stamp, stampCli, stampContract } from './index';
 
 const config = (extra: Record<string, unknown> = {}): Config =>
   parseConfig({ schema: 'factory/v1', reviewers: ['alpha', 'beta-2'], maxRound: 2, dashboard: { settleAfterHours: 24 }, ...extra });
@@ -263,5 +263,22 @@ describe('version and manifest (AC5)', () => {
       expect(dirty.out).toContain(`FAIL  ${edited}: changed (sha256 mismatch)`);
       expect(dirty.out.filter((l) => l.startsWith('FAIL'))).toEqual([`FAIL  ${edited}: changed (sha256 mismatch)`]);
     });
+  });
+});
+
+describe('CLI and contract stamps', () => {
+  test('the CLI stamp is a first-line // comment naming VERSION, and drops the @bun pragma', () => {
+    const out = stampCli('// @bun\nconsole.log(1);\n');
+    expect(out.split('\n')[0]).toBe(cliStampLine());
+    expect(cliStampLine()).toStartWith(`// factory ${VERSION} `);
+    expect(out).toBe(`${cliStampLine()}\nconsole.log(1);\n`);
+    expect(stampCli('x\n')).toBe(`${cliStampLine()}\nx\n`);
+  });
+
+  test('the contract stamp is a first-line HTML comment naming VERSION', () => {
+    const out = stampContract('# Contract\n');
+    expect(out).toBe(`${contractStampLine()}\n# Contract\n`);
+    expect(contractStampLine()).toMatch(new RegExp(`^<!-- factory ${VERSION.replaceAll('.', '\\.')} .* -->$`));
+    expect(contractStampLine()).toContain('do not edit');
   });
 });

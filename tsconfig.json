@@ -17,5 +17,5 @@
     "noEmit": true
   },
   "include": ["packages/*/src/**/*.ts", "apps/*/src/**/*.ts", "factory/**/*.ts"],
-  "exclude": ["node_modules", "factory/jobs", "factory/.worktrees"]
+  "exclude": ["node_modules", "factory/jobs", "factory/.worktrees", "factory/cli.ts"]
 }
