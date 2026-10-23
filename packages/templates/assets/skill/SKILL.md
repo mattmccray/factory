@@ -232,10 +232,14 @@ as `'\''` (as for board values), so `$` and backticks in it are never expanded.
   shell commands run in order from the repo root, and it is green only when every command
   exits 0. If `config.json` has no `gate`, no gate is configured: tell the user so instead of
   running anything, and never invent a command.
-- Then **bookkeeping**, so every job leaves `<target>` clean: commit just the backlog tick, by
-  pathspec, so nothing else of the user's gets swept in: `git commit -m "chore(factory): record
-  job <id>" -m "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md`
-  (nothing changed → skip).
+- Then **bookkeeping**, so every job leaves `<target>` clean. When `job.json` has a non-null
+  `brief`, mark that brief done: set that brief's `Status:` line to `done` and add
+  `- Job: <id> (merged <short sha>, <YYYY-MM-DD>)` right below it (the `<short sha>` you passed
+  to `job.merged`, and today's date). Then commit by pathspec, so nothing else of the user's
+  gets swept in, the brief together with the backlog tick: `git commit -m "chore(factory):
+  record job <id>" -m "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md
+  factory/briefs/<slug>.md`. With no brief, commit the backlog only, ending the same command
+  with `-- factory/backlog.md` (nothing changed → skip).
 - Release the lock (`rmdir factory/.lock`).
 - Never push. Pushing stays a human decision.
 
@@ -247,7 +251,9 @@ the next three-digit number after the highest `factory/jobs/NNN-*` dir (start at
 `brief=factory/briefs/<slug>.md` when it applies (add `maxRound=<n>` only to
 override the config default); it creates the job dir. Write `feature.md` verbatim, release the
 lock, run the loop. If the text names a brief (`brief: factory/briefs/<slug>.md`), its `Status:`
-must be `ready` — a draft brief means the interview isn't done, so stop before claiming and say so.
+must be `ready`. If it is `done`, a job already carried it out: stop before claiming and say
+`brief <slug> is done (job <id>)`, with the job from its `- Job:` line. Separately, a draft
+brief means the interview isn't done, so stop before claiming and say so.
 
 **`/factory queue <text>`** — Add ready work to the backlog without running it. Work arrives
 as text. It is **ready** if it isn't blocked by unmerged work and you can say in one line what
