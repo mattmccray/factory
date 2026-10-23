@@ -1,6 +1,7 @@
 # Mark a brief done when its job merges
 
-- Status: ready
+- Status: done
+- Job: 015-brief-done-status (merged dab06a6, 2026-10-23)
 - Sources: `packages/templates/assets/skill/SKILL.md` (Merge, bookkeeping), `packages/templates/assets/skill/explore.md` (brief format), `docs/contract/v1.md` (`job.claimed.brief`), `HANDOFF.md` ("Backlog and brief formats")
 - Date: 2026-10-23
 
