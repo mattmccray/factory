@@ -29,6 +29,7 @@ export interface JobSnapshot {
   id: string;
   title: string;
   branch: string;
+  target: string | null; // the branch the job is based on and merges into; null: claimed before it was recorded
   builder: string | null;
   stage: Stage;
   round: number;
@@ -164,6 +165,7 @@ export function project(events: FactoryEvent[]): JobSnapshot {
     id: first.id,
     title: first.id,
     branch: `factory/${first.id}`,
+    target: first.target ?? null,
     builder: null,
     stage: 'claimed',
     round: 0,

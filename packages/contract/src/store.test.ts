@@ -162,6 +162,23 @@ describe('rebuild', () => {
   });
 });
 
+describe('target', () => {
+  test('a log without target projects target: null on append and rebuild; with one, it is kept', async () => {
+    await claim();
+    await appendEvent(root, ID, ev('stage.entered', { stage: 'spec' }));
+    const read = async () => JSON.parse(await readFile(join(jobDir(), 'job.json'), 'utf8')).target;
+    expect(await read()).toBeNull();
+    await rm(join(jobDir(), 'job.json'));
+    expect(await rebuild(root, ID)).toEqual([ID]);
+    expect(await read()).toBeNull();
+
+    const config = parseConfig(JSON.parse(await readFile(join(root, 'config.json'), 'utf8')));
+    const snap = await appendEvent(root, '020-other', parseEventInput('job.claimed', {}, { id: '020-other', config, target: 'develop' }));
+    expect(snap.target).toBe('develop');
+    expect((await readLog(root, '020-other'))[0]).toMatchObject({ type: 'job.claimed', target: 'develop' });
+  });
+});
+
 describe('job id', () => {
   test('a malformed id is rejected before touching disk', async () => {
     await expect(appendEvent(root, '../evil', ev('job.noted', { note: 'x' }))).rejects.toThrow('must match');

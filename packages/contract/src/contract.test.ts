@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { type EventInput, type FactoryEvent, checkTransition, parseConfig, parseEventInput } from './contract';
+import { type EventInput, type FactoryEvent, checkTransition, mergeTarget, parseConfig, parseEventInput } from './contract';
 
 const shipped: unknown = await Bun.file(new URL('./fixtures/config.json', import.meta.url)).json();
 const base = { schema: 'factory/v1', reviewers: ['security', 'ux'], maxRound: 2, dashboard: { settleAfterHours: 24 } };
@@ -106,6 +106,47 @@ describe('parseConfig: roles', () => {
   });
 });
 
+describe('parseConfig: merge (target branch)', () => {
+  test('accepts no merge, an empty merge, current, and a branch name, with the effective target', () => {
+    const cases: Array<[unknown, string]> = [
+      [undefined, 'current'],
+      [{}, 'current'],
+      [{ target: 'current' }, 'current'],
+      [{ target: 'develop' }, 'develop'],
+      [{ target: 'release/2.0' }, 'release/2.0'],
+    ];
+    for (const [merge, want] of cases) {
+      const config = parseConfig(merge === undefined ? base : { ...base, merge });
+      expect(mergeTarget(config)).toBe(want);
+    }
+    expect('merge' in parseConfig(base)).toBe(false);
+    expect(parseConfig({ ...base, merge: { target: 'develop' } }).merge).toEqual({ target: 'develop' });
+  });
+
+  test('rejects an unknown key, a non-object merge, or a bad target with a one-line config: reason', () => {
+    const cases: Array<[unknown, RegExp]> = [
+      [{ target: 'main', squash: true }, /^config\.merge: unknown key 'squash'/],
+      ['main', /^config: merge must be an object/],
+      [[], /^config: merge must be an object/],
+      [null, /^config: merge must be an object/],
+      [{ target: '' }, /^config: merge\.target must be/],
+      [{ target: '  ' }, /^config: merge\.target must be/],
+      [{ target: 1 }, /^config: merge\.target must be/],
+      [{ target: null }, /^config: merge\.target must be/],
+    ];
+    for (const [merge, want] of cases) {
+      let message = '';
+      try {
+        parseConfig({ ...base, merge });
+      } catch (e) {
+        message = e instanceof Error ? e.message : String(e);
+      }
+      expect(message).toMatch(want);
+      expect(message).not.toContain('\n');
+    }
+  });
+});
+
 describe('parseEventInput', () => {
   test('accepts valid input', () => {
     expect(parseEventInput('agent.finished', { role: 'reviewer', key: 'ux', round: 1 })).toEqual({
@@ -129,6 +170,14 @@ describe('parseEventInput', () => {
     });
     expect(() => parseEventInput('job.claimed', {}, undefined)).toThrow();
     expect(() => parseEventInput('job.claimed', { id: 'x' }, ctx)).toThrow(/id/);
+  });
+  test('job.claimed takes target from ctx only; a caller-supplied target is an extra field', () => {
+    const ctx = { id: '019-x', config: parseConfig(shipped), target: 'master' };
+    expect(parseEventInput('job.claimed', {}, ctx)).toEqual({
+      type: 'job.claimed', schema: 'factory/v1', id: '019-x', maxRound: 2, brief: null, issue: null, target: 'master',
+    });
+    expect(() => parseEventInput('job.claimed', { target: 'develop' }, ctx)).toThrow(/extra field 'target'|unknown key 'target'/);
+    expect('target' in parseEventInput('job.claimed', {}, { id: '019-x', config: parseConfig(shipped) })).toBe(false);
   });
   test('round.started fills reviewers from config when omitted', () => {
     const ctx = { id: '019-x', config: parseConfig(shipped) };

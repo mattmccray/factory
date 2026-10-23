@@ -30,6 +30,7 @@ export interface Job {
   id: string;
   title: string;
   branch: string;
+  target: string | null; // the branch the job merges into; null: not recorded (claimed before it was)
   stage: string;
   round: number;
   maxRound: number | null;
@@ -110,6 +111,7 @@ export function toJob(v: unknown): Job | null {
     id,
     title: str(v.title) ?? id,
     branch: str(v.branch) ?? '',
+    target: str(v.target) || null,
     stage: str(v.stage) ?? 'claimed',
     round: num(v.round) ?? 0,
     maxRound: num(v.maxRound),
@@ -125,6 +127,12 @@ export function toJob(v: unknown): Job | null {
     updated: str(v.updated),
     timing: isRecord(t) ? { stages: list(t.stages).map(stageSpan).filter(present), agents: list(t.agents).map(agentSpan).filter(present) } : null,
   };
+}
+
+/** The drawer's branch line, `factory/<id> → <target>`; null when the job has no recorded target. */
+export function landing(job: Job): string | null {
+  if (job.target === null) return null;
+  return `${job.branch || `factory/${job.id}`} → ${job.target}`;
 }
 
 export const toJobs = (v: unknown): Job[] => list(v).map(toJob).filter(present);

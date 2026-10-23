@@ -14,7 +14,9 @@ interface AgentIdentity {
 }
 
 export type EventInput =
-  | { type: 'job.claimed'; schema: 'factory/v1'; id: string; maxRound: number; brief: string | null; issue: string | null }
+  // `target` is the branch the job is based on and merges into, resolved by the CLI at claim time
+  // (absent on logs claimed before it existed).
+  | { type: 'job.claimed'; schema: 'factory/v1'; id: string; maxRound: number; brief: string | null; issue: string | null; target?: string }
   | { type: 'job.titled'; title: string }
   | { type: 'stage.entered'; stage: EnteredStage }
   | { type: 'round.started'; round: number; reviewers: string[] }
@@ -36,6 +38,20 @@ export interface Config {
   dashboard: { settleAfterHours: number };
   gate?: string[]; // shell commands run in order from the worktree root; green only when all exit 0
   roles?: Record<string, RoleRunner>; // keyed by a fixed role or a configured reviewer key
+  merge?: MergePolicy;
+}
+
+/** How a job lands. `target` is `"current"` (the main checkout's branch at claim time) or a branch name. */
+export interface MergePolicy {
+  target?: string;
+}
+
+/** The `merge.target` value meaning "the branch the main checkout is on". */
+export const CURRENT_TARGET = 'current';
+
+/** The effective `merge.target`: `"current"` when `merge` or `merge.target` is absent. */
+export function mergeTarget(config: Config): string {
+  return config.merge?.target ?? CURRENT_TARGET;
 }
 
 /** The runners a role may be filled by. Widened additively within v1 as runners ship. */
@@ -72,7 +88,7 @@ function noExtraKeys(obj: Record<string, unknown>, allowed: readonly string[], w
 
 export function parseConfig(raw: unknown): Config {
   if (!isRecord(raw)) throw new Error('config: must be a JSON object');
-  noExtraKeys(raw, ['schema', 'reviewers', 'maxRound', 'dashboard', 'gate', 'roles'], 'config');
+  noExtraKeys(raw, ['schema', 'reviewers', 'maxRound', 'dashboard', 'gate', 'roles', 'merge'], 'config');
   if (raw.schema !== SCHEMA) throw new Error(`config: schema must be "${SCHEMA}"`);
   const { reviewers, maxRound, dashboard } = raw;
   if (!Array.isArray(reviewers) || reviewers.length === 0) throw new Error('config: reviewers must be a non-empty array');
@@ -91,7 +107,20 @@ export function parseConfig(raw: unknown): Config {
   const config: Config = { schema: SCHEMA, reviewers: keys, maxRound, dashboard: { settleAfterHours: settle } };
   if (raw.gate !== undefined) config.gate = parseGate(raw.gate);
   if (raw.roles !== undefined) config.roles = parseRoles(raw.roles, keys);
+  if (raw.merge !== undefined) config.merge = parseMerge(raw.merge);
   return config;
+}
+
+// Optional `merge`: only `target`, a non-empty branch name or "current" (the default).
+function parseMerge(merge: unknown): MergePolicy {
+  if (!isRecord(merge)) throw new Error('config: merge must be an object { target? }');
+  noExtraKeys(merge, ['target'], 'config.merge');
+  if (merge.target === undefined) return {};
+  const target = merge.target;
+  if (typeof target !== 'string' || target.trim() === '') {
+    throw new Error(`config: merge.target must be "${CURRENT_TARGET}" or a non-empty branch name`);
+  }
+  return { target };
 }
 
 // Optional `roles`: role name (a fixed role or a configured reviewer key) -> { runner, model? }.
@@ -178,20 +207,24 @@ function agentIdentity(f: Record<string, unknown>): AgentIdentity {
 
 // job.claimed: a caller may pass `brief`, `issue`, and `maxRound` (defaults to config.maxRound).
 // round.started: `reviewers` defaults to config.reviewers.
-// `id` and `schema` are filled by the CLI via `ctx`, never typed by the caller. `verdict` is
-// never caller-supplied for any event — the CLI reads it from the agent's file.
+// `id`, `schema`, and `target` (the resolved branch) are filled by the CLI via `ctx`, never typed
+// by the caller. `verdict` is never caller-supplied for any event — the CLI reads it from the
+// agent's file.
 export function parseEventInput(
   type: string,
   fields: Record<string, unknown>,
-  ctx?: { id: string; config: Config },
+  ctx?: { id: string; config: Config; target?: string },
 ): EventInput {
   const allow = (...keys: string[]) => noExtraKeys(fields, keys, `${type}: extra field`);
   switch (type) {
     case 'job.claimed': {
       allow('brief', 'issue', 'maxRound');
       if (!ctx) throw new Error('job.claimed: needs the job id and config from the CLI');
+      if (ctx.target !== undefined && ctx.target === '') throw new Error('job.claimed: the resolved target must be a non-empty branch name');
       const maxRound = fields.maxRound === undefined ? ctx.config.maxRound : posInt(fields, 'maxRound');
-      return { type, schema: SCHEMA, id: ctx.id, maxRound, brief: nullableStr(fields, 'brief'), issue: nullableStr(fields, 'issue') };
+      const claimed: Extract<EventInput, { type: 'job.claimed' }> = { type, schema: SCHEMA, id: ctx.id, maxRound, brief: nullableStr(fields, 'brief'), issue: nullableStr(fields, 'issue') };
+      if (ctx.target !== undefined) claimed.target = ctx.target;
+      return claimed;
     }
     case 'job.titled':
       allow('title');
