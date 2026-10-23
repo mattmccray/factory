@@ -162,6 +162,31 @@ describe('rebuild', () => {
   });
 });
 
+describe('target', () => {
+  test('a log without target projects target: null on append and rebuild; with one, it is kept', async () => {
+    await claim();
+    await appendEvent(root, ID, ev('stage.entered', { stage: 'spec' }));
+    const read = async () => JSON.parse(await readFile(join(jobDir(), 'job.json'), 'utf8')).target;
+    expect(await read()).toBeNull();
+    await rm(join(jobDir(), 'job.json'));
+    expect(await rebuild(root, ID)).toEqual([ID]);
+    expect(await read()).toBeNull();
+
+    const config = parseConfig(JSON.parse(await readFile(join(root, 'config.json'), 'utf8')));
+    const snap = await appendEvent(root, '020-other', parseEventInput('job.claimed', {}, { id: '020-other', config, target: 'develop' }));
+    expect(snap.target).toBe('develop');
+    expect((await readLog(root, '020-other'))[0]).toMatchObject({ type: 'job.claimed', target: 'develop' });
+  });
+
+  test('a hand-edited non-string target projects null on rebuild', async () => {
+    await mkdir(jobDir(), { recursive: true });
+    const line = { ts: '2026-10-23T14:00:00.000Z', type: 'job.claimed', schema: 'factory/v1', id: ID, maxRound: 2, brief: null, issue: null, target: 5 };
+    await writeFile(join(jobDir(), 'events.jsonl'), `${JSON.stringify(line)}\n`);
+    await rebuild(root, ID);
+    expect(JSON.parse(await readFile(join(jobDir(), 'job.json'), 'utf8')).target).toBeNull();
+  });
+});
+
 describe('job id', () => {
   test('a malformed id is rejected before touching disk', async () => {
     await expect(appendEvent(root, '../evil', ev('job.noted', { note: 'x' }))).rejects.toThrow('must match');

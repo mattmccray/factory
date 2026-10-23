@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { run } from '@factory/cli';
 import { type Config, MODEL_PATTERN, parseConfig, parseManifest } from '@factory/contract';
-import { TEMPLATES, VERSION, cliStampLine, contractStampLine, fill, renderClaudeCode, splitFrontmatter, stamp, stampCli, stampContract } from './index';
+import { TEMPLATES, type Templates, VERSION, cliStampLine, contractStampLine, fill, renderClaudeCode, splitFrontmatter, stamp, stampCli, stampContract } from './index';
 
 const config = (extra: Record<string, unknown> = {}): Config =>
   parseConfig({ schema: 'factory/v1', reviewers: ['alpha', 'beta-2'], maxRound: 2, dashboard: { settleAfterHours: 24 }, ...extra });
@@ -403,7 +403,7 @@ describe('the customize interview in SKILL.md', () => {
     const raw = section();
     const s = flat(raw);
     expect(raw).toMatch(/\n\d\. `roles` — /);
-    expect(s).toContain('`dashboard` (only `settleAfterHours`), `gate`, and `roles`');
+    expect(s).toContain('`dashboard` (only `settleAfterHours`), `gate`, `merge` (only `target`), and `roles`');
     expect(s).toContain('`roles`, when present, is an object');
     expect(s).toContain('a fixed role (`spec-writer`, `builder`, `approver`) or a configured reviewer key');
     expect(s).toContain('holds only `runner` and `model`');
@@ -425,14 +425,16 @@ describe('the customize interview in SKILL.md', () => {
   });
 
   test('AC5: every file except SKILL.md renders byte-identical to before this job', () => {
-    // sha256 of each file rendered from config() on the base this job started from.
+    // sha256 of each file rendered from config() on the base this job started from. Job 014
+    // (configurable target branch) updated the builder, approver, and reviewer hashes: those
+    // agents now diff against the card's `<base>` instead of a literal `main`.
     const before: Record<string, string> = {
       [EXPLORE]: 'e423590610db5a5614f1deeb70767dc89fda9e87dbf72c2605ec72203cf3e09f',
       [agent('spec-writer')]: '92aaa0c034fd1e8135e8c49d623735a9ced6fd151ea71b995359488c43484a3a',
-      [agent('builder')]: '9c71e03cb053cf8a4cb00487bce9b34e85ddd58f3dd4c7d3366a692decebc80b',
-      [agent('approver')]: '43648fa69e295a28470483fe608607a2349bd8dc7131a81fb5e662c4c36ab709',
-      [agent('alpha')]: '4dc1cc5dcc5acc8affc62884167c8c4be970eb79281965eff463c02931b787bb',
-      [agent('beta-2')]: '1eea5964d08aacbeaa53866332e615ba6b11947f0030aaf455a738268c3faffd',
+      [agent('builder')]: '6219d31829c717a6d1a171229b116202df79b1f27565196213cb2aef083b628b',
+      [agent('approver')]: '061bbfa32a69e71392487e72c784be2f8bc8f2d42eb014cc3a8667514f208b33',
+      [agent('alpha')]: 'd307180bbcbe66b748f754cef06ac21ab75c5151ed44000a9e70583dce3cfe11',
+      [agent('beta-2')]: '29bc300a78b938a2b97d486aa768f5d07f0b9c367e6e1b94765880dac27b9ce7',
     };
     const { files } = renderClaudeCode({ config: config() });
     const now: Record<string, string> = {};
@@ -483,13 +485,14 @@ describe('per-role model from config.roles', () => {
   test('AC3: without roles, every agent and explore renders byte-identical to before, still on model: opus', () => {
     // sha256 of each file rendered from config() on the base this job started from. SKILL.md is
     // excluded: its template text changes in this job (the customize interview covers roles).
+    // Job 014 updated the builder, approver, and reviewer hashes (`<base>` instead of `main`).
     const before: Record<string, string> = {
       [EXPLORE]: 'e423590610db5a5614f1deeb70767dc89fda9e87dbf72c2605ec72203cf3e09f',
       [agent('spec-writer')]: '92aaa0c034fd1e8135e8c49d623735a9ced6fd151ea71b995359488c43484a3a',
-      [agent('builder')]: '9c71e03cb053cf8a4cb00487bce9b34e85ddd58f3dd4c7d3366a692decebc80b',
-      [agent('approver')]: '43648fa69e295a28470483fe608607a2349bd8dc7131a81fb5e662c4c36ab709',
-      [agent('alpha')]: '4dc1cc5dcc5acc8affc62884167c8c4be970eb79281965eff463c02931b787bb',
-      [agent('beta-2')]: '1eea5964d08aacbeaa53866332e615ba6b11947f0030aaf455a738268c3faffd',
+      [agent('builder')]: '6219d31829c717a6d1a171229b116202df79b1f27565196213cb2aef083b628b',
+      [agent('approver')]: '061bbfa32a69e71392487e72c784be2f8bc8f2d42eb014cc3a8667514f208b33',
+      [agent('alpha')]: 'd307180bbcbe66b748f754cef06ac21ab75c5151ed44000a9e70583dce3cfe11',
+      [agent('beta-2')]: '29bc300a78b938a2b97d486aa768f5d07f0b9c367e6e1b94765880dac27b9ce7',
     };
     for (const c of [config(), config({ roles: {} }), config({ roles: { builder: { runner: 'claude' } } })]) {
       const { files } = renderClaudeCode({ config: c });
@@ -524,5 +527,112 @@ describe('per-role model from config.roles', () => {
   test('refuses a hand-built config whose model would break the frontmatter', () => {
     const base = config();
     expect(() => renderClaudeCode({ config: { ...base, roles: { builder: { runner: 'claude', model: 'a\nb' } } } })).toThrow(/model/);
+  });
+});
+
+describe('the target branch: no literal main', () => {
+  const OVERLAY_ROLES = join(import.meta.dir, '..', 'overlays', 'factory', 'roles');
+  const flat = (s: string): string => s.replace(/\s+/g, ' ');
+  // `main` used as a branch name. "the main checkout" (the user's working tree) is not one.
+  const BRANCH_MAIN: RegExp[] = [
+    /\bmain\.\.\.HEAD\b/,
+    /\bmain\.\.HEAD\b/,
+    /\bshow main:/,
+    /\bbase main\b/,
+    /worktree add\b[^\n`]*\smain\b/,
+    /merged? into `main`/,
+    /`main`/,
+  ];
+  const mainsIn = (text: string): string[] => BRANCH_MAIN.filter((re) => re.test(text)).map((re) => re.source);
+  const skillOf = (templates = TEMPLATES): string => at(renderClaudeCode({ config: config(), templates }).files, SKILL);
+
+  test('AC6: no rendered file uses main as a branch', () => {
+    for (const c of [config(), config({ reviewers: ['q'] }), config({ merge: { target: 'develop' } })]) {
+      for (const [path, text] of Object.entries(renderClaudeCode({ config: c }).files)) {
+        expect({ path, mains: mainsIn(text) }).toEqual({ path, mains: [] });
+      }
+    }
+  });
+
+  test('AC6: the default overlay role files diff and show against <base>, never main', async () => {
+    for (const role of ['ui', 'contract']) {
+      const text = await readFile(join(OVERLAY_ROLES, `${role}.md`), 'utf8');
+      expect({ role, mains: mainsIn(text) }).toEqual({ role, mains: [] });
+      expect(text).toContain('<base>');
+    }
+    const ui = await readFile(join(OVERLAY_ROLES, 'ui.md'), 'utf8');
+    expect(ui).toContain('git -C <worktree> diff <base>...HEAD --stat');
+    const contract = await readFile(join(OVERLAY_ROLES, 'contract.md'), 'utf8');
+    expect(contract).toContain('git -C <worktree> show <base>:<path>');
+  });
+
+  test('AC6: the agents read <base> from the card', () => {
+    const { files } = renderClaudeCode({ config: config() });
+    for (const path of [agent('approver'), agent('alpha'), agent('beta-2')]) {
+      const text = at(files, path);
+      expect(text).toContain('git -C <worktree> diff <base>...HEAD');
+      expect(text).toContain('<base>..HEAD');
+      expect(text).toContain('`base:` line on your card');
+    }
+    const builder = flat(at(files, agent('builder')));
+    expect(builder).toContain('`base:` line on your card');
+    expect(builder).toContain('never check out or commit to `<base>`');
+  });
+
+  test('AC6: the spawn card carries base: <target>, and the worktree is added from <target>', () => {
+    const text = skillOf();
+    expect(text).toMatch(/^base: +<target>$/m);
+    expect(text).toContain('worktree: <R>/factory/.worktrees/<id>   (branch factory/<id>)\n');
+    expect(text).toContain("`git worktree add -b factory/<id> factory/.worktrees/<id> '<target>'`");
+  });
+
+  test('AC6: the merge step states the precondition, the merge.failed record, no checkout, and the null fallback', () => {
+    const text = skillOf();
+    const start = text.indexOf('\n## Merge');
+    const merge = flat(text.slice(start, text.indexOf('\n## ', start + 1)));
+    expect(merge).toContain("must be on the job's `<target>`");
+    expect(merge).toContain('`git symbolic-ref --short HEAD`');
+    expect(merge).toContain("`merge.failed reason='checkout is on <x>, job targets <target>'`");
+    expect(merge).toContain('Never run `git checkout`');
+    expect(merge).toContain('/factory approve <id>');
+    expect(merge).toContain("merge conflict with <target>");
+    expect(merge).toContain('If `<target>` had moved past the branch');
+    expect(merge).toContain('every job leaves `<target>` clean');
+    // the precondition comes before the git merge
+    expect(merge.indexOf('checkout is on <x>')).toBeLessThan(merge.indexOf('git merge --no-ff'));
+
+    const s = flat(text);
+    expect(s).toContain('`target` in its `job.json`');
+    expect(s).toContain('If `target` is `null`');
+    expect(s).toContain('resolve it whenever you need it from the current config');
+    expect(s).toContain('`git symbolic-ref --short HEAD` in `<R>`');
+  });
+
+  test('AC6: the customize interview and its refusal rules cover merge.target', () => {
+    const s = flat(skillOf());
+    expect(s).toContain('`merge.target` — the branch jobs are based on and merge into');
+    expect(s).toContain('`merge` (only `target`)');
+    expect(s).toContain('`merge`, when present, is an object holding only `target`');
+    expect(s).toContain('A branch literally named `current` can\'t be targeted');
+    expect(s).toContain('a branch matching `^[A-Za-z0-9][A-Za-z0-9._/-]*$`, with no `..` and no `.lock` suffix');
+    expect(s).toContain('accepts only a plain branch name');
+  });
+
+  test('AC6: the check fails on the old text', () => {
+    const OLD: Array<[keyof Templates, string]> = [
+      ['skill', 'worktree: <R>/factory/.worktrees/<id>   (branch factory/<id>, base main)'],
+      ['skill', '`git worktree add -b factory/<id> factory/.worktrees/<id> main`'],
+      ['skill', 'Each job is merged into `main`.'],
+      ['reviewer', '- The diff: `git -C <worktree> diff main...HEAD` (and `--stat`), `git -C <worktree> log main..HEAD --oneline`,'],
+      ['approver', 'You are the **approver** in the factory: the last gate before `main`.'],
+      ['builder', '  check out or commit to `main`, never merge, never push.'],
+    ];
+    for (const [name, line] of OLD) {
+      const regressed: Templates = { ...TEMPLATES, [name]: `${TEMPLATES[name]}\n${line}\n` };
+      const files = Object.values(renderClaudeCode({ config: config(), templates: regressed }).files);
+      expect({ name, line, caught: files.some((t) => mainsIn(t).length > 0) }).toEqual({ name, line, caught: true });
+    }
+    expect(mainsIn('`git -C <worktree> show main:docs/x.md`')).not.toEqual([]);
+    expect(mainsIn('the main checkout stays put')).toEqual([]);
   });
 });

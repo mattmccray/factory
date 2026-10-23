@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { type Config, parseConfig, parseManifest } from '@factory/contract';
 import { VERSION, cliStampLine, contractStampLine, renderClaudeCode } from '@factory/templates';
+import { initRepo } from './gitrepo';
 import { DEFAULT_CONFIG, GITIGNORE_LINES, withRuntimeIgnores } from './install';
 import { run } from './index';
 import { protectedReason } from './paths';
@@ -114,6 +115,7 @@ describe('init on an empty project (AC1)', () => {
 
 describe('the installed CLI is self-contained (AC2)', () => {
   test('runs doctor and event with bun alone, rooted at its own directory', async () => {
+    initRepo(dir, 'trunk');
     expect((await cli(dir, 'init')).code).toBe(0);
     const entries = await readdir(dir);
     expect(entries).not.toContain('node_modules');
@@ -132,6 +134,7 @@ describe('the installed CLI is self-contained (AC2)', () => {
     const job = await readdir(join(dir, 'factory', 'jobs', '001-smoke-test'));
     expect(job).toContain('events.jsonl');
     expect(job).toContain('job.json');
+    expect(JSON.parse(await text(dir, 'factory/jobs/001-smoke-test/job.json'))).toMatchObject({ target: 'trunk' });
 
     const unknown = await spawn('init');
     expect(unknown.code).toBe(1);

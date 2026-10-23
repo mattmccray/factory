@@ -7,6 +7,7 @@
   import type { DocFile, Fetcher } from './api';
   import type { BoardJob } from './board';
   import { TIMING, groupsOf, pickFile } from './docs';
+  import { landing } from './job';
   import { markdown } from './markdown';
   import TimingView from './TimingView.svelte';
   import { summary, timingView } from './timing';
@@ -79,6 +80,7 @@
   const current = $derived(pickFile(chosen, files, hasTiming));
   const groups = $derived(groupsOf(files));
   const sum = $derived(job === null ? null : summary(job, now));
+  const lands = $derived(job === null ? null : landing(job));
   const view = $derived(job !== null && current === TIMING ? timingView(job, now) : null);
   const html = $derived.by(() => {
     if (current === null || current === TIMING) return null;
@@ -93,6 +95,7 @@
     <div>
       <div class="label">{#if showProject && shown !== null}{`${shown.project.name} · `}{/if}{job?.id ?? ''} · {job?.stage ?? ''}</div>
       <h2 id="drawer-title">{job?.title ?? ''}</h2>
+      {#if lands !== null}<div class="dbranch" title="branch → target">{lands}</div>{/if}
       {#if sum !== null}<div class="dsum" class:na={!sum.recorded}>{sum.text}</div>{/if}
     </div>
     <button class="close" type="button" bind:this={closeBtn} onclick={onclose} aria-label="Close drawer">esc</button>

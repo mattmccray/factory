@@ -1,20 +1,26 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { formatShow, project, readLog } from '@factory/contract';
+import { gitIn, initRepo } from './gitrepo';
 import { run, USAGE } from './index';
 
 const CONFIG = { schema: 'factory/v1', reviewers: ['security', 'code'], maxRound: 2, dashboard: { settleAfterHours: 24 } };
 const ID = '019-example';
 
+// `repo` is a git repo (the main checkout, on `master`); `root` is its factory/ directory.
+let repo: string;
 let root: string;
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'factory-cli-'));
+  repo = await mkdtemp(join(tmpdir(), 'factory-cli-'));
+  initRepo(repo, 'master');
+  root = join(repo, 'factory');
+  await mkdir(root);
   await writeFile(join(root, 'config.json'), JSON.stringify(CONFIG));
 });
 afterEach(async () => {
-  await rm(root, { recursive: true, force: true });
+  await rm(repo, { recursive: true, force: true });
 });
 
 interface Result {
@@ -152,6 +158,59 @@ describe('usage and show (AC3)', () => {
     const r = await cli('event', ID, 'job.claimed');
     expect(r.code).toBe(1);
     expect(r.err).toEqual(["config: unknown key 'extra'"]);
+    expect(await readdir(root)).toEqual(['config.json']);
+  });
+});
+
+describe('target branch (job.claimed)', () => {
+  const jobJson = async (id = ID): Promise<unknown> => JSON.parse(await readFile(join(root, 'jobs', id, 'job.json'), 'utf8'));
+  const claimedEvent = async (id = ID): Promise<unknown> => JSON.parse((await readFile(join(root, 'jobs', id, 'events.jsonl'), 'utf8')).split('\n')[0] ?? '');
+  const withMerge = (merge: unknown) => writeFile(join(root, 'config.json'), JSON.stringify({ ...CONFIG, merge }));
+
+  test('with no merge key, a claim records the checkout branch (master)', async () => {
+    expect(await cli('event', ID, 'job.claimed')).toEqual({ code: 0, out: ['claimed'], err: [] });
+    expect(await claimedEvent()).toMatchObject({ type: 'job.claimed', target: 'master' });
+    expect(await jobJson()).toMatchObject({ target: 'master' });
+  });
+
+  test('a named target is recorded whatever branch the checkout is on', async () => {
+    gitIn(repo, 'branch', 'develop');
+    gitIn(repo, 'checkout', '--quiet', '-b', 'feature/elsewhere');
+    await withMerge({ target: 'develop' });
+    expect(await cli('event', ID, 'job.claimed')).toEqual({ code: 0, out: ['claimed'], err: [] });
+    expect(await claimedEvent()).toMatchObject({ target: 'develop' });
+    expect(await jobJson()).toMatchObject({ target: 'develop' });
+  });
+
+  const refuses = async (want: RegExp): Promise<void> => {
+    const r = await cli('event', ID, 'job.claimed');
+    expect(r.code).toBe(1);
+    expect(r.out).toEqual([]);
+    expect(r.err.length).toBe(1);
+    expect(r.err[0]).toMatch(want);
+    expect(r.err[0]).not.toContain('\n');
+    expect(await readdir(root)).toEqual(['config.json']); // no jobs/, job dir, events.jsonl, or job.json
+  };
+
+  test('a missing named branch refuses the claim and writes nothing', async () => {
+    await withMerge({ target: 'develop' });
+    await refuses(/^merge\.target 'develop': no branch refs\/heads\/develop/);
+  });
+
+  test('current on a detached HEAD refuses the claim and writes nothing', async () => {
+    gitIn(repo, 'checkout', '--quiet', '--detach');
+    await refuses(/^merge\.target 'current': .*detached HEAD/);
+  });
+
+  test('a checkout on a branch with shell metacharacters refuses the claim and writes nothing', async () => {
+    gitIn(repo, 'checkout', '--quiet', '-b', "x';$(id)");
+    await refuses(/^merge\.target 'current': branch ".*" is not an allowed target name/);
+  });
+
+  test('a caller-supplied target is rejected as an extra field and nothing is written', async () => {
+    const r = await cli('event', ID, 'job.claimed', 'target=develop');
+    expect(r.code).toBe(1);
+    expect(r.err).toEqual(["job.claimed: extra field: unknown key 'target'"]);
     expect(await readdir(root)).toEqual(['config.json']);
   });
 });

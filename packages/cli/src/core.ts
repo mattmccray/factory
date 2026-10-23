@@ -6,9 +6,10 @@
 // This is everything the installed, self-contained `factory/cli.ts` carries (`installed.ts`).
 // The source CLI (`index.ts`) adds `init` and `upgrade` on top.
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { appendEvent, formatShow, parseConfig, parseEventInput, parseFields, project, readLog, rebuild } from '@factory/contract';
+import { dirname, join, resolve } from 'node:path';
+import { appendEvent, formatShow, mergeTarget, parseConfig, parseEventInput, parseFields, project, readLog, rebuild } from '@factory/contract';
 import { doctor } from './doctor';
+import { resolveTarget } from './git';
 
 export interface Io {
   root: string; // the factory/ directory
@@ -40,7 +41,15 @@ export async function dispatchCore(argv: readonly string[], io: Io, usage: strin
     case 'event': {
       const [id, type, ...kv] = rest;
       if (!id || !type) throw new Error(USAGE.event);
-      const input = parseEventInput(type, parseFields(kv), { id, config });
+      const fields = parseFields(kv);
+      // Parsed once without a target first, so a caller-supplied `target` (or any other bad
+      // field) is refused before git runs. The claim then records the resolved branch; a
+      // refusal throws before anything is written.
+      let input = parseEventInput(type, fields, { id, config });
+      if (input.type === 'job.claimed') {
+        const target = await resolveTarget(dirname(resolve(io.root)), mergeTarget(config));
+        input = parseEventInput(type, fields, { id, config, target });
+      }
       io.stdout((await appendEvent(io.root, id, input)).stage);
       return 0;
     }

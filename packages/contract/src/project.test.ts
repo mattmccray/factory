@@ -48,13 +48,20 @@ describe('project', () => {
     expect(() => project(log([{ type: 'job.noted', note: 'x' }]))).toThrow();
   });
 
+  test('target comes from job.claimed; a log claimed before it existed projects null', () => {
+    expect(project(log([{ ...claimed, target: 'master' }])).target).toBe('master');
+    const legacy = project(log(twoRound));
+    expect(legacy.target).toBeNull();
+    expect(legacy.stage).toBe('merged'); // the transition rules are unchanged for a target-less log
+  });
+
   test('a fresh claim has defaults', () => {
     const s = project(log([claimed]));
     expect(s).toMatchObject({
       schema: 'factory/v1', id: '019-example', title: '019-example', branch: 'factory/019-example',
       builder: null, stage: 'claimed', round: 0, maxRound: 2, reviews: {}, history: [], reworks: 0,
       decision: null, note: '', brief: null, issue: 'M80', startedAt: tsAt(0), stageEnteredAt: tsAt(0),
-      endedAt: null, updated: tsAt(0),
+      endedAt: null, updated: tsAt(0), target: null,
     });
     expect(s.timing.stages).toEqual([{ stage: 'claimed', round: 0, enteredAt: tsAt(0), exitedAt: null, ms: null }]);
   });

@@ -11,7 +11,7 @@ you don't need to run it (write `not run (per my rules)`).
 - The brief, if your card has one: its **Contract calls** are changes the user approved.
 - The contract: `<worktree>/docs/contract/v1.md` if it exists, else `<worktree>/factory/CONTRACT.md`.
   If the diff edits the contract doc, judge the code against the new text and the new text
-  against the old (`git -C <worktree> show main:<path>`).
+  against the old (`git -C <worktree> show <base>:<path>`, where `<base>` is the `base:` line on your card).
 
 ## The contract surface
 `schema: "factory/v1"`; event types, their fields, and their effects; the transitions the CLI

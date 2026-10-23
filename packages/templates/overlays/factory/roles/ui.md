@@ -8,7 +8,7 @@ is the code reviewer's job; you don't need to run it (write `not run (per my rul
 
 ## First: is Andon touched?
 Andon is `apps/andon/` and any page, style, or client script that `packages/andon-agent`
-serves. Check `git -C <worktree> diff main...HEAD --stat`. If none of it changed, write
+serves. Check `git -C <worktree> diff <base>...HEAD --stat` (`<base>` is the `base:` line on your card). If none of it changed, write
 `VERDICT: PASS` with one line under Summary — "Andon not touched." — and nothing else
 (**Andon not touched → PASS**). Don't review anything outside Andon.
 

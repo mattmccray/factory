@@ -74,6 +74,30 @@ describe('doctor: config (AC5)', () => {
     expect(r.out.some((l) => l.startsWith('FAIL  config.json: config: roles.ux: unknown role'))).toBe(true);
   });
 
+  test('a config with a valid merge is ok', async () => {
+    for (const merge of [{}, { target: 'current' }, { target: 'develop' }]) {
+      await writeConfig({ ...CONFIG, merge });
+      const r = await doctor();
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('ok    config.json');
+    }
+  });
+
+  test('a config with a bad merge fails with the parser\'s reason', async () => {
+    const cases: Array<[unknown, string]> = [
+      [{ target: 'main', squash: true }, "FAIL  config.json: config.merge: unknown key 'squash'"],
+      ['main', 'FAIL  config.json: config: merge must be an object { target? }'],
+      [{ target: '' }, 'FAIL  config.json: config: merge.target must be "current" or a non-empty branch name'],
+      [{ target: 7 }, 'FAIL  config.json: config: merge.target must be "current" or a non-empty branch name'],
+    ];
+    for (const [merge, line] of cases) {
+      await writeConfig({ ...CONFIG, merge });
+      const r = await doctor();
+      expect(r.code).toBe(1);
+      expect(r.out).toContain(line);
+    }
+  });
+
   test('missing config.json', async () => {
     await rm(join(root, 'config.json'));
     const r = await doctor();

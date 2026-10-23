@@ -24,7 +24,7 @@ feature → spec-writer → builder ⇄ [configured reviewers] → approver → 
 |---|---|
 | `factory/jobs/<id>/events.jsonl` — the job's append-only event log, the truth | the factory CLI, when you run it |
 | `factory/jobs/<id>/job.json` — derived from the log; the dashboard polls it | the factory CLI (never by hand) |
-| `factory/config.json` — reviewer keys, the default `maxRound`, the gate, and per-role runners | human (or `customize`, with the human) |
+| `factory/config.json` — reviewer keys, the default `maxRound`, the gate, per-role runners, and the merge target | human (or `customize`, with the human) |
 | `factory/roles/<role>.md` — the project's rules for one role (optional) | human (or `customize`, with the human) |
 | `factory/.lock/` — a short mutex for claiming work and merging | you, briefly |
 | `factory/backlog.md` — queue for `/factory next` | human (you tick items off) |
@@ -39,8 +39,21 @@ feature → spec-writer → builder ⇄ [configured reviewers] → approver → 
 | `factory/.worktrees/<id>/` — the job's checkout, branch `factory/<id>` | builder (code) |
 
 `jobs/`, `.lock/`, and `.worktrees/` are gitignored runtime state. Code lives on the
-branch; the main checkout stays on `main` so your files never move under you.
+branch; the main checkout stays on the job's target branch so your files never move under you.
 Dashboard: Andon, one agent per machine. Run `bun run andon` in the factory clone (not in this project), then open http://127.0.0.1:8766/. `factory init` registers the project with Andon.
+
+**The target branch.** Every job is based on and merges into its **target**: `target` in its
+`job.json`. The CLI resolves it once, at `job.claimed`, from `merge.target` in
+`<R>/factory/config.json`: `current` (the default when `merge` or `merge.target` is absent) is
+the branch the main checkout is on at that moment, and any other value names a branch that
+must exist. The CLI accepts only a plain branch name (letters, digits, `.`, `_`, `/`, `-`), so a
+target never carries quotes or shell metacharacters. A detached HEAD, a missing branch, or a
+disallowed name refuses the claim, writing nothing; tell the user the CLI's one-line reason and
+stop. Read `target` from `job.json` after the claim and use
+it as `<target>` everywhere below, even if the checkout or the config changes mid-job.
+If `target` is `null` (a job claimed before the CLI recorded it), resolve it whenever you need
+it from the current config: `merge.target` if it names a branch, else (`current`, or no key)
+`git symbolic-ref --short HEAD` in `<R>`.
 
 **Reviewers come from config.** The reviewer keys are `reviewers` in `<R>/factory/config.json`,
 in order. Read them when a round starts; never assume a list. Each key `<key>` is the agent
@@ -116,7 +129,8 @@ Agents get context from **files, not the conversation**. Every spawn prompt is j
 Factory job <id>. Your instructions are in your agent definition; all context is in these files.
 repo:     <R>
 job dir:  <R>/factory/jobs/<id>
-worktree: <R>/factory/.worktrees/<id>   (branch factory/<id>, base main)
+worktree: <R>/factory/.worktrees/<id>   (branch factory/<id>)
+base:     <target>
 round:    <N>
 brief:    <R>/factory/briefs/<slug>.md      (spec-writer and approver, when the job has one)
 write:    <the one absolute path this agent writes>
@@ -148,7 +162,7 @@ agent to fix that first line to the exact format its definition gives (`VERDICT:
 **1 · Spec.** Board: `stage.entered stage=spec`. Spawn `factory-spec-writer` → `spec.md`
 (span `role=spec-writer`). Board: `job.titled title='<spec.md's # H1>'`.
 
-**2 · Worktree.** `git worktree add -b factory/<id> factory/.worktrees/<id> main`
+**2 · Worktree.** `git worktree add -b factory/<id> factory/.worktrees/<id> '<target>'`
 (if the branch already exists: `git worktree add factory/.worktrees/<id> factory/<id>`).
 
 **3 · Build.** Board: `stage.entered stage=build`. Spawn `factory-builder` (name it
@@ -188,8 +202,15 @@ line:
 
 ## Merge
 
-Take `factory/.lock` first. Another session may be merging. From the main checkout (which
-must be on `main`; if it isn't, release the lock, stop, and ask):
+Take `factory/.lock` first. Another session may be merging. Everything below runs from the
+main checkout, which must be on the job's `<target>`. Check it first with
+`git symbolic-ref --short HEAD`. If it is on another branch `<x>` (or detached: `<x>` is
+`detached HEAD`), release the lock, board:
+`merge.failed reason='checkout is on <x>, job targets <target>'` (the job goes to
+`needs-human`; `<x>` is whatever the checkout's branch is called, so write any apostrophe
+in it as `'\''`, as for every board value), and stop: tell the user to switch the main
+checkout to `<target>` themselves and retry with `/factory approve <id>`. Never run `git checkout` or `git switch` here. The main
+checkout is the user's working tree, maybe with uncommitted work.
 
 ```bash
 git merge --no-ff factory/<id> -m '<Merge message: line from decision.md>' \
@@ -200,18 +221,18 @@ The merge message is the approver's text: keep it in single quotes and write any
 as `'\''` (as for board values), so `$` and backticks in it are never expanded.
 
 - Conflict or refusal → `git merge --abort` (if a merge is in progress), release the lock,
-  board: `merge.failed reason='merge conflict with main — /factory rework to rebase'`.
+  board: `merge.failed reason='merge conflict with <target> — /factory rework to rebase'`.
   Stop. (Refusal because of a stray `.git/index.lock` means something else is mid-commit;
   wait a few seconds and retry once before giving up.)
 - Success → board: `job.merged sha=<short sha>` **immediately**, before any cleanup, so git and
   the board never disagree. Then `git worktree remove factory/.worktrees/<id>` and
   `git branch -d factory/<id>`; if cleanup fails, report it and carry on (the merge stands).
-- **Post-merge check.** If `main` had moved past the branch's base, run the gate on main and
+- **Post-merge check.** If `<target>` had moved past the branch's base, run the gate on `<target>` and
   report the result (don't auto-revert). The gate is `gate` in `<R>/factory/config.json`: its
   shell commands run in order from the repo root, and it is green only when every command
   exits 0. If `config.json` has no `gate`, no gate is configured: tell the user so instead of
   running anything, and never invent a command.
-- Then **bookkeeping**, so every job leaves `main` clean: commit just the backlog tick, by
+- Then **bookkeeping**, so every job leaves `<target>` clean: commit just the backlog tick, by
   pathspec, so nothing else of the user's gets swept in: `git commit -m "chore(factory): record
   job <id>" -m "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md`
   (nothing changed → skip).
@@ -266,12 +287,12 @@ If the approver never ran on this work (no `APPROVE`/`ESCALATE` from it, so job.
 is null: an escalation before or during review, or after a rework before the approver), say so and
 ask before merging work the approver never checked. (A retry after a failed merge already shows
 `APPROVE (human)`; the human answered that the first time.)
-Recreate the worktree if it's gone (step 2), board: `job.human-approved` (every time, also when
+Recreate the worktree if it's gone (step 2, from the job's `<target>`), board: `job.human-approved` (every time, also when
 retrying after a failed merge; leave decision.md alone, it's the approver's), and **Merge**.
 
 **`/factory rework <id> <note>`** — Send a `needs-human` job back with human feedback. Write
 the note verbatim to `rework-<k>.md` (`k` = `reworks` + 1, from job.json), recreate the worktree
-if needed, board: `job.reworked k=<k> maxRound=<round + 2>` (a fresh review budget; it clears
+if needed (step 2, from the job's `<target>`), board: `job.reworked k=<k> maxRound=<round + 2>` (a fresh review budget; it clears
 the decision). If the job escalated before `spec.md` existed, first spawn `factory-spec-writer`
 with the card plus the rework path (span `role=spec-writer`) and set `job.titled`. Resume
 `builder-<id>` with SendMessage (span `role=builder name=builder-<id> round=<round>`) —
@@ -303,19 +324,22 @@ are facts; which of them gate a merge is a decision). Cover only the v1 overlay,
 2. `maxRound` — the default review budget for a new job.
 3. `dashboard.settleAfterHours` — how long a merged job stays in the Merged column.
 4. `gate` — the shell commands, in order, that must all exit 0; or no gate.
-5. `roles` — for any role that should not run on the default model (`opus`): its runner
+5. `merge.target` — the branch jobs are based on and merge into: `current` (the default: the
+   branch the main checkout is on when a job is claimed) or a branch name such as `develop`.
+   No `merge` key keeps `current`.
+6. `roles` — for any role that should not run on the default model (`opus`): its runner
    (`claude`, the only runner in v1) and, optionally, the harness model name (e.g. a cheaper
    model for a narrow reviewer). No entry, or no `roles` key at all, keeps the default.
-6. `factory/roles/<role>.md` — for `spec-writer`, `builder`, `approver`, and each configured
+7. `factory/roles/<role>.md` — for `spec-writer`, `builder`, `approver`, and each configured
    reviewer key: the project's own rules for that role, or no file (the managed defaults apply).
 
-Anything else (a runner other than `claude`, per-role tools or effort, a tracker, a merge policy,
-conditional reviewers) is not in v1. Say so in a sentence and move on; never write it into the overlay.
+Anything else (a runner other than `claude`, per-role tools or effort, a tracker, any merge policy
+beyond `merge.target` such as squashing, PRs, or pushing, conditional reviewers) is not in v1. Say so in a sentence and move on; never write it into the overlay.
 
 **Refusal rules.** Check every change against these before anything is written. A change that
 breaks one is refused: tell the user which rule and why, and ask again. Nothing is written for it.
 - No key outside v1. `config.json` holds only `schema` (`"factory/v1"`), `reviewers`,
-  `maxRound`, `dashboard` (only `settleAfterHours`), `gate`, and `roles`.
+  `maxRound`, `dashboard` (only `settleAfterHours`), `gate`, `merge` (only `target`), and `roles`.
 - Each reviewer key matches `^[a-z][a-z0-9-]*$`, is unique, and is never a fixed role name
   (`spec-writer`, `builder`, `approver`). There is at least one reviewer.
 - `maxRound` is a positive integer, and `dashboard.settleAfterHours` is a positive number.
@@ -326,6 +350,11 @@ breaks one is refused: tell the user which rule and why, and ask again. Nothing 
   `runner` and `model`; `runner` is required and is `claude`; `model`, when present, is a
   non-empty harness model name matching `^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$` (no spaces or `#`).
   Dropping a reviewer means dropping its `roles` entry too.
+- `merge`, when present, is an object holding only `target`. `target`, when present, is a
+  non-empty string: `current` or the name of a branch matching `^[A-Za-z0-9][A-Za-z0-9._/-]*$`,
+  with no `..` and no `.lock` suffix. No `merge` key (or no `target`) means
+  `current`. A branch literally named `current` can't be targeted. The branch has to exist when
+  a job is claimed, or the claim is refused.
 - A role file exists only for a fixed role or a configured reviewer key. Dropping a reviewer
   whose role file exists means deleting that file too, or keeping the reviewer; ask which.
 - Role rules add rules only. They never change which file an agent writes, its path, or its
@@ -344,6 +373,9 @@ agreed to drop. Write nothing else.
   nothing else of the user's gets swept in:
   `git add -A -- <those paths>`, then `git commit -m "chore(factory): customize overlay"
   -m "Co-Authored-By: Claude <noreply@anthropic.com>" -- <those paths>`. Never push.
+
+**When `merge.target` changed.** No re-render is needed: the CLI reads it at each claim. Live
+jobs keep the target they recorded at claim.
 
 **When `reviewers` or `roles` changed.** A new reviewer key has no agent, and a new model
 takes no effect, until the managed files are re-rendered. Tell the user to run `factory upgrade` before the next job; never run it yourself,

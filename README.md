@@ -1,8 +1,8 @@
 # factory
 
 The factory runs everyday development as a loop of Claude Code agents that talk only through
-markdown files. You hand it a feature, and it comes back merged on your local `main`, or stopped
-with a written reason for a human to decide on. Andon is its dashboard.
+markdown files. You hand it a feature, and it comes back merged into your local target branch, or
+stopped with a written reason for a human to decide on. Andon is its dashboard.
 
 This page covers what the factory is and how to install, upgrade, and use it. For depth, see the
 contract ([`docs/contract/v1.md`](docs/contract/v1.md)), installing and upgrading
@@ -28,8 +28,13 @@ spec → build → parallel reviews → approve → merge
   up to `maxRound` rounds.
 - **approve**: an approver checks the result against the spec and writes `APPROVE` or
   `ESCALATE`.
-- **merge**: an approved job is merged into `main` locally. The factory never pushes. An
-  escalated job stops in `needs-human` until a person approves it or sends it back.
+- **merge**: an approved job is merged locally into its target branch: `merge.target` in
+  `factory/config.json`, by default `current`, the branch your checkout is on when the job is
+  claimed (set it to a name such as `develop` to land work there). The target is recorded at
+  claim, so the job keeps it for its whole life. The factory never pushes, and never switches
+  your checkout's branch: if the checkout isn't on the target at merge time, the job stops in
+  `needs-human` and says so. An escalated job stops in `needs-human` until a person approves it
+  or sends it back.
 
 The rules that hold it together, from the `factory/v1` contract:
 
@@ -161,7 +166,7 @@ stage leaves its file in `factory/jobs/001-csv-export/`:
 | approve | approver | `decision.md` (`APPROVE` or `ESCALATE` on its first line) |
 
 Throughout, the CLI keeps `events.jsonl` (the log) and `job.json` (the snapshot) in the same
-folder. On `APPROVE`, the orchestrator merges the branch into `main` locally with `--no-ff`,
+folder. On `APPROVE`, the orchestrator merges the branch into the job's target branch locally with `--no-ff`,
 removes the worktree and branch, and commits the backlog tick. It never pushes: pushing is
 yours.
 
@@ -192,7 +197,7 @@ bun factory/cli.ts show 001-csv-export   # stage and timing summary
 
 Run as many Claude Code sessions as you like, one job each: each job has its own worktree,
 branch, and job folder. The shared steps, claiming work (which takes the next job id and ticks
-the backlog) and merging into `main`, happen under a short lock, `factory/.lock/`. Before
+the backlog) and merging into the target branch, happen under a short lock, `factory/.lock/`. Before
 claiming, each session runs an **overlap check** against the live jobs; if the new work looks
 likely to change the same area, it asks you whether to start it anyway or take a different
 backlog line.
