@@ -6,3 +6,5 @@ export { project } from './project';
 export { appendEvent, readLog, readVerdict, rebuild } from './store';
 export { parseFields } from './fields';
 export { formatShow } from './show';
+export type { Manifest } from './manifest';
+export { checkManifestPath, parseManifest } from './manifest';

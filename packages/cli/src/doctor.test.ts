@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkManifestPath, parseManifest } from './doctor';
 import { run } from './index';
 
 const CONFIG = { schema: 'factory/v1', reviewers: ['security', 'code'], maxRound: 2, dashboard: { settleAfterHours: 24 } };
@@ -158,23 +157,5 @@ describe('doctor: managed hashes (AC6)', () => {
     const r = await doctor();
     expect(r.code).toBe(1);
     expect(r.out).toContain('FAIL  escape.txt: resolves outside the repo');
-  });
-});
-
-describe('manifest parsing', () => {
-  test('checkManifestPath', () => {
-    expect(checkManifestPath('factory/cli.ts')).toBeNull();
-    expect(checkManifestPath('.claude/skills/factory/SKILL.md')).toBeNull();
-    expect(checkManifestPath('')).not.toBeNull();
-    expect(checkManifestPath('/etc/passwd')).not.toBeNull();
-    expect(checkManifestPath('..')).not.toBeNull();
-    expect(checkManifestPath('a/../b')).not.toBeNull();
-    expect(checkManifestPath('a\\b')).not.toBeNull();
-    expect(checkManifestPath('a\0b')).not.toBeNull();
-  });
-
-  test('parseManifest returns a typed manifest', () => {
-    const m = parseManifest({ schema: 'factory/v1', version: '0.1.0', files: { 'factory/cli.ts': sha('x') } });
-    expect(m).toEqual({ schema: 'factory/v1', version: '0.1.0', files: { 'factory/cli.ts': sha('x') } });
   });
 });
