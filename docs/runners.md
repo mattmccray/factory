@@ -27,7 +27,7 @@ For a role whose runner isn't `claude`, the orchestrator replaces "spawn `factor
 1. **Span first.** Run `bun factory/cli.ts event <id> agent.started …` with the role's usual
    identity fields (`role`, plus `key` and `round` for a reviewer). The span never uses the
    runner's own session or process id.
-2. **Build the card.** The same spawn card as for Claude Code (`repo`, `job dir`, `worktree`,
+2. **Build the card.** The same spawn card as for Claude Code (`repo`, `job dir`, `worktree`, `base`,
    `round`, `brief`, `write`, `deliver`), with the same absolute paths.
 3. **Give it the role's instructions.** The runner has no Claude agent definition, so the adapter
    passes the role's managed instructions as its prompt: the rendered agent file's body (the text
@@ -75,7 +75,8 @@ A runner may be accepted in `roles` only when all of these hold:
       `# Build — <id>`, `VERDICT: PASS|CHANGES`, `APPROVE|ESCALATE`), plus only what the role
       allows (builder commits in the worktree; reviewer supporting files under `round-<N>/<key>/`).
 - [ ] It never writes job state (`events.jsonl`, `job.json`), the overlay, managed files,
-      `.lock/`, the main checkout's code, or `main`, and never runs the CLI's `event` command.
+      `.lock/`, the main checkout's code, or the job's target branch (the card's `base`), and
+      never runs the CLI's `event` command.
 - [ ] It runs non-interactively and exits when it's done, so the orchestrator can confirm the file.
 - [ ] Its sandbox keeps reviewers and the approver read-only on code.
 - [ ] Its `model` value, if any, fits the contract's model pattern.

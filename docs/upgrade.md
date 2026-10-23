@@ -38,6 +38,12 @@ After pulling a new factory release, and after changing `reviewers` or `roles` i
 `factory/config.json` (both are rendered into the managed agents, so a new reviewer has no agent
 and a new model takes no effect until you upgrade):
 
+Merge or settle live jobs before upgrading: let every job whose stage isn't `merged` finish
+(or merge it with `/factory approve <id>`) first. An upgrade replaces the skill and agents that
+are driving those jobs mid-flight, and jobs claimed before a release that records `target` (the
+branch a job merges into) have `target: null`, so the new skill falls back to resolving
+`merge.target` from the current config for them.
+
 ```sh
 cd /path/to/project
 factory upgrade
