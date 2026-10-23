@@ -1,14 +1,27 @@
 # Installing and upgrading the factory
 
-`factory init` and `factory upgrade` run from this repo's source CLI (`packages/cli/src/main.ts`)
-with the target project's root as the working directory. What they write, refuse, and exit with
+`factory init` and `factory upgrade` run from this repo's source CLI, linked onto your PATH as
+`factory`, with the target project's root as the working directory. What they write, refuse, and exit with
 is specified in [`docs/contract/v1.md`](contract/v1.md), "CLI" → "`init` and `upgrade`".
+
+## Linking the `factory` command
+
+Once per clone of this repo:
+
+```sh
+cd /path/to/factory
+bun install
+cd packages/cli
+bun link                     # puts `factory` on your PATH (~/.bun/bin), running this clone's source
+```
+
+After pulling a new release, run `bun install` again; the link follows the clone.
 
 ## Installing into a project
 
 ```sh
 cd /path/to/project
-bun /path/to/factory/packages/cli/src/main.ts init
+factory init
 ```
 
 This writes the stamped skill and agents under `.claude/`, the self-contained `factory/cli.ts`,
@@ -28,7 +41,7 @@ and a new model takes no effect until you upgrade):
 
 ```sh
 cd /path/to/project
-bun /path/to/factory/packages/cli/src/main.ts upgrade
+factory upgrade
 bun factory/cli.ts doctor
 ```
 
@@ -40,7 +53,8 @@ rendered bytes.
 
 This repo runs its own jobs with an installed copy (`.claude/`, `factory/`) that is kept
 separate from the source (CLAUDE.md, "Source and state"). Promotion is a human step, done on
-`main` after a merge, never inside a job.
+`main` after a merge, never inside a job. Run it with the `factory` command linked from this
+checkout, so the source it installs is the source on `main`.
 
 **First time (adopting the vendored v0).** The vendored v0 is unstamped (there is no
 `factory/managed.json`), and its files differ from the render, so plain `init` refuses and
@@ -48,7 +62,7 @@ names them. Adopt it with `--force`:
 
 ```sh
 cd /path/to/factory          # this repo's root, on main, with no job running
-bun packages/cli/src/main.ts init --force
+factory init --force
 bun factory/cli.ts doctor    # the newly installed CLI; exits 0
 git diff --stat              # review: .claude/**, factory/cli.ts, factory/CONTRACT.md, factory/managed.json
 ```
@@ -64,7 +78,7 @@ still serves the old dashboard until Andon replaces it. The root `tsconfig.json`
 
 ```sh
 cd /path/to/factory
-bun packages/cli/src/main.ts upgrade
+factory upgrade
 bun factory/cli.ts doctor
 ```
 

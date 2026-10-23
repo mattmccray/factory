@@ -1,0 +1,260 @@
+# factory
+
+The factory runs everyday development as a loop of Claude Code agents that talk only through
+markdown files. You hand it a feature, and it comes back merged on your local `main`, or stopped
+with a written reason for a human to decide on. Andon is its dashboard.
+
+This page covers what the factory is and how to install, upgrade, and use it. For depth, see the
+contract ([`docs/contract/v1.md`](docs/contract/v1.md)), installing and upgrading
+([`docs/upgrade.md`](docs/upgrade.md)), and runners other than Claude Code
+([`docs/runners.md`](docs/runners.md)).
+
+## What it is
+
+One feature is one **job**, and a job moves through a fixed loop:
+
+```
+spec → build → parallel reviews → approve → merge
+                     ↑      │
+                     └──────┘  (a review asks for changes: the builder takes another round)
+```
+
+- **spec**: a spec-writer turns the request into `spec.md`, the job's acceptance criteria.
+- **build**: a builder implements it on its own branch and worktree, runs the project's gate,
+  and commits.
+- **reviews**: the configured reviewers (the `reviewers` keys in `factory/config.json`, for
+  example `code`, `security`, `contract`) each review the diff in parallel. The round is done
+  only when every one of them has answered. Any `CHANGES` sends the job back to the builder,
+  up to `maxRound` rounds.
+- **approve**: an approver checks the result against the spec and writes `APPROVE` or
+  `ESCALATE`.
+- **merge**: an approved job is merged into `main` locally. The factory never pushes. An
+  escalated job stops in `needs-human` until a person approves it or sends it back.
+
+The rules that hold it together, from the `factory/v1` contract:
+
+- **The event log is the truth.** Each job has an append-only `factory/jobs/<id>/events.jsonl`.
+  `job.json` is a derived snapshot that can be deleted and rebuilt from the log at any time.
+- **The CLI is the only writer of job state.** The orchestrator (the Claude Code session running
+  `/factory`) runs `factory/cli.ts event …`; the CLI takes every timestamp from the system clock,
+  enforces the allowed transitions, reads verdicts from the agents' files, appends to the log, and
+  rebuilds `job.json`. No agent or model writes job state by hand.
+- **Reviewers are configured.** Which reviewers run, the review budget, the gate commands, and
+  each role's model are project settings in `factory/config.json`.
+- **Managed files vs. the overlay.** The skill, the agents, the installed CLI, and the installed
+  contract are **managed files**: rendered by the factory, stamped with a version, hashed in
+  `factory/managed.json`, and never edited by hand. A project's own choices live in the
+  **overlay**: `factory/config.json` and `factory/roles/<role>.md` (that project's rules for one
+  role). Upgrades replace managed files and never touch the overlay.
+
+## Install
+
+You need [Bun](https://bun.sh), git, and Claude Code. In a clone of this repo:
+
+```sh
+cd /path/to/factory
+bun install
+cd packages/cli
+bun link
+```
+
+`bun link` puts a `factory` command on your PATH (in `~/.bun/bin`) that runs this clone's source
+CLI. Then install the factory into a project from that project's root:
+
+```sh
+cd /path/to/project      # a git repo
+factory init
+bun factory/cli.ts doctor
+git add -A && git commit -m "chore(factory): install the factory"
+```
+
+There are two CLIs, and they do different jobs:
+
+| Command | What it is | Runs |
+|---|---|---|
+| `factory …` | the linked source CLI, from your factory clone | `init`, `upgrade` (it also has the core commands, but use the installed copy for those) |
+| `bun factory/cli.ts …` | the project's installed copy, a self-contained managed file | `doctor`, `show`, `event`, `rebuild` |
+
+`factory init` writes the skill and agents under `.claude/`, `factory/cli.ts`,
+`factory/CONTRACT.md`, a default `factory/config.json` (only if there is none), and
+`factory/managed.json`. It adds `factory/jobs/`, `factory/.lock/`, and `factory/.worktrees/` to
+`.gitignore`, and registers the project with Andon. Details are in
+[`docs/upgrade.md`](docs/upgrade.md).
+
+## Upgrade
+
+Pull a new factory release into your clone (`git pull && bun install`). The link follows the
+clone, so there is nothing to relink. Then, in each project:
+
+```sh
+cd /path/to/project
+factory upgrade
+bun factory/cli.ts doctor
+git add -A && git commit -m "chore(factory): upgrade the factory"
+```
+
+Run `factory upgrade` also after you change `reviewers` or `roles` in `factory/config.json`:
+both are rendered into the managed agents, so a new reviewer has no agent, and a new model takes
+no effect, until you upgrade. If a managed file was edited locally, upgrade refuses and names it;
+see step 7 below.
+
+## Using it
+
+This section follows one feature in an example project, `notes-app`, a small web app with a
+`bun test` suite, which wants a "CSV export" button. The `/factory …` commands are typed into a
+Claude Code session opened at the project's root.
+
+### 1. Set up once
+
+```sh
+cd ~/code/notes-app
+factory init
+```
+
+Then, in Claude Code:
+
+```
+/factory customize
+```
+
+`customize` (alias `/factory init`) is an interview that writes only the overlay: the ordered
+`reviewers` (say `code` and `security`), the `maxRound` review budget, the Andon settle time, the
+`gate` (say `["bun test", "bun run typecheck"]`), each role's model under `roles`, and any
+`factory/roles/<role>.md` rules (for example, "tests are colocated as `*.test.ts`" for the
+builder). It refuses anything `factory/v1` doesn't allow, runs doctor, and commits the overlay.
+Check the install and commit what `init` wrote:
+
+```sh
+bun factory/cli.ts doctor        # one line per check; exits 0 when nothing failed
+git add -A && git commit -m "chore(factory): install the factory"
+```
+
+If `customize` changed `reviewers` or `roles`, run `factory upgrade` before the first job.
+
+### 2. Get work in
+
+Work reaches the factory through `factory/backlog.md`:
+
+- **Fuzzy, or touching a contract or a recorded decision:** `/factory explore csv export`. It
+  is an interview, one question at a time, that writes a brief, `factory/briefs/csv-export.md`,
+  and, once the brief is `ready`, adds a backlog line that points at it. The brief binds the
+  spec-writer and approver later.
+- **Clear work:** `/factory queue add a CSV export button to the notes list`. It distills the
+  text into one `- [ ]` backlog line with what defines done, and commits the backlog. It
+  starts nothing.
+
+### 3. Run it
+
+```
+/factory next             # the first unchecked backlog line
+/factory next csv export  # or the line these words describe
+```
+
+The session claims the line (ticking it as `- [x] … → 001-csv-export`) and runs the loop. Each
+stage leaves its file in `factory/jobs/001-csv-export/`:
+
+| Stage | Who | Writes |
+|---|---|---|
+| claim | the orchestrator | `feature.md` (the request, verbatim) |
+| spec | spec-writer | `spec.md` (scope, acceptance criteria, touchpoints) |
+| build | builder, in `factory/.worktrees/001-csv-export/` on branch `factory/001-csv-export` | commits on the branch, and `build.md` |
+| review | each configured reviewer, in parallel | `round-<n>/review-<key>.md`, e.g. `round-1/review-code.md` |
+| approve | approver | `decision.md` (`APPROVE` or `ESCALATE` on its first line) |
+
+Throughout, the CLI keeps `events.jsonl` (the log) and `job.json` (the snapshot) in the same
+folder. On `APPROVE`, the orchestrator merges the branch into `main` locally with `--no-ff`,
+removes the worktree and branch, and commits the backlog tick. It never pushes: pushing is
+yours.
+
+### 4. When it stops
+
+A job stops in `needs-human` when the approver escalates (for example, reviews still ask for
+changes after `maxRound` rounds, or the work hits a contract question) or when the merge
+conflicts. Read why in `factory/jobs/001-csv-export/decision.md` (and the last round's
+reviews), then either:
+
+```
+/factory approve 001-csv-export
+/factory rework 001-csv-export "keep the export to the visible columns; drop the settings toggle"
+```
+
+`approve` merges it as is. `rework` saves your note as `rework-<k>.md`, gives the job a fresh
+review budget, and sends it back to the builder.
+
+### 5. Watch it
+
+Andon shows every registered project's board live (see [Andon](#andon)). From the terminal:
+
+```sh
+bun factory/cli.ts show 001-csv-export   # stage and timing summary
+```
+
+### 6. Side by side
+
+Run as many Claude Code sessions as you like, one job each: each job has its own worktree,
+branch, and job folder. The shared steps, claiming work (which takes the next job id and ticks
+the backlog) and merging into `main`, happen under a short lock, `factory/.lock/`. Before
+claiming, each session runs an **overlap check** against the live jobs; if the new work looks
+likely to change the same area, it asks you whether to start it anyway or take a different
+backlog line.
+
+### 7. Upgrade
+
+After a new factory release, or after changing `reviewers` or `roles`:
+
+```sh
+factory upgrade
+bun factory/cli.ts doctor
+```
+
+If someone edited a managed file (say `.claude/agents/factory-builder.md`), upgrade refuses and
+names it, and doctor reports it as `FAIL … changed`. Move the change into the overlay (here,
+`factory/roles/builder.md`), then rerun with `--force` to restore the rendered file:
+
+```sh
+factory upgrade --force
+```
+
+## Andon
+
+Andon is the dashboard: a board per project, with live timers for each stage and each reviewer,
+a needs-human row, and a job drawer with the files and timing. It has two parts, run from the
+factory clone:
+
+```sh
+bun run andon:build      # once, and after pulling: builds the UI the agent serves
+bun run andon            # the andon-agent daemon: http://127.0.0.1:8766/
+```
+
+The agent is one Bun daemon per machine. It watches the projects in `~/.andon/projects.json`
+(`factory init` adds each project; set `ANDON_HOME` to move the file and `ANDON_PORT` to change
+the port), streams changes to the UI, and never writes job state.
+
+The desktop shell wraps the UI in a window with a tray badge counting needs-human jobs and
+native notifications on escalate and merge. It starts the agent if none is running:
+
+```sh
+bun run andon:shell:build   # build the shell (and the UI)
+bun run andon:shell         # run it
+```
+
+## This repo's self-hosting
+
+This repo builds the factory with the factory, but the factory being built is never the factory
+doing the building. The source is `packages/` and `apps/`. The installed copy that runs this
+repo's jobs is `.claude/` and `factory/`, and no job changes it. Promoting merged source into the
+installed copy is a deliberate human step on `main`, after a merge and never mid-job:
+`factory init --force` the first time (adopting the vendored v0), then `factory upgrade`, each
+run from this repo's root. See [`docs/upgrade.md`](docs/upgrade.md), "Self-upgrade of this
+repo".
+
+## Rules of thumb
+
+- **One job is one reviewable diff.** If a feature needs several branches, split it into
+  several backlog lines.
+- **Contract changes go through `/factory explore`.** Six of the first ten jobs here escalated
+  for lacking a brief. Settle contract and decision questions in the interview, where they are
+  cheap, not after a whole build.
+- **Never edit managed files.** Put project rules in the overlay (`factory/config.json`,
+  `factory/roles/<role>.md`), and run `factory upgrade` to re-render.
+- **Never push.** The factory merges locally; pushing stays a human decision.
