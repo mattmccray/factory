@@ -17,13 +17,15 @@ export interface TraySpec {
   title: string;
   tooltip: string;
   menu: TrayMenuItem[];
+  /** A left click fires the tray click (the window toggle); the menu opens on right- or ctrl-click. */
+  primaryAction: boolean;
 }
 
 export const SHOW_ID = 'show';
 export const QUIT_ID = 'quit';
 export const TRAY_MENU: TrayMenuItem[] = [{ id: SHOW_ID, label: 'Show Andon' }, { separator: true }, { id: QUIT_ID, label: 'Quit' }];
 
-const spec = (title: string, tooltip: string): TraySpec => ({ title, tooltip, menu: TRAY_MENU });
+const spec = (title: string, tooltip: string): TraySpec => ({ title, tooltip, menu: TRAY_MENU, primaryAction: true });
 
 /** The title is the count (empty at 0); the tooltip says it in words. */
 export const traySpec = (n: number): TraySpec =>

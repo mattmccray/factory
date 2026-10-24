@@ -11,6 +11,7 @@ import { curlArgv, responseFromCurl } from './curl';
 import type { Http } from './http';
 import { startShell } from './shell';
 import type { Shell } from './shell';
+import { toggleAction } from './toggle';
 
 // ---- the little of txiki.js and Tiny this adapter uses (no `any`; see ~/.tinyjs/template/types) ----
 
@@ -28,8 +29,19 @@ declare const tjs: Tjs;
 interface TinyTraySpec extends TraySpec {
   icon?: string;
 }
+/** The fields of Tiny's window state this adapter reads. */
+export interface TinyWinState {
+  visible: boolean;
+  minimized: boolean;
+  focused: boolean;
+}
 interface TinyWindow {
   show(): void;
+  /** `{ app: false }` puts away this window alone (a bare hide() on main hides the whole app). */
+  hide(opts?: { app?: boolean }): void;
+  restore(): void;
+  /** Resolves null when there is no state to give. */
+  getState(): Promise<TinyWinState | null>;
   eval(js: string): void;
 }
 /** The backend `app` object Tiny passes to `init` and the hooks. */
@@ -147,7 +159,15 @@ export function init(app: TinyApp): void {
   })();
 }
 
-export function onTray(id: string | null, app: TinyApp): void {
+/** A menu item's id, or null for a left click on the icon (the tray spec sets `primaryAction`). */
+export async function onTray(id: string | null, app: TinyApp): Promise<void> {
+  if (id === null) {
+    const main = app.window('main');
+    const action = toggleAction(await main.getState());
+    if (action.kind === 'hide') return main.hide({ app: false });
+    if (action.restore) main.restore();
+    return main.show(); // brings it to the front
+  }
   if (id === SHOW_ID) app.window('main').show();
   if (id === QUIT_ID) {
     stopAll();
