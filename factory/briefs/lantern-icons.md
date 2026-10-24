@@ -1,4 +1,4 @@
-# Lantern icons for the Dock and tray
+# Lantern icons and badge for the Dock and tray
 
 - Status: ready
 - Sources: apps/andon-shell/tinyjs.json, apps/andon-shell/src/backend.ts, apps/andon-shell/src/badge.ts, ~/.tinyjs/template/types/tiny.d.ts (`app.presence`, `app.icon`, `app.badge`), HANDOFF.md decision 9; job 016-tray-click-toggle (the tray toggle, split from this)
@@ -42,6 +42,11 @@ when a job needs a human.
 7. What do the icons show before the agent answers, or when it fails to start? → **The idle look:
    the unlit Dock lantern and the outlined tray lantern.** The tray tooltip already says what's
    happening. Why: there's no board state to show yet.
+8. Does the Dock icon carry a badge? → **Yes: the needs-human count (the tray's number), via
+   `app.badge`; cleared (`''`) at zero, before the agent answers, and when it fails to start.**
+   Why: the count at a glance in the Dock; folded in here (2026-10-23) instead of its own brief
+   because it's one call on the same state in the same adapter, and a separate job would
+   conflict with this one at merge.
 
 ## Scope
 - In: drop `"activation": "accessory"` from `apps/andon-shell/tinyjs.json` (the window shows at
@@ -49,8 +54,9 @@ when a job needs a human.
   coverage) that maps the shell's board state to `idle` | `running` | `escalated` per decision 4;
   the Tiny adapter switches the Dock icon (`app.icon`, `''` or `icon.png` for idle) and the tray
   icon (`tray-idle.png` / `tray-running.png`, as a template image) only when the state changes,
-  and keeps the tray's needs-human count and tooltip as they are.
-- Out: the Dock badge with the needs-human count (its own brief); bouncing the Dock icon; the
+  and keeps the tray's needs-human count and tooltip as they are; the Dock badge shows the same
+  count (decision 8), set only when the count changes.
+- Out: bouncing the Dock icon; the
   tray toggle and its fixes (job 016); new artwork (the assets are fixed inputs); any contract
   code in the shell (HANDOFF.md decision 9); any change to the agent or the board UI.
 
@@ -63,10 +69,13 @@ when a job needs a human.
 - When any job is in `needs-human`, the Dock shows the orange flame even if other jobs are
   running, and the tray shows the filled lantern if any are running (outlined if not), with the
   count beside it as today.
-- Before the agent answers and after it fails to start, both icons show the idle look.
+- The Dock badge shows the needs-human count whenever it's above zero and matches the tray's
+  number; at zero it's cleared.
+- Before the agent answers and after it fails to start, both icons show the idle look and the
+  Dock has no badge.
 - The tray icon adapts to light and dark menu bars (template image).
-- Unit tests pin the state rule for each case above and that the adapter only changes icons when
-  the state changes.
+- Unit tests pin the state rule for each case above, the badge text for zero and non-zero
+  counts, and that the adapter only changes icons and the badge when they change.
 
 ## Contract calls
 None.
