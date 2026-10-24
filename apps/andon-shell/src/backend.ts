@@ -11,6 +11,7 @@ import { curlArgv, responseFromCurl } from './curl';
 import type { Http } from './http';
 import { startShell } from './shell';
 import type { Shell } from './shell';
+import { oneAtATime, trayClickAction } from './trayclick';
 
 // ---- the little of txiki.js and Tiny this adapter uses (no `any`; see ~/.tinyjs/template/types) ----
 
@@ -28,8 +29,19 @@ declare const tjs: Tjs;
 interface TinyTraySpec extends TraySpec {
   icon?: string;
 }
+/** The fields of Tiny's window state this adapter reads. */
+export interface TinyWinState {
+  minimized: boolean;
+  fullscreen: boolean;
+  allSpaces: boolean;
+}
 interface TinyWindow {
   show(): void;
+  restore(): void;
+  /** On: the window joins every Space (and floats over fullscreen apps); off: back to one Space. */
+  setAllSpaces(on: boolean): void;
+  /** Resolves null when there is no state to give. */
+  getState(): Promise<TinyWinState | null>;
   eval(js: string): void;
 }
 /** The backend `app` object Tiny passes to `init` and the hooks. */
@@ -147,7 +159,26 @@ export function init(app: TinyApp): void {
   })();
 }
 
-export function onTray(id: string | null, app: TinyApp): void {
+/** How long a shown window stays on every Space before it is pinned back to one: long enough for
+ *  the show to land on the Space the user is on, not on the window's old one. */
+const SPACE_SETTLE_MS = 150;
+
+/** A left click on the icon: show the main window in front, on this Space. It never hides it:
+ *  Tiny's `focused` isn't reliable at click time (rework 2); the close button hides the window. */
+const showMain = oneAtATime(async (app: TinyApp): Promise<void> => {
+  const main = app.window('main');
+  const action = trayClickAction(await main.getState());
+  if (action.moveHere) main.setAllSpaces(true);
+  if (action.restore) main.restore();
+  main.show(); // brings it to the front
+  if (!action.moveHere) return;
+  await sleep(SPACE_SETTLE_MS);
+  main.setAllSpaces(false);
+});
+
+/** A menu item's id, or null for a left click on the icon (the tray spec sets `primaryAction`). */
+export async function onTray(id: string | null, app: TinyApp): Promise<void> {
+  if (id === null) return showMain(app);
   if (id === SHOW_ID) app.window('main').show();
   if (id === QUIT_ID) {
     stopAll();

@@ -27,7 +27,7 @@ const readJson = (path: string): Record<string, unknown> => {
 describe('AC5: the shell runs no contract, agent, or UI code', () => {
   test('the scan sees the logic modules and the adapter', () => {
     expect(sources).toContain(ADAPTER);
-    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'notify.ts', 'autostart.ts']) expect(sources).toContain(f);
+    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts']) expect(sources).toContain(f);
   });
 
   test('no source imports @factory/contract, @factory/andon-agent, or apps/andon', () => {
