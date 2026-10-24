@@ -6,7 +6,7 @@
   "id": "dev.factory.andon",
   "version": "0.1.0",
   "minTinyjsVersion": "0.57.0",
-  "activation": "accessory",
+  "icon": "assets/icon.png",
   "url": "http://127.0.0.1:8766/",
   "api": { "disable": ["*"] },
   "backend": "build/backend.js"

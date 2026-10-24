@@ -1,7 +1,11 @@
-// The adapter's tray hook against a fake Tiny app: no Tiny or txiki globals are touched by onTray.
-import { expect, test } from 'bun:test';
-import { onTray } from './backend';
-import type { TinyApp, TinyWinState } from './backend';
+// The adapter against a fake Tiny app. onTray and the lantern hooks touch no Tiny or txiki
+// globals; the init tests stand in fake `tjs` and `__ANDON_REPO__` globals.
+import { afterEach, expect, test } from 'bun:test';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { assetPath, dockIcon, init, onTray, setDock, setTray, trayIcon } from './backend';
+import type { TinyApp, TinyTraySpec, TinyWinState } from './backend';
+import { trayNotice, traySpec } from './badge';
 
 /** Which window ops fail. Mutable, so a test can heal the window between clicks. Each failing op is
  *  still recorded, then `getState` rejects and `restore`/`show` throw. */
@@ -19,6 +23,8 @@ function fakeApp(state: TinyWinState | null, fail: Failures = {}): { app: TinyAp
   };
   const app: TinyApp = {
     tray: { set: () => calls.push('tray.set') },
+    icon: (path) => calls.push(`icon(${path})`) > 0,
+    badge: (text) => calls.push(`badge(${text})`) > 0,
     notify: async () => {
       calls.push('notify');
       return true;
@@ -111,4 +117,114 @@ test('AC4: a failed click does not jam the next one', async () => {
     await onTray(null, app);
     expect(calls).toEqual(showHere());
   }
+});
+
+// ---- the lantern: Dock icon, tray icon, badge ----
+
+const REPO = resolve(import.meta.dir, '..', '..', '..');
+const ASSETS = join(REPO, 'apps', 'andon-shell', 'assets');
+
+/** A fake app that records the Dock icon, the badge, and every tray spec. */
+function lanternApp(): { app: TinyApp; icons: string[]; badges: string[]; trays: TinyTraySpec[] } {
+  const icons: string[] = [];
+  const badges: string[] = [];
+  const trays: TinyTraySpec[] = [];
+  const { app } = fakeApp(null);
+  app.icon = (p) => icons.push(p) > 0;
+  app.badge = (t) => badges.push(t) > 0;
+  app.tray = { set: (spec) => void trays.push(spec) };
+  return { app, icons, badges, trays };
+}
+
+test('AC4: each Dock look maps to the bundle icon or an absolute asset path that exists', () => {
+  expect(dockIcon(REPO, 'idle')).toBe('');
+  expect(dockIcon(REPO, 'running')).toBe(join(ASSETS, 'dock-running.png'));
+  expect(dockIcon(REPO, 'escalated')).toBe(join(ASSETS, 'dock-escalated.png'));
+  const { app, icons } = lanternApp();
+  setDock(app, REPO, 'idle');
+  setDock(app, REPO, 'running');
+  setDock(app, REPO, 'escalated');
+  expect(icons).toEqual(['', join(ASSETS, 'dock-running.png'), join(ASSETS, 'dock-escalated.png')]);
+  for (const p of icons.slice(1)) {
+    expect(p.startsWith('/')).toBe(true);
+    expect(dirname(p)).toBe(ASSETS);
+    expect(existsSync(p)).toBe(true);
+  }
+  expect(existsSync(join(ASSETS, 'icon.png'))).toBe(true); // what '' resets to (the bundle icon)
+});
+
+test('AC4: the tray icon is the outlined or filled lantern, as a template image, with the spec unchanged', () => {
+  expect(trayIcon(REPO, false)).toBe(join(ASSETS, 'tray-idle.png'));
+  expect(trayIcon(REPO, true)).toBe(join(ASSETS, 'tray-running.png'));
+  const { app, trays } = lanternApp();
+  setTray(app, REPO, traySpec(2), false);
+  setTray(app, REPO, traySpec(2), true);
+  expect(trays).toEqual([
+    { ...traySpec(2), icon: join(ASSETS, 'tray-idle.png'), template: true },
+    { ...traySpec(2), icon: join(ASSETS, 'tray-running.png'), template: true },
+  ]);
+  for (const t of trays) {
+    expect(typeof t.icon).toBe('string');
+    expect(dirname(String(t.icon))).toBe(ASSETS);
+    expect(existsSync(String(t.icon))).toBe(true);
+  }
+  expect(assetPath('/the/repo/', 'x.png')).toBe('/the/repo/apps/andon-shell/assets/x.png');
+});
+
+// ---- init: the idle look before the agent answers and after it fails to start ----
+
+interface FakeProcess {
+  stdout: ReadableStream<Uint8Array> | null;
+  kill(): void;
+  wait(): Promise<{ exit_status: number; term_signal: string | null }>;
+}
+
+const never = <T>(): Promise<T> => new Promise<T>(() => undefined);
+
+/** Stand in txiki's `tjs` and the build-time repo path. `curl` runs `curl`; any other spawn runs `agent`. */
+function fakeGlobals(curl: () => FakeProcess, agent: () => FakeProcess): void {
+  Reflect.set(globalThis, '__ANDON_REPO__', REPO);
+  Reflect.set(globalThis, '__ANDON_BUN__', '/the/bun');
+  Reflect.set(globalThis, 'tjs', { env: {}, spawn: (argv: string[]) => (argv[0] === 'curl' ? curl() : agent()) });
+}
+
+afterEach(() => {
+  for (const k of ['__ANDON_REPO__', '__ANDON_BUN__', 'tjs']) Reflect.deleteProperty(globalThis, k);
+});
+
+/** The Dock is idle (never set, or reset with '') and the badge is clear (never set, or ''). */
+function expectIdle(l: ReturnType<typeof lanternApp>): void {
+  expect(l.icons.every((p) => p === '')).toBe(true);
+  expect(l.badges.every((t) => t === '')).toBe(true);
+}
+
+test('AC5: before the agent answers, the tray shows the notice with the outlined lantern, and the Dock is idle', () => {
+  const hung: FakeProcess = { stdout: new ReadableStream<Uint8Array>(), kill: () => undefined, wait: never };
+  fakeGlobals(
+    () => hung,
+    () => hung,
+  );
+  const l = lanternApp();
+  init(l.app);
+  expect(l.trays).toEqual([{ ...trayNotice('starting the agent'), icon: join(ASSETS, 'tray-idle.png'), template: true }]);
+  expectIdle(l);
+});
+
+test('AC5: when the agent fails to start, the tray shows the reason with the outlined lantern, and the Dock is idle', async () => {
+  const unreachable = (): FakeProcess => ({
+    stdout: new ReadableStream<Uint8Array>({ start: (c) => c.close() }),
+    kill: () => undefined,
+    wait: async () => ({ exit_status: 7, term_signal: null }),
+  });
+  fakeGlobals(unreachable, () => {
+    throw new Error('no bun here');
+  });
+  const l = lanternApp();
+  init(l.app);
+  for (let i = 0; i < 50 && l.trays.length < 2; i++) await new Promise((r) => setTimeout(r, 2));
+  expect(l.trays).toHaveLength(2);
+  const last = l.trays.at(-1);
+  expect(last?.tooltip).toStartWith('Andon: could not start the agent');
+  expect(last).toMatchObject({ title: '', icon: join(ASSETS, 'tray-idle.png'), template: true });
+  expectIdle(l);
 });
