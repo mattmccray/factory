@@ -303,6 +303,131 @@ describe('CLI and contract stamps', () => {
   });
 });
 
+describe('the overlay outcome rule', () => {
+  const configs = [config(), config({ reviewers: ['q'] }), config({ reviewers: ['zeta', 'eta-1', 'theta'], gate: ['x'] })];
+  // Collapses line breaks so assertions don't depend on where the prose wraps.
+  const flat = (s: string): string => s.replace(/\s+/g, ' ');
+  // The `## Project rules (overlay)` section, up to the next `## ` heading.
+  const overlaySection = (text: string): string => {
+    const start = text.indexOf('\n## Project rules (overlay)');
+    if (start < 0) throw new Error('no ## Project rules (overlay) section');
+    const end = text.indexOf('\n## ', start + 1);
+    return flat(end < 0 ? text.slice(start) : text.slice(start, end));
+  };
+  // Every role document for a config: the fixed roles, then one per reviewer key.
+  const roleDocs = (c: Config): Array<[string, string]> => [
+    [agent('spec-writer'), 'spec-writer'],
+    [agent('builder'), 'builder'],
+    [agent('approver'), 'approver'],
+    ...c.reviewers.map((key): [string, string] => [agent(key), key]),
+  ];
+  // The one file each role writes, where it notes an ignored overlay line.
+  const ownFile = (role: string): string =>
+    role === 'spec-writer' ? '`spec.md`' : role === 'builder' ? '`build.md`' : role === 'approver' ? '`decision.md`' : 'review';
+  const note = (role: string): string => `\`factory/roles/${role}.md: "<the line>" breaks the overlay outcome rule; ignored.\``;
+
+  test('AC1: every role document states the ratchet, the quick test, and ignore-and-note', () => {
+    for (const c of configs) {
+      const { files } = renderClaudeCode({ config: c });
+      for (const [path, role] of roleDocs(c)) {
+        const s = overlaySection(at(files, path));
+        const has = (phrase: string): { path: string; phrase: string; stated: boolean } => ({ path, phrase, stated: s.includes(phrase) });
+        for (const phrase of [
+          'more focused or stricter',
+          'more lenient about what you find',
+          'does this line decide the outcome before looking, or throw away something already found?',
+          'Ignore it',
+          note(role),
+          ownFile(role),
+          'An ignored line never causes blocking or escalation.',
+        ]) {
+          expect(has(phrase)).toEqual({ path, phrase, stated: true });
+        }
+      }
+    }
+  });
+
+  test('AC2: the reviewer honors narrowing, PASS early, and blocking, notes a lenient line as a [nit], and reviews without it', () => {
+    for (const c of configs) {
+      const { files } = renderClaudeCode({ config: c });
+      for (const key of c.reviewers) {
+        const s = overlaySection(at(files, agent(key)));
+        for (const phrase of [
+          'when you may PASS early',
+          'narrow what you review',
+          'make something blocking',
+          'It never makes the review more lenient',
+          'fixes the verdict',
+          'drops, hides, or downgrades a finding',
+          `report it as one \`[nit]\` finding: ${note(key)}`,
+          'review as if it weren\'t there',
+        ]) {
+          expect({ key, phrase, stated: s.includes(phrase) }).toEqual({ key, phrase, stated: true });
+        }
+        expect(s).not.toContain('what makes a finding blocking');
+      }
+    }
+  });
+
+  test('AC3: every role document allows a downgrade or exemption only on a recorded human decision, with the finding still written', () => {
+    for (const c of configs) {
+      const { files } = renderClaudeCode({ config: c });
+      for (const [path] of roleDocs(c)) {
+        const s = overlaySection(at(files, path));
+        for (const phrase of [
+          'only when it cites a recorded human decision',
+          'a brief\'s decision or contract call, or a decision record the project names, such as its deferred and known-gaps lists',
+          'still written, marked as covered',
+          '`[accepted: <the decision>]`',
+        ]) {
+          expect({ path, phrase, stated: s.includes(phrase) }).toEqual({ path, phrase, stated: true });
+        }
+      }
+    }
+  });
+
+  test('AC4: the approver, builder, and spec-writer each ignore a lenient line and note it in their own file', () => {
+    const { files } = renderClaudeCode({ config: config() });
+    const approver = overlaySection(at(files, agent('approver')));
+    for (const phrase of ['"always APPROVE"', 'removes a default escalation trigger', 'add a one-line note to `decision.md`', 'decide normally', 'never remove one']) {
+      expect({ phrase, stated: approver.includes(phrase) }).toEqual({ phrase, stated: true });
+    }
+    const builder = overlaySection(at(files, agent('builder')));
+    for (const phrase of ['Never skip or wave off a `[blocking]` finding because of an overlay line', 'note it in one line in `build.md`']) {
+      expect({ phrase, stated: builder.includes(phrase) }).toEqual({ phrase, stated: true });
+    }
+    const specWriter = overlaySection(at(files, agent('spec-writer')));
+    for (const phrase of ['note it in one line in `spec.md`, under **Constraints**', 'never under "Contract conflicts / open questions"']) {
+      expect({ phrase, stated: specWriter.includes(phrase) }).toEqual({ phrase, stated: true });
+    }
+  });
+
+  test('AC5: the skill\'s role-file refusal rule refuses a lenient line, names the rule, and offers the allowed form', () => {
+    for (const c of configs) {
+      const text = at(renderClaudeCode({ config: c }).files, SKILL);
+      const start = text.indexOf('**Refusal rules.**');
+      const end = text.indexOf('**Write.**', start);
+      if (start < 0 || end < 0) throw new Error('no refusal rules');
+      const rules = text.slice(start, end);
+      // The role-file rule is the last bullet.
+      const last = flat(rules.slice(rules.lastIndexOf('\n- ')));
+      for (const phrase of [
+        'never change which file an agent writes, its path, or its first line',
+        'the overlay outcome rule',
+        'more focused or stricter, never more lenient about what it finds',
+        'decides the outcome before looking or throws away something already found',
+        '"always PASS"',
+        '"always APPROVE"',
+        'name the overlay outcome rule',
+        'offer the allowed form: cite a recorded human decision',
+        'keep the finding visible',
+      ]) {
+        expect({ phrase, stated: last.includes(phrase) }).toEqual({ phrase, stated: true });
+      }
+    }
+  });
+});
+
 describe('the customize interview in SKILL.md', () => {
   const skillOf = (c: Config = config()): string => at(renderClaudeCode({ config: c }).files, SKILL);
   // The `## Customize` section, up to the next `## ` heading.
@@ -429,13 +554,15 @@ describe('the customize interview in SKILL.md', () => {
     // (configurable target branch) updated the builder, approver, and reviewer hashes: those
     // agents now diff against the card's `<base>` instead of a literal `main`. Job 015 (brief
     // done status) updated the EXPLORE hash: the brief format gains `done` and the `- Job:` line.
+    // Job 020 (overlay outcome rule) updated every agent hash: each "Project rules (overlay)"
+    // section gains the outcome rule.
     const before: Record<string, string> = {
       [EXPLORE]: 'f963a37517018fd21bfec5dd62c829fa0cc92d8edcd502b34bf4789cab97e528',
-      [agent('spec-writer')]: '92aaa0c034fd1e8135e8c49d623735a9ced6fd151ea71b995359488c43484a3a',
-      [agent('builder')]: '6219d31829c717a6d1a171229b116202df79b1f27565196213cb2aef083b628b',
-      [agent('approver')]: '061bbfa32a69e71392487e72c784be2f8bc8f2d42eb014cc3a8667514f208b33',
-      [agent('alpha')]: 'd307180bbcbe66b748f754cef06ac21ab75c5151ed44000a9e70583dce3cfe11',
-      [agent('beta-2')]: '29bc300a78b938a2b97d486aa768f5d07f0b9c367e6e1b94765880dac27b9ce7',
+      [agent('spec-writer')]: 'e8595a8b596b936e369373677acac3c37e233de10fc6b7035b12fb5b5c29a0b1',
+      [agent('builder')]: 'c89ce77e6e090651f57959b4e2a98a034176156c11d19b09a0f6e8106c56740f',
+      [agent('approver')]: '4874e89a848fb9434b9379e6f0165d4b3c47d86943c9b9ed82d4293435e7edd3',
+      [agent('alpha')]: 'dfe1cd9b59957007a63f3f4474d145d1ecc8e6a616db0236196fd065ef6c053d',
+      [agent('beta-2')]: '8c6e2ba134bb732ef87f579b5822350108bb6553b4257674fb30a4f5a3618840',
     };
     const { files } = renderClaudeCode({ config: config() });
     const now: Record<string, string> = {};
@@ -488,13 +615,14 @@ describe('per-role model from config.roles', () => {
     // excluded: its template text changes in this job (the customize interview covers roles).
     // Job 014 updated the builder, approver, and reviewer hashes (`<base>` instead of `main`).
     // Job 015 updated the EXPLORE hash (the brief format gains `done` and the `- Job:` line).
+    // Job 020 updated every agent hash (the overlay outcome rule in "Project rules (overlay)").
     const before: Record<string, string> = {
       [EXPLORE]: 'f963a37517018fd21bfec5dd62c829fa0cc92d8edcd502b34bf4789cab97e528',
-      [agent('spec-writer')]: '92aaa0c034fd1e8135e8c49d623735a9ced6fd151ea71b995359488c43484a3a',
-      [agent('builder')]: '6219d31829c717a6d1a171229b116202df79b1f27565196213cb2aef083b628b',
-      [agent('approver')]: '061bbfa32a69e71392487e72c784be2f8bc8f2d42eb014cc3a8667514f208b33',
-      [agent('alpha')]: 'd307180bbcbe66b748f754cef06ac21ab75c5151ed44000a9e70583dce3cfe11',
-      [agent('beta-2')]: '29bc300a78b938a2b97d486aa768f5d07f0b9c367e6e1b94765880dac27b9ce7',
+      [agent('spec-writer')]: 'e8595a8b596b936e369373677acac3c37e233de10fc6b7035b12fb5b5c29a0b1',
+      [agent('builder')]: 'c89ce77e6e090651f57959b4e2a98a034176156c11d19b09a0f6e8106c56740f',
+      [agent('approver')]: '4874e89a848fb9434b9379e6f0165d4b3c47d86943c9b9ed82d4293435e7edd3',
+      [agent('alpha')]: 'dfe1cd9b59957007a63f3f4474d145d1ecc8e6a616db0236196fd065ef6c053d',
+      [agent('beta-2')]: '8c6e2ba134bb732ef87f579b5822350108bb6553b4257674fb30a4f5a3618840',
     };
     for (const c of [config(), config({ roles: {} }), config({ roles: { builder: { runner: 'claude' } } })]) {
       const { files } = renderClaudeCode({ config: c });

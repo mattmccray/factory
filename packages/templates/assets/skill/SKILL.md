@@ -364,7 +364,16 @@ breaks one is refused: tell the user which rule and why, and ask again. Nothing 
 - A role file exists only for a fixed role or a configured reviewer key. Dropping a reviewer
   whose role file exists means deleting that file too, or keeping the reviewer; ask which.
 - Role rules add rules only. They never change which file an agent writes, its path, or its
-  first line, and they never tell an agent to write job state or edit managed files.
+  first line, and they never tell an agent to write job state or edit managed files. They follow
+  the overlay outcome rule: a role rule can make a role more focused or stricter, never more
+  lenient about what it finds. Refuse a rule that decides the outcome before looking or throws
+  away something already found: a fixed verdict or decision ("always PASS", "always APPROVE"),
+  dropping, hiding, or downgrading a finding, removing an escalation trigger, or telling the
+  builder to skip a `[blocking]` finding. Narrowing focus, adding checks or triggers, making
+  something blocking, and PASSing early when the role's area is untouched are all fine. When you
+  refuse, name the overlay outcome rule and offer the allowed form: cite a recorded human decision
+  (a brief's decision or contract call, or a decision record the project names) and keep the
+  finding visible, marked as covered (for example, `[accepted: <the decision>]`).
 
 **Write.** Once the user agrees to the whole set, write `factory/config.json` (two-space
 JSON, keys in the order above) and the agreed role files, and delete any role file the user
