@@ -1,6 +1,7 @@
 # Role overlays never decide the outcome
 
-- Status: ready
+- Status: done
+- Job: 020-overlay-outcome-rule (merged 2e53baf, 2026-10-24)
 - Sources: factory/jobs/005-factory-customize/round-1/review-security.md (finding 1, nit); packages/templates/assets/agents/*.md (Project rules sections); packages/templates/assets/skill/SKILL.md (Customize, Refusal rules); docs/contract/v1.md (Role overlays)
 - Date: 2026-10-24
 
