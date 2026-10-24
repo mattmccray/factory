@@ -1,6 +1,7 @@
 # Lantern icons and badge for the Dock and tray
 
-- Status: ready
+- Status: done
+- Job: 019-lantern-icons-badge (merged e98227f, 2026-10-23)
 - Sources: apps/andon-shell/tinyjs.json, apps/andon-shell/src/backend.ts, apps/andon-shell/src/badge.ts, ~/.tinyjs/template/types/tiny.d.ts (`app.presence`, `app.icon`, `app.badge`), HANDOFF.md decision 9; job 016-tray-click-toggle (the tray toggle, split from this)
 - Date: 2026-10-23
 
