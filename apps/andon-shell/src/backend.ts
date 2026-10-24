@@ -167,13 +167,29 @@ const SPACE_SETTLE_MS = 150;
  *  Tiny's `focused` isn't reliable at click time (rework 2); the close button hides the window. */
 const showMain = oneAtATime(async (app: TinyApp): Promise<void> => {
   const main = app.window('main');
-  const action = trayClickAction(await main.getState());
-  if (action.moveHere) main.setAllSpaces(true);
-  if (action.restore) main.restore();
-  main.show(); // brings it to the front
-  if (!action.moveHere) return;
-  await sleep(SPACE_SETTLE_MS);
-  main.setAllSpaces(false);
+  let state: TinyWinState | null;
+  try {
+    state = await main.getState();
+  } catch (err) {
+    // No state to decide on: still show the window, just without the Space move.
+    console.log(`andon-shell: window state unavailable (${String(err)}); showing the window as is`);
+    main.show();
+    return;
+  }
+  const action = trayClickAction(state);
+  if (!action.moveHere) {
+    if (action.restore) main.restore();
+    main.show(); // brings it to the front
+    return;
+  }
+  main.setAllSpaces(true);
+  try {
+    if (action.restore) main.restore();
+    main.show(); // brings it to the front
+    await sleep(SPACE_SETTLE_MS);
+  } finally {
+    main.setAllSpaces(false); // never leave the window on every Space, even when a step threw
+  }
 });
 
 /** A menu item's id, or null for a left click on the icon (the tray spec sets `primaryAction`). */
