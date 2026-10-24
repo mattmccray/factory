@@ -30,9 +30,10 @@ const concat = (a: Uint8Array, b: Uint8Array): Uint8Array => {
 /**
  * Reads curl's `--include` stdout: the status line and headers, then the body as a stream. Rejects
  * when curl printed no response (the agent is unreachable). Cancelling the body calls `cancel`, so
- * the adapter can stop the curl process.
+ * the adapter can stop the curl process. `stdout` is anything with a byte reader: a web
+ * `ReadableStream`, or txiki's process stream (whose `bytes()` Bun's stream type won't accept).
  */
-export async function responseFromCurl(stdout: ReadableStream<Uint8Array>, cancel: () => void = () => undefined): Promise<HttpResponse> {
+export async function responseFromCurl(stdout: Pick<ReadableStream<Uint8Array>, 'getReader'>, cancel: () => void = () => undefined): Promise<HttpResponse> {
   const reader = stdout.getReader();
   let buf: Uint8Array = new Uint8Array(0);
   let status = 0;

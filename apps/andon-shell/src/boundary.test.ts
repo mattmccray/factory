@@ -1,6 +1,7 @@
 // The shell's boundaries: no contract, agent, or UI code runs in it, its logic is runtime-neutral
-// (AC5), the window loads the agent on loopback with the page's Tiny API denied (AC6), and the
-// backend entry is the Bun bundle of backend.ts.
+// (AC5), only backend.ts names Tiny or txiki (through Tiny's own vendored types, narrowed to
+// `ShellApp`), the window loads the agent on loopback with the page's Tiny API denied (AC6), the
+// shell pins the Tiny JS it was tested on, and the backend entry is the Bun bundle of backend.ts.
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -8,6 +9,7 @@ import { BACKEND_OUT, bundleBackend } from '../build';
 import { isRecord } from './state';
 
 const shellDir = join(import.meta.dir, '..');
+const repoDir = join(shellDir, '..', '..');
 const ADAPTER = 'backend.ts';
 const sources = readdirSync(import.meta.dir).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'));
 
@@ -47,7 +49,7 @@ describe('AC5: the shell runs no contract, agent, or UI code', () => {
         expect({ file: f, specifier: s, local: /^\.\/[a-z]+$/.test(s) }).toEqual({ file: f, specifier: s, local: true });
       }
     }
-    // the adapter's imports are local too: Tiny and txiki are globals, described by ambient types
+    // the adapter's imports are local too: Tiny and txiki are globals, typed by Tiny's vendored types/
     for (const s of specifiers(readFileSync(join(import.meta.dir, ADAPTER), 'utf8'))) expect(s).toMatch(/^\.\/[a-z]+$/);
   });
 
@@ -60,8 +62,107 @@ describe('AC5: the shell runs no contract, agent, or UI code', () => {
   });
 });
 
+/** Names Tiny or txiki in code: the `tjs` or `tiny` global, or a `Tiny*` type. Not the prose word "Tiny". */
+const NAMES_TINY = /\btjs\b|\btiny\b|\bTiny[A-Z]\w*/;
+/** A triple-slash reference to a file under a `types/` directory. */
+const TYPES_REFERENCE = /^\s*\/\/\/\s*<reference\s+path\s*=\s*["'][^"']*\btypes\//m;
+
+describe('only backend.ts names Tiny or txiki', () => {
+  test('the matcher flags the globals and Tiny types, not the prose word', () => {
+    for (const code of ["tjs.spawn(['curl'], {})", 'const e = tjs.env;', 'tiny.api.call()', 'function f(app: TinyApp) {}', 'let s: TinyWinState | null', 'const t: TinyTraySpec = {}']) {
+      expect({ code, flagged: NAMES_TINY.test(code) }).toEqual({ code, flagged: true });
+    }
+    for (const prose of ['// The Tiny JS shell: the runtime-neutral part.', '/** Tiny calls init once. */', 'const tinyish = 1;', 'const myTjs = 2;', 'const Tiny = 3;']) {
+      expect({ prose, flagged: NAMES_TINY.test(prose) }).toEqual({ prose, flagged: false });
+    }
+  });
+
+  test('no source other than backend.ts names tjs, tiny, or a Tiny* type', () => {
+    for (const f of sources.filter((x) => x !== ADAPTER)) {
+      const hit = readFileSync(join(import.meta.dir, f), 'utf8').match(NAMES_TINY)?.[0] ?? null;
+      expect({ file: f, names: hit }).toEqual({ file: f, names: null });
+    }
+  });
+});
+
+describe("backend.ts types the adapter with Tiny's vendored types, narrowed to ShellApp", () => {
+  const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
+
+  test('the vendored types are present', () => {
+    for (const f of ['tiny.d.ts', 'tjs.d.ts']) expect(existsSync(join(shellDir, 'types', f))).toBe(true);
+    expect(readdirSync(join(shellDir, 'types')).sort()).toEqual(['tiny.d.ts', 'tjs.d.ts']);
+  });
+
+  test('it references both vendored files', () => {
+    expect(adapter).toMatch(/^\/\/\/ <reference path="\.\.\/types\/tiny\.d\.ts" \/>$/m);
+    expect(adapter).toMatch(/^\/\/\/ <reference path="\.\.\/types\/tjs\.d\.ts" \/>$/m);
+  });
+
+  test('it declares no Tiny or txiki interface or global of its own', () => {
+    expect(adapter).not.toMatch(/\bdeclare\s+(const|let|var|namespace)\s+(tjs|tiny)\b/);
+    for (const name of ['TjsProcess', 'Tjs', 'TinyApp', 'TinyWindow', 'TinyWinState', 'TinyTraySpec']) {
+      const declared = new RegExp(`\\b(interface|type|class)\\s+${name}\\b`).test(adapter);
+      expect({ name, declared }).toEqual({ name, declared: false });
+    }
+  });
+
+  test("it exports ShellApp, a Pick of Tiny's TinyApp, and the adapter's entry points take it", () => {
+    expect(adapter).toMatch(/^export type ShellApp = Pick<TinyApp, [^>]+>/m);
+    expect(adapter).toMatch(/\bexport function init\(app: ShellApp\)/);
+    expect(adapter).toMatch(/\bexport async function onTray\(id: string \| null, app: ShellApp\)/);
+    expect(adapter).toMatch(/\bexport function setDock\(app: ShellApp,/);
+    expect(adapter).toMatch(/\bexport const setTray = \(app: ShellApp,/);
+    expect(adapter).toMatch(/\boneAtATime\(async \(app: ShellApp\)/);
+  });
+
+  test('the reference matcher flags a types/ reference and nothing else', () => {
+    expect(TYPES_REFERENCE.test('/// <reference path="../types/tiny.d.ts" />')).toBe(true);
+    expect(TYPES_REFERENCE.test("x\n  /// <reference path='types/tjs.d.ts'/>")).toBe(true);
+    expect(TYPES_REFERENCE.test('/// <reference types="bun" />')).toBe(false);
+    expect(TYPES_REFERENCE.test('/// <reference lib="esnext.disposable" />')).toBe(false);
+  });
+
+  test('no other file in the repo references the vendored types', () => {
+    const skip = new Set(['node_modules', '.git', 'jobs', '.worktrees', '.lock', 'build', 'dist', '.build']);
+    const hits: string[] = [];
+    const walk = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.isDirectory()) {
+          if (!skip.has(e.name)) walk(join(dir, e.name));
+        } else if (/\.(ts|tsx|mts|cts|js|mjs|svelte)$/.test(e.name) && TYPES_REFERENCE.test(readFileSync(join(dir, e.name), 'utf8'))) {
+          hits.push(join(dir, e.name).slice(repoDir.length + 1));
+        }
+      }
+    };
+    walk(repoDir);
+    expect(hits).toEqual(['apps/andon-shell/src/backend.ts']);
+  });
+
+  test("the root tsconfig doesn't include the vendored types", () => {
+    const cfg = readJson(join(repoDir, 'tsconfig.json'));
+    expect(cfg.include).toEqual(['packages/*/src/**/*.ts', 'apps/*/src/**/*.ts', 'factory/**/*.ts']);
+  });
+});
+
 describe('AC6: tinyjs.json', () => {
   const cfg = readJson(join(shellDir, 'tinyjs.json'));
+
+  test('the shell pins Tiny JS 0.65.0, the version it was smoke-tested on, and nothing else moved', () => {
+    expect(cfg.minTinyjsVersion).toBe('0.65.0');
+    expect(cfg).toEqual({
+      $schema: 'https://tinyjs.app/schema/tinyjs.schema.json',
+      name: 'andon',
+      title: 'Andon',
+      size: '1280x820',
+      id: 'dev.factory.andon',
+      version: '0.1.0',
+      minTinyjsVersion: '0.65.0',
+      icon: 'assets/icon.png',
+      url: 'http://127.0.0.1:8766/',
+      api: { disable: ['*'] },
+      backend: 'build/backend.js',
+    });
+  });
 
   test('the main window loads the agent at http://127.0.0.1:<port>/', () => {
     expect(typeof cfg.url).toBe('string');
