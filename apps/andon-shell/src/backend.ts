@@ -11,7 +11,7 @@ import { curlArgv, responseFromCurl } from './curl';
 import type { Http } from './http';
 import { startShell } from './shell';
 import type { Shell } from './shell';
-import { oneAtATime, toggleAction } from './toggle';
+import { oneAtATime, trayClickAction } from './trayclick';
 
 // ---- the little of txiki.js and Tiny this adapter uses (no `any`; see ~/.tinyjs/template/types) ----
 
@@ -31,16 +31,12 @@ interface TinyTraySpec extends TraySpec {
 }
 /** The fields of Tiny's window state this adapter reads. */
 export interface TinyWinState {
-  visible: boolean;
   minimized: boolean;
-  focused: boolean;
   fullscreen: boolean;
   allSpaces: boolean;
 }
 interface TinyWindow {
   show(): void;
-  /** `{ app: false }` puts away this window alone (a bare hide() on main hides the whole app). */
-  hide(opts?: { app?: boolean }): void;
   restore(): void;
   /** On: the window joins every Space (and floats over fullscreen apps); off: back to one Space. */
   setAllSpaces(on: boolean): void;
@@ -167,13 +163,11 @@ export function init(app: TinyApp): void {
  *  the show to land on the Space the user is on, not on the window's old one. */
 const SPACE_SETTLE_MS = 150;
 
-/** A left click on the icon: show the main window on this Space, or put it away. */
-const toggleMain = oneAtATime(async (app: TinyApp): Promise<void> => {
+/** A left click on the icon: show the main window in front, on this Space. It never hides it:
+ *  Tiny's `focused` isn't reliable at click time (rework 2); the close button hides the window. */
+const showMain = oneAtATime(async (app: TinyApp): Promise<void> => {
   const main = app.window('main');
-  const state = await main.getState();
-  const action = toggleAction(state);
-  console.log(`andon-shell: tray click ${JSON.stringify(state && { visible: state.visible, minimized: state.minimized, focused: state.focused, fullscreen: state.fullscreen })} -> ${JSON.stringify(action)}`);
-  if (action.kind === 'hide') return main.hide({ app: false });
+  const action = trayClickAction(await main.getState());
   if (action.moveHere) main.setAllSpaces(true);
   if (action.restore) main.restore();
   main.show(); // brings it to the front
@@ -184,7 +178,7 @@ const toggleMain = oneAtATime(async (app: TinyApp): Promise<void> => {
 
 /** A menu item's id, or null for a left click on the icon (the tray spec sets `primaryAction`). */
 export async function onTray(id: string | null, app: TinyApp): Promise<void> {
-  if (id === null) return toggleMain(app);
+  if (id === null) return showMain(app);
   if (id === SHOW_ID) app.window('main').show();
   if (id === QUIT_ID) {
     stopAll();
