@@ -1,6 +1,6 @@
 // The Tiny JS backend adapter: the only file that touches Tiny or txiki.js. It wires the shell's
-// runtime-neutral logic (shell.ts, autostart.ts) to Tiny's `app.tray`, `app.notify`, and
-// `onTray`, and to txiki's `tjs.spawn` (for the agent, and for curl: see curl.ts). `bun run
+// runtime-neutral logic (shell.ts, autostart.ts) to Tiny's `app.tray`, `app.icon`, `app.badge`,
+// `app.notify`, and `onTray`, and to txiki's `tjs.spawn` (for the agent, and for curl: see curl.ts). `bun run
 // andon:shell:build` bundles it into build/backend.js, the plain-JS entry tinyjs.json names.
 // The window's page (the agent-served UI) gets no Tiny API: tinyjs.json's `api` gate denies it all.
 import { QUIT_ID, SHOW_ID, trayNotice } from './badge';
@@ -9,6 +9,7 @@ import { agentCommand, agentUrl, DEFAULT_PORT, ensureAgent, probeAgent, resolveP
 import type { Agent, Child } from './autostart';
 import { curlArgv, responseFromCurl } from './curl';
 import type { Http } from './http';
+import type { DockLook } from './lantern';
 import { startShell } from './shell';
 import type { Shell } from './shell';
 import { oneAtATime, trayClickAction } from './trayclick';
@@ -26,8 +27,11 @@ interface Tjs {
 }
 declare const tjs: Tjs;
 
-interface TinyTraySpec extends TraySpec {
+export interface TinyTraySpec extends TraySpec {
+  /** A png path (absolute or project-relative). */
   icon?: string;
+  /** On: a one-color image that adapts to light and dark menu bars. */
+  template?: boolean;
 }
 /** The fields of Tiny's window state this adapter reads. */
 export interface TinyWinState {
@@ -47,6 +51,10 @@ interface TinyWindow {
 /** The backend `app` object Tiny passes to `init` and the hooks. */
 export interface TinyApp {
   tray: { set(spec: TinyTraySpec): void };
+  /** Replaces the Dock icon from a png; '' resets it to the bundle icon (tinyjs.json's `icon`). */
+  icon(path: string): boolean;
+  /** The Dock badge; '' clears it. */
+  badge(text: string): boolean;
   notify(title: string, body?: string, opts?: { subtitle?: string }): Promise<boolean>;
   window(id: string): TinyWindow;
   /** Main-window op: the close button hides the window instead of quitting. */
@@ -60,7 +68,33 @@ export interface TinyApp {
 declare const __ANDON_REPO__: string;
 declare const __ANDON_BUN__: string;
 
-const ICON = 'sf:light.beacon.max';
+// ---- the lantern images ----
+// By absolute path under the repo: Tiny doesn't ship `assets/` as runtime data, and the repo path
+// is fixed at build time (the same one the agent is started from), so it works in `tinyjs dev`
+// and in a built app alike.
+
+export const assetPath = (repo: string, file: string): string => `${repo.replace(/\/+$/, '')}/apps/andon-shell/assets/${file}`;
+
+/** The Dock icon for a look: '' (the bundle's unlit icon.png) for idle, else the lit lantern. */
+export const dockIcon = (repo: string, look: DockLook): string =>
+  look === 'idle' ? '' : assetPath(repo, look === 'running' ? 'dock-running.png' : 'dock-escalated.png');
+
+/** The tray lantern: outlined when no jobs are running, filled when they are. */
+export const trayIcon = (repo: string, running: boolean): string => assetPath(repo, running ? 'tray-running.png' : 'tray-idle.png');
+
+export function setDock(app: TinyApp, repo: string, look: DockLook): void {
+  if (!app.icon(dockIcon(repo, look))) console.log(`andon-shell: could not set the ${look} Dock icon`);
+}
+
+export const setTray = (app: TinyApp, repo: string, spec: TraySpec, running: boolean): void =>
+  app.tray.set({ ...spec, icon: trayIcon(repo, running), template: true });
+
+/** No board to show (the agent hasn't answered, or never will): the idle look, no badge, and the notice. */
+function showNotice(app: TinyApp, repo: string, text: string): void {
+  setTray(app, repo, trayNotice(text), false);
+  setDock(app, repo, 'idle');
+  app.badge('');
+}
 
 // ---- host pieces ----
 
@@ -123,13 +157,13 @@ function stopAll(): void {
   agent = null;
 }
 
-const tray = (app: TinyApp, spec: TraySpec): void => app.tray.set({ ...spec, icon: ICON });
-
 export function init(app: TinyApp): void {
+  quitting = false; // a fresh lifecycle (Tiny calls init once; tests call it after a Quit)
   const port = resolvePort(tjs.env);
   const url = agentUrl(port);
   const http = curlHttp(url);
-  tray(app, trayNotice('starting the agent'));
+  const repo = __ANDON_REPO__;
+  showNotice(app, repo, 'starting the agent');
   app.setHideOnClose(true);
   // ⌘Q skips onTray: stop our agent before Tiny exits (kill is synchronous).
   void app.done?.then(stopAll, stopAll);
@@ -145,14 +179,16 @@ export function init(app: TinyApp): void {
     if (quitting) return stopAll();
     if (!agent.ok) {
       console.log(`andon-shell: ${agent.reason}`);
-      tray(app, trayNotice(agent.reason));
+      showNotice(app, repo, agent.reason);
       return;
     }
     // The window loaded tinyjs.json's URL before the agent answered (or on another port): load it now.
     if (agent.started || port !== DEFAULT_PORT) app.window('main').eval(`location.replace(${JSON.stringify(`${url}/`)})`);
     shell = startShell({
       http,
-      tray: (spec) => tray(app, spec),
+      tray: (spec, running) => setTray(app, repo, spec, running),
+      dock: (look) => setDock(app, repo, look),
+      badge: (text) => void app.badge(text),
       notify: (n) => void app.notify(n.title, n.body, { subtitle: n.subtitle }),
       log: (line) => console.log(line),
     });

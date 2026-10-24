@@ -2,7 +2,7 @@
 // (AC5), the window loads the agent on loopback with the page's Tiny API denied (AC6), and the
 // backend entry is the Bun bundle of backend.ts.
 import { describe, expect, test } from 'bun:test';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BACKEND_OUT, bundleBackend } from '../build';
 import { isRecord } from './state';
@@ -27,7 +27,7 @@ const readJson = (path: string): Record<string, unknown> => {
 describe('AC5: the shell runs no contract, agent, or UI code', () => {
   test('the scan sees the logic modules and the adapter', () => {
     expect(sources).toContain(ADAPTER);
-    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts']) expect(sources).toContain(f);
+    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts']) expect(sources).toContain(f);
   });
 
   test('no source imports @factory/contract, @factory/andon-agent, or apps/andon', () => {
@@ -79,9 +79,14 @@ describe('AC6: tinyjs.json', () => {
     expect(cfg.inject).toBeUndefined();
   });
 
-  test('the backend entry is the Bun bundle, and the app is a tray app', () => {
+  test('the backend entry is the Bun bundle', () => {
     expect(join(shellDir, String(cfg.backend))).toBe(BACKEND_OUT);
-    expect(cfg.activation).toBe('accessory');
+  });
+
+  test('the app is a regular app (a Dock icon, the window shown at launch) with the unlit lantern as its icon', () => {
+    expect('activation' in cfg).toBe(false);
+    expect(cfg.icon).toBe('assets/icon.png');
+    expect(existsSync(join(shellDir, 'assets', 'icon.png'))).toBe(true);
   });
 });
 
