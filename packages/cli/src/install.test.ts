@@ -400,7 +400,12 @@ describe('self-upgrade of a copy of this repo (AC6)', () => {
     const before = kept(await snapshot(copy));
     expect(Object.keys(before).length).toBeGreaterThan(8);
 
-    expect((await cli(copy, 'init')).code).toBe(1); // the vendored files differ, so init alone refuses
+    // Make the copy stale on purpose, so the refusal never depends on whether this repo's installed
+    // copy has been upgraded to the current templates.
+    await writeFile(join(copy, agent('code')), `${await text(copy, agent('code'))}\nedited by the AC6 test\n`);
+    const refused = await cli(copy, 'init');
+    expect(refused.code).toBe(1); // a managed file differs, so init alone refuses
+    expect(refused.err.join('\n')).toContain(agent('code'));
     const r = await cli(copy, 'init', '--force');
     expect(r.err).toEqual([]);
     expect(r.code).toBe(0);
