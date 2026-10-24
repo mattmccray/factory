@@ -12,7 +12,9 @@ questions on decisions, not on facts.
   thinking (a backlog line, a design note, a plan doc), read that too. Decisions already made
   there are starting points to *confirm*, not questions to re-ask.
 - **An existing brief's slug** → resume it. Re-read it, summarize where it stands in a few
-  lines, and pick up at its first open question.
+  lines, and pick up at its first open question. If its `Status:` is `done`, don't reopen it,
+  since a job already carried it out: name the job that carried it out (its `- Job:` line),
+  and offer a new brief that lists the old one under `Sources:`.
 
 Do your homework before the first question. Read the project's instructions (`CLAUDE.md` or
 its equivalent) and any decision records or contracts they name as binding, and the project's
@@ -46,11 +48,14 @@ split with the user, then interview them one at a time.
 
 Create `factory/briefs/<slug>.md` after the first answer, and update it after every decision.
 That way an interrupted session can resume. While questions remain it says `Status: draft`.
+Only the factory's Merge step writes the `- Job:` line, and sets `Status: done`, when the job
+that carried the brief out merges. Never write either one here.
 
 ```
 # <Title>
 
-- Status: draft | ready
+- Status: draft | ready | done
+- Job: <id> (merged <short sha>, <YYYY-MM-DD>)   (written only at merge)
 - Sources: <earlier thinking you read, e.g. a plan doc's path> | —
 - Date: <YYYY-MM-DD>
 
