@@ -4,7 +4,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { assetPath, dockIcon, init, onTray, setDock, setTray, trayIcon } from './backend';
-import type { TinyApp, TinyTraySpec, TinyWinState } from './backend';
+import type { ShellApp, ShellTraySpec, ShellWinState } from './backend';
 import { trayNotice, traySpec } from './badge';
 
 /** Which window ops fail. Mutable, so a test can heal the window between clicks. Each failing op is
@@ -15,13 +15,13 @@ interface Failures {
   show?: boolean;
 }
 
-function fakeApp(state: TinyWinState | null, fail: Failures = {}): { app: TinyApp; calls: string[] } {
+function fakeApp(state: ShellWinState | null, fail: Failures = {}): { app: ShellApp; calls: string[] } {
   const calls: string[] = [];
   const op = (name: string, failing: boolean | undefined): void => {
     calls.push(name);
     if (failing === true) throw new Error(`${name} failed`);
   };
-  const app: TinyApp = {
+  const app: ShellApp = {
     tray: { set: () => calls.push('tray.set') },
     icon: (path) => calls.push(`icon(${path})`) > 0,
     badge: (text) => calls.push(`badge(${text})`) > 0,
@@ -47,7 +47,7 @@ function fakeApp(state: TinyWinState | null, fail: Failures = {}): { app: TinyAp
 
 // The adapter reads only `minimized`, `fullscreen`, and `allSpaces`; Tiny's `visible` and `focused`
 // play no part (rework 2), so a window in front and one hidden look the same to it.
-const st = (minimized: boolean, fullscreen = false): TinyWinState => ({ minimized, fullscreen, allSpaces: false });
+const st = (minimized: boolean, fullscreen = false): ShellWinState => ({ minimized, fullscreen, allSpaces: false });
 /** Show on the Space the user is on: join every Space, show, then pin it back to one. */
 const showHere = (...mid: string[]): string[] => ['main.getState', 'main.allSpaces(true)', ...mid, 'main.show', 'main.allSpaces(false)'];
 
@@ -125,10 +125,10 @@ const REPO = resolve(import.meta.dir, '..', '..', '..');
 const ASSETS = join(REPO, 'apps', 'andon-shell', 'assets');
 
 /** A fake app that records the Dock icon, the badge, and every tray spec. */
-function lanternApp(): { app: TinyApp; icons: string[]; badges: string[]; trays: TinyTraySpec[] } {
+function lanternApp(): { app: ShellApp; icons: string[]; badges: string[]; trays: ShellTraySpec[] } {
   const icons: string[] = [];
   const badges: string[] = [];
-  const trays: TinyTraySpec[] = [];
+  const trays: ShellTraySpec[] = [];
   const { app } = fakeApp(null);
   app.icon = (p) => icons.push(p) > 0;
   app.badge = (t) => badges.push(t) > 0;

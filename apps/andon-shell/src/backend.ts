@@ -3,6 +3,8 @@
 // `app.notify`, and `onTray`, and to txiki's `tjs.spawn` (for the agent, and for curl: see curl.ts). `bun run
 // andon:shell:build` bundles it into build/backend.js, the plain-JS entry tinyjs.json names.
 // The window's page (the agent-served UI) gets no Tiny API: tinyjs.json's `api` gate denies it all.
+/// <reference path="../types/tiny.d.ts" />
+/// <reference path="../types/tjs.d.ts" />
 import { QUIT_ID, SHOW_ID, trayNotice } from './badge';
 import type { TraySpec } from './badge';
 import { agentCommand, agentUrl, DEFAULT_PORT, ensureAgent, probeAgent, resolvePort } from './autostart';
@@ -14,55 +16,32 @@ import { startShell } from './shell';
 import type { Shell } from './shell';
 import { oneAtATime, trayClickAction } from './trayclick';
 
-// ---- the little of txiki.js and Tiny this adapter uses (no `any`; see ~/.tinyjs/template/types) ----
+// ---- the Tiny this adapter uses ----
+// Tiny's and txiki's own declarations (vendored unedited from Tiny's template; `tinyjs
+// update-project` refreshes them) type the `tjs` global and the `app` Tiny passes in. ShellApp
+// picks the members the shell calls, so its whole dependence on Tiny is listed here, in one place,
+// and the test fakes stay small.
 
-interface TjsProcess {
-  readonly stdout: ReadableStream<Uint8Array> | null;
-  kill(signal?: string): void;
-  wait(): Promise<{ exit_status: number; term_signal: string | null }>;
-}
-interface Tjs {
-  readonly env: Record<string, string>;
-  spawn(args: string[], opts?: { env?: Record<string, string>; stdin?: 'ignore' | 'inherit' | 'pipe'; stdout?: 'ignore' | 'inherit' | 'pipe'; stderr?: 'ignore' | 'inherit' | 'pipe' }): TjsProcess;
-}
-declare const tjs: Tjs;
+/** The fields of the main window's state the tray click reads. */
+export type ShellWinState = Pick<TinyWinState, 'minimized' | 'fullscreen' | 'allSpaces'>;
+/** The window ops the adapter calls. `getState` resolves null when there is no state to give. */
+export type ShellWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpaces' | 'eval'> & {
+  getState(): Promise<ShellWinState | null>;
+};
+/** The backend `app` object Tiny passes to `init` and the hooks, narrowed to what the shell uses.
+ *  `icon('')` resets the Dock icon to the bundle icon, `badge('')` clears the badge, and `done`
+ *  settles when the launcher closes (⌘Q, or the app menu's Quit). */
+export type ShellApp = Pick<TinyApp, 'icon' | 'badge' | 'notify' | 'setHideOnClose' | 'quit'> &
+  Partial<Pick<TinyApp, 'done'>> & {
+    tray: Pick<TinyApp['tray'], 'set'>;
+    window(id: string): ShellWindow;
+  };
+/** What the adapter hands `app.tray.set`. */
+export type ShellTraySpec = Parameters<ShellApp['tray']['set']>[0];
 
-export interface TinyTraySpec extends TraySpec {
-  /** A png path (absolute or project-relative). */
-  icon?: string;
-  /** On: a one-color image that adapts to light and dark menu bars. */
-  template?: boolean;
-}
-/** The fields of Tiny's window state this adapter reads. */
-export interface TinyWinState {
-  minimized: boolean;
-  fullscreen: boolean;
-  allSpaces: boolean;
-}
-interface TinyWindow {
-  show(): void;
-  restore(): void;
-  /** On: the window joins every Space (and floats over fullscreen apps); off: back to one Space. */
-  setAllSpaces(on: boolean): void;
-  /** Resolves null when there is no state to give. */
-  getState(): Promise<TinyWinState | null>;
-  eval(js: string): void;
-}
-/** The backend `app` object Tiny passes to `init` and the hooks. */
-export interface TinyApp {
-  tray: { set(spec: TinyTraySpec): void };
-  /** Replaces the Dock icon from a png; '' resets it to the bundle icon (tinyjs.json's `icon`). */
-  icon(path: string): boolean;
-  /** The Dock badge; '' clears it. */
-  badge(text: string): boolean;
-  notify(title: string, body?: string, opts?: { subtitle?: string }): Promise<boolean>;
-  window(id: string): TinyWindow;
-  /** Main-window op: the close button hides the window instead of quitting. */
-  setHideOnClose(on: boolean): void;
-  quit(): void;
-  /** Settles when the launcher closes (⌘Q, or the app menu's Quit); Tiny exits right after. */
-  done?: Promise<unknown>;
-}
+/** Compile-time proof that the app Tiny passes in is a ShellApp. */
+type Holds<T extends true> = T;
+type TinyAppIsShellApp = Holds<TinyApp extends ShellApp ? true : false>;
 
 // Fixed at build time by build.ts (`Bun.build` `define`).
 declare const __ANDON_REPO__: string;
@@ -82,15 +61,15 @@ export const dockIcon = (repo: string, look: DockLook): string =>
 /** The tray lantern: outlined when no jobs are running, filled when they are. */
 export const trayIcon = (repo: string, running: boolean): string => assetPath(repo, running ? 'tray-running.png' : 'tray-idle.png');
 
-export function setDock(app: TinyApp, repo: string, look: DockLook): void {
+export function setDock(app: ShellApp, repo: string, look: DockLook): void {
   if (!app.icon(dockIcon(repo, look))) console.log(`andon-shell: could not set the ${look} Dock icon`);
 }
 
-export const setTray = (app: TinyApp, repo: string, spec: TraySpec, running: boolean): void =>
+export const setTray = (app: ShellApp, repo: string, spec: TraySpec, running: boolean): void =>
   app.tray.set({ ...spec, icon: trayIcon(repo, running), template: true });
 
 /** No board to show (the agent hasn't answered, or never will): the idle look, no badge, and the notice. */
-function showNotice(app: TinyApp, repo: string, text: string): void {
+function showNotice(app: ShellApp, repo: string, text: string): void {
   setTray(app, repo, trayNotice(text), false);
   setDock(app, repo, 'idle');
   app.badge('');
@@ -157,7 +136,7 @@ function stopAll(): void {
   agent = null;
 }
 
-export function init(app: TinyApp): void {
+export function init(app: ShellApp): void {
   quitting = false; // a fresh lifecycle (Tiny calls init once; tests call it after a Quit)
   const port = resolvePort(tjs.env);
   const url = agentUrl(port);
@@ -201,9 +180,9 @@ const SPACE_SETTLE_MS = 150;
 
 /** A left click on the icon: show the main window in front, on this Space. It never hides it:
  *  Tiny's `focused` isn't reliable at click time (rework 2); the close button hides the window. */
-const showMain = oneAtATime(async (app: TinyApp): Promise<void> => {
+const showMain = oneAtATime(async (app: ShellApp): Promise<void> => {
   const main = app.window('main');
-  let state: TinyWinState | null;
+  let state: ShellWinState | null;
   try {
     state = await main.getState();
   } catch (err) {
@@ -229,7 +208,7 @@ const showMain = oneAtATime(async (app: TinyApp): Promise<void> => {
 });
 
 /** A menu item's id, or null for a left click on the icon (the tray spec sets `primaryAction`). */
-export async function onTray(id: string | null, app: TinyApp): Promise<void> {
+export async function onTray(id: string | null, app: ShellApp): Promise<void> {
   if (id === null) return showMain(app);
   if (id === SHOW_ID) app.window('main').show();
   if (id === QUIT_ID) {
