@@ -2,16 +2,16 @@
   "schema": "factory/v1",
   "version": "0.1.0",
   "files": {
-    ".claude/agents/factory-approver.md": "061bbfa32a69e71392487e72c784be2f8bc8f2d42eb014cc3a8667514f208b33",
-    ".claude/agents/factory-builder.md": "6219d31829c717a6d1a171229b116202df79b1f27565196213cb2aef083b628b",
-    ".claude/agents/factory-code.md": "a41dc8d308ed2dff5cda999647e91894f161f7c9c210546b2afa8d97a54fce10",
-    ".claude/agents/factory-contract.md": "3964ad2bf4e7039c16c732dd32abe1160b4bca04bfbe7a5009a81779eef6835b",
-    ".claude/agents/factory-security.md": "afdb6c8ffb9a8cf6faab2ac3533660d6d7f346c4f0ec373a735b8d06d2d4e8d6",
-    ".claude/agents/factory-spec-writer.md": "92aaa0c034fd1e8135e8c49d623735a9ced6fd151ea71b995359488c43484a3a",
-    ".claude/agents/factory-ui.md": "16bbb8a87db71dd2ed0c99bc094138cb287e25d7415e5895c91114bccee04808",
-    ".claude/skills/factory/SKILL.md": "1f235c9740caef46e64a0ef8fdbe254404f5b9512e76fa977171a1b5323eefed",
+    ".claude/agents/factory-approver.md": "4874e89a848fb9434b9379e6f0165d4b3c47d86943c9b9ed82d4293435e7edd3",
+    ".claude/agents/factory-builder.md": "c89ce77e6e090651f57959b4e2a98a034176156c11d19b09a0f6e8106c56740f",
+    ".claude/agents/factory-code.md": "2f8aaab981cfafde43645b14270f25b7ef72b29e8e2f2e275bf2b3a2b956b30b",
+    ".claude/agents/factory-contract.md": "7fc2b479919b272eac37f40897a6e1bfb3a16df568a714e5c8e0799dadab7a91",
+    ".claude/agents/factory-security.md": "1c8b733fd478381ce3c72f7863f8c92101415b8f457dac892968abbe5365e8ab",
+    ".claude/agents/factory-spec-writer.md": "e8595a8b596b936e369373677acac3c37e233de10fc6b7035b12fb5b5c29a0b1",
+    ".claude/agents/factory-ui.md": "fe9a0819b38bfd75b670f2581e3429142c11f76e1f2a0571c13240e53322778a",
+    ".claude/skills/factory/SKILL.md": "a4e69f326f4ad21e39b343532d16a307cbfb9ea21ab68e0de4a2c68fca8d40aa",
     ".claude/skills/factory/explore.md": "f963a37517018fd21bfec5dd62c829fa0cc92d8edcd502b34bf4789cab97e528",
-    "factory/CONTRACT.md": "2a56ead2baeee3bffe3e6accc4093b33e5f973eb4ee1a044569743369845a763",
+    "factory/CONTRACT.md": "9eeaa38e996c1d4394f82594c71f6922422a7037828146d6913d83968bc1ffa8",
     "factory/cli.ts": "7386640685bf0b96ab69f90c0a1349285c064a001b2ab52bfd0637520262b3c8"
   }
 }
