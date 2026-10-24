@@ -298,11 +298,14 @@ describe('the event stream (AC4, AC5)', () => {
     await client.next((e) => e.event === 'projects');
     await settle(150);
     const factory = join(a, 'factory');
+    // Late fs events from the fixture setup may still yield board events: only what follows the
+    // burst's first append counts.
+    const from = client.seen.length;
     await appendEvent(factory, '001-first-job', parseEventInput('stage.entered', { stage: 'spec' }));
     await appendEvent(factory, '001-first-job', parseEventInput('stage.entered', { stage: 'build' }));
     await client.next((e) => e.event === 'board' && stagesOf(e.data).includes('build'));
     await settle(400);
-    expect(client.seen.filter((e) => e.event === 'board').length).toBeLessThanOrEqual(2);
+    expect(client.seen.slice(from).filter((e) => e.event === 'board').length).toBeLessThanOrEqual(2);
     client.close();
   });
 
