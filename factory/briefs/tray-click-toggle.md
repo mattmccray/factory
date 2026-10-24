@@ -1,6 +1,7 @@
 # Tray click toggles the window
 
-- Status: ready
+- Status: done
+- Job: 016-tray-click-toggle (merged 4e127ce, 2026-10-23)
 - Sources: apps/andon-shell/src/backend.ts, apps/andon-shell/src/badge.ts, ~/.tinyjs/README.md (tray `primaryAction`), ~/.tinyjs/template/types/tiny.d.ts
 - Date: 2026-10-23
 
