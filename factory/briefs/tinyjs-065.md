@@ -1,6 +1,7 @@
 # Move the Andon shell to Tiny JS 0.65
 
-- Status: ready
+- Status: done
+- Job: 021-tinyjs-065-types (merged 7905ffe, 2026-10-24)
 - Sources: HANDOFF.md §10 (Andon architecture, the Tiny JS note); Tiny JS CHANGELOG 0.57.8–0.65.0
 - Date: 2026-10-24
 
