@@ -2,14 +2,16 @@
 //   event <id> <type> [field=value …]
 //   rebuild <id> | --all
 //   show <id>
+//   abandon <id> "<reason>" [--force] [--delete-branch]
 //   doctor
 // This is everything the installed, self-contained `factory/cli.ts` carries (`installed.ts`).
 // The source CLI (`index.ts`) adds `init` and `upgrade` on top.
-import { readFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-import { appendEvent, formatShow, mergeTarget, parseConfig, parseEventInput, parseFields, project, readLog, rebuild } from '@factory/contract';
+import { readFile, stat } from 'node:fs/promises';
+import { dirname, join, relative, resolve } from 'node:path';
+import { appendEvent, formatShow, isJobId, mergeTarget, parseConfig, parseEventInput, parseFields, project, readLog, rebuild } from '@factory/contract';
 import { doctor } from './doctor';
-import { resolveTarget } from './git';
+import { deleteBranch, removeWorktree, resolveTarget } from './git';
+import { isNotFound } from './paths';
 
 export interface Io {
   root: string; // the factory/ directory
@@ -23,6 +25,7 @@ export const USAGE = {
   event: 'usage: event <id> <type> [field=value …]',
   rebuild: 'usage: rebuild <id> | --all',
   show: 'usage: show <id>',
+  abandon: 'usage: abandon <id> "<reason>" [--force] [--delete-branch]',
   // The vendored CLI's exact top-level usage line; `doctor` is documented in docs/contract/v1.md.
   all: 'usage: event <id> <type> [k=v …] | rebuild <id>|--all | show <id>',
 };
@@ -68,9 +71,66 @@ export async function dispatchCore(argv: readonly string[], io: Io, usage: strin
       for (const line of formatShow(project(log), (io.now ?? (() => new Date()))())) io.stdout(line);
       return 0;
     }
+    case 'abandon':
+      return abandon(rest, io);
     default:
       throw new Error(usage);
   }
+}
+
+interface AbandonArgs {
+  id: string;
+  reason: string;
+  force: boolean;
+  deleteBranch: boolean;
+}
+
+// `<id> "<reason>"` then the two flags, each at most once, in any order; anything else is usage.
+function parseAbandon(rest: readonly string[]): AbandonArgs {
+  const [id, reason, ...flags] = rest;
+  if (id === undefined || reason === undefined || reason === '' || flags.length > 2) throw new Error(USAGE.abandon);
+  const known = ['--force', '--delete-branch'];
+  if (flags.some((f) => !known.includes(f)) || new Set(flags).size !== flags.length) throw new Error(USAGE.abandon);
+  return { id, reason, force: flags.includes('--force'), deleteBranch: flags.includes('--delete-branch') };
+}
+
+const isDir = async (path: string): Promise<boolean> => {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch (e) {
+    if (isNotFound(e)) return false;
+    throw e;
+  }
+};
+
+// Closes a job for good: logs `job.abandoned` (the transition check runs under the per-job lock),
+// then removes its worktree and, with --delete-branch, its branch. The event is logged before
+// cleanup, as `job.merged` is, so git and the board can't disagree about whether the job is closed.
+async function abandon(rest: readonly string[], io: Io): Promise<number> {
+  const args = parseAbandon(rest);
+  if (!isJobId(args.id)) throw new Error(`job id '${args.id}' must match ^\\d{3}-[a-z0-9-]+$`);
+  const input = parseEventInput('job.abandoned', { reason: args.reason });
+  const snap = await appendEvent(io.root, args.id, input, undefined, { force: args.force });
+
+  const repo = dirname(resolve(io.root));
+  const branch = `factory/${args.id}`;
+  const worktree = relative(repo, join(resolve(io.root), '.worktrees', args.id));
+  const left: string[] = [];
+  if (await isDir(join(repo, worktree))) {
+    const why = await removeWorktree(repo, worktree);
+    if (why !== null) left.push(`worktree ${worktree} (${why})`);
+  }
+  if (args.deleteBranch) {
+    if (snap.branch !== branch) left.push(`branch ${snap.branch} (not ${branch}; not deleted)`);
+    else if (left.length > 0) left.push(`branch ${branch} (its worktree is still there)`);
+    else {
+      const why = await deleteBranch(repo, branch);
+      if (why !== null) left.push(`branch ${branch} (${why})`);
+    }
+  }
+  if (left.length > 0) throw new Error(`${args.id} is abandoned, but cleanup left behind: ${left.join('; ')}`);
+  io.stdout(snap.stage);
+  return 0;
 }
 
 // Runs `body` and returns its exit code; any thrown error becomes exit 1 with one stderr line.

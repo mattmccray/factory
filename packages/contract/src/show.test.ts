@@ -32,3 +32,19 @@ describe('formatShow', () => {
     expect(out.find((l) => l.startsWith('agent  approver'))).toMatch(/running/);
   });
 });
+
+describe('formatShow: abandoned', () => {
+  test('the terminal abandoned stage is never shown as running, from needs-human', () => {
+    const out = formatShow(project(log([...toApprove, { type: 'job.escalated', reason: 'r' }, { type: 'job.abandoned', reason: 'dead end' }])), later);
+    expect(out[0]).toBe('019-x  abandoned  X');
+    expect(out.find((l) => l.startsWith('stage  abandoned'))).toBe('stage  abandoned r1');
+    expect(out.join('\n')).not.toContain('running');
+  });
+  test('from build with an open builder, nothing is shown as running', () => {
+    const toBuild = toApprove.slice(0, 4);
+    const out = formatShow(project(log([...toBuild, { type: 'agent.started', role: 'builder', name: 'b' }, { type: 'job.abandoned', reason: 'dead end' }])), later);
+    expect(out).toContain('stage  abandoned');
+    expect(out).toContain('agent  builder b  1m 0s');
+    expect(out.join('\n')).not.toContain('running');
+  });
+});

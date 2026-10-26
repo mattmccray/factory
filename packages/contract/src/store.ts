@@ -3,7 +3,7 @@
 import { appendFile, mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { checkTransition } from './contract';
-import type { EventInput, FactoryEvent, Verdict } from './contract';
+import type { EventInput, FactoryEvent, TransitionOptions, Verdict } from './contract';
 import { project } from './project';
 import type { JobSnapshot } from './project';
 
@@ -139,7 +139,15 @@ async function writeSnapshot(root: string, id: string, snap: JobSnapshot): Promi
   await rename(tmp, file);
 }
 
-export async function appendEvent(root: string, id: string, input: EventInput, now: () => Date = () => new Date()): Promise<JobSnapshot> {
+// `opts.force` is passed to the transition check only (it lets `job.abandoned` leave a working
+// stage); it is never recorded on the event.
+export async function appendEvent(
+  root: string,
+  id: string,
+  input: EventInput,
+  now: () => Date = () => new Date(),
+  opts: TransitionOptions = {},
+): Promise<JobSnapshot> {
   return withLock(jobDir(root, id), input.type === 'job.claimed', async () => {
     const prior = await readLog(root, id);
     if (prior.length === 0 && (await exists(join(jobDir(root, id), 'job.json')))) {
@@ -148,7 +156,7 @@ export async function appendEvent(root: string, id: string, input: EventInput, n
     const raw = prior.length === 0 ? '' : await readFile(logPath(root, id), 'utf8');
     if (raw !== '' && !raw.endsWith('\n')) throw new Error(`${id}: events.jsonl does not end with a newline (corrupt tail); refusing to append`);
     const checked = await withVerdict(root, id, input);
-    checkTransition(prior, checked);
+    checkTransition(prior, checked, opts);
     const event: FactoryEvent = { ts: now().toISOString(), ...checked };
     await appendFile(logPath(root, id), `${JSON.stringify(event)}\n`);
     const snap = project(await readLog(root, id));

@@ -288,3 +288,64 @@ describe('checkTransition', () => {
     expect(() => checkTransition(toBuild, { type: 'job.titled', title: 'T' })).not.toThrow();
   });
 });
+
+describe('job.abandoned', () => {
+  const abandon: EventInput = { type: 'job.abandoned', reason: 'dead end' };
+  const spec = log(claimed, { type: 'stage.entered', stage: 'spec' });
+  const review = [...toBuild, ...log(round1)];
+  const approve = [...toBuild, ...log(round1, fin('security', 'PASS'), fin('ux', 'PASS'), { type: 'stage.entered', stage: 'approve' })];
+  const human = [...approve, ...log({ type: 'job.escalated', reason: 'r' })];
+  const abandoned = [...human, ...log(abandon)];
+  const merged = [...human, ...log({ type: 'job.human-approved' }, { type: 'job.merged', sha: 'a' })];
+
+  test('parses a non-empty reason only, and no other field', () => {
+    expect(parseEventInput('job.abandoned', { reason: 'dead end' })).toEqual(abandon);
+    expect(() => parseEventInput('job.abandoned', {})).toThrow(/reason/);
+    expect(() => parseEventInput('job.abandoned', { reason: '' })).toThrow(/reason/);
+    expect(() => parseEventInput('job.abandoned', { reason: 'x', force: 'true' })).toThrow(/extra field/);
+    expect(() => parseEventInput('job.abandoned', { reason: 'x', note: 'y' })).toThrow(/extra field/);
+  });
+
+  test('is accepted from needs-human without force', () => {
+    expect(() => checkTransition(human, abandon)).not.toThrow();
+    expect(() => checkTransition(human, abandon, { force: true })).not.toThrow();
+  });
+
+  test('from a working stage, needs force', () => {
+    for (const l of [log(claimed), spec, toBuild, review, approve]) {
+      expect(() => checkTransition(l, abandon)).toThrow(/force/);
+      expect(() => checkTransition(l, abandon, { force: false })).toThrow(/force/);
+      expect(() => checkTransition(l, abandon, { force: true })).not.toThrow();
+    }
+  });
+
+  test('is never accepted from merged or abandoned, with or without force', () => {
+    for (const l of [merged, abandoned]) {
+      expect(() => checkTransition(l, abandon)).toThrow(/terminal/);
+      expect(() => checkTransition(l, abandon, { force: true })).toThrow(/terminal/);
+    }
+  });
+
+  test('before the claim, it is rejected', () => {
+    expect(() => checkTransition([], abandon, { force: true })).toThrow(/job.claimed/);
+  });
+
+  test('once abandoned, every event type is rejected, with or without force', () => {
+    const every: EventInput[] = [
+      claimed, { type: 'job.titled', title: 'T' }, { type: 'stage.entered', stage: 'build' }, round1,
+      { type: 'agent.started', role: 'builder' }, { type: 'agent.finished', role: 'builder' },
+      { type: 'job.noted', note: 'x' }, { type: 'job.escalated', reason: 'r' },
+      { type: 'job.reworked', k: 1, maxRound: 3 }, { type: 'job.human-approved' },
+      { type: 'merge.failed', reason: 'r' }, { type: 'job.merged', sha: 'a' }, abandon,
+    ];
+    for (const e of every) {
+      expect(() => checkTransition(abandoned, e)).toThrow(/abandoned \(terminal\)/);
+      expect(() => checkTransition(abandoned, e, { force: true })).toThrow(/abandoned \(terminal\)/);
+    }
+  });
+
+  test('force changes nothing for any other event', () => {
+    expect(() => checkTransition(toBuild, { type: 'stage.entered', stage: 'approve' }, { force: true })).toThrow();
+    expect(() => checkTransition(human, { type: 'job.merged', sha: 'a' }, { force: true })).toThrow();
+  });
+});

@@ -1,7 +1,7 @@
 ---
 name: factory
-description: Run the factory — a feature goes spec → build → parallel reviews → approve → merge, driven by subagents that talk only through markdown files; `queue` and `explore` feed its backlog, and `customize` (alias `init`) tailors the project's overlay. Use when the user invokes /factory with a feature, `next [words]`, `queue <text>`, `explore <idea|brief>`, `customize`, `init`, `approve <job-id>`, or `rework <job-id> <note>`.
-argument-hint: "<feature> | next [words] | queue <text> | explore <idea|brief> | customize | init | approve <job-id> | rework <job-id> <note>"
+description: Run the factory — a feature goes spec → build → parallel reviews → approve → merge, driven by subagents that talk only through markdown files; `queue` and `explore` feed its backlog, and `customize` (alias `init`) tailors the project's overlay. Use when the user invokes /factory with a feature, `next [words]`, `queue <text>`, `explore <idea|brief>`, `customize`, `init`, `approve <job-id>`, `rework <job-id> <note>`, or `abandon <job-id> <reason>`.
+argument-hint: "<feature> | next [words] | queue <text> | explore <idea|brief> | customize | init | approve <job-id> | rework <job-id> <note> | abandon <job-id> <reason>"
 ---
 
 # /factory — the orchestrator
@@ -77,7 +77,7 @@ truncates the partial last line, then runs `bun factory/cli.ts rebuild <id>`; yo
 log. The schema, the event types, and the allowed transitions are in
 [factory/CONTRACT.md](../../../factory/CONTRACT.md); `bun factory/cli.ts show <id>` prints a job's
 stage and timing. Jobs claimed before the CLI (no `events.jsonl`) reject every event, so
-`approve`/`rework` can't drive them; say so in one line and stop.
+`approve`/`rework`/`abandon` can't drive them; say so in one line and stop.
 
 Put free-text values (`title`, `note`, `reason`) in **single quotes** — double quotes expand
 `$` and backticks — and write an apostrophe as `'\''`: `reason='it'\''s blocked'`.
@@ -307,6 +307,31 @@ commit."* If that builder isn't alive in this session, spawn a fresh `factory-bu
 `builder-<id>` with the card plus the rework path (everything it needs is in files). Then
 continue at step 4 with round `<round> + 1` (round 1 if the job escalated before any review).
 
+**`/factory abandon <id> <reason>`** — Close a job for good, without merging: it leaves the
+board, its worktree is removed, and it can never take another event. Read the job's `stage` from
+job.json. Refuse `merged` and `abandoned` (both are terminal). Otherwise ask the user two
+questions, one at a time, and wait for each answer:
+1. **Confirm.** *"Abandon <id> (<stage>): '<reason>'? This can't be undone."* From a working
+   stage (`claimed`, `spec`, `build`, `review`, `approve`), also ask them to confirm that the
+   session driving the job is stopped: abandon never stops agents, and a session still running
+   would keep working on a closed job. Anything but a clear yes: stop and change nothing.
+2. **The branch.** *"Keep the branch `factory/<id>`, or delete it?"* The default is **keep** (an
+   unclear answer keeps it).
+
+Then, from `<R>`, run
+
+```bash
+bun factory/cli.ts abandon <id> '<reason>'
+```
+
+adding `--force` only when the job is in a working stage (never from `needs-human`), and
+`--delete-branch` only when the user chose delete. Quote the reason as for any free-text value.
+It logs `job.abandoned`, then removes `factory/.worktrees/<id>` (and the branch, if asked), and
+prints `abandoned`. A non-zero exit before the event is logged (a wrong stage without
+`--force`, a bad id or reason) changed nothing: report the one-line reason. A non-zero exit
+naming what was left behind means the job **is** abandoned but cleanup failed: tell the user
+what to remove by hand. Never write the event yourself to get around a refusal.
+
 ## Customize — the overlay interview
 
 `/factory customize` (or `/factory init`) writes only `factory/config.json` and
@@ -403,7 +428,8 @@ Finish with what changed, doctor's result, the commit (or why there is none), an
 ## Ground rules
 
 - One job per session; as many sessions as the user likes. A job is driven only by the session
-  that claimed it, or, once it's `needs-human`, by whoever runs `approve`/`rework` on it.
+  that claimed it, or, once it's `needs-human`, by whoever runs `approve`/`rework`/`abandon` on it
+  (`abandon` from a working stage needs the user to confirm the driving session is stopped).
   Finding another job in flight is never a reason to stop; it's only a reason for the overlap check.
 - Agents write only their own file (a reviewer also its `round-<N>/<key>/` supporting files);
   you write only your job's feature.md and rework notes, backlog ticks, and events through the

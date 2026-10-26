@@ -1,7 +1,12 @@
 // The factory/v1 state contract (docs/contract/v1.md): event types, config parsing, and the
 // transition rules the CLI enforces before it appends. Dependency-free on purpose.
 
-export type Stage = 'claimed' | 'spec' | 'build' | 'review' | 'approve' | 'needs-human' | 'merged';
+export type Stage = 'claimed' | 'spec' | 'build' | 'review' | 'approve' | 'needs-human' | 'merged' | 'abandoned';
+/** The stages a job is worked in: everything but `needs-human` and the terminal `merged` and `abandoned`. */
+export type WorkingStage = 'claimed' | 'spec' | 'build' | 'review' | 'approve';
+export const WORKING_STAGES: readonly WorkingStage[] = ['claimed', 'spec', 'build', 'review', 'approve'];
+/** Narrows a stage to a working stage, or null. */
+export const workingStage = (stage: Stage): WorkingStage | null => WORKING_STAGES.find((w) => w === stage) ?? null;
 export type Role = 'spec-writer' | 'builder' | 'reviewer' | 'approver';
 export type Verdict = 'PASS' | 'CHANGES' | 'APPROVE' | 'ESCALATE';
 type EnteredStage = 'spec' | 'build' | 'approve';
@@ -27,7 +32,8 @@ export type EventInput =
   | { type: 'job.reworked'; k: number; maxRound: number }
   | { type: 'job.human-approved' }
   | { type: 'merge.failed'; reason: string }
-  | { type: 'job.merged'; sha: string };
+  | { type: 'job.merged'; sha: string }
+  | { type: 'job.abandoned'; reason: string };
 
 export type FactoryEvent = EventInput & { ts: string };
 
@@ -90,6 +96,8 @@ const RUNNERS: readonly Runner[] = ['claude'];
 
 const SCHEMA = 'factory/v1';
 const JOB_ID = /^\d{3}-[a-z0-9-]+$/;
+/** True when `id` is a well-formed job id (`^\d{3}-[a-z0-9-]+$`), safe to build a path from. */
+export const isJobId = (id: string): boolean => JOB_ID.test(id);
 const REVIEWER_KEY = /^[a-z][a-z0-9-]*$/;
 const RESERVED_KEYS = ['spec-writer', 'builder', 'approver'];
 const ROLES: readonly Role[] = ['spec-writer', 'builder', 'reviewer', 'approver'];
@@ -288,6 +296,9 @@ export function parseEventInput(
     case 'job.merged':
       allow('sha');
       return { type, sha: str(fields, 'sha') };
+    case 'job.abandoned':
+      allow('reason');
+      return { type, reason: str(fields, 'reason') };
     default:
       throw new Error(`unknown event type '${type}'`);
   }
@@ -319,6 +330,7 @@ function derive(prior: FactoryEvent[]): State {
       case 'job.human-approved': s.humanApproved = true; break;
       case 'merge.failed': s.stage = 'needs-human'; s.humanApproved = false; break;
       case 'job.merged': s.stage = 'merged'; break;
+      case 'job.abandoned': s.stage = 'abandoned'; break;
       default: break;
     }
   }
@@ -329,7 +341,12 @@ function fail(msg: string): never {
   throw new Error(msg);
 }
 
-export function checkTransition(prior: FactoryEvent[], next: EventInput): void {
+/** Options for `checkTransition`. `force` lets `job.abandoned` leave a working stage; nothing else reads it. */
+export interface TransitionOptions {
+  force?: boolean;
+}
+
+export function checkTransition(prior: FactoryEvent[], next: EventInput, opts: TransitionOptions = {}): void {
   const s = derive(prior);
   const { stage } = s;
   if (stage === null) {
@@ -339,7 +356,7 @@ export function checkTransition(prior: FactoryEvent[], next: EventInput): void {
     if (!isPosInt(next.maxRound)) fail('maxRound must be a positive integer');
     return;
   }
-  if (stage === 'merged') fail(`job is merged (terminal): ${next.type} not allowed`);
+  if (stage === 'merged' || stage === 'abandoned') fail(`job is ${stage} (terminal): ${next.type} not allowed`);
   const bad = (): never => fail(`${next.type} not allowed from stage '${stage}'`);
 
   switch (next.type) {
@@ -380,6 +397,11 @@ export function checkTransition(prior: FactoryEvent[], next: EventInput): void {
     case 'job.human-approved':
       // Idempotent while needs-human: a retried approve after an interrupted session is harmless.
       return stage === 'needs-human' ? undefined : bad();
+    case 'job.abandoned':
+      // From needs-human always; from a working stage only with force (the caller confirmed the
+      // session driving the job is stopped). merged and abandoned are caught above.
+      if (stage === 'needs-human' || opts.force === true) return;
+      return fail(`job.abandoned from working stage '${stage}' requires force (abandon --force)`);
   }
 }
 

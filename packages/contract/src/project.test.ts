@@ -302,4 +302,96 @@ describe('project', () => {
     expect(project(events)).toEqual(project(events));
     expect(JSON.stringify(events)).toBe(copy);
   });
+
+  test('a fresh claim has stoppedBy and stoppedFrom null', () => {
+    const s = project(log([claimed]));
+    expect(s.stoppedBy).toBeNull();
+    expect(s.stoppedFrom).toBeNull();
+    expect(Object.keys(s)).toContain('stoppedBy');
+    expect(Object.keys(s)).toContain('stoppedFrom');
+  });
+});
+
+const toReview: EventInput[] = [
+  claimed, { type: 'stage.entered', stage: 'spec' }, { type: 'stage.entered', stage: 'build' },
+  { type: 'round.started', round: 1, reviewers: ['code'] },
+];
+const toApprove: EventInput[] = [...toReview, ...reviewer('code', 1, 'PASS'), { type: 'stage.entered', stage: 'approve' }];
+
+describe('why a job stopped (stoppedBy / stoppedFrom)', () => {
+  test('an escalation from review: escalated / review', () => {
+    const s = project(log([...toReview, { type: 'job.escalated', reason: 'stuck' }]));
+    expect(s).toMatchObject({ stage: 'needs-human', stoppedBy: 'escalated', stoppedFrom: 'review' });
+  });
+
+  test('an escalation from each working stage records that stage', () => {
+    expect(project(log([claimed, { type: 'job.escalated', reason: 'r' }])).stoppedFrom).toBe('claimed');
+    expect(project(log([claimed, { type: 'stage.entered', stage: 'spec' }, { type: 'job.escalated', reason: 'r' }])).stoppedFrom).toBe('spec');
+    expect(project(log([...toReview.slice(0, 3), { type: 'job.escalated', reason: 'r' }])).stoppedFrom).toBe('build');
+    expect(project(log([...toApprove, { type: 'job.escalated', reason: 'r' }])).stoppedFrom).toBe('approve');
+  });
+
+  test('approve then merge.failed: merge-failed / approve', () => {
+    const s = project(log([...toApprove, { type: 'merge.failed', reason: 'conflict' }]));
+    expect(s).toMatchObject({ stage: 'needs-human', stoppedBy: 'merge-failed', stoppedFrom: 'approve' });
+  });
+
+  test('a later human-approved then merge.failed: merge-failed, stoppedFrom unchanged', () => {
+    const escalated = [...toReview, { type: 'job.escalated', reason: 'r' } satisfies EventInput];
+    const s = project(log([...escalated, { type: 'job.human-approved' }, { type: 'merge.failed', reason: 'conflict' }]));
+    expect(s).toMatchObject({ stage: 'needs-human', stoppedBy: 'merge-failed', stoppedFrom: 'review' });
+    const approved = project(log([...escalated, { type: 'job.human-approved' }]));
+    expect(approved).toMatchObject({ stoppedBy: 'escalated', stoppedFrom: 'review' });
+  });
+
+  test('job.reworked resets both to null', () => {
+    const s = project(log([...toApprove, { type: 'merge.failed', reason: 'c' }, { type: 'job.reworked', k: 1, maxRound: 3 }]));
+    expect(s).toMatchObject({ stage: 'build', stoppedBy: null, stoppedFrom: null });
+  });
+
+  test('a job that never entered needs-human has both null, merged or not', () => {
+    for (const s of [project(log(toReview)), project(log(twoRound))]) {
+      expect(s.stoppedBy).toBeNull();
+      expect(s.stoppedFrom).toBeNull();
+    }
+  });
+
+  test('job.merged after a human approve keeps them', () => {
+    const s = project(log([...toApprove, { type: 'job.escalated', reason: 'r' }, { type: 'job.human-approved' }, { type: 'job.merged', sha: 'a' }]));
+    expect(s).toMatchObject({ stage: 'merged', stoppedBy: 'escalated', stoppedFrom: 'approve' });
+  });
+});
+
+describe('job.abandoned', () => {
+  test('from needs-human: stage abandoned, endedAt and note from the event, spans closed', () => {
+    const events = log([...toReview, { type: 'job.escalated', reason: 'stuck' }, { type: 'job.abandoned', reason: 'dead end' }]);
+    const s = project(events);
+    const at = tsAt(events.length - 1);
+    expect(s).toMatchObject({ stage: 'abandoned', endedAt: at, note: 'dead end', stageEnteredAt: at, updated: at });
+    expect(s).toMatchObject({ stoppedBy: 'escalated', stoppedFrom: 'review' }); // kept
+    const spans = s.timing.stages;
+    expect(spans.map((x) => x.stage).slice(-2)).toEqual(['needs-human', 'abandoned']);
+    expect(spans[spans.length - 2]).toMatchObject({ exitedAt: at, ms: 60_000 });
+    expect(spans[spans.length - 1]).toMatchObject({ stage: 'abandoned', enteredAt: at, exitedAt: null, ms: null });
+  });
+
+  test('from build with an open builder span: every open agent span closes with a null verdict', () => {
+    const events = log([...toReview.slice(0, 3), { type: 'agent.started', role: 'builder', name: 'builder-019' },
+      { type: 'job.abandoned', reason: 'dead end' }]);
+    const s = project(events);
+    const at = tsAt(events.length - 1);
+    expect(s).toMatchObject({ stage: 'abandoned', endedAt: at, note: 'dead end', stoppedBy: null, stoppedFrom: null });
+    expect(s.timing.agents).toEqual([
+      { role: 'builder', key: null, round: null, name: 'builder-019', startedAt: tsAt(3), finishedAt: at, ms: 60_000, verdict: null },
+    ]);
+    const spans = s.timing.stages;
+    expect(spans.map((x) => x.stage).slice(-2)).toEqual(['build', 'abandoned']);
+    expect(spans[spans.length - 2]).toMatchObject({ exitedAt: at, ms: 120_000 });
+    expect(spans[spans.length - 1]).toMatchObject({ exitedAt: null, ms: null });
+  });
+
+  test('merge.failed and job.abandoned keep stoppedBy merge-failed', () => {
+    const s = project(log([...toApprove, { type: 'merge.failed', reason: 'c' }, { type: 'job.abandoned', reason: 'x' }]));
+    expect(s).toMatchObject({ stage: 'abandoned', stoppedBy: 'merge-failed', stoppedFrom: 'approve' });
+  });
 });

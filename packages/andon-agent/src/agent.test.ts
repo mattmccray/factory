@@ -507,3 +507,25 @@ describe('the built UI (AC5)', () => {
     expect(field((await getJson(`${url}/projects`)).body, 'projects')).toEqual([]);
   });
 });
+
+describe('abandoned jobs (AC5)', () => {
+  test('the board returns an abandoned snapshot with stoppedBy/stoppedFrom intact', async () => {
+    const a = await makeProject('alpha', ['001-first-job', '002-second-job']);
+    const factory = join(a, 'factory');
+    const steps: Array<[string, Record<string, unknown>]> = [
+      ['stage.entered', { stage: 'spec' }], ['stage.entered', { stage: 'build' }],
+      ['job.escalated', { reason: 'stuck' }], ['job.abandoned', { reason: 'dead end' }],
+    ];
+    for (const [type, fields] of steps) await appendEvent(factory, '001-first-job', parseEventInput(type, fields));
+    await addRoot(registry, a);
+    const { url } = await start();
+    const board = await getJson(`${url}/projects/${projectId(a)}/board`);
+    expect(board.status).toBe(200);
+    const jobs = field(board.body, 'jobs');
+    const abandoned = Array.isArray(jobs) ? jobs.find((j) => field(j, 'id') === '001-first-job') : undefined;
+    expect(abandoned).toMatchObject({ stage: 'abandoned', note: 'dead end', stoppedBy: 'escalated', stoppedFrom: 'build' });
+    expect(typeof field(abandoned, 'endedAt')).toBe('string');
+    const other = Array.isArray(jobs) ? jobs.find((j) => field(j, 'id') === '002-second-job') : undefined;
+    expect(other).toMatchObject({ stage: 'claimed', stoppedBy: null, stoppedFrom: null });
+  });
+});
