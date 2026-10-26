@@ -215,3 +215,36 @@ describe('doctor: managed hashes (AC6)', () => {
     expect(r.out).toContain('FAIL  escape.txt: resolves outside the repo');
   });
 });
+
+describe('doctor: duplicate job numbers (AC6)', () => {
+  const seed = async (...ids: string[]): Promise<void> => {
+    for (const id of ids) await mkdir(join(root, 'jobs', id), { recursive: true });
+  };
+
+  test('a number held by two dirs is a note naming both, sorted, and doctor still exits 0', async () => {
+    await seed('005-b', '005-a', '004-c');
+    const r = await doctor();
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('note: job number 005 is used by 005-a, 005-b');
+    expect(r.out.filter((l) => l.includes('job number'))).toEqual(['note: job number 005 is used by 005-a, 005-b']);
+  });
+
+  test('each duplicated number gets its own note, in number order', async () => {
+    await seed('007-z', '007-y', '007-x', '002-q', '002-p');
+    const r = await doctor();
+    expect(r.code).toBe(0);
+    expect(r.out.filter((l) => l.includes('job number'))).toEqual([
+      'note: job number 002 is used by 002-p, 002-q',
+      'note: job number 007 is used by 007-x, 007-y, 007-z',
+    ]);
+  });
+
+  test('no duplicates, no jobs/, or stray entries: no such note', async () => {
+    expect((await doctor()).out.some((l) => l.includes('job number'))).toBe(false);
+    await seed('001-a', '002-b', '.claim.lock', 'notes');
+    await writeFile(join(root, 'jobs', '001-file'), 'x');
+    const r = await doctor();
+    expect(r.code).toBe(0);
+    expect(r.out).toEqual(['ok    config.json', 'note  unstamped install: no managed.json, hash checks skipped']);
+  });
+});

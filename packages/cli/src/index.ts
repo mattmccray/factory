@@ -13,7 +13,7 @@ export const USAGE = {
   ...CORE_USAGE,
   init: 'usage: init [--force]',
   upgrade: 'usage: upgrade [--force]',
-  // The source CLI's top-level line: the vendored line plus the installer commands.
+  // The source CLI's top-level line: the installed CLI's line plus `doctor` and the installer commands.
   source: `${CORE_USAGE.all} | doctor | init [--force] | upgrade [--force]`,
 };
 

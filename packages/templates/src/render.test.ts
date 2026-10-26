@@ -938,3 +938,56 @@ describe('the abandon command in SKILL.md', () => {
     }
   });
 });
+
+describe('CLI-owned job ids in SKILL.md (job 024, AC7)', () => {
+  const flat = (s: string): string => s.replace(/\s+/g, ' ');
+  const configs = [config(), config({ reviewers: ['q'] }), config({ reviewers: ['zeta', 'eta-1'], gate: ['x'], merge: { target: 'develop' } })];
+  const skill = (c: Config = config()): string => flat(at(renderClaudeCode({ config: c }).files, SKILL));
+  const section = (text: string, heading: string): string => {
+    const start = text.indexOf(`## ${heading}`);
+    if (start < 0) throw new Error(`no section ${heading}`);
+    const end = text.indexOf(' ## ', start + 3);
+    return end < 0 ? text.slice(start) : text.slice(start, end);
+  };
+
+  test('never tells the orchestrator to compute or pick a job id, or to log job.claimed itself', () => {
+    for (const c of configs) {
+      const text = skill(c);
+      expect(text).not.toContain('next three-digit number');
+      expect(text).not.toContain('NNN-*');
+      expect(text).not.toContain('take the next id');
+      expect(text).not.toMatch(/event <id> job\.claimed/);
+      expect(text).not.toMatch(/Board: `job\.claimed`/);
+      expect(text).not.toContain('run `job.claimed`');
+    }
+  });
+
+  test('the board section shows the claim command and says to use the printed id', () => {
+    const board = section(skill(), 'The board');
+    expect(board).toContain('bun factory/cli.ts claim <slug> [brief=…] [issue=…] [maxRound=…]');
+    expect(board).toContain('prints the full id (e.g. `004-export-csv-report`) as its only output');
+    expect(board).toContain('That printed id is `<id>` everywhere from then on; never compute, guess, or pick an id yourself.');
+    expect(board).toContain('`slug <slug> is live as <id>`');
+  });
+
+  test('the claim step runs claim under factory/.lock and uses the printed id after it', () => {
+    const side = section(skill(), 'Running jobs side by side');
+    expect(side).toContain('The job-id sequence is the CLI\'s: `claim` hands out each number under its own lock');
+    expect(side).toContain('under `factory/.lock`');
+    expect(side).toContain('- **Claim:** pick the work, run the overlap check, run `bun factory/cli.ts claim <slug> …` (it picks the number, creates the job dir, and prints the id), then, with that printed id, write `feature.md` and tick the backlog line.');
+  });
+
+  test('/factory <feature>: brief refusals come before claim, which runs under the lock and prints the id', () => {
+    const commands = section(skill(), 'Commands');
+    const entry = commands.slice(commands.indexOf('**`/factory <feature>`**'), commands.indexOf('**`/factory queue <text>`**'));
+    expect(entry).toContain('run `bun factory/cli.ts claim <slug>` with `brief=factory/briefs/<slug>.md` when it applies');
+    expect(entry).toContain('The CLI picks the number and prints the job\'s id, e.g. `004-export-csv-report`; use that id from then on.');
+    expect(entry.indexOf('stop before claiming')).toBeGreaterThan(-1);
+    expect(entry.indexOf('stop before claiming')).toBeLessThan(entry.indexOf('claim <slug>'));
+    expect(entry).toContain('under the lock (overlap check first)');
+  });
+
+  test('the files table lists the CLI-owned .claim.lock', () => {
+    expect(skill()).toContain('| `factory/jobs/.claim.lock/` — the CLI\'s mutex for handing out job ids | the factory CLI (never by hand) |');
+  });
+});

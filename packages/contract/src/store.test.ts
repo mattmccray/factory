@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile, appendFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile, appendFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseEventInput, parseConfig } from './contract';
 import type { EventInput } from './contract';
 import { project } from './project';
-import { appendEvent, readLog, readVerdict, rebuild } from './store';
+import { appendEvent, claimJob, readLog, readVerdict, rebuild } from './store';
 
 let root: string;
 const ID = '019-example';
@@ -273,5 +273,67 @@ describe('job.abandoned (force)', () => {
       await expect(appendEvent(root, ID, e, undefined, { force: true })).rejects.toThrow(/abandoned \(terminal\)/);
     }
     expect(await files()).toEqual(before);
+  });
+});
+
+describe('claimJob (AC1–AC4)', () => {
+  const cfg = async () => parseConfig(JSON.parse(await readFile(join(root, 'config.json'), 'utf8')));
+  const claimSlug = async (slug: string, fields: Record<string, unknown> = {}) => (await claimJob(root, slug, { fields, config: await cfg(), target: 'main' })).id;
+  const seed = async (...ids: string[]) => {
+    for (const id of ids) await mkdir(jobDir(id), { recursive: true });
+  };
+  const lock = () => join(root, 'jobs', '.claim.lock');
+
+  test('numbers: none gives 001, after 004 gives 005, gaps are never filled', async () => {
+    expect(await claimSlug('a')).toBe('001-a');
+    await seed('004-b');
+    expect(await claimSlug('c')).toBe('005-c');
+    expect((await readdir(join(root, 'jobs'))).sort()).toEqual(['001-a', '004-b', '005-c']);
+  });
+
+  test('the first event is job.claimed with the picked id, fields, and target', async () => {
+    const id = await claimSlug('x', { brief: 'b.md', issue: 'M1', maxRound: 4 });
+    const [first] = await readLog(root, id);
+    expect(first).toMatchObject({ type: 'job.claimed', id: '001-x', brief: 'b.md', issue: 'M1', maxRound: 4, target: 'main' });
+  });
+
+  test('concurrent claims in-process get distinct, consecutive numbers and leave no lock', async () => {
+    const slugs = Array.from({ length: 20 }, (_, i) => `s-${i}`);
+    const ids = await Promise.all(slugs.map((s) => claimSlug(s)));
+    expect(ids.map((id) => id.slice(0, 3)).sort()).toEqual(Array.from({ length: 20 }, (_, i) => String(i + 1).padStart(3, '0')));
+    for (const [i, id] of ids.entries()) expect(id.slice(4)).toBe(slugs[i] ?? '');
+    expect(await readdir(join(root, 'jobs'))).not.toContain('.claim.lock');
+  });
+
+  test('a .claim.lock older than 30 s is broken and the claim goes ahead', async () => {
+    await mkdir(lock(), { recursive: true });
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lock(), old, old);
+    expect(await claimSlug('after-stale')).toBe('001-after-stale');
+    expect(await readdir(join(root, 'jobs'))).toEqual(['001-after-stale']);
+  });
+
+  test('a fresh .claim.lock is waited on', async () => {
+    await mkdir(lock(), { recursive: true });
+    let done = false;
+    const p = claimSlug('waits').then((id) => {
+      done = true;
+      return id;
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(done).toBe(false);
+    expect(await readdir(join(root, 'jobs'))).toEqual(['.claim.lock']);
+    await rm(lock(), { recursive: true });
+    expect(await p).toBe('001-waits');
+  });
+
+  test('refusals write nothing and release the lock', async () => {
+    await seed('003-export-csv');
+    await writeFile(join(jobDir('003-export-csv'), 'job.json'), JSON.stringify({ stage: 'review' }));
+    await expect(claimSlug('export-csv')).rejects.toThrow('slug export-csv is live as 003-export-csv');
+    await expect(claimSlug('Bad')).rejects.toThrow(/slug/);
+    await seed('999-z');
+    await expect(claimSlug('more')).rejects.toThrow(/999/);
+    expect((await readdir(join(root, 'jobs'))).sort()).toEqual(['003-export-csv', '999-z']);
   });
 });

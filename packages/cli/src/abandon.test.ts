@@ -6,7 +6,7 @@ import { gitIn, initRepo } from './gitrepo';
 import { USAGE, run } from './index';
 
 const CONFIG = { schema: 'factory/v1', reviewers: ['code'], maxRound: 2, dashboard: { settleAfterHours: 24 } };
-const ID = '022-example';
+const ID = '001-example';
 const BRANCH = `factory/${ID}`;
 
 // `repo` is a git repo (the main checkout); `root` its factory/; the job has a worktree on BRANCH.
@@ -67,7 +67,8 @@ async function event(...args: string[]): Promise<void> {
 
 // Claims the job, makes its worktree and branch, and drives it to `build`.
 async function toBuild(): Promise<void> {
-  await event('job.claimed');
+  const claimed = await cli('claim', 'example');
+  if (claimed.code !== 0 || claimed.out[0] !== ID) throw new Error(`claim: ${claimed.err.join(' ')}`);
   await event('stage.entered', 'stage=spec');
   gitIn(repo, 'worktree', 'add', '--quiet', '-b', BRANCH, 'factory/.worktrees/' + ID, 'main');
   await event('stage.entered', 'stage=build');

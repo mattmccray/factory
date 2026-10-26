@@ -1,10 +1,10 @@
-// `factory doctor` (docs/contract/v1.md "CLI", "Managed files"): validates config.json and
-// verifies managed-file hashes against factory/managed.json. It reports every finding instead of
+// `factory doctor` (docs/contract/v1.md "CLI", "Managed files"): validates config.json,
+// verifies managed-file hashes against factory/managed.json, and notes duplicate job numbers. It reports every finding instead of
 // stopping at the first, and never reads a path outside the repo.
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { parseConfig, parseManifest } from '@factory/contract';
+import { isJobId, parseConfig, parseManifest } from '@factory/contract';
 import type { Manifest } from '@factory/contract';
 import { isNotFound, locate } from './paths';
 
@@ -93,7 +93,28 @@ async function checkManaged(root: string): Promise<Finding[]> {
   return out;
 }
 
+// A job number held by more than one job dir is a `note`, never a failure: existing duplicates
+// keep working, and renaming one would break its branch, worktree, and log. Only dirs whose names
+// match the job-id pattern count.
+async function checkJobNumbers(root: string): Promise<Finding[]> {
+  let names: string[];
+  try {
+    names = (await readdir(join(root, 'jobs'), { withFileTypes: true })).filter((d) => d.isDirectory() && isJobId(d.name)).map((d) => d.name);
+  } catch (e) {
+    if (isNotFound(e)) return [];
+    return [bad('jobs/', firstLine(e))];
+  }
+  const byNumber = new Map<string, string[]>();
+  for (const name of names.sort()) {
+    const n = name.slice(0, 3);
+    byNumber.set(n, [...(byNumber.get(n) ?? []), name]);
+  }
+  return [...byNumber.entries()]
+    .filter(([, ids]) => ids.length > 1)
+    .map(([n, ids]) => ({ ok: true, line: `note: job number ${n} is used by ${ids.join(', ')}` }));
+}
+
 // `root` is the factory/ directory; manifest paths are relative to its parent (the repo root).
 export async function doctor(root: string): Promise<Finding[]> {
-  return [await checkConfig(root), ...(await checkManaged(root))];
+  return [await checkConfig(root), ...(await checkManaged(root)), ...(await checkJobNumbers(root))];
 }

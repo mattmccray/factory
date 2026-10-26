@@ -2,8 +2,8 @@
 // rewrites the derived job.json. `root` is the factory/ directory so tests can use a temp dir.
 import { appendFile, mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { checkTransition } from './contract';
-import type { EventInput, FactoryEvent, TransitionOptions, Verdict } from './contract';
+import { JOB_NUMBER_MAX, checkSlug, checkTransition, parseEventInput } from './contract';
+import type { Config, EventInput, FactoryEvent, TransitionOptions, Verdict } from './contract';
 import { project } from './project';
 import type { JobSnapshot } from './project';
 
@@ -90,17 +90,12 @@ async function withVerdict(root: string, id: string, input: EventInput): Promise
   return input;
 }
 
-// Serializes the whole read -> check -> append -> project -> write sequence per job.
-// Only a creating caller (job.claimed) may make the job dir; anyone else on a missing dir fails.
-async function withLock<T>(dir: string, create: boolean, fn: () => Promise<T>): Promise<T> {
-  let created = false;
-  if (create) created = (await mkdir(dir, { recursive: true })) !== undefined;
-  else if (!(await exists(dir))) throw new Error(`${dir.split('/').pop()}: no such job`);
-  const lock = join(dir, '.events.lock');
+// Takes the `mkdir` lock at `lock`, waiting on a fresh holder and breaking one older than 30 s.
+async function acquire(lock: string): Promise<void> {
   for (;;) {
     try {
       await mkdir(lock);
-      break;
+      return;
     } catch (e) {
       if (!isExists(e)) throw e;
       try {
@@ -111,6 +106,16 @@ async function withLock<T>(dir: string, create: boolean, fn: () => Promise<T>): 
       await sleep(LOCK_RETRY_MS);
     }
   }
+}
+
+// Serializes the whole read -> check -> append -> project -> write sequence per job.
+// Only a creating caller (job.claimed) may make the job dir; anyone else on a missing dir fails.
+async function withLock<T>(dir: string, create: boolean, fn: () => Promise<T>): Promise<T> {
+  let created = false;
+  if (create) created = (await mkdir(dir, { recursive: true })) !== undefined;
+  else if (!(await exists(dir))) throw new Error(`${dir.split('/').pop()}: no such job`);
+  const lock = join(dir, '.events.lock');
+  await acquire(lock);
   let ok = false;
   try {
     const out = await fn();
@@ -197,4 +202,80 @@ async function listEventedJobs(root: string): Promise<string[]> {
     }
   }
   return out;
+}
+
+/** What `claimJob` records on `job.claimed`: the caller's fields, the config, and the resolved target. */
+export interface ClaimInput {
+  fields: Record<string, unknown>;
+  config: Config;
+  target?: string;
+}
+
+function claimedInput(id: string, input: ClaimInput): EventInput {
+  const ctx: { id: string; config: Config; target?: string } = { id, config: input.config };
+  if (input.target !== undefined) ctx.target = input.target;
+  return parseEventInput('job.claimed', input.fields, ctx);
+}
+
+/**
+ * Checks a claim without touching disk: the slug (`checkSlug`) and the `job.claimed` fields
+ * (`brief`, `issue`, `maxRound` only). Throws the one-line reason `claimJob` would.
+ */
+export function checkClaim(slug: string, input: ClaimInput): void {
+  checkSlug(slug);
+  claimedInput(`000-${slug}`, input);
+}
+
+// The job dirs under jobs/ (names matching the job-id pattern; anything else is ignored).
+async function jobDirs(root: string): Promise<string[]> {
+  try {
+    return (await readdir(join(root, 'jobs'), { withFileTypes: true })).filter((d) => d.isDirectory() && JOB_ID.test(d.name)).map((d) => d.name).sort();
+  } catch (e) {
+    if (isNotFound(e)) return [];
+    throw e;
+  }
+}
+
+// Live: a readable job.json whose stage is neither `merged` nor `abandoned`. No readable job.json is not live.
+async function isLive(root: string, id: string): Promise<boolean> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readFile(join(jobDir(root, id), 'job.json'), 'utf8'));
+  } catch {
+    return false;
+  }
+  if (typeof raw !== 'object' || raw === null || !('stage' in raw) || typeof raw.stage !== 'string') return false;
+  return raw.stage !== 'merged' && raw.stage !== 'abandoned';
+}
+
+/**
+ * Creates a new job for `slug` (docs/contract/v1.md "CLI", `claim`): under `jobs/.claim.lock`
+ * (an `mkdir`, stale after 30 s) it scans the job dirs, refuses a slug held by a live job, picks
+ * the highest number + 1 (gaps are never filled; refused past 999), and appends `job.claimed`
+ * through `appendEvent`, which creates the dir under its own `.events.lock`. A refusal writes nothing.
+ */
+export async function claimJob(
+  root: string,
+  slug: string,
+  input: ClaimInput,
+  now: () => Date = () => new Date(),
+): Promise<{ id: string; snapshot: JobSnapshot }> {
+  checkClaim(slug, input);
+  const jobs = join(root, 'jobs');
+  await mkdir(jobs, { recursive: true });
+  const lock = join(jobs, '.claim.lock');
+  await acquire(lock);
+  try {
+    const dirs = await jobDirs(root);
+    for (const d of dirs) {
+      if (d.slice(4) === slug && (await isLive(root, d))) throw new Error(`slug ${slug} is live as ${d}`);
+    }
+    const highest = dirs.reduce((n, d) => Math.max(n, Number(d.slice(0, 3))), 0);
+    if (highest >= JOB_NUMBER_MAX) throw new Error(`job number ${JOB_NUMBER_MAX} is taken: no job numbers are left`);
+    const id = `${String(highest + 1).padStart(3, '0')}-${slug}`;
+    const snapshot = await appendEvent(root, id, claimedInput(id, input), now);
+    return { id, snapshot };
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+  }
 }

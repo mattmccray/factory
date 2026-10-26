@@ -7,7 +7,8 @@ import { gitIn, initRepo } from './gitrepo';
 import { run, USAGE } from './index';
 
 const CONFIG = { schema: 'factory/v1', reviewers: ['security', 'code'], maxRound: 2, dashboard: { settleAfterHours: 24 } };
-const ID = '019-example';
+const ID = '001-example';
+const SLUG = 'example';
 
 // `repo` is a git repo (the main checkout, on `master`); `root` is its factory/ directory.
 let repo: string;
@@ -60,7 +61,7 @@ async function snapshotJobs(): Promise<Record<string, string>> {
 
 describe('event / rebuild (AC1)', () => {
   test('claims, enters spec, titles, and rebuilds with exit 0', async () => {
-    expect(await cli('event', ID, 'job.claimed')).toEqual({ code: 0, out: ['claimed'], err: [] });
+    expect(await cli('claim', SLUG)).toEqual({ code: 0, out: [ID], err: [] });
     expect(await cli('event', ID, 'stage.entered', 'stage=spec')).toEqual({ code: 0, out: ['spec'], err: [] });
     expect(await cli('event', ID, 'job.titled', 'title=404')).toEqual({ code: 0, out: ['spec'], err: [] });
 
@@ -70,8 +71,8 @@ describe('event / rebuild (AC1)', () => {
     expect(lines[2]).toContain('"title":"404"');
 
     expect(await cli('rebuild', ID)).toEqual({ code: 0, out: [`rebuilt 1: ${ID}`], err: [] });
-    await cli('event', '020-other', 'job.claimed');
-    expect(await cli('rebuild', '--all')).toEqual({ code: 0, out: [`rebuilt 2: ${ID} 020-other`], err: [] });
+    expect(await cli('claim', 'other')).toEqual({ code: 0, out: ['002-other'], err: [] });
+    expect(await cli('rebuild', '--all')).toEqual({ code: 0, out: [`rebuilt 2: ${ID} 002-other`], err: [] });
   });
 });
 
@@ -88,7 +89,7 @@ describe('rejections (AC2)', () => {
   };
 
   beforeEach(async () => {
-    await cli('event', ID, 'job.claimed');
+    await cli('claim', SLUG);
     await cli('event', ID, 'stage.entered', 'stage=spec');
   });
 
@@ -96,13 +97,13 @@ describe('rejections (AC2)', () => {
   test('a non-integer round', () => rejects(['event', ID, 'round.started', 'round=abc']));
   test('a non-array reviewers', () => rejects(['event', ID, 'round.started', 'round=1', 'reviewers={"a":1}']));
   test('a bad job id creates no dir', async () => {
-    await rejects(['event', '../x', 'job.claimed']);
+    await rejects(['event', '../x', 'job.noted', 'note=x']);
     expect((await readdir(root)).sort()).toEqual(['config.json', 'jobs']);
     expect(await readdir(join(root, 'jobs'))).toEqual([ID]);
   });
   test('a bad job id on a fresh root creates nothing', async () => {
     await rm(join(root, 'jobs'), { recursive: true });
-    const r = await cli('event', 'BAD', 'job.claimed');
+    const r = await cli('event', 'BAD', 'job.noted', 'note=x');
     expect(r.code).toBe(1);
     expect(r.err.length).toBe(1);
     expect(await readdir(root)).toEqual(['config.json']);
@@ -122,21 +123,24 @@ describe('usage and show (AC3)', () => {
   test('rebuild with no target', () => usage(['rebuild'], USAGE.rebuild));
   test('show with no id', () => usage(['show'], USAGE.show));
 
-  test('usage lines match the vendored CLI', () => {
+  test('claim with no slug', () => usage(['claim'], USAGE.claim));
+
+  test('usage lines: every command, and both top-level lines list claim (AC7)', () => {
     expect(USAGE).toEqual({
+      claim: 'usage: claim <slug> [brief=…] [issue=…] [maxRound=…]',
       event: 'usage: event <id> <type> [field=value …]',
       rebuild: 'usage: rebuild <id> | --all',
       show: 'usage: show <id>',
       abandon: 'usage: abandon <id> "<reason>" [--force] [--delete-branch]',
-      all: 'usage: event <id> <type> [k=v …] | rebuild <id>|--all | show <id>',
+      all: 'usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id>',
       init: 'usage: init [--force]',
       upgrade: 'usage: upgrade [--force]',
-      source: 'usage: event <id> <type> [k=v …] | rebuild <id>|--all | show <id> | doctor | init [--force] | upgrade [--force]',
+      source: 'usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id> | doctor | init [--force] | upgrade [--force]',
     });
   });
 
   test('show prints formatShow lines', async () => {
-    await cli('event', ID, 'job.claimed');
+    await cli('claim', SLUG);
     await cli('event', ID, 'stage.entered', 'stage=spec');
     const now = new Date();
     const out: string[] = [];
@@ -156,20 +160,20 @@ describe('usage and show (AC3)', () => {
 
   test('a bad config.json is a one-line rejection for non-doctor commands', async () => {
     await writeFile(join(root, 'config.json'), JSON.stringify({ ...CONFIG, extra: 1 }));
-    const r = await cli('event', ID, 'job.claimed');
+    const r = await cli('claim', SLUG);
     expect(r.code).toBe(1);
     expect(r.err).toEqual(["config: unknown key 'extra'"]);
     expect(await readdir(root)).toEqual(['config.json']);
   });
 });
 
-describe('target branch (job.claimed)', () => {
+describe('target branch (claim, AC5)', () => {
   const jobJson = async (id = ID): Promise<unknown> => JSON.parse(await readFile(join(root, 'jobs', id, 'job.json'), 'utf8'));
   const claimedEvent = async (id = ID): Promise<unknown> => JSON.parse((await readFile(join(root, 'jobs', id, 'events.jsonl'), 'utf8')).split('\n')[0] ?? '');
   const withMerge = (merge: unknown) => writeFile(join(root, 'config.json'), JSON.stringify({ ...CONFIG, merge }));
 
   test('with no merge key, a claim records the checkout branch (master)', async () => {
-    expect(await cli('event', ID, 'job.claimed')).toEqual({ code: 0, out: ['claimed'], err: [] });
+    expect(await cli('claim', SLUG)).toEqual({ code: 0, out: [ID], err: [] });
     expect(await claimedEvent()).toMatchObject({ type: 'job.claimed', target: 'master' });
     expect(await jobJson()).toMatchObject({ target: 'master' });
   });
@@ -178,19 +182,24 @@ describe('target branch (job.claimed)', () => {
     gitIn(repo, 'branch', 'develop');
     gitIn(repo, 'checkout', '--quiet', '-b', 'feature/elsewhere');
     await withMerge({ target: 'develop' });
-    expect(await cli('event', ID, 'job.claimed')).toEqual({ code: 0, out: ['claimed'], err: [] });
+    expect(await cli('claim', SLUG)).toEqual({ code: 0, out: [ID], err: [] });
     expect(await claimedEvent()).toMatchObject({ target: 'develop' });
     expect(await jobJson()).toMatchObject({ target: 'develop' });
   });
 
+  // A refusal leaves no jobs/, job dir, events.jsonl, job.json, or .claim.lock, and uses up no
+  // number: the next good claim gets the number this one would have used.
   const refuses = async (want: RegExp): Promise<void> => {
-    const r = await cli('event', ID, 'job.claimed');
+    const r = await cli('claim', SLUG);
     expect(r.code).toBe(1);
     expect(r.out).toEqual([]);
     expect(r.err.length).toBe(1);
     expect(r.err[0]).toMatch(want);
     expect(r.err[0]).not.toContain('\n');
-    expect(await readdir(root)).toEqual(['config.json']); // no jobs/, job dir, events.jsonl, or job.json
+    expect(await readdir(root)).toEqual(['config.json']);
+    await writeFile(join(root, 'config.json'), JSON.stringify(CONFIG));
+    gitIn(repo, 'checkout', '--quiet', 'master');
+    expect(await cli('claim', SLUG)).toEqual({ code: 0, out: [ID], err: [] });
   };
 
   test('a missing named branch refuses the claim and writes nothing', async () => {
@@ -209,9 +218,154 @@ describe('target branch (job.claimed)', () => {
   });
 
   test('a caller-supplied target is rejected as an extra field and nothing is written', async () => {
-    const r = await cli('event', ID, 'job.claimed', 'target=develop');
+    const r = await cli('claim', SLUG, 'target=develop');
     expect(r.code).toBe(1);
     expect(r.err).toEqual(["job.claimed: extra field: unknown key 'target'"]);
     expect(await readdir(root)).toEqual(['config.json']);
   });
+});
+
+describe('claim (AC1–AC5)', () => {
+  const seed = async (...ids: string[]): Promise<void> => {
+    for (const id of ids) await mkdir(join(root, 'jobs', id), { recursive: true });
+  };
+  const writeJob = (id: string, stage: string) => writeFile(join(root, 'jobs', id, 'job.json'), JSON.stringify({ id, stage }));
+  const lines = async (id: string): Promise<unknown[]> =>
+    (await readFile(join(root, 'jobs', id, 'events.jsonl'), 'utf8')).trim().split('\n').map((l): unknown => JSON.parse(l));
+
+  test('AC1: after 004 it creates 005-<slug> with job.claimed first, prints only the id, exit 0', async () => {
+    await seed('001-a', '004-b');
+    expect(await cli('claim', 'week-view-pager', 'brief=factory/briefs/x.md', 'issue=M7', 'maxRound=3')).toEqual({ code: 0, out: ['005-week-view-pager'], err: [] });
+    expect((await readdir(join(root, 'jobs', '005-week-view-pager'))).sort()).toEqual(['events.jsonl', 'job.json']);
+    const log = await lines('005-week-view-pager');
+    expect(log.length).toBe(1);
+    expect(log[0]).toMatchObject({ type: 'job.claimed', schema: 'factory/v1', id: '005-week-view-pager', target: 'master', brief: 'factory/briefs/x.md', issue: 'M7', maxRound: 3 });
+    const snap: unknown = JSON.parse(await readFile(join(root, 'jobs', '005-week-view-pager', 'job.json'), 'utf8'));
+    expect(snap).toMatchObject({ id: '005-week-view-pager', stage: 'claimed', target: 'master', maxRound: 3 });
+  });
+
+  test('AC1: no jobs/ gives 001, and defaults come from config', async () => {
+    expect(await cli('claim', 'first')).toEqual({ code: 0, out: ['001-first'], err: [] });
+    expect((await lines('001-first'))[0]).toMatchObject({ maxRound: 2, brief: null, issue: null });
+  });
+
+  test('AC1: an empty jobs/ gives 001; stray entries are ignored', async () => {
+    await mkdir(join(root, 'jobs', 'notes'), { recursive: true });
+    await writeFile(join(root, 'jobs', '900-file'), 'not a dir');
+    expect(await cli('claim', 'first')).toEqual({ code: 0, out: ['001-first'], err: [] });
+  });
+
+  const refused = async (argv: string[], want?: string): Promise<void> => {
+    const before = await snapshotJobs();
+    const r = await cli(...argv);
+    expect(r.code).toBe(1);
+    expect(r.out).toEqual([]);
+    expect(r.err.length).toBe(1);
+    expect(r.err[0]).not.toBe('');
+    if (want !== undefined) expect(r.err[0]).toBe(want);
+    expect(await snapshotJobs()).toEqual(before);
+  };
+
+  for (const bad of ['Abc', '--x', 'x-', 'a_b', 'a'.repeat(41), '', '-', 'a--b', '../x']) {
+    test(`AC3: slug ${JSON.stringify(bad)} is refused and creates nothing`, async () => {
+      await seed('001-a');
+      await refused(['claim', bad]);
+    });
+  }
+
+  test('AC3: a bad slug on a fresh root creates no jobs/', async () => {
+    const r = await cli('claim', 'Abc');
+    expect(r.code).toBe(1);
+    expect(r.err.length).toBe(1);
+    expect(await readdir(root)).toEqual(['config.json']);
+  });
+
+  test('AC3: a missing slug is the claim usage line', async () => {
+    expect(await cli('claim')).toEqual({ code: 1, out: [], err: [USAGE.claim] });
+  });
+
+  test('AC3: a 40-character slug is accepted', async () => {
+    const slug = `${'a'.repeat(19)}-${'b'.repeat(20)}`;
+    expect(slug.length).toBe(40);
+    expect(await cli('claim', slug)).toEqual({ code: 0, out: [`001-${slug}`], err: [] });
+  });
+
+  test('AC3: with 999 taken, the claim is refused', async () => {
+    await seed('999-last');
+    await refused(['claim', 'more']);
+  });
+
+  test('AC3: a bad field is refused before anything is written', async () => {
+    await refused(['claim', 'x', 'id=002-x']);
+    await refused(['claim', 'x', 'maxRound=abc']);
+  });
+
+  test('AC4: a live slug is refused naming the job; a settled or unreadable one is claimed anew', async () => {
+    await seed('003-export-csv');
+    await writeJob('003-export-csv', 'build');
+    await refused(['claim', 'export-csv'], 'slug export-csv is live as 003-export-csv');
+    for (const stage of ['needs-human', 'claimed']) {
+      await writeJob('003-export-csv', stage);
+      await refused(['claim', 'export-csv'], 'slug export-csv is live as 003-export-csv');
+    }
+    await writeJob('003-export-csv', 'merged');
+    expect(await cli('claim', 'export-csv')).toEqual({ code: 0, out: ['004-export-csv'], err: [] });
+    expect(await cli('event', '004-export-csv', 'stage.entered', 'stage=spec')).toEqual({ code: 0, out: ['spec'], err: [] });
+    expect(await cli('abandon', '004-export-csv', 'redo', '--force')).toEqual({ code: 0, out: ['abandoned'], err: [] });
+    expect(await cli('claim', 'export-csv')).toEqual({ code: 0, out: ['005-export-csv'], err: [] });
+  });
+
+  test('AC4: a dir with no readable job.json is not live', async () => {
+    await seed('003-export-csv', '004-other');
+    await writeFile(join(root, 'jobs', '004-other', 'job.json'), '{not json');
+    expect(await cli('claim', 'export-csv')).toEqual({ code: 0, out: ['005-export-csv'], err: [] });
+    expect(await cli('claim', 'other')).toEqual({ code: 0, out: ['006-other'], err: [] });
+  });
+
+  test('AC5: event <id> job.claimed is refused naming claim, and writes nothing', async () => {
+    await refused(['event', ID, 'job.claimed']);
+    const r = await cli('event', ID, 'job.claimed');
+    expect(r.err[0]).toContain('claim <slug>');
+    expect(await readdir(root)).toEqual(['config.json']);
+  });
+
+  test('AC5: other event types still print the new stage', async () => {
+    await cli('claim', SLUG);
+    expect(await cli('event', ID, 'stage.entered', 'stage=spec')).toEqual({ code: 0, out: ['spec'], err: [] });
+    expect(await cli('event', ID, 'job.noted', 'note=hi')).toEqual({ code: 0, out: ['spec'], err: [] });
+  });
+
+  test('AC2: concurrent claims in-process get distinct, consecutive numbers', async () => {
+    await seed('002-seed');
+    const slugs = Array.from({ length: 12 }, (_, i) => `job-${i}`);
+    const results = await Promise.all(slugs.map((s) => cli('claim', s)));
+    const ids = results.map((r) => {
+      expect(r.code).toBe(0);
+      expect(r.err).toEqual([]);
+      return r.out[0] ?? '';
+    });
+    expect(ids.map((id) => id.slice(0, 3)).sort()).toEqual(Array.from({ length: 12 }, (_, i) => String(i + 3).padStart(3, '0')));
+    for (const [i, id] of ids.entries()) expect(id.slice(4)).toBe(slugs[i] ?? '');
+    expect((await readdir(join(root, 'jobs'))).sort()).toEqual(['002-seed', ...ids].sort());
+  });
+
+  test('AC2: concurrent claims as separate bun processes get distinct, consecutive numbers', async () => {
+    const main = join(import.meta.dir, 'main.ts');
+    const n = 6;
+    const runs = await Promise.all(
+      Array.from({ length: n }, async (_, i) => {
+        const p = Bun.spawn([process.execPath, main, 'claim', `proc-${i}`], { cwd: repo, stdout: 'pipe', stderr: 'pipe' });
+        const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+        return { out, err, code, slug: `proc-${i}` };
+      }),
+    );
+    for (const r of runs) {
+      expect(r).toMatchObject({ code: 0, err: '' });
+      expect(r.out).toMatch(new RegExp(`^\\d{3}-${r.slug}\\n$`));
+    }
+    const ids = runs.map((r) => r.out.trim());
+    expect(ids.map((id) => id.slice(0, 3)).sort()).toEqual(Array.from({ length: n }, (_, i) => String(i + 1).padStart(3, '0')));
+    expect((await readdir(join(root, 'jobs'))).sort()).toEqual([...ids].sort());
+    for (const id of ids) expect((await lines(id))[0]).toMatchObject({ type: 'job.claimed', id });
+  }, 30_000);
 });

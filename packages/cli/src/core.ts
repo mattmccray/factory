@@ -1,4 +1,5 @@
 // The factory CLI's core commands — the only writer of job state (docs/contract/v1.md "CLI").
+//   claim <slug> [brief=…] [issue=…] [maxRound=…]
 //   event <id> <type> [field=value …]
 //   rebuild <id> | --all
 //   show <id>
@@ -8,7 +9,7 @@
 // The source CLI (`index.ts`) adds `init` and `upgrade` on top.
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
-import { appendEvent, formatShow, isJobId, mergeTarget, parseConfig, parseEventInput, parseFields, project, readLog, rebuild } from '@factory/contract';
+import { appendEvent, checkClaim, checkSlug, claimJob, formatShow, isJobId, mergeTarget, parseConfig, parseEventInput, parseFields, project, readLog, rebuild } from '@factory/contract';
 import { doctor } from './doctor';
 import { deleteBranch, removeWorktree, resolveTarget } from './git';
 import { isNotFound } from './paths';
@@ -22,12 +23,13 @@ export interface Io {
 }
 
 export const USAGE = {
+  claim: 'usage: claim <slug> [brief=…] [issue=…] [maxRound=…]',
   event: 'usage: event <id> <type> [field=value …]',
   rebuild: 'usage: rebuild <id> | --all',
   show: 'usage: show <id>',
   abandon: 'usage: abandon <id> "<reason>" [--force] [--delete-branch]',
-  // The vendored CLI's exact top-level usage line; `doctor` is documented in docs/contract/v1.md.
-  all: 'usage: event <id> <type> [k=v …] | rebuild <id>|--all | show <id>',
+  // The installed CLI's top-level usage line; `doctor` and `abandon` are documented in docs/contract/v1.md.
+  all: 'usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id>',
 };
 
 // Runs one core command; an unknown or missing command is a usage error naming `usage`.
@@ -41,19 +43,24 @@ export async function dispatchCore(argv: readonly string[], io: Io, usage: strin
   }
   const config = parseConfig(JSON.parse(await readFile(join(io.root, 'config.json'), 'utf8')));
   switch (cmd) {
+    case 'claim': {
+      const [slug, ...kv] = rest;
+      if (slug === undefined) throw new Error(USAGE.claim);
+      checkSlug(slug);
+      const fields = parseFields(kv);
+      // The slug and fields are checked before git runs; the target is resolved before the claim
+      // lock is taken, so a refusal writes nothing and uses up no job number.
+      checkClaim(slug, { fields, config });
+      const target = await resolveTarget(dirname(resolve(io.root)), mergeTarget(config));
+      io.stdout((await claimJob(io.root, slug, { fields, config, target })).id);
+      return 0;
+    }
     case 'event': {
       const [id, type, ...kv] = rest;
       if (!id || !type) throw new Error(USAGE.event);
+      if (type === 'job.claimed') throw new Error(`job.claimed is written only by claim: run ${USAGE.claim.replace('usage: ', '')}`);
       const fields = parseFields(kv);
-      // Parsed once without a target first, so a caller-supplied `target` (or any other bad
-      // field) is refused before git runs. The claim then records the resolved branch; a
-      // refusal throws before anything is written.
-      let input = parseEventInput(type, fields, { id, config });
-      if (input.type === 'job.claimed') {
-        const target = await resolveTarget(dirname(resolve(io.root)), mergeTarget(config));
-        input = parseEventInput(type, fields, { id, config, target });
-      }
-      io.stdout((await appendEvent(io.root, id, input)).stage);
+      io.stdout((await appendEvent(io.root, id, parseEventInput(type, fields, { id, config }))).stage);
       return 0;
     }
     case 'rebuild': {

@@ -27,6 +27,7 @@ feature → spec-writer → builder ⇄ [configured reviewers] → approver → 
 | `factory/config.json` — reviewer keys, the default `maxRound`, the gate, per-role runners, and the merge target | human (or `customize`, with the human) |
 | `factory/roles/<role>.md` — the project's rules for one role (optional) | human (or `customize`, with the human) |
 | `factory/.lock/` — a short mutex for claiming work and merging | you, briefly |
+| `factory/jobs/.claim.lock/` — the CLI's mutex for handing out job ids | the factory CLI (never by hand) |
 | `factory/backlog.md` — queue for `/factory next` | human (you tick items off) |
 | `factory/briefs/<slug>.md` — decisions from an `explore` interview (tracked in git) | you, with the human |
 | `factory/jobs/<id>/feature.md` — the request, verbatim | you |
@@ -43,7 +44,7 @@ branch; the main checkout stays on the job's target branch so your files never m
 Dashboard: Andon, one agent per machine. Run `bun run andon` in the factory clone (not in this project), then open http://127.0.0.1:8766/. `factory init` registers the project with Andon.
 
 **The target branch.** Every job is based on and merges into its **target**: `target` in its
-`job.json`. The CLI resolves it once, at `job.claimed`, from `merge.target` in
+`job.json`. The CLI resolves it once, at `claim`, from `merge.target` in
 `<R>/factory/config.json`: `current` (the default when `merge` or `merge.target` is absent) is
 the branch the main checkout is on at that moment, and any other value names a branch that
 must exist. The CLI accepts only a plain branch name (letters, digits, `.`, `_`, `/`, `-`), so a
@@ -69,7 +70,20 @@ the log** yourself. "Board: `<type> k=v …`" below means: run
 bun factory/cli.ts event <id> <type> [k=v …]    # from <R>
 ```
 
-for **your job** only, right when the change happens. It prints the new stage. A non-zero exit
+for **your job** only, right when the change happens. It prints the new stage. A job starts
+with **`claim`**, never with `event`:
+
+```bash
+bun factory/cli.ts claim <slug> [brief=…] [issue=…] [maxRound=…]    # from <R>
+```
+
+`<slug>` is a 2–4 word kebab name for the work (lowercase letters and digits joined by single
+`-`, at most 40 characters), e.g. `export-csv-report`. The CLI picks the job number, creates
+`factory/jobs/<id>/`, logs `job.claimed`, and prints the full id (e.g. `004-export-csv-report`)
+as its only output. That printed id is `<id>` everywhere from then on; never compute, guess, or
+pick an id yourself. A non-zero exit means nothing was claimed: read the one-line reason (a bad
+slug, `slug <slug> is live as <id>` when a live job already has that slug, a refused
+`merge.target`), fix it or tell the user, and stop. A non-zero exit
 means the event was rejected and nothing was written: read the one-line reason and fix the
 cause (usually WAIT FOR ALL, or an agent's file that's missing or malformed). Never hand-edit
 state to get around it. If the reason is a corrupt (torn) tail, stop and tell the user: a human
@@ -92,9 +106,10 @@ the reviewer's or approver's file.
 ## Running jobs side by side
 
 Any number of sessions can run `/factory` at once, one job each. Each job has its own worktree,
-branch, job dir, and `job.json`, so they don't touch each other's files. Three things are shared:
-the backlog, the job-id sequence, and the main checkout that merges land in. Those steps happen
-under `factory/.lock`, which is a directory because `mkdir` is atomic:
+branch, job dir, and `job.json`, so they don't touch each other's files. The job-id sequence is
+the CLI's: `claim` hands out each number under its own lock, so two sessions never get the same
+id. Two more things are shared: the backlog and the main checkout that merges land in. Those
+steps happen under `factory/.lock`, which is a directory because `mkdir` is atomic:
 
 ```bash
 cd <R>; until mkdir factory/.lock 2>/dev/null; do
@@ -104,8 +119,9 @@ cd <R>; until mkdir factory/.lock 2>/dev/null; do
 
 Release it with `rmdir factory/.lock` as soon as the step is done, and never hold it while you
 wait on the user or an agent. Two steps take the lock:
-- **Claim:** pick the work, run the overlap check, take the next id, run `job.claimed` (it
-  creates the job dir), write `feature.md`, and tick the backlog line.
+- **Claim:** pick the work, run the overlap check, run `bun factory/cli.ts claim <slug> …` (it
+  picks the number, creates the job dir, and prints the id), then, with that printed id, write
+  `feature.md` and tick the backlog line.
 - **Merge:** everything in **Merge** below, bookkeeping included.
 
 **Live jobs** are the jobs whose `job.json` (read-only to you) has a stage other than
@@ -245,15 +261,15 @@ as `'\''` (as for board values), so `$` and backticks in it are never expanded.
 
 ## Commands
 
-**`/factory <feature>`** — New job. **Claim** it under the lock (overlap check first). `id` =
-the next three-digit number after the highest `factory/jobs/NNN-*` dir (start at `001`) + a
-2–4 word kebab slug, e.g. `004-export-csv-report`. Board: `job.claimed` with
-`brief=factory/briefs/<slug>.md` when it applies (add `maxRound=<n>` only to
-override the config default); it creates the job dir. Write `feature.md` verbatim, release the
-lock, run the loop. If the text names a brief (`brief: factory/briefs/<slug>.md`), its `Status:`
-must be `ready`. If it is `done`, a job already carried it out: stop before claiming and say
-`brief <slug> is done (job <id>)`, with the job from its `- Job:` line. Separately, a draft
-brief means the interview isn't done, so stop before claiming and say so.
+**`/factory <feature>`** — New job. If the text names a brief (`brief: factory/briefs/<slug>.md`),
+its `Status:` must be `ready`. If it is `done`, a job already carried it out: stop before claiming
+and say `brief <slug> is done (job <id>)`, with the job from its `- Job:` line. Separately, a draft
+brief means the interview isn't done, so stop before claiming and say so. Otherwise **claim** it
+under the lock (overlap check first): pick a 2–4 word kebab slug for the work and run
+`bun factory/cli.ts claim <slug>` with `brief=factory/briefs/<slug>.md` when it applies (add
+`maxRound=<n>` only to override the config default). The CLI picks the number and prints the
+job's id, e.g. `004-export-csv-report`; use that id from then on. Write `feature.md` verbatim,
+release the lock, run the loop.
 
 **`/factory queue <text>`** — Add ready work to the backlog without running it. Work arrives
 as text. It is **ready** if it isn't blocked by unmerged work and you can say in one line what

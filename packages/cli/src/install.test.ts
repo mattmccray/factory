@@ -7,7 +7,7 @@ import { type Config, parseConfig, parseManifest } from '@factory/contract';
 import { VERSION, cliStampLine, contractStampLine, renderClaudeCode } from '@factory/templates';
 import { initRepo } from './gitrepo';
 import { DEFAULT_CONFIG, GITIGNORE_LINES, withRuntimeIgnores } from './install';
-import { run } from './index';
+import { USAGE, run } from './index';
 import { protectedReason } from './paths';
 
 const REPO = join(import.meta.dir, '..', '..', '..');
@@ -114,7 +114,7 @@ describe('init on an empty project (AC1)', () => {
 });
 
 describe('the installed CLI is self-contained (AC2)', () => {
-  test('runs doctor and event with bun alone, rooted at its own directory', async () => {
+  test('runs doctor, claim, and event with bun alone, rooted at its own directory', async () => {
     initRepo(dir, 'trunk');
     expect((await cli(dir, 'init')).code).toBe(0);
     const entries = await readdir(dir);
@@ -129,8 +129,15 @@ describe('the installed CLI is self-contained (AC2)', () => {
     const doc = await spawn('doctor');
     expect(doc.err).toBe('');
     expect(doc.code).toBe(0);
-    const ev = await spawn('event', '001-smoke-test', 'job.claimed');
-    expect(ev).toEqual({ out: 'claimed\n', err: '', code: 0 });
+    const claimed = await spawn('claim', 'smoke-test');
+    expect(claimed).toEqual({ out: '001-smoke-test\n', err: '', code: 0 });
+    expect(await spawn('claim', 'second')).toEqual({ out: '002-second\n', err: '', code: 0 });
+    const old = await spawn('event', '003-x', 'job.claimed');
+    expect(old.code).toBe(1);
+    expect(old.err).toContain('claim <slug>');
+    expect(await readdir(join(dir, 'factory', 'jobs'))).not.toContain('003-x');
+    const ev = await spawn('event', '001-smoke-test', 'stage.entered', 'stage=spec');
+    expect(ev).toEqual({ out: 'spec\n', err: '', code: 0 });
     const job = await readdir(join(dir, 'factory', 'jobs', '001-smoke-test'));
     expect(job).toContain('events.jsonl');
     expect(job).toContain('job.json');
@@ -138,6 +145,9 @@ describe('the installed CLI is self-contained (AC2)', () => {
 
     const unknown = await spawn('init');
     expect(unknown.code).toBe(1);
+    expect(unknown.err).toBe(`${USAGE.all}\n`);
+    expect(unknown.err).toContain('claim <slug>');
+    expect(await spawn('claim')).toEqual({ out: '', err: `${USAGE.claim}\n`, code: 1 });
 
     expect((await text(dir, 'factory/cli.ts')).split('\n')[0]).toBe(cliStampLine());
     expect(cliStampLine()).toStartWith(`// factory ${VERSION} `);
