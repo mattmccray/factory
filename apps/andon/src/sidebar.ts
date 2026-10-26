@@ -1,0 +1,164 @@
+// The frame's pure model (design §3, §4): the sidebar's rows (All Projects and every registered
+// project, each with a status dot and a badge), the connection footer, the toolbar's title and
+// subtitle, the status bar's legend and settle text, and the shell mode read from the page URL.
+// Nothing here touches the DOM; App.svelte and the frame components only lay it out.
+import type { Job } from './job';
+import type { Status } from './live';
+import { ALL, needsHuman } from './projects';
+import type { Selection } from './projects';
+import type { UiState } from './state';
+
+/** A project's worst state, worst first. */
+export type ProjectState = 'needs-human' | 'review-failed' | 'active' | 'idle';
+export type Dot = 'red' | 'orange' | 'blue' | 'gray';
+
+export const DOTS: Record<ProjectState, Dot> = { 'needs-human': 'red', 'review-failed': 'orange', active: 'blue', idle: 'gray' };
+/** What each dot means, for screen readers and tooltips. */
+export const STATE_LABELS: Record<ProjectState, string> = { 'needs-human': 'needs a human', 'review-failed': 'review failed', active: 'working', idle: 'idle' };
+
+export interface Badge {
+  tone: 'red' | 'gray';
+  count: number;
+  label: string; // "2 need a human", "3 active"
+}
+
+export interface SidebarRow {
+  id: Selection;
+  name: string;
+  title: string; // the tooltip: the project's root
+  state: ProjectState;
+  dot: Dot;
+  badge: Badge | null;
+  selected: boolean;
+}
+
+export interface SidebarModel {
+  all: { badge: Badge | null; selected: boolean };
+  projects: SidebarRow[];
+}
+
+/** Stages a job never leaves: it's done, never active. `abandoned` comes with a later v1 addition. */
+const TERMINAL = new Set(['merged', 'abandoned']);
+
+/** Active: not settled, not merged (or otherwise terminal), and not waiting on a human. Only a
+ *  merged job settles, so excluding the terminal stages excludes every settled job too. */
+export const isActive = (j: Job): boolean => !TERMINAL.has(j.stage) && j.stage !== 'needs-human';
+
+/** Review failed: back in `build` after a round whose latest recorded reviews include a non-PASS verdict. */
+export const reviewFailed = (j: Job): boolean => j.stage === 'build' && j.round > 0 && Object.values(j.reviews).some((v) => v !== 'PASS');
+
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+const redBadge = (n: number): Badge => ({ tone: 'red', count: n, label: plural(n, 'needs a human', 'need a human') });
+
+/** One project's state, dot, and badge (red needs-human count, else gray active count, else none). */
+export function projectStatus(jobs: readonly Job[]): { state: ProjectState; badge: Badge | null } {
+  const human = jobs.filter((j) => j.stage === 'needs-human').length;
+  const active = jobs.filter(isActive);
+  const state: ProjectState = human > 0 ? 'needs-human' : active.some(reviewFailed) ? 'review-failed' : active.length > 0 ? 'active' : 'idle';
+  const badge = human > 0 ? redBadge(human) : active.length > 0 ? { tone: 'gray' as const, count: active.length, label: `${active.length} active` } : null;
+  return { state, badge };
+}
+
+const byName = (a: { name: string; id: string }, b: { name: string; id: string }): number =>
+  a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+
+/** The sidebar: All Projects (badge: the total needs-human count), then every project by name. */
+export function sidebarModel(s: UiState, sel: Selection): SidebarModel {
+  const total = needsHuman(s).total;
+  const projects = s.projects
+    .map((p): SidebarRow => {
+      const { state, badge } = projectStatus(s.boards[p.id]?.jobs ?? []);
+      return { id: p.id, name: p.name, title: p.root, state, dot: DOTS[state], badge, selected: sel === p.id };
+    })
+    .sort(byName);
+  const known = projects.some((p) => p.selected);
+  return { all: { badge: total > 0 ? redBadge(total) : null, selected: sel === ALL || !known }, projects };
+}
+
+// ---- the connection footer ----
+
+export interface Footer {
+  text: string;
+  dot: 'green' | 'gray' | 'red';
+}
+
+export function footer(status: Status, projects: number): Footer {
+  if (status === 'live') return { text: `Connected · andon-agent · ${plural(projects, 'project', 'projects')}`, dot: 'green' };
+  if (status === 'down') return { text: 'Unreachable', dot: 'red' };
+  return { text: 'Connecting…', dot: 'gray' };
+}
+
+// ---- the toolbar ----
+
+/** The toolbar title: "Andon", or the selected project's name. */
+export function title(s: UiState, sel: Selection): string {
+  return sel === ALL ? 'Andon' : (s.projects.find((p) => p.id === sel)?.name ?? 'Andon');
+}
+
+export interface Subtitle {
+  scope: string; // "All Projects", or the selected project's name
+  running: string; // "12 running"
+  waiting: string | null; // "3 waiting on you" (shown red), or null at zero
+}
+
+/** "<scope> — N running, M waiting on you"; running excludes needs-human, and the waiting part is omitted at zero. */
+export function subtitle(s: UiState, sel: Selection, running: number, waiting: number): Subtitle {
+  const scope = sel === ALL ? 'All Projects' : (s.projects.find((p) => p.id === sel)?.name ?? 'All Projects');
+  return { scope, running: `${running} running`, waiting: waiting > 0 ? `${waiting} waiting on you` : null };
+}
+
+export const subtitleText = (t: Subtitle): string => `${t.scope} — ${t.running}${t.waiting !== null ? `, ${t.waiting}` : ''}`;
+
+// ---- the status bar ----
+
+export interface LegendEntry {
+  key: string; // the swatch's class
+  label: string;
+}
+
+/** The state legend, one swatch per state a card can show (the card's left edge). */
+export const LEGEND: readonly LegendEntry[] = [
+  { key: 'needs-human', label: 'Needs a human' },
+  { key: 'failed', label: 'Review failed' },
+  { key: 'review', label: 'In review' },
+  { key: 'approve', label: 'At approver' },
+  { key: 'build', label: 'Building' },
+  { key: 'spec', label: 'Spec' },
+  { key: 'claimed', label: 'Claimed' },
+  { key: 'merged', label: 'Merged' },
+];
+
+/** "Settle after 24h", or each distinct setting in the selection ("Settle after 2h / 24h"). */
+export function settleText(hours: readonly number[]): string {
+  const distinct = [...new Set(hours)].sort((a, b) => a - b);
+  return `Settle after ${(distinct.length > 0 ? distinct : [24]).map((h) => `${h}h`).join(' / ')}`;
+}
+
+/** The selection's `settleAfterHours` values, one per project. */
+export function settleHours(s: UiState, sel: Selection): number[] {
+  return s.projects.filter((p) => sel === ALL || sel === p.id).map((p) => s.boards[p.id]?.config.settleAfterHours ?? 24);
+}
+
+// ---- the window: shell or browser ----
+
+export type ShellMode = 'mac' | 'browser';
+
+/** The traffic lights' reserved width, at the top-left of the sidebar (or the toolbar when the sidebar is hidden). */
+export const MAC_INSET = 78;
+
+/** `?shell=mac` (the Tiny JS shell loads the page with it) is the Mac shell; anything else is a browser. */
+export function shellMode(search: string): ShellMode {
+  return new URLSearchParams(search).get('shell') === 'mac' ? 'mac' : 'browser';
+}
+
+export interface Frame {
+  inset: number; // px reserved for the traffic lights at the top-left of the sidebar
+  toolbarInset: number; // px reserved at the toolbar's left when the sidebar is hidden
+  drag: boolean; // data-tiny-drag on the toolbar and the sidebar's top strip
+  transparentSidebar: boolean; // the native vibrancy shows through
+}
+
+export function frame(mode: ShellMode, sidebarOpen: boolean): Frame {
+  const mac = mode === 'mac';
+  return { inset: mac ? MAC_INSET : 0, toolbarInset: mac && !sidebarOpen ? MAC_INSET : 0, drag: mac, transparentSidebar: mac };
+}

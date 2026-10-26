@@ -3,6 +3,7 @@
   // timers, one row of reviewer chips per round, the decision, and the note.
   import { chipRounds, roundKeys } from './board';
   import type { BoardJob } from './board';
+  import { reviewFailed } from './sidebar';
   import { abbr, chipTime, clock, reviewerSpan } from './time';
 
   interface Props {
@@ -21,7 +22,7 @@
   const reviewing = $derived(job.stage === 'review');
 </script>
 
-<button class="card {job.stage}" class:new={fresh} class:moved type="button" aria-haspopup="dialog" onclick={() => onopen(item.key)}>
+<button class="card {job.stage}" class:failed={reviewFailed(job)} class:new={fresh} class:moved type="button" aria-haspopup="dialog" onclick={() => onopen(item.key)}>
   <span class="top">
     <span class="id">{#if showProject}<span class="proj" title={item.project.name}>{item.project.name}</span>{/if}{job.id}</span>
     <span class="rnd">{job.round > 0 ? `round ${job.round}/${job.maxRound ?? 2}` : ''}</span>
