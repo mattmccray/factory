@@ -236,3 +236,42 @@ describe('hardening', () => {
     expect(await readFile(log, 'utf8')).toBe(text);
   });
 });
+
+describe('job.abandoned (force)', () => {
+  const files = async (): Promise<Record<string, string>> => ({
+    log: await readFile(join(jobDir(), 'events.jsonl'), 'utf8'),
+    snap: await readFile(join(jobDir(), 'job.json'), 'utf8'),
+  });
+  const abandon = ev('job.abandoned', { reason: 'dead end' });
+
+  test('from a working stage, appendEvent rejects it without force and writes nothing; with force it lands', async () => {
+    await toReview();
+    const before = await files();
+    await expect(appendEvent(root, ID, abandon)).rejects.toThrow(/force/);
+    await expect(appendEvent(root, ID, abandon, undefined, { force: false })).rejects.toThrow(/force/);
+    expect(await files()).toEqual(before);
+    const snap = await appendEvent(root, ID, abandon, undefined, { force: true });
+    expect(snap).toMatchObject({ stage: 'abandoned', note: 'dead end' });
+    const last = (await readLog(root, ID)).at(-1);
+    expect(last).toMatchObject({ type: 'job.abandoned', reason: 'dead end' });
+    expect(last && 'force' in last).toBe(false); // force is never recorded
+  });
+
+  test('from needs-human it lands without force', async () => {
+    await toReview();
+    await appendEvent(root, ID, ev('job.escalated', { reason: 'stuck' }));
+    expect((await appendEvent(root, ID, abandon)).stage).toBe('abandoned');
+  });
+
+  test('once abandoned, every event is rejected with or without force, and nothing is written', async () => {
+    await toReview();
+    await appendEvent(root, ID, abandon, undefined, { force: true });
+    const before = await files();
+    for (const e of [ev('job.noted', { note: 'x' }), ev('job.titled', { title: 'T' }), ev('agent.started', { role: 'builder' }),
+      ev('job.reworked', { k: 1, maxRound: 3 }), ev('job.escalated', { reason: 'r' }), abandon]) {
+      await expect(appendEvent(root, ID, e)).rejects.toThrow(/abandoned \(terminal\)/);
+      await expect(appendEvent(root, ID, e, undefined, { force: true })).rejects.toThrow(/abandoned \(terminal\)/);
+    }
+    expect(await files()).toEqual(before);
+  });
+});

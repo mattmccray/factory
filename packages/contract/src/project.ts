@@ -1,9 +1,12 @@
 // Projection: the append-only event log -> the `job.json` snapshot (docs/contract/v1.md).
 // Pure — no clock reads. Viewers compute live elapsed time from the open timestamps.
-import type { FactoryEvent, Role, Stage, Verdict } from './contract';
+import { workingStage } from './contract';
+import type { FactoryEvent, Role, Stage, Verdict, WorkingStage } from './contract';
 
 export type ReviewState = 'PASS' | 'CHANGES' | 'pending';
 export type Decision = 'APPROVE' | 'ESCALATE' | 'APPROVE (human)';
+/** Why a job is (or was last) in `needs-human`. */
+export type StoppedBy = 'escalated' | 'merge-failed';
 
 export interface StageSpan {
   stage: Stage;
@@ -39,6 +42,8 @@ export interface JobSnapshot {
   reworks: number;
   decision: Decision | null;
   note: string;
+  stoppedBy: StoppedBy | null; // set by job.escalated / merge.failed; reset by job.reworked
+  stoppedFrom: WorkingStage | null; // the working stage the job left for needs-human
   brief: string | null;
   issue: string | null;
   startedAt: string;
@@ -64,6 +69,17 @@ function enterStage(s: JobSnapshot, stage: Stage, ts: string): void {
 
 function sameAgent(a: AgentSpan, role: Role, key: string | null, round: number | null, name: string | null): boolean {
   return a.role === role && a.key === key && a.round === round && a.name === name;
+}
+
+// An event that ends a stage from the outside (an agent never wrote its file, or the job was
+// abandoned) leaves no agent span open: each closes at `ts` with its verdict still null.
+function closeOpenAgents(s: JobSnapshot, ts: string): void {
+  for (const a of s.timing.agents) {
+    if (a.finishedAt === null) {
+      a.finishedAt = ts;
+      a.ms = ms(a.startedAt, ts);
+    }
+  }
 }
 
 function apply(s: JobSnapshot, e: FactoryEvent): void {
@@ -126,21 +142,23 @@ function apply(s: JobSnapshot, e: FactoryEvent): void {
       return;
     case 'job.escalated':
       // An escalation can come mid-stage (an agent never wrote its file): no span stays open.
-      for (const a of s.timing.agents) {
-        if (a.finishedAt === null) {
-          a.finishedAt = e.ts;
-          a.ms = ms(a.startedAt, e.ts);
-        }
-      }
+      closeOpenAgents(s, e.ts);
       s.note = e.reason;
+      s.stoppedBy = 'escalated';
+      s.stoppedFrom = workingStage(s.stage);
       enterStage(s, 'needs-human', e.ts);
       return;
     case 'merge.failed':
       s.note = e.reason;
+      s.stoppedBy = 'merge-failed';
+      // From approve, that's where it stopped; a retry from needs-human keeps the original stage.
+      if (s.stage !== 'needs-human') s.stoppedFrom = workingStage(s.stage);
       enterStage(s, 'needs-human', e.ts);
       return;
     case 'job.reworked':
       s.reworks = e.k;
+      s.stoppedBy = null;
+      s.stoppedFrom = null;
       s.maxRound = e.maxRound;
       s.decision = null;
       s.note = ''; // the escalation reason no longer describes the job
@@ -153,6 +171,13 @@ function apply(s: JobSnapshot, e: FactoryEvent): void {
       s.endedAt = e.ts;
       s.note = `merged ${e.sha}`;
       enterStage(s, 'merged', e.ts);
+      return;
+    case 'job.abandoned':
+      // Terminal like merged; stoppedBy/stoppedFrom keep why it last stopped, if it did.
+      closeOpenAgents(s, e.ts);
+      s.endedAt = e.ts;
+      s.note = e.reason;
+      enterStage(s, 'abandoned', e.ts);
       return;
   }
 }
@@ -175,6 +200,8 @@ export function project(events: FactoryEvent[]): JobSnapshot {
     reworks: 0,
     decision: null,
     note: '',
+    stoppedBy: null,
+    stoppedFrom: null,
     brief: first.brief,
     issue: first.issue,
     startedAt: first.ts,

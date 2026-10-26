@@ -33,17 +33,21 @@ export interface Column extends Station {
 export interface BoardModel {
   andon: BoardJob[];
   columns: Column[];
-  settled: BoardJob[]; // newest merge first
+  settled: BoardJob[]; // newest end (merge or abandon) first
   running: number; // jobs on the line, not merged or waiting
   waiting: number; // needs-human jobs
   shown: number; // every job not settled
 }
 
-/** A merged job's merge time: `endedAt`, or `updated` for a legacy job. */
+/** A merged or abandoned job's end time: `endedAt`, or `updated` for a legacy job. */
 export const mergedAt = (j: Job): number => time(j.endedAt ?? j.updated);
 
-/** A merged job settles once its merge is older than its project's `settleAfterHours`. */
-export const isSettled = (b: BoardJob, now: number): boolean => b.job.stage === 'merged' && now - mergedAt(b.job) > b.settleAfterHours * 3_600_000;
+/**
+ * A merged job settles once its merge is older than its project's `settleAfterHours`; an abandoned
+ * job is always settled (never on the board, the andon row, or the counts).
+ */
+export const isSettled = (b: BoardJob, now: number): boolean =>
+  b.job.stage === 'abandoned' || (b.job.stage === 'merged' && now - mergedAt(b.job) > b.settleAfterHours * 3_600_000);
 
 const stationOf = (stage: string): string => (stage === 'claimed' ? 'spec' : stage);
 

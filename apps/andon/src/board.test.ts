@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildBoard, chipRounds, movement, roundKeys } from './board';
+import { buildBoard, chipRounds, isSettled, mergedAt, movement, roundKeys } from './board';
 import { HOUR, NOW, before, job, tag } from './fixtures';
 import { toConfig } from './job';
 
@@ -56,6 +56,40 @@ describe('buildBoard (AC1)', () => {
 
   test('the Review column names the reviewers', () => {
     expect(buildBoard([], NOW, ['security', 'code']).columns[2]?.who).toBe('security · code');
+  });
+});
+
+describe('abandoned jobs (AC5)', () => {
+  const jobs = [
+    job({ id: '001-build', stage: 'build', updated: before(1 * HOUR) }),
+    job({ id: '002-human', stage: 'needs-human', updated: before(2 * HOUR) }),
+    job({ id: '003-abandoned-fresh', stage: 'abandoned', endedAt: before(1 * HOUR), updated: before(1 * HOUR), stoppedBy: 'escalated', stoppedFrom: 'review' }),
+    job({ id: '004-merged-old', stage: 'merged', endedAt: before(30 * HOUR), updated: before(30 * HOUR) }),
+    job({ id: '005-abandoned-old', stage: 'abandoned', endedAt: before(40 * HOUR), updated: before(40 * HOUR) }),
+    job({ id: '006-merged-older', stage: 'merged', endedAt: before(50 * HOUR), updated: before(50 * HOUR) }),
+    job({ id: '007-abandoned-now', stage: 'abandoned', endedAt: before(0), updated: before(0) }),
+  ].map((j) => tag(j));
+  const board = buildBoard(jobs, NOW);
+  const ids = (list: Array<{ job: { id: string } }>): string[] => list.map((b) => b.job.id);
+
+  test('an abandoned job is settled regardless of settleAfterHours, newest endedAt first, mixed with merged', () => {
+    expect(ids(board.settled)).toEqual(['007-abandoned-now', '003-abandoned-fresh', '004-merged-old', '005-abandoned-old', '006-merged-older']);
+    expect(isSettled(tag(job({ id: '008-a', stage: 'abandoned', endedAt: before(0) }), undefined, 1000), NOW)).toBe(true);
+  });
+
+  test('an abandoned job is in no column, not the andon row, and not counted', () => {
+    const onBoard = [...ids(board.andon), ...board.columns.flatMap((c) => ids(c.jobs))];
+    expect(onBoard.filter((id) => id.includes('abandoned'))).toEqual([]);
+    expect(ids(board.andon)).toEqual(['002-human']);
+    expect(board.running).toBe(1);
+    expect(board.waiting).toBe(1);
+    expect(board.shown).toBe(2);
+  });
+
+  test('a legacy-shaped abandoned job with no endedAt settles by updated', () => {
+    const legacy = tag(job({ id: '009-a', stage: 'abandoned', updated: before(3 * HOUR) }));
+    expect(buildBoard([legacy], NOW).settled.map((b) => b.job.id)).toEqual(['009-a']);
+    expect(mergedAt(legacy.job)).toBe(NOW - 3 * HOUR);
   });
 });
 

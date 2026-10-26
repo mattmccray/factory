@@ -17,8 +17,8 @@ export function formatShow(snap: JobSnapshot, now: Date): string[] {
   const out = [`${snap.id}  ${snap.stage}${snap.title ? `  ${snap.title}` : ''}`];
   for (const s of snap.timing.stages) {
     const head = `stage  ${s.stage}${s.round ? ` r${s.round}` : ''}`;
-    // merged is terminal: its span never closes, and it isn't running either.
-    out.push(s.stage === 'merged' ? head : `${head}  ${span(s.ms, s.enteredAt, now)}`);
+    // merged and abandoned are terminal: their span never closes, and it isn't running either.
+    out.push(s.stage === 'merged' || s.stage === 'abandoned' ? head : `${head}  ${span(s.ms, s.enteredAt, now)}`);
   }
   for (const a of snap.timing.agents) {
     const who = [a.role, a.key, a.round !== null ? `r${a.round}` : null, a.name].filter((x) => x !== null).join(' ');

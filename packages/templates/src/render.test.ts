@@ -888,3 +888,53 @@ describe('marking a brief done when its job merges (job 015)', () => {
     }
   });
 });
+
+describe('the abandon command in SKILL.md', () => {
+  const flat = (s: string): string => s.replace(/\s+/g, ' ');
+  const configs = [config(), config({ reviewers: ['q'] }), config({ reviewers: ['zeta', 'eta-1', 'theta'], gate: ['x'] })];
+  const entryOf = (text: string): string => {
+    const start = text.indexOf('**`/factory abandon <id> <reason>`**');
+    if (start < 0) throw new Error('no abandon entry');
+    const end = text.indexOf('\n## ', start);
+    return flat(end < 0 ? text.slice(start) : text.slice(start, end));
+  };
+
+  test('AC6: abandon is in the frontmatter and in Commands', () => {
+    const { frontmatter, body } = splitFrontmatter(at(renderClaudeCode({ config: config() }).files, SKILL));
+    expect(/^argument-hint: (.+)$/m.exec(frontmatter)?.[1] ?? '').toContain('abandon <job-id> <reason>');
+    expect(/^description: (.+)$/m.exec(frontmatter)?.[1] ?? '').toContain('abandon <job-id> <reason>');
+    const commands = body.slice(body.indexOf('\n## Commands'), body.indexOf('\n## ', body.indexOf('\n## Commands') + 1));
+    expect(commands).toContain('**`/factory abandon <id> <reason>`**');
+  });
+
+  test('AC6: the confirm question, with the session-stopped check from a working stage', () => {
+    const entry = entryOf(at(renderClaudeCode({ config: config() }).files, SKILL));
+    expect(entry).toContain('**Confirm.**');
+    expect(entry).toContain('From a working stage (`claimed`, `spec`, `build`, `review`, `approve`), also ask them to confirm that the session driving the job is stopped');
+    expect(entry).toContain('Refuse `merged` and `abandoned`');
+  });
+
+  test('AC6: the keep-or-delete-branch question, with keep as the default', () => {
+    const entry = entryOf(at(renderClaudeCode({ config: config() }).files, SKILL));
+    expect(entry).toContain('**The branch.**');
+    expect(entry).toContain('Keep the branch `factory/<id>`, or delete it?');
+    expect(entry).toContain('The default is **keep**');
+  });
+
+  test('AC6: the exact CLI call, with --force from a working stage and --delete-branch only on delete', () => {
+    const entry = entryOf(at(renderClaudeCode({ config: config() }).files, SKILL));
+    expect(entry).toContain("bun factory/cli.ts abandon <id> '<reason>'");
+    expect(entry).toContain('adding `--force` only when the job is in a working stage (never from `needs-human`)');
+    expect(entry).toContain('`--delete-branch` only when the user chose delete');
+  });
+
+  test('AC6: rendering stays deterministic', () => {
+    for (const c of configs) {
+      const one = renderClaudeCode({ config: c });
+      const two = renderClaudeCode({ config: c });
+      expect(two.files).toEqual(one.files);
+      expect(two.manifest).toEqual(one.manifest);
+      expect(one.manifest.files[SKILL]).toBe(sha(at(one.files, SKILL)));
+    }
+  });
+});
