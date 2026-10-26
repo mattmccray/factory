@@ -27,6 +27,7 @@ factory/
   roles/<role>.md             # overlay: the project's rules for one role (tracked; optional)
   cli.ts                      # the only writer of job state (managed: a self-contained bundle)
   backlog.md  briefs/         # human-facing queue and interview briefs (tracked)
+  jobs/.claim.lock/           # the CLI's mutex for handing out job ids (runtime; never by hand)
   jobs/<id>/                  # runtime state, one dir per job (gitignored)
     events.jsonl              # append-only event log — the truth
     job.json                  # derived snapshot — what the board reads
@@ -37,8 +38,19 @@ factory/
   .lock/  .worktrees/<id>/    # runtime (gitignored)
 ```
 
-Job id: `^\d{3}-[a-z0-9-]+$` (three-digit sequence + 2–4 word kebab slug). The CLI checks it before
+Job id: `^\d{3}-[a-z0-9-]+$` (three-digit sequence + kebab slug). The CLI checks it before
 building any path under `jobs/`, so a bad id never reads, writes, or creates anything.
+
+Job ids are handed out by the CLI only, by `claim <slug>` (see "CLI"); an orchestrator never
+computes one. A **slug** (a job's dir name with the `NNN-` prefix removed) must match
+`^[a-z0-9]+(-[a-z0-9]+)*$` and be at most 40 characters ("2–4 words" is the skill's guidance, not
+a CLI rule). The number is the highest number among the job dirs + 1 (`001` when there are none);
+gaps are never filled, and once `999` is taken `claim` refuses. Only `jobs/` entries that are
+directories named like a job id count; `.claim.lock` and other stray entries are ignored.
+**Uniqueness:** every claim takes its number under `jobs/.claim.lock` (see the "Concurrency" paragraph in
+"CLI"), so no two claims, from any number of sessions or processes, get the same number. Job dirs
+created before this rule may already share a number; they keep working untouched, and `doctor`
+reports each such number as a `note`.
 
 ## `config.json`
 
@@ -59,7 +71,8 @@ building any path under `jobs/`, so a bad id never reads, writes, or creates any
   `round-<N>/review-<k>.md`. The order is the chip order on the board.
 - `maxRound` — default review budget for a new job.
 - `dashboard.settleAfterHours` — a merged job older than this is *settled*: hidden from the
-  Merged column and listed in the Settled dialog. Purely a view; no event records it.
+  Merged column and listed in the Settled dialog. Purely a view; no event records it. An
+  abandoned job is settled at once, whatever this says.
 - `gate` — optional. The project's gate: an ordered, non-empty array of non-empty shell command
   strings. Agents run them in order from the worktree root, and the gate is green only when
   every command exits 0. There is no default: when `gate` is absent, no gate is configured, and
@@ -71,7 +84,7 @@ building any path under `jobs/`, so a bad id never reads, writes, or creates any
   target branch name, configured or resolved from `"current"`, must match
   `^[A-Za-z0-9][A-Za-z0-9._/-]*$` with no `..`, `//`, or `/.`, and must not end in `/`, `.`, or
   `.lock`, so it can never carry quotes, whitespace, or shell metacharacters into the commands
-  that use it; anything else is an error. The CLI resolves it once per job, at `job.claimed`, and records the result (see
+  that use it; anything else is an error. The CLI resolves it once per job, at `claim`, and records it on `job.claimed` (see
   "`events.jsonl`"), so changing `merge.target` affects only jobs claimed afterward. A branch
   literally named `current` can't be targeted: the value always means the checkout's branch.
 - `roles` — optional. Says how each role is run: an object mapping a role name to
@@ -244,18 +257,19 @@ Plus the type's own fields:
 
 | type | fields | effect on the job |
 |---|---|---|
-| `job.claimed` | `schema: "factory/v1"`, `id`, `maxRound`, `brief: string\|null`, `issue: string\|null`, `target?` (the resolved target branch; filled by the CLI) | first line of every log; stage `claimed`; sets `target` |
+| `job.claimed` | `schema: "factory/v1"`, `id`, `maxRound`, `brief: string\|null`, `issue: string\|null`, `target?` (the resolved target branch; filled by the CLI) | first line of every log, written only by `claim`; stage `claimed`; sets `target` |
 | `job.titled` | `title` | sets the card title (from spec.md's H1) |
 | `stage.entered` | `stage` (`spec`\|`build`\|`approve`) | moves the job to that stage |
 | `round.started` | `round`, `reviewers: string[]` (filled by the CLI from `config.reviewers` when omitted; the stored event always has it) | stage `review`; previous round (if any) moves to history; every listed reviewer `pending` |
 | `agent.started` | `role` (`spec-writer`\|`builder`\|`reviewer`\|`approver`), `key?` (reviewer key), `round?`, `name?` (agent name/id, e.g. `builder-019-…`) | opens a timing span |
 | `agent.finished` | same identity fields as its start, `verdict?` | closes the span; a reviewer's `verdict` (`PASS`\|`CHANGES`) sets its chip only when its `round` is the current round and its `key` is one that round listed (any other finish closes its span and changes no chip); the approver's (`APPROVE`\|`ESCALATE`) sets `decision` |
 | `job.noted` | `note` | one-line card note |
-| `job.escalated` | `reason` | stage `needs-human`; `note = reason`; closes every still-open agent span at this `ts` with `verdict: null` |
-| `job.reworked` | `k`, `maxRound` | stage `build`; clears `decision`; `reworks = k`; `note = ""` |
+| `job.escalated` | `reason` | stage `needs-human`; `note = reason`; `stoppedBy = "escalated"`, `stoppedFrom` = the stage it left; closes every still-open agent span at this `ts` with `verdict: null` |
+| `job.reworked` | `k`, `maxRound` | stage `build`; clears `decision`; `reworks = k`; `note = ""`; `stoppedBy` and `stoppedFrom` = `null` |
 | `job.human-approved` | — | `decision = "APPROVE (human)"` (idempotent: a repeat while `needs-human` is accepted and changes nothing) |
-| `merge.failed` | `reason` | stage `needs-human`; `note = reason` |
-| `job.merged` | `sha` | stage `merged`; `note = "merged <sha>"`; terminal |
+| `merge.failed` | `reason` | stage `needs-human`; `note = reason`; `stoppedBy = "merge-failed"`; from `approve`, `stoppedFrom = "approve"` (from `needs-human`, after `job.human-approved`, `stoppedFrom` is unchanged) |
+| `job.merged` | `sha` | stage `merged`; `note = "merged <sha>"`; `endedAt = ts`; terminal |
+| `job.abandoned` | `reason` (non-empty) | stage `abandoned`; `note = reason`; `endedAt = ts`; closes every still-open agent span at this `ts` with `verdict: null`; terminal. *(Added within v1, additively.)* |
 
 `target` is never supplied by the orchestrator either: a caller-supplied `target` is rejected as
 an extra field, and nothing is written. The CLI resolves it from `merge.target` with git, in the
@@ -278,21 +292,33 @@ pair with the same `name`; spans never overlap for one identity.
 | from | allowed events |
 |---|---|
 | (no log) | `job.claimed` |
-| `claimed` | `stage.entered spec`, `job.escalated` |
-| `spec` | `job.titled`, `stage.entered build`, `job.escalated` |
-| `build` | `round.started` (round = previous + 1), `job.escalated` |
-| `review` | `stage.entered build` (only if round < maxRound and the round is complete), `stage.entered approve` (round complete), `job.escalated` |
-| `approve` | `job.escalated`, `job.merged`, `merge.failed` |
-| `needs-human` | `job.reworked`, `job.human-approved` → then `job.merged` \| `merge.failed` (a failed merge resets the approval, so `job.human-approved` is needed again before the next `job.merged`) |
+| `claimed` | `stage.entered spec`, `job.escalated`, `job.abandoned` (force only) |
+| `spec` | `job.titled`, `stage.entered build`, `job.escalated`, `job.abandoned` (force only) |
+| `build` | `round.started` (round = previous + 1), `job.escalated`, `job.abandoned` (force only) |
+| `review` | `stage.entered build` (only if round < maxRound and the round is complete), `stage.entered approve` (round complete), `job.escalated`, `job.abandoned` (force only) |
+| `approve` | `job.escalated`, `job.merged`, `merge.failed`, `job.abandoned` (force only) |
+| `needs-human` | `job.reworked`, `job.abandoned`, `job.human-approved` → then `job.merged` \| `merge.failed` (a failed merge resets the approval, so `job.human-approved` is needed again before the next `job.merged`) |
 | `merged` | nothing (terminal) |
+| `abandoned` | nothing (terminal) |
 
 `job.escalated` is allowed from every working stage (`claimed`, `spec`, `build`, `review`, `approve`),
 not from `needs-human`. A job whose log has no `job.claimed`, or whose dir holds a `job.json` but no
-`events.jsonl` (legacy), rejects every event — including `job.claimed`; only `job.claimed` on a
-new id creates the job dir, and a rejected event leaves nothing behind. A merge from `needs-human`
+`events.jsonl` (legacy), rejects every event — including `job.claimed`; only `claim` creates a
+job dir (it logs `job.claimed` on a new id), and a rejected event leaves nothing behind. A merge from `needs-human`
 needs a `job.human-approved` logged after any `merge.failed` (and after any `job.escalated`).
 `job.human-approved` is idempotent while `needs-human`: logging it again when the job is already
 human-approved is accepted (so a retried `approve` never fails on it) and has no further effect.
+
+`job.abandoned` is allowed from `needs-human` always, and from a working stage only when the
+caller passes **force**, an option of the transition check, not a field of the event: the event
+stores `reason` only, and nothing records whether force was passed. `bun factory/cli.ts event
+<id> job.abandoned reason=…` never passes force, so through `event` it is allowed from
+`needs-human` only; `abandon --force` (see "CLI") passes it. It is never allowed from `merged`
+or `abandoned`, with or without force. *(Added within v1, additively: a new event and a new
+terminal stage; no existing transition is tightened.)*
+
+`merged` and `abandoned` are the two terminal stages: each rejects every later event, including
+`job.noted`, `job.titled`, and `agent.*`, with or without force.
 
 `job.noted`, `job.titled`, `agent.started`, and `agent.finished` are allowed in any non-terminal
 stage. A round is **complete** when every reviewer listed in its `round.started` has an
@@ -312,7 +338,8 @@ see a partial file). Field-compatible with the pre-contract `job.json`, plus tim
   "stage": "review", "round": 2, "maxRound": 2,
   "reviews": { "security": "CHANGES", "ux": "PASS", "ui": "pending", "code": "PASS" },
   "history": [ { "round": 1, "reviews": { "security": "CHANGES", "ux": "PASS", "ui": "CHANGES", "code": "PASS" } } ],
-  "reworks": 0, "decision": null, "note": "", "brief": null, "issue": "M80",
+  "reworks": 0, "decision": null, "note": "", "stoppedBy": null, "stoppedFrom": null,
+  "brief": null, "issue": "M80",
   "startedAt": "2026-10-23T14:02:11.204Z",
   "stageEnteredAt": "2026-10-23T14:31:40.019Z",
   "endedAt": null,
@@ -333,8 +360,17 @@ see a partial file). Field-compatible with the pre-contract `job.json`, plus tim
   not, it records `merge.failed reason='checkout is on <x>, job targets <target>'` and never
   switches the checkout's branch.
 - `stageEnteredAt` — when the current stage began (drives the card's live timer).
-- `endedAt` — the `job.merged` time, else `null`. Settled = `endedAt` older than
-  `settleAfterHours`.
+- `stoppedBy` — why the job is (or last was) in `needs-human`: `"escalated"` (set by
+  `job.escalated`) or `"merge-failed"` (set by `merge.failed`, also one logged while already in
+  `needs-human`); `null` when it never was, or since its last `job.reworked`.
+- `stoppedFrom` — the working stage (`claimed`, `spec`, `build`, `review`, or `approve`) the job
+  was in when it entered `needs-human`, or `null`. A `merge.failed` from `needs-human` leaves it
+  unchanged. `job.reworked` resets both fields to `null`; `job.human-approved`, `job.merged`, and
+  `job.abandoned` keep them. Snapshots written by the CLI always carry both keys; readers treat a
+  missing key as `null` (a snapshot written before them, until a `rebuild` derives them from the
+  log). *(Added within v1, additively.)*
+- `endedAt` — the `job.merged` or `job.abandoned` time, else `null`. A merged job is settled when
+  `endedAt` is older than `settleAfterHours`; an abandoned job is always settled.
 - `updated` — the last event's `ts`.
 - `timing.stages[].exitedAt`/`ms` are `null` for the open stage; `timing.agents[].finishedAt`/`ms`
   are `null` while the agent runs. Viewers compute live elapsed time from the open timestamps.
@@ -346,10 +382,12 @@ them as having no timing and use `updated` as the merge time when `stage` is `me
 ## CLI
 
 ```
+bun factory/cli.ts claim <slug> [brief=…] [issue=…] [maxRound=…]  # create a job; prints its id
 bun factory/cli.ts event <id> <type> [field=value …]   # validate, append, rebuild job.json
 bun factory/cli.ts rebuild <id> | --all                # regenerate job.json from the log
 bun factory/cli.ts show <id>                           # human-readable timing summary
-bun factory/cli.ts doctor                              # validate config.json, verify managed hashes
+bun factory/cli.ts abandon <id> "<reason>" [--force] [--delete-branch]  # close a job for good
+bun factory/cli.ts doctor                              # validate config.json, verify managed hashes, note duplicate job numbers
 factory init [--force]                                 # (source only) install the managed core
 factory upgrade [--force]                              # (source only) replace the managed core
 ```
@@ -358,7 +396,45 @@ Alias: `bun run factory:event …` for `event`. Value parsing is fixed, not gues
 and `k` are integers (anything else is an error); `reviewers` is a JSON array; the literal `null`
 is `null`; every other value stays a string (so `sha=3e45678` and `title=404` are never coerced). The CLI fills `job.claimed`'s `id`/`schema`/`target`
 (and `maxRound` when omitted) and `round.started`'s `reviewers` when omitted from `config.json`. Exit 0 and print the new stage on success;
-exit non-zero with a one-line reason on rejection.
+exit non-zero with a one-line reason on rejection. `event <id> job.claimed …` is always rejected,
+with a one-line reason naming `claim`, and writes nothing: a job is created only by `claim`.
+
+`claim <slug> [brief=…] [issue=…] [maxRound=…]` is the only way to create a job. It takes a slug,
+never a full id (there is no override). In order, it: checks the slug (see "File layout") and the
+fields (`brief`, `issue`, `maxRound` only; a caller-supplied `target`, `id`, or anything else is
+an extra field); resolves `target` from `merge.target` with git (see "`events.jsonl`"); then,
+holding `jobs/.claim.lock`, scans the job dirs, refuses the slug when a **live** job already has
+it, picks the next number (highest + 1; refused once `999` is taken), and appends `job.claimed`
+for `<NNN>-<slug>` through the per-job path (so `jobs/<id>/.events.lock` nests inside
+`.claim.lock`), which creates the dir, `events.jsonl`, and `job.json`. A job is live when its
+dir has a readable `job.json` whose `stage` is neither `merged` nor `abandoned`; a dir with no
+readable `job.json` (legacy) is not live. A live slug is refused with
+`slug <slug> is live as <id>`; after that job is `merged` or `abandoned`, the same slug is
+claimed again under a new number. On success `claim` exits 0 and prints only the full id
+(e.g. `005-week-view-pager`) on stdout: the dir's name and the log's `id`. Every refusal (a bad
+or missing slug, a bad field, a refused target, a live slug, no numbers left) exits 1 with one
+stderr line and writes nothing: no job dir, no `events.jsonl`, no `job.json`. The slug, field,
+and target checks run before the lock is taken, so they also leave no `.claim.lock` and use up
+no number. A missing slug prints `usage: claim <slug> [brief=…] [issue=…] [maxRound=…]`.
+
+`show` treats `abandoned` like `merged`: its terminal stage span is never closed and is not
+shown as running.
+
+`abandon <id> "<reason>" [--force] [--delete-branch]` closes a job without merging it. In order,
+it: checks the job id (`^\d{3}-[a-z0-9-]+$`) before building any path; appends
+`job.abandoned reason=<reason>` under the per-job lock, which runs the transition check (passing
+force only with `--force`); in the repo root (the parent of `factory/`), runs
+`git worktree remove --force factory/.worktrees/<id>` only if that worktree directory exists;
+with `--delete-branch` only, runs `git branch -D <branch>`, where `<branch>` is the snapshot's
+`branch` and must equal `factory/<id>` (a branch that no longer exists is not an error); and
+prints `abandoned`. Without `--delete-branch` the branch is kept. The event is logged before
+cleanup, the same rule as `job.merged`, so git and the board can't disagree about whether the
+job is closed: a rejected event exits 1 and touches neither git nor the job, and a cleanup that
+fails exits 1 with one line naming what was left behind, while the job stays `abandoned`. A
+missing id or reason, an empty reason, an unknown or repeated flag, or an extra argument exits 1
+with `usage: abandon <id> "<reason>" [--force] [--delete-branch]`, and nothing is written.
+`abandon` never stops a running agent session; the skill asks the user to confirm the session
+is stopped before it passes `--force`. *(Added within v1, additively: a new command.)*
 
 `doctor` writes nothing. It runs every check and reports every finding, one line per check
 (`ok`, `FAIL`, or `note`), rather than stopping at the first:
@@ -369,6 +445,9 @@ exit non-zero with a one-line reason on rejection.
 2. If `managed.json` exists, it must be well-formed (see "Managed files"), and each listed file
    must exist with a matching SHA-256. A malformed manifest, a missing file, or a changed file is
    a failure, and each is reported by its path. No manifest is a `note` (unstamped install).
+3. Each job number held by more than one job dir (directories under `jobs/` named like a job id)
+   is a `note`, never a failure, one line per number in number order, with the dirs sorted:
+   `note: job number 005 is used by 005-links-footer, 005-week-view-pager`.
 
 `doctor` exits 0 when nothing failed and 1 otherwise.
 
@@ -379,11 +458,13 @@ An installed copy that predates `doctor` gains it when the CLI is promoted.
 The installed `factory/cli.ts` is a single self-contained file (the source CLI bundled with its
 contract code), so it runs with `bun` alone, with no workspace packages or `node_modules`. It
 finds its factory root from its own location (its directory), and keeps the same commands
-(`event`, `rebuild`, `show`, `doctor`), value parsing, per-command usage lines, and exit codes as
+(`claim`, `event`, `rebuild`, `show`, `abandon`, `doctor`), value parsing, per-command usage lines, and exit codes as
 the source. The top-level usage line (printed for a missing or unknown command) differs: the
-installed CLI prints the vendored
-`usage: event <id> <type> [k=v …] | rebuild <id>|--all | show <id>`, and the source CLI prints
-that line followed by ` | doctor | init [--force] | upgrade [--force]`.
+installed CLI prints
+`usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id>`, and the source CLI prints
+that line followed by ` | doctor | init [--force] | upgrade [--force]`. Neither line lists
+`abandon`; its own usage line is printed for its usage errors. An installed copy that predates
+`abandon` or `claim` gains it when the CLI is promoted.
 The same source always bundles to the same bytes. It does not offer `init` or `upgrade`: those
 run from the factory's source against a project, as the linked `factory init` with the project
 root as the cwd.
@@ -447,7 +528,12 @@ a one-line reason that names the offending paths.
 Concurrency: a job's log has exactly one writer at a time — the session driving that job (or,
 in `needs-human`, whoever runs approve/rework). The CLI enforces it with a per-job lock,
 `jobs/<id>/.events.lock` (an `mkdir`; considered stale after 30 s), held across read → check →
-append → project → write. Cross-job steps (claim, merge) stay under `factory/.lock` as before.
+append → project → write. Job numbers are handed out under a second `mkdir` lock,
+`jobs/.claim.lock` (the same 30 s stale rule; a fresh one is waited on), held by `claim` across
+scan → pick → create dir → first event; the per-job `.events.lock` nests inside it. Only `claim`
+takes it. Cross-job steps the CLI can't see (the orchestrator's overlap check and backlog tick
+around a claim, and merges) stay under `factory/.lock` as before; an orchestrator holds
+`factory/.lock` around its whole claim step, and `claim` never takes `factory/.lock`.
 
 Log integrity: a log whose last line lacks `\n` (a torn write) is refused for appends as a corrupt
 tail; an unparseable line is reported by its line number. Recovery is manual: a human truncates the
@@ -490,7 +576,8 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
   basename. A project whose `factory/` is missing is still listed.
 - `GET /projects/<pid>/board` returns `{ jobs, config }` for that project, with the same shape
   and rules as the dashboard's `GET /board`: a `job.json` that is missing or mid-write keeps the
-  job's last good snapshot, unknown `job.json` fields are passed through, and a bad
+  job's last good snapshot, unknown `job.json` fields are passed through (an `abandoned` job,
+  `stoppedBy`, and `stoppedFrom` included, unchanged), and a bad
   `config.json` is a 500 whose text is `config.json: <reason>`.
 - `GET /projects/<pid>/jobs/<id>/docs` returns `{ files: [{ path, text }] }`, with the same
   reading order, brief handling, and paths (relative to `factory/`) as the dashboard's
@@ -544,5 +631,11 @@ These rules record how the code behaves today; they change no behavior.
   dashboard, and Andon) ignore fields they don't know. A reader that meets an unknown event `type`
   leaves the snapshot as it was and does not fail (the projection still advances `updated` to that
   event's `ts`, since `updated` is always the last event's `ts`).
+- **2026-10-26: `claim` and the `job.claimed` refusal on `event`.** A single approved pre-1.0
+  break within `factory/v1` (the brief's contract call, approved 2026-10-26): `job.claimed` is
+  written only by the new `claim <slug>` command, which picks the job number, and `event` refuses
+  `job.claimed`. It is not additive, and it is the only exception to the additive-only rule; it sets no
+  general pre-1.0 policy. The log format and `job.claimed`'s fields are unchanged, so every
+  existing `events.jsonl` and `job.json` stays valid v1.
 - **`config.json` is strict, so upgrade first.** A config that uses a newer v1 key needs a CLI that
   knows that key. Upgrade the managed files before adding the key to the overlay.

@@ -1,9 +1,11 @@
 // factory 0.1.0 · managed file, do not edit: it is replaced on upgrade. Project settings go in the overlay: factory/config.json
 // packages/cli/src/core.ts
-import { readFile as readFile3 } from "fs/promises";
-import { dirname as dirname3, join as join4, resolve as resolve3 } from "path";
+import { readFile as readFile3, stat as stat2 } from "fs/promises";
+import { dirname as dirname3, join as join4, relative as relative2, resolve as resolve3 } from "path";
 
 // packages/contract/src/contract.ts
+var WORKING_STAGES = ["claimed", "spec", "build", "review", "approve"];
+var workingStage = (stage) => WORKING_STAGES.find((w) => w === stage) ?? null;
 var CURRENT_TARGET = "current";
 var BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 function isTargetBranch(name) {
@@ -16,6 +18,16 @@ var MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$/;
 var RUNNERS = ["claude"];
 var SCHEMA = "factory/v1";
 var JOB_ID = /^\d{3}-[a-z0-9-]+$/;
+var isJobId = (id) => JOB_ID.test(id);
+var SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+var SLUG_MAX = 40;
+var JOB_NUMBER_MAX = 999;
+function checkSlug(slug) {
+  if (slug.length > SLUG_MAX)
+    throw new Error(`slug ${JSON.stringify(slug)} is ${slug.length} characters (at most ${SLUG_MAX})`);
+  if (!SLUG_PATTERN.test(slug))
+    throw new Error(`slug ${JSON.stringify(slug)} must match ${SLUG_PATTERN.source}`);
+}
 var REVIEWER_KEY = /^[a-z][a-z0-9-]*$/;
 var RESERVED_KEYS = ["spec-writer", "builder", "approver"];
 var ROLES = ["spec-writer", "builder", "reviewer", "approver"];
@@ -221,6 +233,9 @@ function parseEventInput(type, fields, ctx) {
     case "job.merged":
       allow("sha");
       return { type, sha: str(fields, "sha") };
+    case "job.abandoned":
+      allow("reason");
+      return { type, reason: str(fields, "reason") };
     default:
       throw new Error(`unknown event type '${type}'`);
   }
@@ -265,6 +280,9 @@ function derive(prior) {
       case "job.merged":
         s.stage = "merged";
         break;
+      case "job.abandoned":
+        s.stage = "abandoned";
+        break;
       default:
         break;
     }
@@ -274,7 +292,7 @@ function derive(prior) {
 function fail(msg) {
   throw new Error(msg);
 }
-function checkTransition(prior, next) {
+function checkTransition(prior, next, opts = {}) {
   const s = derive(prior);
   const { stage } = s;
   if (stage === null) {
@@ -288,8 +306,8 @@ function checkTransition(prior, next) {
       fail("maxRound must be a positive integer");
     return;
   }
-  if (stage === "merged")
-    fail(`job is merged (terminal): ${next.type} not allowed`);
+  if (stage === "merged" || stage === "abandoned")
+    fail(`job is ${stage} (terminal): ${next.type} not allowed`);
   const bad = () => fail(`${next.type} not allowed from stage '${stage}'`);
   switch (next.type) {
     case "job.claimed":
@@ -338,6 +356,10 @@ function checkTransition(prior, next) {
       return stage === "needs-human" ? undefined : bad();
     case "job.human-approved":
       return stage === "needs-human" ? undefined : bad();
+    case "job.abandoned":
+      if (stage === "needs-human" || opts.force === true)
+        return;
+      return fail(`job.abandoned from working stage '${stage}' requires force (abandon --force)`);
   }
 }
 function requireComplete(s) {
@@ -361,6 +383,14 @@ function enterStage(s, stage, ts) {
 }
 function sameAgent(a, role, key, round, name) {
   return a.role === role && a.key === key && a.round === round && a.name === name;
+}
+function closeOpenAgents(s, ts) {
+  for (const a of s.timing.agents) {
+    if (a.finishedAt === null) {
+      a.finishedAt = ts;
+      a.ms = ms(a.startedAt, ts);
+    }
+  }
 }
 function apply(s, e) {
   s.updated = e.ts;
@@ -429,21 +459,23 @@ function apply(s, e) {
       s.note = e.note;
       return;
     case "job.escalated":
-      for (const a of s.timing.agents) {
-        if (a.finishedAt === null) {
-          a.finishedAt = e.ts;
-          a.ms = ms(a.startedAt, e.ts);
-        }
-      }
+      closeOpenAgents(s, e.ts);
       s.note = e.reason;
+      s.stoppedBy = "escalated";
+      s.stoppedFrom = workingStage(s.stage);
       enterStage(s, "needs-human", e.ts);
       return;
     case "merge.failed":
       s.note = e.reason;
+      s.stoppedBy = "merge-failed";
+      if (s.stage !== "needs-human")
+        s.stoppedFrom = workingStage(s.stage);
       enterStage(s, "needs-human", e.ts);
       return;
     case "job.reworked":
       s.reworks = e.k;
+      s.stoppedBy = null;
+      s.stoppedFrom = null;
       s.maxRound = e.maxRound;
       s.decision = null;
       s.note = "";
@@ -456,6 +488,12 @@ function apply(s, e) {
       s.endedAt = e.ts;
       s.note = `merged ${e.sha}`;
       enterStage(s, "merged", e.ts);
+      return;
+    case "job.abandoned":
+      closeOpenAgents(s, e.ts);
+      s.endedAt = e.ts;
+      s.note = e.reason;
+      enterStage(s, "abandoned", e.ts);
       return;
   }
 }
@@ -478,6 +516,8 @@ function project(events) {
     reworks: 0,
     decision: null,
     note: "",
+    stoppedBy: null,
+    stoppedFrom: null,
     brief: first.brief,
     issue: first.issue,
     startedAt: first.ts,
@@ -573,17 +613,11 @@ async function withVerdict(root, id, input) {
   }
   return input;
 }
-async function withLock(dir, create, fn) {
-  let created = false;
-  if (create)
-    created = await mkdir(dir, { recursive: true }) !== undefined;
-  else if (!await exists(dir))
-    throw new Error(`${dir.split("/").pop()}: no such job`);
-  const lock = join(dir, ".events.lock");
+async function acquire(lock) {
   for (;; ) {
     try {
       await mkdir(lock);
-      break;
+      return;
     } catch (e) {
       if (!isExists(e))
         throw e;
@@ -597,6 +631,15 @@ async function withLock(dir, create, fn) {
       await sleep(LOCK_RETRY_MS);
     }
   }
+}
+async function withLock(dir, create, fn) {
+  let created = false;
+  if (create)
+    created = await mkdir(dir, { recursive: true }) !== undefined;
+  else if (!await exists(dir))
+    throw new Error(`${dir.split("/").pop()}: no such job`);
+  const lock = join(dir, ".events.lock");
+  await acquire(lock);
   let ok = false;
   try {
     const out = await fn();
@@ -627,7 +670,7 @@ async function writeSnapshot(root, id, snap) {
 `);
   await rename(tmp, file);
 }
-async function appendEvent(root, id, input, now = () => new Date) {
+async function appendEvent(root, id, input, now = () => new Date, opts = {}) {
   return withLock(jobDir(root, id), input.type === "job.claimed", async () => {
     const prior = await readLog(root, id);
     if (prior.length === 0 && await exists(join(jobDir(root, id), "job.json"))) {
@@ -638,7 +681,7 @@ async function appendEvent(root, id, input, now = () => new Date) {
 `))
       throw new Error(`${id}: events.jsonl does not end with a newline (corrupt tail); refusing to append`);
     const checked = await withVerdict(root, id, input);
-    checkTransition(prior, checked);
+    checkTransition(prior, checked, opts);
     const event = { ts: now().toISOString(), ...checked };
     await appendFile(logPath(root, id), `${JSON.stringify(event)}
 `);
@@ -681,6 +724,58 @@ async function listEventedJobs(root) {
     }
   }
   return out;
+}
+function claimedInput(id, input) {
+  const ctx = { id, config: input.config };
+  if (input.target !== undefined)
+    ctx.target = input.target;
+  return parseEventInput("job.claimed", input.fields, ctx);
+}
+function checkClaim(slug, input) {
+  checkSlug(slug);
+  claimedInput(`000-${slug}`, input);
+}
+async function jobDirs(root) {
+  try {
+    return (await readdir(join(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && JOB_ID2.test(d.name)).map((d) => d.name).sort();
+  } catch (e) {
+    if (isNotFound(e))
+      return [];
+    throw e;
+  }
+}
+async function isLive(root, id) {
+  let raw;
+  try {
+    raw = JSON.parse(await readFile(join(jobDir(root, id), "job.json"), "utf8"));
+  } catch {
+    return false;
+  }
+  if (typeof raw !== "object" || raw === null || !("stage" in raw) || typeof raw.stage !== "string")
+    return false;
+  return raw.stage !== "merged" && raw.stage !== "abandoned";
+}
+async function claimJob(root, slug, input, now = () => new Date) {
+  checkClaim(slug, input);
+  const jobs = join(root, "jobs");
+  await mkdir(jobs, { recursive: true });
+  const lock = join(jobs, ".claim.lock");
+  await acquire(lock);
+  try {
+    const dirs = await jobDirs(root);
+    for (const d of dirs) {
+      if (d.slice(4) === slug && await isLive(root, d))
+        throw new Error(`slug ${slug} is live as ${d}`);
+    }
+    const highest = dirs.reduce((n, d) => Math.max(n, Number(d.slice(0, 3))), 0);
+    if (highest >= JOB_NUMBER_MAX)
+      throw new Error(`job number ${JOB_NUMBER_MAX} is taken: no job numbers are left`);
+    const id = `${String(highest + 1).padStart(3, "0")}-${slug}`;
+    const snapshot = await appendEvent(root, id, claimedInput(id, input), now);
+    return { id, snapshot };
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+  }
 }
 // packages/contract/src/fields.ts
 var INT_KEYS = ["round", "maxRound", "k"];
@@ -728,7 +823,7 @@ function formatShow(snap, now) {
   const out = [`${snap.id}  ${snap.stage}${snap.title ? `  ${snap.title}` : ""}`];
   for (const s of snap.timing.stages) {
     const head = `stage  ${s.stage}${s.round ? ` r${s.round}` : ""}`;
-    out.push(s.stage === "merged" ? head : `${head}  ${span(s.ms, s.enteredAt, now)}`);
+    out.push(s.stage === "merged" || s.stage === "abandoned" ? head : `${head}  ${span(s.ms, s.enteredAt, now)}`);
   }
   for (const a of snap.timing.agents) {
     const who = [a.role, a.key, a.round !== null ? `r${a.round}` : null, a.name].filter((x) => x !== null).join(" ");
@@ -778,7 +873,7 @@ function parseManifest(raw) {
 }
 // packages/cli/src/doctor.ts
 import { createHash } from "crypto";
-import { readFile as readFile2 } from "fs/promises";
+import { readFile as readFile2, readdir as readdir2 } from "fs/promises";
 import { dirname as dirname2, join as join3, resolve as resolve2 } from "path";
 
 // packages/cli/src/paths.ts
@@ -899,8 +994,24 @@ async function checkManaged(root) {
   }
   return out;
 }
+async function checkJobNumbers(root) {
+  let names;
+  try {
+    names = (await readdir2(join3(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && isJobId(d.name)).map((d) => d.name);
+  } catch (e) {
+    if (isNotFound2(e))
+      return [];
+    return [bad("jobs/", firstLine(e))];
+  }
+  const byNumber = new Map;
+  for (const name of names.sort()) {
+    const n = name.slice(0, 3);
+    byNumber.set(n, [...byNumber.get(n) ?? [], name]);
+  }
+  return [...byNumber.entries()].filter(([, ids]) => ids.length > 1).map(([n, ids]) => ({ ok: true, line: `note: job number ${n} is used by ${ids.join(", ")}` }));
+}
 async function doctor(root) {
-  return [await checkConfig(root), ...await checkManaged(root)];
+  return [await checkConfig(root), ...await checkManaged(root), ...await checkJobNumbers(root)];
 }
 
 // packages/cli/src/git.ts
@@ -912,12 +1023,12 @@ function gitEnv() {
   }
   return env;
 }
-async function git(repo, args) {
+async function git(repo, args, what = "merge.target") {
   let proc;
   try {
     proc = Bun.spawn(["git", "-C", repo, ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: gitEnv() });
   } catch (e) {
-    throw new Error(`merge.target: cannot run git: ${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(`${what}: cannot run git: ${e instanceof Error ? e.message : String(e)}`);
   }
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   return { code, out: out.trim(), err: err.trim().split(`
@@ -946,13 +1057,28 @@ async function resolveTarget(repo, configured) {
     throw new Error(`merge.target '${configured}': no branch refs/heads/${configured} in ${repo}`);
   throw new Error(`merge.target '${configured}': git failed in ${repo}: ${r.err || `exit ${r.code}`}`);
 }
+async function removeWorktree(repo, path) {
+  const r = await git(repo, ["worktree", "remove", "--force", path], "abandon");
+  return r.code === 0 ? null : r.err || `exit ${r.code}`;
+}
+async function deleteBranch(repo, branch) {
+  const has = await git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], "abandon");
+  if (has.code === 1)
+    return null;
+  if (has.code !== 0)
+    return has.err || `exit ${has.code}`;
+  const r = await git(repo, ["branch", "-D", branch], "abandon");
+  return r.code === 0 ? null : r.err || `exit ${r.code}`;
+}
 
 // packages/cli/src/core.ts
 var USAGE = {
+  claim: "usage: claim <slug> [brief=\u2026] [issue=\u2026] [maxRound=\u2026]",
   event: "usage: event <id> <type> [field=value \u2026]",
   rebuild: "usage: rebuild <id> | --all",
   show: "usage: show <id>",
-  all: "usage: event <id> <type> [k=v \u2026] | rebuild <id>|--all | show <id>"
+  abandon: 'usage: abandon <id> "<reason>" [--force] [--delete-branch]',
+  all: "usage: claim <slug> [k=v \u2026] | event <id> <type> [k=v \u2026] | rebuild <id>|--all | show <id>"
 };
 async function dispatchCore(argv, io, usage = USAGE.all) {
   const [cmd, ...rest] = argv;
@@ -964,17 +1090,25 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
   }
   const config = parseConfig(JSON.parse(await readFile3(join4(io.root, "config.json"), "utf8")));
   switch (cmd) {
+    case "claim": {
+      const [slug, ...kv] = rest;
+      if (slug === undefined)
+        throw new Error(USAGE.claim);
+      checkSlug(slug);
+      const fields = parseFields(kv);
+      checkClaim(slug, { fields, config });
+      const target = await resolveTarget(dirname3(resolve3(io.root)), mergeTarget(config));
+      io.stdout((await claimJob(io.root, slug, { fields, config, target })).id);
+      return 0;
+    }
     case "event": {
       const [id, type, ...kv] = rest;
       if (!id || !type)
         throw new Error(USAGE.event);
+      if (type === "job.claimed")
+        throw new Error(`job.claimed is written only by claim: run ${USAGE.claim.replace("usage: ", "")}`);
       const fields = parseFields(kv);
-      let input = parseEventInput(type, fields, { id, config });
-      if (input.type === "job.claimed") {
-        const target = await resolveTarget(dirname3(resolve3(io.root)), mergeTarget(config));
-        input = parseEventInput(type, fields, { id, config, target });
-      }
-      io.stdout((await appendEvent(io.root, id, input)).stage);
+      io.stdout((await appendEvent(io.root, id, parseEventInput(type, fields, { id, config }))).stage);
       return 0;
     }
     case "rebuild": {
@@ -996,9 +1130,60 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
         io.stdout(line);
       return 0;
     }
+    case "abandon":
+      return abandon(rest, io);
     default:
       throw new Error(usage);
   }
+}
+function parseAbandon(rest) {
+  const [id, reason, ...flags] = rest;
+  if (id === undefined || reason === undefined || reason === "" || flags.length > 2)
+    throw new Error(USAGE.abandon);
+  const known = ["--force", "--delete-branch"];
+  if (flags.some((f) => !known.includes(f)) || new Set(flags).size !== flags.length)
+    throw new Error(USAGE.abandon);
+  return { id, reason, force: flags.includes("--force"), deleteBranch: flags.includes("--delete-branch") };
+}
+var isDir = async (path) => {
+  try {
+    return (await stat2(path)).isDirectory();
+  } catch (e) {
+    if (isNotFound2(e))
+      return false;
+    throw e;
+  }
+};
+async function abandon(rest, io) {
+  const args = parseAbandon(rest);
+  if (!isJobId(args.id))
+    throw new Error(`job id '${args.id}' must match ^\\d{3}-[a-z0-9-]+$`);
+  const input = parseEventInput("job.abandoned", { reason: args.reason });
+  const snap = await appendEvent(io.root, args.id, input, undefined, { force: args.force });
+  const repo = dirname3(resolve3(io.root));
+  const branch = `factory/${args.id}`;
+  const worktree = relative2(repo, join4(resolve3(io.root), ".worktrees", args.id));
+  const left = [];
+  if (await isDir(join4(repo, worktree))) {
+    const why = await removeWorktree(repo, worktree);
+    if (why !== null)
+      left.push(`worktree ${worktree} (${why})`);
+  }
+  if (args.deleteBranch) {
+    if (snap.branch !== branch)
+      left.push(`branch ${snap.branch} (not ${branch}; not deleted)`);
+    else if (left.length > 0)
+      left.push(`branch ${branch} (its worktree is still there)`);
+    else {
+      const why = await deleteBranch(repo, branch);
+      if (why !== null)
+        left.push(`branch ${branch} (${why})`);
+    }
+  }
+  if (left.length > 0)
+    throw new Error(`${args.id} is abandoned, but cleanup left behind: ${left.join("; ")}`);
+  io.stdout(snap.stage);
+  return 0;
 }
 async function guarded(io, body) {
   try {

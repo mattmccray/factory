@@ -1,7 +1,7 @@
 ---
 name: factory
-description: Run the factory — a feature goes spec → build → parallel reviews → approve → merge, driven by subagents that talk only through markdown files; `queue` and `explore` feed its backlog, and `customize` (alias `init`) tailors the project's overlay. Use when the user invokes /factory with a feature, `next [words]`, `queue <text>`, `explore <idea|brief>`, `customize`, `init`, `approve <job-id>`, or `rework <job-id> <note>`.
-argument-hint: "<feature> | next [words] | queue <text> | explore <idea|brief> | customize | init | approve <job-id> | rework <job-id> <note>"
+description: Run the factory — a feature goes spec → build → parallel reviews → approve → merge, driven by subagents that talk only through markdown files; `queue` and `explore` feed its backlog, and `customize` (alias `init`) tailors the project's overlay. Use when the user invokes /factory with a feature, `next [words]`, `queue <text>`, `explore <idea|brief>`, `customize`, `init`, `approve <job-id>`, `rework <job-id> <note>`, or `abandon <job-id> <reason>`.
+argument-hint: "<feature> | next [words] | queue <text> | explore <idea|brief> | customize | init | approve <job-id> | rework <job-id> <note> | abandon <job-id> <reason>"
 ---
 <!-- factory 0.1.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/config.json and factory/roles/<role>.md -->
 
@@ -28,6 +28,7 @@ feature → spec-writer → builder ⇄ [configured reviewers] → approver → 
 | `factory/config.json` — reviewer keys, the default `maxRound`, the gate, per-role runners, and the merge target | human (or `customize`, with the human) |
 | `factory/roles/<role>.md` — the project's rules for one role (optional) | human (or `customize`, with the human) |
 | `factory/.lock/` — a short mutex for claiming work and merging | you, briefly |
+| `factory/jobs/.claim.lock/` — the CLI's mutex for handing out job ids | the factory CLI (never by hand) |
 | `factory/backlog.md` — queue for `/factory next` | human (you tick items off) |
 | `factory/briefs/<slug>.md` — decisions from an `explore` interview (tracked in git) | you, with the human |
 | `factory/jobs/<id>/feature.md` — the request, verbatim | you |
@@ -44,7 +45,7 @@ branch; the main checkout stays on the job's target branch so your files never m
 Dashboard: Andon, one agent per machine. Run `bun run andon` in the factory clone (not in this project), then open http://127.0.0.1:8766/. `factory init` registers the project with Andon.
 
 **The target branch.** Every job is based on and merges into its **target**: `target` in its
-`job.json`. The CLI resolves it once, at `job.claimed`, from `merge.target` in
+`job.json`. The CLI resolves it once, at `claim`, from `merge.target` in
 `<R>/factory/config.json`: `current` (the default when `merge` or `merge.target` is absent) is
 the branch the main checkout is on at that moment, and any other value names a branch that
 must exist. The CLI accepts only a plain branch name (letters, digits, `.`, `_`, `/`, `-`), so a
@@ -70,7 +71,20 @@ the log** yourself. "Board: `<type> k=v …`" below means: run
 bun factory/cli.ts event <id> <type> [k=v …]    # from <R>
 ```
 
-for **your job** only, right when the change happens. It prints the new stage. A non-zero exit
+for **your job** only, right when the change happens. It prints the new stage. A job starts
+with **`claim`**, never with `event`:
+
+```bash
+bun factory/cli.ts claim <slug> [brief=…] [issue=…] [maxRound=…]    # from <R>
+```
+
+`<slug>` is a 2–4 word kebab name for the work (lowercase letters and digits joined by single
+`-`, at most 40 characters), e.g. `export-csv-report`. The CLI picks the job number, creates
+`factory/jobs/<id>/`, logs `job.claimed`, and prints the full id (e.g. `004-export-csv-report`)
+as its only output. That printed id is `<id>` everywhere from then on; never compute, guess, or
+pick an id yourself. A non-zero exit means nothing was claimed: read the one-line reason (a bad
+slug, `slug <slug> is live as <id>` when a live job already has that slug, a refused
+`merge.target`), fix it or tell the user, and stop. A non-zero exit
 means the event was rejected and nothing was written: read the one-line reason and fix the
 cause (usually WAIT FOR ALL, or an agent's file that's missing or malformed). Never hand-edit
 state to get around it. If the reason is a corrupt (torn) tail, stop and tell the user: a human
@@ -78,7 +92,7 @@ truncates the partial last line, then runs `bun factory/cli.ts rebuild <id>`; yo
 log. The schema, the event types, and the allowed transitions are in
 [factory/CONTRACT.md](../../../factory/CONTRACT.md); `bun factory/cli.ts show <id>` prints a job's
 stage and timing. Jobs claimed before the CLI (no `events.jsonl`) reject every event, so
-`approve`/`rework` can't drive them; say so in one line and stop.
+`approve`/`rework`/`abandon` can't drive them; say so in one line and stop.
 
 Put free-text values (`title`, `note`, `reason`) in **single quotes** — double quotes expand
 `$` and backticks — and write an apostrophe as `'\''`: `reason='it'\''s blocked'`.
@@ -93,9 +107,10 @@ the reviewer's or approver's file.
 ## Running jobs side by side
 
 Any number of sessions can run `/factory` at once, one job each. Each job has its own worktree,
-branch, job dir, and `job.json`, so they don't touch each other's files. Three things are shared:
-the backlog, the job-id sequence, and the main checkout that merges land in. Those steps happen
-under `factory/.lock`, which is a directory because `mkdir` is atomic:
+branch, job dir, and `job.json`, so they don't touch each other's files. The job-id sequence is
+the CLI's: `claim` hands out each number under its own lock, so two sessions never get the same
+id. Two more things are shared: the backlog and the main checkout that merges land in. Those
+steps happen under `factory/.lock`, which is a directory because `mkdir` is atomic:
 
 ```bash
 cd <R>; until mkdir factory/.lock 2>/dev/null; do
@@ -105,8 +120,9 @@ cd <R>; until mkdir factory/.lock 2>/dev/null; do
 
 Release it with `rmdir factory/.lock` as soon as the step is done, and never hold it while you
 wait on the user or an agent. Two steps take the lock:
-- **Claim:** pick the work, run the overlap check, take the next id, run `job.claimed` (it
-  creates the job dir), write `feature.md`, and tick the backlog line.
+- **Claim:** pick the work, run the overlap check, run `bun factory/cli.ts claim <slug> …` (it
+  picks the number, creates the job dir, and prints the id), then, with that printed id, write
+  `feature.md` and tick the backlog line.
 - **Merge:** everything in **Merge** below, bookkeeping included.
 
 **Live jobs** are the jobs whose `job.json` (read-only to you) has a stage other than
@@ -246,15 +262,15 @@ as `'\''` (as for board values), so `$` and backticks in it are never expanded.
 
 ## Commands
 
-**`/factory <feature>`** — New job. **Claim** it under the lock (overlap check first). `id` =
-the next three-digit number after the highest `factory/jobs/NNN-*` dir (start at `001`) + a
-2–4 word kebab slug, e.g. `004-export-csv-report`. Board: `job.claimed` with
-`brief=factory/briefs/<slug>.md` when it applies (add `maxRound=<n>` only to
-override the config default); it creates the job dir. Write `feature.md` verbatim, release the
-lock, run the loop. If the text names a brief (`brief: factory/briefs/<slug>.md`), its `Status:`
-must be `ready`. If it is `done`, a job already carried it out: stop before claiming and say
-`brief <slug> is done (job <id>)`, with the job from its `- Job:` line. Separately, a draft
-brief means the interview isn't done, so stop before claiming and say so.
+**`/factory <feature>`** — New job. If the text names a brief (`brief: factory/briefs/<slug>.md`),
+its `Status:` must be `ready`. If it is `done`, a job already carried it out: stop before claiming
+and say `brief <slug> is done (job <id>)`, with the job from its `- Job:` line. Separately, a draft
+brief means the interview isn't done, so stop before claiming and say so. Otherwise **claim** it
+under the lock (overlap check first): pick a 2–4 word kebab slug for the work and run
+`bun factory/cli.ts claim <slug>` with `brief=factory/briefs/<slug>.md` when it applies (add
+`maxRound=<n>` only to override the config default). The CLI picks the number and prints the
+job's id, e.g. `004-export-csv-report`; use that id from then on. Write `feature.md` verbatim,
+release the lock, run the loop.
 
 **`/factory queue <text>`** — Add ready work to the backlog without running it. Work arrives
 as text. It is **ready** if it isn't blocked by unmerged work and you can say in one line what
@@ -307,6 +323,31 @@ with the card plus the rework path (span `role=spec-writer`) and set `job.titled
 commit."* If that builder isn't alive in this session, spawn a fresh `factory-builder` named
 `builder-<id>` with the card plus the rework path (everything it needs is in files). Then
 continue at step 4 with round `<round> + 1` (round 1 if the job escalated before any review).
+
+**`/factory abandon <id> <reason>`** — Close a job for good, without merging: it leaves the
+board, its worktree is removed, and it can never take another event. Read the job's `stage` from
+job.json. Refuse `merged` and `abandoned` (both are terminal). Otherwise ask the user two
+questions, one at a time, and wait for each answer:
+1. **Confirm.** *"Abandon <id> (<stage>): '<reason>'? This can't be undone."* From a working
+   stage (`claimed`, `spec`, `build`, `review`, `approve`), also ask them to confirm that the
+   session driving the job is stopped: abandon never stops agents, and a session still running
+   would keep working on a closed job. Anything but a clear yes: stop and change nothing.
+2. **The branch.** *"Keep the branch `factory/<id>`, or delete it?"* The default is **keep** (an
+   unclear answer keeps it).
+
+Then, from `<R>`, run
+
+```bash
+bun factory/cli.ts abandon <id> '<reason>'
+```
+
+adding `--force` only when the job is in a working stage (never from `needs-human`), and
+`--delete-branch` only when the user chose delete. Quote the reason as for any free-text value.
+It logs `job.abandoned`, then removes `factory/.worktrees/<id>` (and the branch, if asked), and
+prints `abandoned`. A non-zero exit before the event is logged (a wrong stage without
+`--force`, a bad id or reason) changed nothing: report the one-line reason. A non-zero exit
+naming what was left behind means the job **is** abandoned but cleanup failed: tell the user
+what to remove by hand. Never write the event yourself to get around a refusal.
 
 ## Customize — the overlay interview
 
@@ -404,7 +445,8 @@ Finish with what changed, doctor's result, the commit (or why there is none), an
 ## Ground rules
 
 - One job per session; as many sessions as the user likes. A job is driven only by the session
-  that claimed it, or, once it's `needs-human`, by whoever runs `approve`/`rework` on it.
+  that claimed it, or, once it's `needs-human`, by whoever runs `approve`/`rework`/`abandon` on it
+  (`abandon` from a working stage needs the user to confirm the driving session is stopped).
   Finding another job in flight is never a reason to stop; it's only a reason for the overlap check.
 - Agents write only their own file (a reviewer also its `round-<N>/<key>/` supporting files);
   you write only your job's feature.md and rework notes, backlog ticks, and events through the
