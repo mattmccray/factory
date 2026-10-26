@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Andon · Orbit (mock-up 05)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="data.js"></script>
+<style>
+  :root {
+    --bg: #060a16; --bg2: #0c1531; --panel: rgba(11, 16, 34, .78);
+    --hair: rgba(170, 186, 228, .13); --hair2: rgba(170, 186, 228, .24);
+    --text: #ebe5d6; --muted: #8790a8; --faint: #4f5872;
+    --star: #ffd88a; --star-dim: #b8a57c; --bright: #fff4dc;
+    --pass: #e7cd8c; --changes: #d98bd4; --landed: #8fd6ca; --hot: #ff5a2c;
+    --serif: "Cormorant Garamond", "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background: radial-gradient(1100px 900px at 38% 52%, var(--bg2) 0%, #08102a 38%, var(--bg) 72%), var(--bg);
+    color: var(--text); font: 15px/1.4 var(--serif); -webkit-font-smoothing: antialiased;
+    display: grid; grid-template-columns: minmax(0, 1fr) 392px; grid-template-rows: auto minmax(0, 1fr);
+  }
+  body::after { /* grain */
+    content: ""; position: fixed; inset: 0; pointer-events: none; opacity: .07; mix-blend-mode: screen;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  }
+  .mono { font-family: var(--mono); }
+
+  /* ── header ───────────────────────────── */
+  header {
+    grid-column: 1 / -1; display: flex; align-items: flex-end; gap: 28px;
+    padding: 20px 28px 14px; border-bottom: 1px solid var(--hair);
+  }
+  .brand .eyebrow { font: 500 10px/1 var(--mono); letter-spacing: .28em; text-transform: uppercase; color: var(--muted); }
+  .brand h1 { margin: 6px 0 0; font: italic 400 34px/1 var(--serif); letter-spacing: .01em; }
+  .brand h1 b { font-style: normal; font-weight: 500; color: var(--star); }
+  .caption { flex: 1; font: italic 16px/1.35 var(--serif); color: var(--muted); max-width: 560px; padding-bottom: 2px; }
+  .caption em { color: var(--text); }
+  .stats { display: flex; gap: 22px; align-items: flex-end; }
+  .stat { text-align: right; }
+  .stat .n { font: 500 26px/1 var(--serif); }
+  .stat .l { font: 10px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-top: 5px; }
+  .stat.hot .n { color: var(--hot); text-shadow: 0 0 14px rgba(255, 90, 44, .55); }
+  .stat.motion .n { color: var(--star); }
+  .stat.landed .n { color: var(--landed); }
+  .clock { font: 11px/1.5 var(--mono); color: var(--muted); text-align: right; padding-left: 18px; border-left: 1px solid var(--hair); }
+  .clock .live { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--landed); margin-right: 6px; vertical-align: 1px; box-shadow: 0 0 8px var(--landed); animation: breathe 2.4s ease-in-out infinite; }
+
+  /* ── chart ────────────────────────────── */
+  .stage { grid-column: 1; grid-row: 2; position: relative; min-height: 0; display: flex; flex-direction: column; }
+  .chart { flex: 1; min-height: 0; position: relative; }
+  .chart svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .ring-label { font: 500 7.5px var(--mono); letter-spacing: .12em; text-transform: uppercase; fill: var(--muted); }
+  .proj-label { font: 500 15px var(--serif); letter-spacing: .06em; fill: var(--text); }
+  .proj-label .cnt { font: 9px var(--mono); fill: var(--muted); letter-spacing: .05em; }
+  .proj-label.idle { fill: var(--faint); font-style: italic; }
+  .jid { font: 500 9px var(--mono); fill: #c9c2ae; letter-spacing: .04em; paint-order: stroke; stroke: #08102a; stroke-width: 2.5px; }
+  .job.ejected .jid { fill: var(--hot); }
+  .core-n { font: 500 30px var(--serif); fill: var(--text); opacity: .55; }
+  .core-l { font: 8px var(--mono); letter-spacing: .24em; text-transform: uppercase; fill: var(--muted); }
+  .rim-ticks { transform-origin: 400px 400px; animation: spin 720s linear infinite; }
+  .halo-orbit { transform-origin: 400px 400px; animation: spin 420s linear infinite reverse; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .job { cursor: pointer; }
+  .job .glyph { transform-box: fill-box; transform-origin: center; transition: transform .25s cubic-bezier(.3, 1.6, .5, 1), opacity .25s; }
+  svg.focusing .job:not(.hl) .glyph { opacity: .28; }
+  .job.hl .glyph { transform: scale(1.55); }
+  .job.sel .glyph { transform: scale(1.7); }
+  .twinkle { transform-box: fill-box; transform-origin: center; animation: twinkle 3.2s ease-in-out infinite; }
+  .pulse { transform-box: fill-box; transform-origin: center; animation: pulse 1.8s ease-in-out infinite; }
+  .tether { stroke-dasharray: 2 3; animation: flow 1.2s linear infinite; }
+  @keyframes twinkle { 0%, 100% { transform: scale(1) rotate(0); opacity: 1; } 50% { transform: scale(.82) rotate(12deg); opacity: .8; } }
+  @keyframes pulse { 0%, 100% { transform: scale(.75); opacity: .55; } 50% { transform: scale(1.25); opacity: 1; } }
+  @keyframes flow { to { stroke-dashoffset: -10; } }
+  @keyframes breathe { 50% { opacity: .35; } }
+
+  .legend {
+    flex: none; display: grid; grid-template-columns: repeat(5, auto); justify-content: center; gap: 6px 22px;
+    padding: 8px 20px 14px; font: 10.5px/1 var(--mono); color: var(--muted); letter-spacing: .03em;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+  .legend svg { width: 22px; height: 22px; overflow: visible; }
+
+  /* ── detail card ──────────────────────── */
+  .detail {
+    position: absolute; left: 22px; top: 16px; width: 330px; padding: 16px 18px 16px;
+    background: var(--panel); border: 1px solid var(--hair2); border-radius: 3px;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 20px 50px -20px rgba(0, 0, 0, .8); display: none;
+  }
+  .detail.open { display: block; animation: rise .22s ease-out; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+  .detail.hot { border-color: rgba(255, 90, 44, .55); box-shadow: 0 0 0 1px rgba(255, 90, 44, .15), 0 20px 50px -20px rgba(0, 0, 0, .8); }
+  .detail .x { position: absolute; right: 10px; top: 8px; background: none; border: 0; color: var(--muted); font: 18px var(--mono); cursor: pointer; }
+  .detail .x:hover { color: var(--text); }
+  .detail .kicker { font: 10px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  .detail h2 { margin: 6px 0 10px; font: 500 22px/1.15 var(--serif); }
+  .detail h2.untitled { font-style: italic; color: var(--muted); }
+  .detail dl { margin: 0; display: grid; grid-template-columns: 96px 1fr; gap: 5px 10px; font: 11.5px/1.4 var(--mono); }
+  .detail dt { color: var(--muted); }
+  .detail dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+  .detail .note { margin-top: 12px; padding: 8px 10px; font: italic 15px/1.3 var(--serif); border-left: 2px solid var(--star-dim); background: rgba(255, 216, 138, .05); }
+  .detail.hot .note { border-color: var(--hot); background: rgba(255, 90, 44, .08); }
+  .detail .act { margin-top: 10px; font: 10.5px var(--mono); color: var(--hot); }
+  .v { display: inline-block; padding: 1px 6px; margin: 0 4px 3px 0; border-radius: 2px; font-size: 10.5px; border: 1px solid; }
+  .v.PASS { color: var(--pass); border-color: rgba(231, 205, 140, .4); }
+  .v.CHANGES { color: var(--changes); border-color: rgba(217, 139, 212, .5); background: rgba(217, 139, 212, .08); }
+  .v.pending { color: var(--muted); border-color: var(--hair2); border-style: dashed; }
+
+  /* ── rail ─────────────────────────────── */
+  aside { grid-column: 2; grid-row: 2; min-height: 0; overflow-y: auto; border-left: 1px solid var(--hair); background: linear-gradient(180deg, rgba(8, 12, 28, .55), rgba(8, 12, 28, .85)); padding: 14px 0 24px; }
+  aside::-webkit-scrollbar { width: 6px; } aside::-webkit-scrollbar-thumb { background: var(--hair2); border-radius: 3px; }
+  .sec { padding: 0 18px; margin-bottom: 12px; }
+  .sec h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; padding: 5px 0; font: 500 10px/1 var(--mono); letter-spacing: .22em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--hair); }
+  .sec h3 .c { margin-left: auto; letter-spacing: .05em; }
+  .sec.hot h3 { color: var(--hot); border-color: rgba(255, 90, 44, .35); }
+  .sec.hot h3::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--hot); box-shadow: 0 0 10px var(--hot); animation: breathe 1.4s ease-in-out infinite; }
+  .row {
+    display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 0 10px;
+    min-height: 36px; padding: 3px 8px; margin: 0 -8px; width: calc(100% + 16px); text-align: left;
+    background: none; border: 0; border-radius: 3px; color: inherit; cursor: pointer; font: inherit;
+    transition: background .15s;
+  }
+  .row:hover, .row.hl { background: rgba(255, 216, 138, .07); }
+  .row.sel { background: rgba(255, 216, 138, .12); box-shadow: inset 2px 0 0 var(--star); }
+  .row svg { width: 22px; height: 22px; overflow: visible; grid-row: span 2; }
+  .row .t { font: 500 15px/1.1 var(--serif); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .t.untitled { font-style: italic; color: var(--muted); }
+  .row .s { grid-column: 2; font: 10px/1.25 var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .s b { font-weight: 500; color: var(--star-dim); }
+  .row .k { grid-column: 3; grid-row: 1 / span 2; text-align: right; font: 9.5px/1.3 var(--mono); color: var(--muted); white-space: nowrap; }
+  .row .k .st { display: block; color: var(--text); letter-spacing: .04em; }
+  .row .k .st.failed { color: var(--changes); }
+  .row .k .st.landed { color: var(--landed); }
+  .row .n { grid-column: 2 / -1; font: italic 13px/1.2 var(--serif); color: #ffb79f; margin: 1px 0 2px; }
+  .sec.hot .row { background: rgba(255, 90, 44, .05); margin-bottom: 4px; }
+  .sec.hot .row:hover, .sec.hot .row.hl { background: rgba(255, 90, 44, .12); }
+  .sec .dust { font: italic 14px var(--serif); color: var(--faint); padding: 4px 0; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="eyebrow">Andon · mock-up 05</div>
+    <h1>The <b>Orbit</b></h1>
+  </div>
+  <p class="caption">Each wedge is a project. Work falls inward ring by ring and <em>lands</em> in the core. Anything thrown <em>outside the rim</em> is waiting for you.</p>
+  <div class="stats" id="stats"></div>
+  <div class="clock"><span class="live"></span>live<br><span id="clock"></span></div>
+</header>
+
+<section class="stage">
+  <div class="chart" id="chart"></div>
+  <div class="legend" id="legend"></div>
+  <div class="detail" id="detail" role="dialog" aria-modal="false" aria-labelledby="d-title"></div>
+</section>
+
+<aside id="rail" aria-label="Jobs"></aside>
+
+<script>
+(function () {
+  const F = window.FACTORY;
+  const C = 400;
+  const COL = { star: '#ffd88a', starDim: '#b8a57c', bright: '#fff4dc', pass: '#e7cd8c', changes: '#d98bd4', pending: 'rgba(200,210,235,.45)', landed: '#8fd6ca', hot: '#ff5a2c', hair: 'rgba(170,186,228,.13)', hair2: 'rgba(170,186,228,.24)', muted: '#8790a8' };
+  // ring radii, outermost first
+  const RING = { claimed: 333, spec: 311, build: 270, review: 225, approve: 177, merged: 108 };
+  const BOUND = [348, 292, 248, 202, 152, 62];
+  const BANDS = [
+    { label: 'claimed', r: 333, dy: -5 }, { label: 'spec', r: 311, dy: 10 }, { label: 'build', r: 270, dy: 3 },
+    { label: 'review', r: 225, dy: 3 }, { label: 'approve', r: 177, dy: 3 }, { label: 'merged', r: 120, dy: 3 },
+  ];
+  const RIM = 348, EJECT = 410;
+  const rad = (d) => (d * Math.PI) / 180;
+  const P = (r, d) => [+(C + r * Math.cos(rad(d))).toFixed(2), +(C + r * Math.sin(rad(d))).toFixed(2)];
+  const lp = (r, d) => [+(r * Math.cos(rad(d))).toFixed(2), +(r * Math.sin(rad(d))).toFixed(2)];
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const projIdx = Object.fromEntries(F.projects.map((p, i) => [p.id, i]));
+  const projName = Object.fromEntries(F.projects.map((p) => [p.id, p.name]));
+  const center = (i) => -90 + i * 30 + 15;
+
+  // seeded random for stable dust
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+
+  const isMergeFail = (j) => j.stage === 'needs-human' && (j.decision === 'APPROVE' || /^merge failed/.test(j.note));
+  const kindOf = (j) => (j.kind === 'needs-human' ? (isMergeFail(j) ? 'merge-failed' : 'escalated') : j.kind);
+  const KIND_LABEL = {
+    escalated: 'Escalated', 'merge-failed': 'Merge failed', 'review-failed': 'Review failed', reviewing: 'In review',
+    approve: 'At approver', build: 'Building', spec: 'Writing spec', claimed: 'Claimed', merged: 'Landed', settled: 'Settled',
+  };
+  const untitled = (j) => j.title === j.id;
+
+  // ── glyphs (drawn at the origin) ─────────────────────────────
+  function star4(R, r) {
+    let d = '';
+    for (let k = 0; k < 8; k++) { const [x, y] = lp(k % 2 ? r : R, -90 + k * 45); d += (k ? 'L' : 'M') + x + ' ' + y; }
+    return d + 'Z';
+  }
+  function arc(r, a0, a1) {
+    const [x0, y0] = lp(r, a0), [x1, y1] = lp(r, a1);
+    return `M${x0} ${y0}A${r} ${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${x1} ${y1}`;
+  }
+  function verdictArcs(reviews) {
+    const keys = Object.keys(reviews), n = keys.length, gap = n > 1 ? 26 : 0, span = 360 / n;
+    return keys.map((k, i) => {
+      const v = reviews[k].verdict, a0 = -90 + i * span + gap / 2, a1 = -90 + (i + 1) * span - gap / 2;
+      if (v === 'PASS') return `<path d="${arc(9, a0, a1)}" fill="none" stroke="${COL.pass}" stroke-width="1.7" stroke-linecap="round"/>`;
+      if (v === 'CHANGES') return `<path d="${arc(12.5, a0 + 8, a1 + 8)}" fill="none" stroke="${COL.changes}" stroke-width="2.4" stroke-linecap="round"/>`;
+      return `<path d="${arc(9, a0, a1)}" fill="none" stroke="${COL.pending}" stroke-width="1" stroke-dasharray="1.4 2.2"/>`;
+    }).join('');
+  }
+  function glyph(kind, j) {
+    switch (kind) {
+      case 'claimed': return `<circle r="4.4" fill="none" stroke="${COL.starDim}" stroke-width="1" stroke-dasharray="1.6 1.6"/><circle r="1.2" fill="${COL.starDim}"/>`;
+      case 'spec': return `<circle r="9" fill="url(#gWarm)" opacity=".45"/><path d="M0 -5.6L5.6 0L0 5.6L-5.6 0Z" fill="none" stroke="${COL.star}" stroke-width="1.15"/><circle r="1.5" fill="${COL.star}"/>`;
+      case 'build': return `<circle r="14" fill="url(#gWarm)"/><path class="twinkle" d="${star4(9, 2.1)}" fill="${COL.star}"/>`;
+      case 'reviewing':
+      case 'review-failed': {
+        const cur = j ? j.rounds[j.rounds.length - 1].reviews : (kind === 'reviewing' ? { a: { verdict: 'PASS' }, b: { verdict: 'pending' }, c: { verdict: 'PASS' } } : { a: { verdict: 'PASS' }, b: { verdict: 'CHANGES' }, c: { verdict: 'PASS' } });
+        const core = kind === 'review-failed' ? `<circle r="3.6" fill="${COL.star}" stroke="${COL.changes}" stroke-width="1.2"/>` : `<circle r="3.6" fill="${COL.star}"/>`;
+        return `<circle r="12" fill="url(#gWarm)" opacity=".55"/>${verdictArcs(cur)}${core}`;
+      }
+      case 'approve': return `<circle r="16" fill="url(#gWarm)"/><circle r="12.5" fill="none" stroke="${COL.star}" stroke-opacity=".3" stroke-width=".8"/><circle r="8.2" fill="none" stroke="${COL.star}" stroke-width="1.3"/><circle r="4.3" fill="${COL.bright}"/>`;
+      case 'merged': return `<circle r="11" fill="url(#gLanded)"/><circle r="3.5" fill="${COL.landed}"/>`;
+      case 'settled': return `<circle cx="-4" cy="2" r="1.2" fill="${COL.muted}" opacity=".7"/><circle cx="3" cy="-3" r="1" fill="${COL.muted}" opacity=".5"/><circle cx="4" cy="4" r=".8" fill="${COL.muted}" opacity=".6"/><circle cx="-1" cy="-5" r=".7" fill="${COL.muted}" opacity=".4"/>`;
+      case 'escalated': return `<circle class="pulse" r="22" fill="url(#gHot)"/><path d="${star4(10.5, 2.4)}" fill="${COL.hot}"/><circle r="2.1" fill="#fff1e8"/>`;
+      case 'merge-failed': return `<circle class="pulse" r="22" fill="url(#gHot)"/><path d="${arc(7.5, -70, 80)}" fill="none" stroke="${COL.hot}" stroke-width="2.4" stroke-linecap="round"/><path transform="translate(-2.2 1.6)" d="${arc(7.5, 112, 262)}" fill="none" stroke="${COL.hot}" stroke-width="2.4" stroke-linecap="round"/><circle r="2.1" fill="#fff1e8"/>`;
+    }
+    return '';
+  }
+  const DEFS = `<defs>
+    <pattern id="hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(35)"><line x1="0" y1="0" x2="0" y2="7" stroke="rgba(170,186,228,.09)" stroke-width="1"/></pattern>
+    <radialGradient id="gWarm"><stop offset="0" stop-color="#ffd88a" stop-opacity=".5"/><stop offset="1" stop-color="#ffd88a" stop-opacity="0"/></radialGradient>
+    <radialGradient id="gLanded"><stop offset="0" stop-color="#8fd6ca" stop-opacity=".45"/><stop offset="1" stop-color="#8fd6ca" stop-opacity="0"/></radialGradient>
+    <radialGradient id="gHot"><stop offset="0" stop-color="#ff5a2c" stop-opacity=".75"/><stop offset=".45" stop-color="#ff5a2c" stop-opacity=".22"/><stop offset="1" stop-color="#ff5a2c" stop-opacity="0"/></radialGradient>
+    <radialGradient id="gCore"><stop offset="0" stop-color="#1b2a55" stop-opacity=".9"/><stop offset="1" stop-color="#0c1531" stop-opacity="0"/></radialGradient>
+    <radialGradient id="gHalo" cx="400" cy="400" r="440" gradientUnits="userSpaceOnUse"><stop offset=".78" stop-color="#ff5a2c" stop-opacity="0"/><stop offset=".86" stop-color="#ff5a2c" stop-opacity=".16"/><stop offset="1" stop-color="#ff5a2c" stop-opacity="0"/></radialGradient>
+  </defs>`;
+
+  // ── place jobs ───────────────────────────────────────────────
+  const jobs = F.jobs.map((j) => ({ ...j, k2: kindOf(j), pi: projIdx[j.project] }));
+  const ringOf = (k) => ({ claimed: 'claimed', spec: 'spec', build: 'build', reviewing: 'review', 'review-failed': 'review', approve: 'approve', merged: 'merged', escalated: 'eject', 'merge-failed': 'eject' }[k]);
+  const groups = {};
+  for (const j of jobs) { if (j.k2 === 'settled') continue; const g = `${j.pi}:${ringOf(j.k2)}`; (groups[g] ||= []).push(j); }
+  for (const [g, list] of Object.entries(groups)) {
+    const [pi, ring] = g.split(':');
+    const n = list.length, step = n > 1 ? Math.min(9, 18 / (n - 1)) : 0;
+    list.forEach((j, i) => {
+      let a = center(+pi) + (i - (n - 1) / 2) * step;
+      if (ring === 'eject') a = center(+pi) + 11.5 + i * 8; // clear of the rim label
+      j.angle = a; j.r = ring === 'eject' ? EJECT : RING[ring];
+    });
+  }
+
+  const active = new Set(jobs.filter((j) => j.k2 !== 'settled' && j.k2 !== 'merged').map((j) => j.project));
+  const escalatedProj = new Set(jobs.filter((j) => j.k2 === 'escalated' || j.k2 === 'merge-failed').map((j) => j.project));
+  const settled = jobs.filter((j) => j.k2 === 'settled');
+
+  // ── draw the orbit ───────────────────────────────────────────
+  let s = `<svg id="orbit" viewBox="-70 -60 940 920" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Orbit of factory jobs across ${F.projects.length} projects">${DEFS}`;
+  // background stars
+  for (let i = 0; i < 140; i++) {
+    const a = rnd() * 360, r = 430 + rnd() * 260, [x, y] = P(r, a);
+    s += `<circle cx="${x}" cy="${y}" r="${(rnd() * .9 + .2).toFixed(2)}" fill="#cfd8f0" opacity="${(rnd() * .35 + .05).toFixed(2)}"/>`;
+  }
+  s += `<circle cx="400" cy="400" r="440" fill="url(#gHalo)"/>`;
+  s += `<circle cx="400" cy="400" r="155" fill="url(#gCore)"/>`;
+  // band shading
+  BOUND.forEach((r, i) => { if (i % 2 === 1) s += `<circle cx="400" cy="400" r="${r}" fill="rgba(140,160,215,.025)"/>`; });
+  // idle sectors: shaded wedges
+  F.projects.forEach((p, i) => {
+    if (active.has(p.id)) return;
+    const a0 = -90 + i * 30, a1 = a0 + 30, [x0, y0] = P(RIM, a0), [x1, y1] = P(RIM, a1), [x2, y2] = P(62, a1), [x3, y3] = P(62, a0);
+    s += `<path d="M${x0} ${y0}A${RIM} ${RIM} 0 0 1 ${x1} ${y1}L${x2} ${y2}A62 62 0 0 0 ${x3} ${y3}Z" fill="rgba(4,7,18,.22)"/><path d="M${x0} ${y0}A${RIM} ${RIM} 0 0 1 ${x1} ${y1}L${x2} ${y2}A62 62 0 0 0 ${x3} ${y3}Z" fill="url(#hatch)"/>`;
+  });
+  // rings
+  BOUND.forEach((r, i) => s += `<circle cx="400" cy="400" r="${r}" fill="none" stroke="${i === 0 ? COL.hair2 : COL.hair}" stroke-width="${i === 0 ? 1 : .7}"${i === 5 ? ' stroke-dasharray="1 3"' : ''}/>`);
+  s += `<circle cx="400" cy="400" r="${RING.claimed + 0}" fill="none" stroke="${COL.hair}" stroke-width=".5" stroke-dasharray="1 5"/>`;
+  // sector spokes
+  for (let i = 0; i < 12; i++) { const [x0, y0] = P(64, -90 + i * 30), [x1, y1] = P(RIM, -90 + i * 30); s += `<line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}" stroke="${COL.hair}" stroke-width=".7"/>`; }
+  // hot rim arcs for sectors holding an escalation
+  F.projects.forEach((p, i) => {
+    if (!escalatedProj.has(p.id)) return;
+    const [x0, y0] = P(RIM, -90 + i * 30 + 2), [x1, y1] = P(RIM, -90 + i * 30 + 28);
+    s += `<path d="M${x0} ${y0}A${RIM} ${RIM} 0 0 1 ${x1} ${y1}" fill="none" stroke="${COL.hot}" stroke-width="2" opacity=".7"/>`;
+  });
+  // rotating rim ticks + halo orbit
+  s += `<g class="rim-ticks">`;
+  for (let d = 0; d < 360; d += 2) { const long = d % 10 === 0, [x0, y0] = P(RIM + 1, d), [x1, y1] = P(RIM + (long ? 7 : 3.5), d); s += `<line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}" stroke="${long ? COL.hair2 : COL.hair}" stroke-width=".7"/>`; }
+  s += `</g><circle class="halo-orbit" cx="400" cy="400" r="${EJECT}" fill="none" stroke="rgba(255,90,44,.18)" stroke-width=".7" stroke-dasharray="2 9"/>`;
+  // ring labels on the left horizontal spoke (the beacon/cartograph boundary), each on its own ring
+  BANDS.forEach((b) => { s += `<text class="ring-label" x="${C - b.r}" y="${C + b.dy}" text-anchor="middle" stroke="#0a1230" stroke-width="3" paint-order="stroke">${b.label}</text>`; });
+  // project labels on arcs
+  F.projects.forEach((p, i) => {
+    const c = center(i), bottom = Math.sin(rad(c)) > 0.05, r = bottom ? 367 : 357;
+    const [x0, y0] = P(r, bottom ? c + 15 : c - 15), [x1, y1] = P(r, bottom ? c - 15 : c + 15);
+    s += `<path id="lab-${i}" d="M${x0} ${y0}A${r} ${r} 0 0 ${bottom ? 0 : 1} ${x1} ${y1}" fill="none"/>`;
+    const n = jobs.filter((j) => j.project === p.id && j.k2 !== 'settled' && j.k2 !== 'merged').length;
+    const idle = !active.has(p.id);
+    s += `<text class="proj-label${idle ? ' idle' : ''}" data-proj="${p.id}"><textPath href="#lab-${i}" startOffset="50%" text-anchor="middle">${esc(p.name)}<tspan class="cnt" dx="5">${idle ? 'idle' : n}</tspan></textPath></text>`;
+  });
+  // settled dust in the core
+  settled.forEach((j) => {
+    for (let g = 0; g < 4; g++) {
+      const a = center(j.pi) + (rnd() - .5) * 26, r = 24 + rnd() * 34, [x, y] = P(r, a);
+      s += `<circle cx="${x}" cy="${y}" r="${(g ? rnd() * .8 + .4 : 1.5).toFixed(2)}" fill="#aab4cf" opacity="${(g ? .25 : .55)}"><title>settled: ${esc(projName[j.project])} ${esc(j.id)}</title></circle>`;
+    }
+  });
+  s += `<text class="core-n" x="400" y="404" text-anchor="middle">${settled.length}</text><text class="core-l" x="400" y="417" text-anchor="middle">settled</text>`;
+  // tethers
+  for (const j of jobs) {
+    if (j.r !== EJECT) continue;
+    const [x0, y0] = P(RIM + 2, j.angle), [x1, y1] = P(EJECT - 12, j.angle);
+    s += `<line class="tether" x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}" stroke="${COL.hot}" stroke-width="1.1" opacity=".75"/>`;
+  }
+  // jobs
+  for (const j of jobs) {
+    if (j.angle === undefined) continue;
+    const [x, y] = P(j.r, j.angle);
+    s += `<g class="job${j.r === EJECT ? ' ejected' : ''}" data-key="${esc(j.key)}" transform="translate(${x} ${y})" tabindex="0" role="button" aria-label="${esc(projName[j.project])} ${esc(j.id)}: ${KIND_LABEL[j.k2]}"><title>${esc(projName[j.project])} · ${esc(j.id)} — ${KIND_LABEL[j.k2]}</title><g class="glyph"><g transform="scale(1.3)">${glyph(j.k2, j)}</g><text class="jid" x="${j.r === EJECT ? 0 : 15}" y="${j.r === EJECT ? 30 : 3.5}" text-anchor="${j.r === EJECT ? 'middle' : 'start'}">${esc(j.id.slice(0, 3))}</text></g><circle r="19" fill="transparent"/></g>`;
+  }
+  s += `</svg>`;
+  document.getElementById('chart').innerHTML = s;
+  const svg = document.getElementById('orbit');
+
+  // ── header stats ─────────────────────────────────────────────
+  const needs = jobs.filter((j) => j.k2 === 'escalated' || j.k2 === 'merge-failed');
+  const RANK = { approve: 0, 'review-failed': 1, reviewing: 2, build: 3, spec: 4, claimed: 5 };
+  const motion = jobs.filter((j) => j.k2 in RANK).sort((a, b) => RANK[a.k2] - RANK[b.k2] || a.enteredAt - b.enteredAt);
+  const landed = jobs.filter((j) => j.k2 === 'merged').sort((a, b) => b.enteredAt - a.enteredAt);
+  document.getElementById('stats').innerHTML = [
+    ['hot', needs.length, 'need you'], ['motion', motion.length, 'in motion'], ['landed', landed.length, 'landed today'], ['', settled.length, 'settled'],
+  ].map(([c, n, l]) => `<div class="stat ${c}"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+  document.getElementById('clock').textContent = new Date(F.NOW).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+
+  // ── legend ───────────────────────────────────────────────────
+  const LEG = [['claimed', 'claimed'], ['spec', 'spec'], ['build', 'build'], ['reviewing', 'reviewing'], ['review-failed', 'review failed'],
+    ['approve', 'at approver'], ['merged', 'landed < 24h'], ['settled', 'settled (dust)'], ['escalated', 'escalated'], ['merge-failed', 'merge failed']];
+  document.getElementById('legend').innerHTML = LEG.map(([k, l]) => `<span><svg viewBox="-13 -13 26 26">${glyph(k)}</svg>${l}</span>`).join('');
+
+  // ── rail ─────────────────────────────────────────────────────
+  const mini = (j) => `<svg viewBox="-15 -15 30 30" aria-hidden="true">${glyph(j.k2, j)}</svg>`;
+  const titleHtml = (j, cls) => `<span class="${cls}${untitled(j) ? ' untitled' : ''}">${untitled(j) ? 'untitled, spec pending' : esc(j.title)}</span>`;
+  const row = (j, extra) => `<button class="row" type="button" data-key="${esc(j.key)}">${mini(j)}${titleHtml(j, 't')}<span class="s"><b>${esc(projName[j.project])}</b> · ${esc(j.id)}</span><span class="k"><span class="st${j.k2 === 'review-failed' ? ' failed' : ''}${j.k2 === 'merged' ? ' landed' : ''}">${KIND_LABEL[j.k2]}${j.round > 0 && j.k2 !== 'merged' ? ` · R${j.round}/${j.maxRound}` : ''}</span>${F.ago(j.enteredAt)}${j.k2 === 'merged' ? ' ago' : ''}</span>${extra || ''}</button>`;
+  document.getElementById('rail').innerHTML =
+    `<div class="sec hot"><h3>Needs a human<span class="c">${needs.length}</span></h3>${needs.map((j) => row(j, `<span class="n">${esc(j.note)}</span>`)).join('')}</div>` +
+    `<div class="sec"><h3>In motion<span class="c">${motion.length}</span></h3>${motion.map((j) => row(j)).join('')}</div>` +
+    `<div class="sec"><h3>Landed today<span class="c">${landed.length}</span></h3>${landed.map((j) => row(j)).join('')}</div>` +
+    `<div class="sec"><h3>Settled<span class="c">${settled.length}</span></h3><div class="dust">${settled.length} jobs older than a day, gathered as dust at the core.</div></div>`;
+
+  // ── linking: hover + select ──────────────────────────────────
+  const byKey = Object.fromEntries(jobs.map((j) => [j.key, j]));
+  const els = (k) => document.querySelectorAll(`[data-key="${CSS.escape(k)}"]`);
+  function hover(k, on) {
+    els(k).forEach((e) => e.classList.toggle('hl', on));
+    svg.classList.toggle('focusing', on);
+    if (on) { const r = document.querySelector(`.row[data-key="${CSS.escape(k)}"]`); r && r.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+  }
+  document.querySelectorAll('[data-key]').forEach((e) => {
+    e.addEventListener('mouseenter', () => hover(e.dataset.key, true));
+    e.addEventListener('mouseleave', () => hover(e.dataset.key, false));
+    e.addEventListener('focus', () => hover(e.dataset.key, true));
+    e.addEventListener('blur', () => hover(e.dataset.key, false));
+    e.addEventListener('click', () => select(e.dataset.key));
+    e.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); select(e.dataset.key); } });
+  });
+
+  const detail = document.getElementById('detail');
+  let selected = null;
+  function select(k) {
+    if (selected) els(selected).forEach((e) => e.classList.remove('sel'));
+    if (selected === k) { selected = null; detail.classList.remove('open'); return; }
+    selected = k; els(k).forEach((e) => e.classList.add('sel'));
+    const j = byKey[k], hot = j.k2 === 'escalated' || j.k2 === 'merge-failed';
+    const rounds = j.rounds.map((r) => `<div>R${r.round} ${Object.entries(r.reviews).map(([rk, v]) => `<span class="v ${v.verdict}">${esc(rk)} ${v.verdict === 'pending' ? '…' : v.verdict === 'PASS' ? '✓' : '✕'}</span>`).join('')}</div>`).join('');
+    detail.className = 'detail open' + (hot ? ' hot' : '');
+    detail.innerHTML = `<button class="x" type="button" aria-label="Close">×</button>
+      <div class="kicker">${esc(projName[j.project])} · ${esc(j.id)}</div>
+      <h2 id="d-title" class="${untitled(j) ? 'untitled' : ''}">${untitled(j) ? 'Untitled, spec pending' : esc(j.title)}</h2>
+      <dl>
+        <dt>stage</dt><dd>${KIND_LABEL[j.k2]} <span style="color:var(--muted)">(${esc(j.stage)})</span></dd>
+        <dt>${j.k2 === 'merged' || j.k2 === 'settled' ? 'landed' : 'in stage'}</dt><dd>${F.ago(j.enteredAt)}${j.k2 === 'merged' || j.k2 === 'settled' ? ' ago' : ''}</dd>
+        <dt>claimed</dt><dd>${F.ago(j.claimedAt)} ago</dd>
+        <dt>round</dt><dd>${j.round}/${j.maxRound}</dd>
+        <dt>branch</dt><dd>${esc(j.branch)}</dd>
+        ${j.decision ? `<dt>decision</dt><dd>${esc(j.decision)}</dd>` : ''}
+        ${rounds ? `<dt>verdicts</dt><dd>${rounds}</dd>` : ''}
+      </dl>
+      ${j.note ? `<div class="note">${esc(j.note)}</div>` : ''}
+      ${hot ? `<div class="act">→ /factory approve ${esc(j.id)} &nbsp;|&nbsp; /factory rework ${esc(j.id)} &lt;note&gt;</div>` : ''}`;
+    detail.querySelector('.x').addEventListener('click', () => select(k));
+  }
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && selected) select(selected); });
+})();
+</script>
+</body>
+</html>

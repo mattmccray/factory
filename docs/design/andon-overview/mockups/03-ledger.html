@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Andon · 03 · The Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400..900;1,6..96,400..700&family=Newsreader:ital,opsz,wght@0,6..72,400..700;1,6..72,400..600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* The Ledger: one line per job, ordered by what it needs from the human. A broadsheet set in
+   ink on newsprint; ink-red is reserved for trouble. */
+:root {
+  --paper: #f1ebdd; --paper-2: #e8e0cd; --ink: #15130f; --ink-2: #3d382f; --muted: #7d7464; --faint: #b3a993;
+  --rule: rgba(21,19,15,.16); --rule-strong: rgba(21,19,15,.55); --red: #b0231a; --red-wash: rgba(176,35,26,.07);
+  --display: "Bodoni Moda", "Bodoni 72", Didot, "Big Caslon", Georgia, serif;
+  --body: "Newsreader", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --row: 25px;
+  --cols: 92px 84px 168px minmax(200px, 1fr) 118px 172px 40px 70px minmax(220px, 320px);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  display: flex; flex-direction: column; overflow: hidden;
+  background-color: var(--paper); color: var(--ink);
+  font: 14px/1.35 var(--body); font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+  background-image:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .08  0 0 0 0 .07  0 0 0 0 .05  0 0 0 .07 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ── masthead ─────────────────────────────────────── */
+.mast { flex: none; padding: 12px 32px 0; }
+.mast-top { display: grid; grid-template-columns: 1fr auto 1fr; align-items: end; gap: 24px; }
+.kicker { font: 500 10px/1.3 var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+.kicker b { color: var(--ink); font-weight: 600; }
+h1 { margin: 0; font: 400 40px/0.95 var(--display); font-variation-settings: "opsz" 96; letter-spacing: -.012em; text-align: center; white-space: nowrap; }
+h1 i { font-weight: 400; }
+.dateline { text-align: right; font: italic 13px/1.3 var(--body); color: var(--ink-2); }
+.dateline .live { font: 500 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ink); font-style: normal; }
+.dateline .live::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ink); margin-right: 6px; vertical-align: 1px; animation: blink 2.4s steps(2, jump-none) infinite; }
+@keyframes blink { 50% { opacity: .2; } }
+.rules { margin-top: 8px; border-top: 3px solid var(--ink); border-bottom: 1px solid var(--ink); height: 6px; }
+.summary { display: flex; justify-content: center; gap: 0; padding: 4px 0 5px; border-bottom: 1px solid var(--rule-strong); font: 13px var(--body); }
+.summary span { padding: 0 16px; border-left: 1px solid var(--rule); white-space: nowrap; }
+.summary span:first-child { border-left: 0; }
+.summary b { font: 600 16px var(--display); font-variation-settings: "opsz" 24; margin-right: 4px; }
+.summary .hot b, .summary .hot { color: var(--red); }
+
+/* ── controls ─────────────────────────────────────── */
+.controls { flex: none; display: flex; align-items: center; gap: 18px; padding: 6px 32px 4px; }
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; flex: 1; min-width: 0; }
+.ctl-label { font: 500 9.5px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin-right: 6px; }
+.pf { display: inline-flex; align-items: baseline; gap: 5px; padding: 2px 7px 3px; border: 1px solid var(--rule); font: 12px var(--body); color: var(--ink-2); background: transparent; }
+.pf .n { font: 500 10px var(--mono); color: var(--muted); }
+.pf.alert .n { color: var(--red); font-weight: 600; }
+.pf.alert::after { content: ""; width: 5px; height: 5px; background: var(--red); align-self: center; }
+.pf[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+.pf[aria-pressed="true"] .n { color: color-mix(in srgb, var(--paper) 70%, transparent); }
+.pf[aria-pressed="true"].alert .n { color: #ff9d8f; }
+.pf.idle { font-style: italic; }
+.pf:hover { border-color: var(--rule-strong); }
+.seg { flex: none; display: inline-flex; border: 1px solid var(--ink); }
+.seg button { padding: 3px 10px; font: 500 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+
+.key { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 0 32px 6px; font: italic 12.5px var(--body); color: var(--ink-2); border-bottom: 1px solid var(--rule-strong); }
+.key .how { flex: 1 1 100%; }
+.key .how b { font-style: normal; font: 600 9.5px var(--mono); letter-spacing: .14em; text-transform: uppercase; margin-right: 6px; color: var(--ink); }
+.legend { display: flex; align-items: center; gap: 4px; font-style: normal; }
+.legend .stamp { cursor: default; }
+
+/* ── ledger ───────────────────────────────────────── */
+.ledger { flex: 1; min-height: 0; overflow-y: auto; padding: 0 32px 28px; }
+.colhead, .row { display: grid; grid-template-columns: var(--cols); column-gap: 12px; align-items: center; }
+.colhead { position: sticky; top: 0; z-index: 2; background: var(--paper); height: 22px; border-bottom: 1px solid var(--rule-strong);
+  font: 500 9px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+.colhead .r { text-align: right; }
+
+.tier { margin-top: 6px; }
+.tier-head { display: flex; align-items: baseline; gap: 10px; padding: 3px 0 2px; border-bottom: 1px solid var(--ink); }
+.tier-head .num { font: italic 400 13px var(--display); color: var(--muted); width: 22px; }
+.tier-head h2 { margin: 0; font: 700 17px/1 var(--display); font-variation-settings: "opsz" 28; letter-spacing: .005em; }
+.tier-head .count { font: 600 11px var(--mono); padding: 1px 5px; border: 1px solid var(--ink); }
+.tier-head .dek { font: italic 12.5px var(--body); color: var(--muted); }
+.tier-head .dek code { font: 11px var(--mono); font-style: normal; color: var(--ink-2); }
+.tier.t-need .tier-head { border-bottom-color: var(--red); }
+.tier.t-need .tier-head h2, .tier.t-back .tier-head h2 { color: var(--red); }
+.tier.t-need .tier-head .count { background: var(--red); border-color: var(--red); color: var(--paper); }
+.tier.t-back .tier-head .count { border-color: var(--red); color: var(--red); }
+.tier.t-settled .tier-head h2 { color: var(--ink-2); font-weight: 500; font-style: italic; }
+.empty { height: var(--row); display: flex; align-items: center; font: italic 13px var(--body); color: var(--faint); border-bottom: 1px solid var(--rule); }
+
+.row { position: relative; min-height: var(--row); border-bottom: 1px solid var(--rule); cursor: pointer; }
+.row > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row:hover { background: color-mix(in srgb, var(--paper-2) 70%, transparent); }
+.row[aria-expanded="true"] { background: var(--paper-2); border-bottom-color: transparent; }
+.row.k-needs-human { background: linear-gradient(90deg, var(--red-wash), transparent 55%); }
+.row.k-needs-human::before { content: ""; position: absolute; left: -10px; top: 4px; bottom: 4px; width: 3px; background: var(--red); }
+.row.k-review-failed::before { content: ""; position: absolute; left: -10px; top: 4px; bottom: 4px; width: 3px; background: repeating-linear-gradient(180deg, var(--red) 0 3px, transparent 3px 6px); }
+.row.k-settled { color: var(--muted); }
+.c-proj { font: 600 11.5px var(--body); letter-spacing: .02em; font-variant: small-caps; text-transform: lowercase; }
+.c-id { font: 11.5px var(--mono); color: var(--ink-2); }
+.c-title { font: 14px var(--body); }
+.c-title .await { font-style: italic; color: var(--muted); }
+.k-settled .c-title, .k-merged .c-title { color: var(--ink-2); }
+.c-rnd, .c-time { text-align: right; font: 11.5px var(--mono); color: var(--ink-2); }
+.c-rnd .max { color: var(--faint); }
+.c-time.long { color: var(--ink); font-weight: 600; }
+.c-note { font: italic 13px var(--body); color: var(--ink-2); }
+.k-needs-human .c-note, .k-review-failed .c-note { color: var(--red); }
+.c-note .sha { font: 11px var(--mono); font-style: normal; color: var(--muted); }
+
+/* state stamps: the first column, and the legend */
+.stamp { display: inline-flex; align-items: center; gap: 4px; height: 17px; padding: 0 5px; font: 600 9px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; border: 1px solid transparent; white-space: nowrap; }
+.s-needs-human { background: var(--red); color: var(--paper); }
+.s-merge-failed { background: var(--red); color: var(--paper); background-image: repeating-linear-gradient(-45deg, transparent 0 4px, rgba(255,255,255,.18) 4px 6px); }
+.s-review-failed { color: var(--red); border-color: var(--red); }
+.s-approve { background: var(--ink); color: var(--paper); }
+.s-reviewing { border-color: var(--ink); color: var(--ink); }
+.s-build { color: var(--ink); border-color: var(--rule-strong); border-style: dashed; }
+.s-spec { color: var(--ink-2); font-style: italic; border-bottom-color: var(--ink-2); }
+.s-claimed { color: var(--muted); border: 1px dotted var(--faint); }
+.s-merged { color: var(--ink); }
+.s-merged::before { content: "✓"; font-size: 11px; }
+.s-settled { color: var(--faint); font-weight: 500; }
+
+/* the six-stop pipeline */
+.pipe { display: inline-flex; align-items: center; height: 14px; }
+.pip { position: relative; width: 9px; height: 9px; border-radius: 50%; border: 1px solid var(--faint); background: transparent; }
+.link { width: 9px; height: 1px; background: var(--faint); }
+.pip.done { background: var(--ink); border-color: var(--ink); width: 6px; height: 6px; margin: 0 1.5px; }
+.link.done { background: var(--ink); }
+.pip.cur { width: 11px; height: 11px; background: var(--ink); border-color: var(--ink); }
+.pip.cur::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 1px solid var(--ink); opacity: 0; animation: ring 2.2s ease-out infinite; }
+@keyframes ring { 0% { transform: scale(.5); opacity: .7; } 80%, 100% { transform: scale(1.15); opacity: 0; } }
+.k-claimed .pip.cur { background: transparent; }
+.k-approve .pip.cur { border-radius: 2px; transform: rotate(45deg); width: 9px; height: 9px; margin: 0 1px; }
+.k-review-failed .pip.cur { background: var(--red); border-color: var(--red); }
+.k-review-failed .pip.cur::after { border-color: var(--red); }
+.k-needs-human .pip.cur { background: var(--paper); border: 1.5px solid var(--red); border-radius: 0; width: 11px; height: 11px; }
+.k-needs-human .pip.cur::before { content: "✕"; position: absolute; inset: 0; display: grid; place-items: center; font: 700 9px/1 var(--mono); color: var(--red); }
+.k-needs-human .pip.cur::after { display: none; }
+.k-merged .pip.cur { background: var(--ink); }
+.k-merged .pip.cur::after, .k-settled .pip.cur::after { display: none; }
+.k-settled .pip, .k-settled .pip.done, .k-settled .pip.cur { background: var(--faint); border-color: var(--faint); width: 5px; height: 5px; margin: 0 2px; }
+.k-settled .link { background: var(--faint); opacity: .6; }
+
+/* reviewer verdicts */
+.c-ver { display: flex; align-items: center; gap: 3px; }
+.vr { display: inline-flex; gap: 3px; align-items: center; }
+.vr.prev { opacity: .32; }
+.vr.prev + .vr::before { content: "›"; color: var(--faint); margin-right: 1px; font: 12px var(--body); }
+.v { display: inline-flex; align-items: baseline; gap: 1px; font: 10.5px var(--mono); color: var(--ink-2); }
+.v .g { font: 600 11px var(--mono); }
+.v.PASS .g { color: var(--ink); }
+.v.CHANGES { color: var(--red); }
+.v.CHANGES .g { color: var(--red); }
+.v.pending { color: var(--muted); }
+.v.pending .g { color: var(--faint); }
+.v.live.pending .g { animation: blink 1.6s steps(2, jump-none) infinite; color: var(--ink-2); }
+.nil { color: var(--faint); font: 11px var(--mono); }
+
+/* the expanded record */
+.detail { display: grid; grid-template-columns: 1.25fr 1.25fr 1fr; gap: 28px; padding: 10px 14px 14px 104px; background: var(--paper-2); border-bottom: 1px solid var(--rule-strong); animation: open .18s ease-out; }
+@keyframes open { from { opacity: 0; transform: translateY(-3px); } }
+.detail h3 { margin: 0 0 5px; font: 500 9px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--rule); padding-bottom: 4px; }
+.detail .lede { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 14px; margin-bottom: -10px; }
+.detail .lede h4 { margin: 0; font: 600 22px/1.1 var(--display); font-variation-settings: "opsz" 40; }
+.detail .lede .meta { font: 11px var(--mono); color: var(--muted); }
+.detail table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+.detail td { padding: 2px 0; border-bottom: 1px dotted var(--rule); }
+.detail td.t, .detail td.d { font: 11px var(--mono); color: var(--ink-2); text-align: right; width: 1%; white-space: nowrap; padding-left: 14px; }
+.detail tr.now td { font-weight: 600; }
+.detail tr.trouble td { color: var(--red); }
+.detail .round { margin-bottom: 8px; }
+.detail .round .rh { font: italic 13px var(--body); margin-bottom: 2px; }
+.detail .round .rh b { font: 700 13px var(--display); font-style: normal; }
+.detail .note { font: italic 14px/1.4 var(--body); }
+.detail .note.trouble { color: var(--red); }
+.detail .cmd { margin-top: 8px; font: 11px var(--mono); color: var(--ink-2); padding: 5px 7px; border: 1px solid var(--rule-strong); background: var(--paper); }
+.detail .cmd b { color: var(--red); font-weight: 600; }
+
+/* settled: one line per project */
+.settled-grid { display: grid; grid-template-columns: repeat(3, 1fr); column-gap: 28px; }
+.sline { display: grid; grid-template-columns: 12px 92px 1fr auto; gap: 8px; align-items: baseline; height: 25px; padding-top: 4px; border-bottom: 1px solid var(--rule); text-align: left; color: var(--muted); }
+.sline:hover { color: var(--ink); }
+.sline .tw { font: 10px var(--mono); transition: transform .15s; display: inline-block; }
+.sline[aria-expanded="true"] .tw { transform: rotate(90deg); }
+.sline .p { font: 600 11.5px var(--body); font-variant: small-caps; text-transform: lowercase; color: var(--ink-2); }
+.sline .w { font: italic 12.5px var(--body); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sline .a { font: 11px var(--mono); }
+.settled-open { margin-top: 4px; }
+
+/* by project */
+.pgroup { margin-top: 6px; }
+.pgroup .tier-head h2 { font-variant: small-caps; text-transform: lowercase; font-size: 19px; letter-spacing: .02em; }
+.pgroup .tally { display: flex; gap: 4px; margin-left: auto; }
+.pgroup.idle .tier-head { border-bottom-color: var(--rule-strong); }
+.pgroup.idle .tier-head h2 { color: var(--muted); font-weight: 500; }
+.pgroup .sline { grid-template-columns: 12px 1fr auto; padding-left: 0; }
+</style>
+</head>
+<body>
+<header class="mast">
+  <div class="mast-top">
+    <div class="kicker">Andon · <b>All projects</b><br>Concept 03 · attention-first ledger</div>
+    <h1>The Andon <i>Ledger</i></h1>
+    <div class="dateline"><span id="date"></span><br><span class="live">Live from the line</span></div>
+  </div>
+  <div class="rules"></div>
+  <nav class="summary" id="summary" aria-label="Summary"></nav>
+</header>
+
+<div class="controls">
+  <div class="filters" id="filters" role="group" aria-label="Filter by project"></div>
+  <div class="seg" role="group" aria-label="Group by">
+    <button type="button" data-group="tier" aria-pressed="true">By attention</button>
+    <button type="button" data-group="project" aria-pressed="false">By project</button>
+  </div>
+</div>
+<div class="key">
+  <span class="how"><b>How to read this</b>One line per job, most urgent first. Pips trace claimed → spec → build → review → approve → merged; ✓ pass, ✗ changes, · pending; faded marks are the previous round. Click a line for its record.</span>
+  <span class="legend" id="legend" aria-label="Legend"></span>
+</div>
+
+<main class="ledger" id="ledger">
+  <div class="colhead" aria-hidden="true">
+    <span>State</span><span>Project</span><span>Job</span><span>Title</span><span>Pipeline</span><span>Reviews</span><span class="r">Rnd</span><span class="r" title="Time in the current stage; for merged jobs, time since merging">In stage</span><span>Note</span>
+  </div>
+  <div id="body"></div>
+</main>
+
+<script src="data.js"></script>
+<script>
+(() => {
+  const F = window.FACTORY;
+  const NOW = F.NOW;
+  const proj = Object.fromEntries(F.projects.map((p) => [p.id, p]));
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  const dur = (ms) => { const m = Math.max(0, Math.round(ms / 60000)); return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`; };
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const pad = (n) => String(n).padStart(2, '0');
+  const clock = (t) => { const d = new Date(t), n = new Date(NOW); const hm = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+    return d.toISOString().slice(0, 10) === n.toISOString().slice(0, 10) ? hm : `${MON[d.getUTCMonth()]} ${d.getUTCDate()} ${hm}`; };
+  const ABBR = { security: 'sec', contract: 'con', code: 'cod', ui: 'ui', ux: 'ux' };
+  const STAGE_NAME = { claimed: 'Claimed', spec: 'Spec', build: 'Build', review: 'Review', approve: 'Approve', merged: 'Merged', 'needs-human': 'Needs a human' };
+
+  // ── classification ──
+  const mergeFailed = (j) => j.kind === 'needs-human' && j.note.startsWith('merge failed');
+  const stampOf = (j) => {
+    if (j.kind === 'needs-human') return mergeFailed(j) ? ['merge-failed', 'Merge failed'] : ['needs-human', 'Escalated'];
+    return { 'review-failed': ['review-failed', 'Sent back'], reviewing: ['reviewing', 'In review'], approve: ['approve', 'Approving'],
+      build: ['build', j.round > 0 ? 'Rebuilding' : 'Building'], spec: ['spec', 'Spec'], claimed: ['claimed', 'Claimed'],
+      merged: ['merged', 'Merged'], settled: ['settled', 'Settled'] }[j.kind];
+  };
+  const stamp = (cls, label, title) => `<span class="stamp s-${cls}"${title ? ` title="${esc(title)}"` : ''}>${esc(label)}</span>`;
+  const TIER = { 'needs-human': 'need', 'review-failed': 'back', merged: 'today', settled: 'settled' };
+  const tierOf = (j) => TIER[j.kind] ?? 'line';
+  const LINE_ORDER = { approve: 0, reviewing: 1, build: 2, spec: 3, claimed: 4 };
+  const KIND_RANK = { 'needs-human': 0, 'review-failed': 1, approve: 2, reviewing: 3, build: 4, spec: 5, claimed: 6, merged: 7, settled: 8 };
+  const byUrgency = (a, b) => (KIND_RANK[a.kind] - KIND_RANK[b.kind]) || (a.enteredAt - b.enteredAt);
+
+  // ── cells ──
+  function pipeline(j) {
+    let cur = j.stage;
+    if (j.kind === 'needs-human') cur = j.history[j.history.length - 2].stage;
+    const idx = F.stages.indexOf(cur);
+    let h = '';
+    F.stages.forEach((s, i) => {
+      if (i > 0) h += `<span class="link${i <= idx ? ' done' : ''}"></span>`;
+      h += `<span class="pip ${i < idx ? 'done' : i === idx ? 'cur' : 'todo'}" title="${STAGE_NAME[s]}"></span>`;
+    });
+    const where = j.kind === 'needs-human' ? `stopped at ${cur}` : `at ${cur}`;
+    return `<span class="pipe" role="img" aria-label="Pipeline, ${where}">${h}</span>`;
+  }
+  function verdictRound(j, r, cls) {
+    const keys = proj[j.project].reviewers.filter((k) => r.reviews[k]);
+    const live = cls === 'cur' && j.stage === 'review';
+    return `<span class="vr ${cls}" title="Round ${r.round}">` + keys.map((k) => {
+      const v = r.reviews[k].verdict;
+      const g = v === 'PASS' ? '✓' : v === 'CHANGES' ? '✗' : '·';
+      return `<span class="v ${v}${live ? ' live' : ''}" title="R${r.round} ${k}: ${v}">${ABBR[k] ?? k}<span class="g">${g}</span></span>`;
+    }).join('') + '</span>';
+  }
+  function verdicts(j) {
+    if (j.rounds.length === 0) return '<span class="nil">—</span>';
+    const cur = j.rounds[j.rounds.length - 1], prev = j.rounds[j.rounds.length - 2];
+    return (prev ? verdictRound(j, prev, 'prev') : '') + verdictRound(j, cur, 'cur');
+  }
+  function note(j) {
+    if (j.note === '') return '';
+    const m = /^merged ([0-9a-f]+)$/.exec(j.note);
+    if (m) return `<span class="sha">${esc(m[1])}</span> · lead time ${dur(j.enteredAt - j.claimedAt)}`;
+    return esc(j.note);
+  }
+  function row(j, open) {
+    const [cls, label] = stampOf(j);
+    const inStage = NOW - j.enteredAt;
+    const long = j.kind !== 'merged' && j.kind !== 'settled' && inStage > 120 * 60000;
+    const title = j.title === j.id ? '<span class="await">Awaiting a spec…</span>' : esc(j.title);
+    const time = F.ago(j.enteredAt);
+    const h = `<div class="row k-${j.kind}" role="button" tabindex="0" aria-expanded="${open}" data-key="${esc(j.key)}">
+      <span class="c-state">${stamp(cls, label)}</span>
+      <span class="c-proj">${esc(proj[j.project].name)}</span>
+      <span class="c-id">${esc(j.id)}</span>
+      <span class="c-title">${title}</span>
+      <span class="c-pipe">${pipeline(j)}</span>
+      <span class="c-ver">${verdicts(j)}</span>
+      <span class="c-rnd">${j.round > 0 ? `${j.round}<span class="max">/${j.maxRound}</span>` : '<span class="max">—</span>'}</span>
+      <span class="c-time${long ? ' long' : ''}">${time}</span>
+      <span class="c-note">${note(j)}</span>
+    </div>`;
+    return open ? h + detail(j) : h;
+  }
+
+  function detail(j) {
+    const hist = j.history.map((e, i) => {
+      const next = j.history[i + 1];
+      const last = !next;
+      const terminal = e.stage === 'merged';
+      const d = last ? (terminal ? '' : `${dur(NOW - e.at)} so far`) : dur(next.at - e.at);
+      const trouble = e.stage === 'needs-human';
+      return `<tr class="${last && !terminal ? 'now' : ''}${trouble ? ' trouble' : ''}"><td>${STAGE_NAME[e.stage]}</td><td class="t">${clock(e.at)}</td><td class="d">${d}</td></tr>`;
+    }).join('');
+    const rounds = j.rounds.length === 0 ? '<div class="note" style="color:var(--muted)">No review rounds yet.</div>' : j.rounds.map((r) => {
+      const rows = proj[j.project].reviewers.filter((k) => r.reviews[k]).map((k) => {
+        const { verdict, finishedAt } = r.reviews[k];
+        const g = verdict === 'PASS' ? '✓ pass' : verdict === 'CHANGES' ? '✗ changes' : '· pending';
+        return `<tr class="${verdict === 'CHANGES' ? 'trouble' : ''}"><td>${k}</td><td class="t">${g}</td><td class="d">${finishedAt ? `${clock(finishedAt)} · ${dur(finishedAt - r.at)}` : `${dur(NOW - r.at)} so far`}</td></tr>`;
+      }).join('');
+      return `<div class="round"><div class="rh"><b>Round ${r.round}</b> of ${j.maxRound}, opened ${clock(r.at)}</div><table>${rows}</table></div>`;
+    }).join('');
+    const trouble = j.kind === 'needs-human' || j.kind === 'review-failed';
+    let cmd = '';
+    if (j.kind === 'needs-human') cmd = `<div class="cmd"><b>›</b> /factory approve ${esc(j.id)} &nbsp;or&nbsp; /factory rework ${esc(j.id)} "&lt;note&gt;"</div>`;
+    const total = j.stage === 'merged' ? `lead time ${dur(j.enteredAt - j.claimedAt)}` : `open ${dur(NOW - j.claimedAt)}`;
+    return `<div class="detail">
+      <div class="lede"><h4>${esc(j.title === j.id ? 'Untitled (spec pending)' : j.title)}</h4><span class="meta">${esc(proj[j.project].name)} / ${esc(j.id)} · ${esc(j.branch)} · ${total}${j.decision ? ` · decision ${esc(j.decision)}` : ''}</span></div>
+      <div><h3>Stage record</h3><table>${hist}</table></div>
+      <div><h3>Review rounds</h3>${rounds}</div>
+      <div><h3>Note</h3><div class="note${trouble ? ' trouble' : ''}">${j.note ? esc(j.note) : '<span style="color:var(--muted)">No note.</span>'}</div>${cmd}</div>
+    </div>`;
+  }
+
+  // ── state ──
+  const ui = { group: 'tier', only: new Set(), open: new Set(), openSettled: new Set() };
+  const visible = () => F.jobs.filter((j) => ui.only.size === 0 || ui.only.has(j.project));
+
+  // ── masthead ──
+  const d = new Date(NOW);
+  const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  document.getElementById('date').textContent = `${DAYS[d.getUTCDay()]}, ${['January','February','March','April','May','June','July','August','September','October','November','December'][d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()} · ${clock(NOW)} UTC`;
+  const count = (t) => F.jobs.filter((j) => tierOf(j) === t).length;
+  document.getElementById('summary').innerHTML = [
+    ['hot', count('need'), 'need you'], ['hot', count('back'), 'sent back'], ['', count('line'), 'on the line'],
+    ['', count('today'), 'landed today'], ['', count('settled'), 'settled'], ['', F.projects.length, 'projects'],
+  ].map(([c, n, l]) => `<span class="${n > 0 ? c : ''}"><b>${n}</b>${l}</span>`).join('');
+  document.getElementById('legend').innerHTML = [
+    ['needs-human', 'Escalated'], ['merge-failed', 'Merge failed'], ['review-failed', 'Sent back'], ['approve', 'Approving'],
+    ['reviewing', 'In review'], ['build', 'Building'], ['spec', 'Spec'], ['claimed', 'Claimed'], ['merged', 'Merged'], ['settled', 'Settled'],
+  ].map(([c, l]) => stamp(c, l, F.kinds[c] ?? 'Escalated: merge failed')).join('');
+
+  // ── filters ──
+  function renderFilters() {
+    const active = (p) => F.jobs.filter((j) => j.project === p.id && j.kind !== 'settled');
+    const h = [`<span class="ctl-label">Projects</span>`, `<button type="button" class="pf" data-p="" aria-pressed="${ui.only.size === 0}">All</button>`];
+    for (const p of F.projects) {
+      const a = active(p);
+      const alert = a.some((j) => j.kind === 'needs-human' || j.kind === 'review-failed');
+      h.push(`<button type="button" class="pf${alert ? ' alert' : ''}${a.length === 0 ? ' idle' : ''}" data-p="${p.id}" aria-pressed="${ui.only.has(p.id)}" title="${a.length} open job(s)">${esc(p.name)}<span class="n">${a.length || 'idle'}</span></button>`);
+    }
+    document.getElementById('filters').innerHTML = h.join('');
+  }
+
+  // ── body ──
+  const ROMAN = ['I', 'II', 'III', 'IV', 'V'];
+  const TIERS = [
+    { key: 'need', name: 'Needs you', dek: 'escalated or failed to merge · <code>/factory approve | rework</code>' },
+    { key: 'back', name: 'Sent back', dek: 'a reviewer asked for changes; the builder goes again' },
+    { key: 'line', name: 'On the line', dek: 'closest to landing first, then longest in stage' },
+    { key: 'today', name: 'Landed today', dek: 'merged in the last 24 hours' },
+    { key: 'settled', name: 'Settled', dek: 'merged more than 24 hours ago · one line per project' },
+  ];
+  function tierHead(i, name, n, dek, extra = '') {
+    return `<div class="tier-head"><span class="num">${i}</span><h2>${name}</h2><span class="count">${n}</span><span class="dek">${dek}</span>${extra}</div>`;
+  }
+  function settledLine(pid, jobs, showName) {
+    const open = ui.openSettled.has(pid);
+    const latest = jobs.reduce((a, b) => (a.enteredAt > b.enteredAt ? a : b));
+    const what = jobs.map((j) => j.id).join(', ');
+    return `<button type="button" class="sline" data-settled="${pid}" aria-expanded="${open}">
+      <span class="tw">▸</span>${showName ? `<span class="p">${esc(proj[pid].name)}</span>` : ''}
+      <span class="w">${jobs.length} settled — ${esc(what)}</span><span class="a">${F.ago(latest.enteredAt)} ago</span></button>`;
+  }
+  function renderTiers(jobs) {
+    return TIERS.map((t, i) => {
+      let list = jobs.filter((j) => tierOf(j) === t.key);
+      if (t.key === 'line') list.sort((a, b) => (LINE_ORDER[a.kind] - LINE_ORDER[b.kind]) || (a.enteredAt - b.enteredAt));
+      else list.sort((a, b) => (t.key === 'today' ? b.enteredAt - a.enteredAt : a.enteredAt - b.enteredAt));
+      let inner;
+      if (t.key === 'settled') {
+        const byP = new Map();
+        for (const j of list) { if (!byP.has(j.project)) byP.set(j.project, []); byP.get(j.project).push(j); }
+        inner = list.length === 0 ? '<div class="empty">Nothing settled.</div>'
+          : `<div class="settled-grid">${[...byP].map(([p, js]) => settledLine(p, js, true)).join('')}</div>` +
+            [...byP].filter(([p]) => ui.openSettled.has(p)).map(([, js]) => `<div class="settled-open">${js.map((j) => row(j, ui.open.has(j.key))).join('')}</div>`).join('');
+      } else {
+        inner = list.length === 0 ? `<div class="empty">${t.key === 'need' ? 'Nothing needs you. The line is running itself.' : 'None.'}</div>`
+          : list.map((j) => row(j, ui.open.has(j.key))).join('');
+      }
+      return `<section class="tier t-${t.key}">${tierHead(ROMAN[i], t.name, list.length, t.dek)}${inner}</section>`;
+    }).join('');
+  }
+  function renderProjects(jobs) {
+    const groups = F.projects.filter((p) => ui.only.size === 0 || ui.only.has(p.id)).map((p) => {
+      const all = jobs.filter((j) => j.project === p.id);
+      const open = all.filter((j) => j.kind !== 'settled').sort(byUrgency);
+      const settled = all.filter((j) => j.kind === 'settled');
+      const rank = open.length ? KIND_RANK[open[0].kind] : 99;
+      return { p, open, settled, rank };
+    }).sort((a, b) => (a.rank - b.rank) || a.p.name.localeCompare(b.p.name));
+    return groups.map(({ p, open, settled }, i) => {
+      const tally = open.map((j) => stamp(...stampOf(j))).join('');
+      const head = tierHead(String(i + 1).padStart(2, '0'), esc(p.name), open.length, open.length ? `${p.reviewers.join(' · ')}` : 'idle', `<span class="tally">${tally}</span>`);
+      const rows = open.map((j) => row(j, ui.open.has(j.key))).join('');
+      const s = settled.length ? settledLine(p.id, settled, false) + (ui.openSettled.has(p.id) ? settled.map((j) => row(j, ui.open.has(j.key))).join('') : '') : '';
+      return `<section class="pgroup${open.length ? '' : ' idle'}${open.some((j) => j.kind === 'needs-human') ? ' t-need tier' : ''}">${head}${rows}${s}</section>`;
+    }).join('');
+  }
+  function render() {
+    renderFilters();
+    const jobs = visible();
+    document.getElementById('body').innerHTML = ui.group === 'tier' ? renderTiers(jobs) : renderProjects(jobs);
+    document.querySelectorAll('.seg button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.group === ui.group)));
+  }
+
+  // ── events ──
+  document.getElementById('filters').addEventListener('click', (e) => {
+    const b = e.target.closest('.pf'); if (!b) return;
+    const p = b.dataset.p;
+    if (p === '') ui.only.clear(); else if (ui.only.has(p)) ui.only.delete(p); else ui.only.add(p);
+    render();
+  });
+  document.querySelector('.seg').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return; ui.group = b.dataset.group; render();
+  });
+  const toggle = (set, k) => (set.has(k) ? set.delete(k) : set.add(k));
+  const body = document.getElementById('body');
+  body.addEventListener('click', (e) => {
+    const s = e.target.closest('[data-settled]');
+    if (s) { toggle(ui.openSettled, s.dataset.settled); render(); return; }
+    const r = e.target.closest('.row');
+    if (r) { toggle(ui.open, r.dataset.key); render(); body.querySelector(`.row[data-key="${CSS.escape(r.dataset.key)}"]`)?.focus(); }
+  });
+  body.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('row')) { e.preventDefault(); e.target.click(); }
+  });
+  render();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Andon overview: mock-ups</title>
+<style>
+  body { margin: 0; font: 15px/1.5 ui-monospace, Menlo, monospace; background: #111; color: #ddd; }
+  nav { display: flex; gap: 6px; padding: 10px 14px; border-bottom: 1px solid #333; align-items: center; }
+  nav b { margin-right: 12px; color: #fff; }
+  nav a { color: #aaa; text-decoration: none; padding: 4px 10px; border: 1px solid #333; border-radius: 4px; }
+  nav a.on, nav a:hover { color: #fff; border-color: #888; }
+  iframe { display: block; width: 1440px; height: 900px; border: 0; margin: 0 auto; background: #fff; }
+</style>
+</head>
+<body>
+<nav>
+  <b>Andon overview</b>
+  <a href="#01-timeline.html">1 · Shift Log</a>
+  <a href="#02-swimlanes.html">2 · Assembly Lines</a>
+  <a href="#03-ledger.html">3 · The Ledger</a>
+  <a href="#04-signal-wall.html">4 · Signal Wall</a>
+  <a href="#05-orbit.html">5 · Orbit</a>
+  <span style="color:#555;margin:0 6px">│ round 2:</span>
+  <a href="#06-lines-cyanotype.html">6 · Cyanotype</a>
+  <a href="#07-lines-mac.html">7 · Mac app ★</a>
+  <a href="#08-lines-mac-blueprint.html">8 · Mac + blueprint</a>
+</nav>
+<iframe id="f" title="mock-up"></iframe>
+<script>
+  const f = document.getElementById('f');
+  const show = () => {
+    const page = location.hash.slice(1) || '07-lines-mac.html';
+    f.src = page;
+    for (const a of document.querySelectorAll('nav a')) a.classList.toggle('on', a.getAttribute('href') === '#' + page);
+  };
+  addEventListener('hashchange', show);
+  show();
+</script>
+</body>
+</html>

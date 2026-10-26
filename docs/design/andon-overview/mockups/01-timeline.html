@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Andon · Shift Log — mock-up 01 (timeline)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,100..800&family=IBM+Plex+Sans+Condensed:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #080907; --panel: #0e100c; --panel2: #12150f;
+  --rule: rgba(222, 206, 150, .065); --rule2: rgba(222, 206, 150, .14); --rule3: rgba(222, 206, 150, .26);
+  --ink: #ebe4c9; --muted: #8f8b74; --faint: #4d4c40;
+  --accent: #ffb238;
+  --claimed: #7d7b6c; --spec: #4cc6dc; --build: #f2a33a; --review: #b9d94a; --approve: #e9e2c4;
+  --merged: #41d47f; --human: #ff4127; --changes: #ff7b3d; --pass: #41d47f;
+  --display: "Martian Mono", "Iosevka Term", "SF Mono", ui-monospace, Menlo, monospace;
+  --text: "IBM Plex Sans Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; }
+body {
+  background: radial-gradient(120% 90% at 60% 0%, #12140e 0%, var(--bg) 60%) fixed, var(--bg);
+  color: var(--ink); font: 13px/1.35 var(--text);
+  display: flex; flex-direction: column; padding: 0 20px 14px;
+  -webkit-font-smoothing: antialiased;
+}
+/* scanlines + vignette */
+body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 50;
+  background:
+    repeating-linear-gradient(0deg, rgba(255,255,255,.018) 0 1px, transparent 1px 3px),
+    radial-gradient(140% 100% at 50% 50%, transparent 60%, rgba(0,0,0,.55) 100%); }
+.mono { font-family: var(--display); font-stretch: 75%; }
+
+/* ── header ─────────────────────────────────── */
+header { flex: none; display: flex; align-items: center; gap: 28px; padding: 16px 0 12px; border-bottom: 1px solid var(--rule2); }
+.brand { display: flex; align-items: baseline; gap: 12px; }
+.brand b { font: 800 26px/1 var(--display); font-stretch: 75%; letter-spacing: .02em; color: var(--accent);
+  text-shadow: 0 0 18px rgba(255,178,56,.35); }
+.brand span { font: 400 12px/1 var(--display); font-stretch: 75%; letter-spacing: .32em; color: var(--muted); }
+.counts { flex: 1; display: flex; flex-wrap: wrap; gap: 4px 14px; font: 500 11px/1 var(--display); font-stretch: 75%; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.counts i { display: inline-block; width: 7px; height: 7px; margin-right: 6px; vertical-align: 0; }
+.counts em { font-style: normal; color: var(--ink); margin-right: 4px; }
+.clock { text-align: right; font: 400 11px/1.4 var(--display); font-stretch: 75%; color: var(--muted); letter-spacing: .08em; }
+.clock strong { display: block; font-weight: 700; font-size: 20px; color: var(--ink); letter-spacing: .04em; }
+.clock strong::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--merged); margin-right: 9px; vertical-align: 3px; animation: beat 2s infinite; }
+@keyframes beat { 0% { box-shadow: 0 0 0 0 rgba(65,212,127,.55); } 70%, 100% { box-shadow: 0 0 0 7px transparent; } }
+
+/* ── needs a human ───────────────────────────── */
+#human { flex: none; margin: 12px 0 10px; border: 1px solid rgba(255,65,39,.45); background:
+  repeating-linear-gradient(-45deg, rgba(255,65,39,.07) 0 10px, rgba(255,65,39,.02) 10px 20px), var(--panel);
+  display: flex; align-items: stretch; }
+#human .hd { flex: none; width: 168px; padding: 10px 12px; border-right: 1px solid rgba(255,65,39,.3);
+  font: 700 11px/1.3 var(--display); font-stretch: 75%; letter-spacing: .14em; text-transform: uppercase; color: var(--human); }
+#human .hd::before { content: ""; display: block; width: 10px; height: 10px; background: var(--human); margin-bottom: 7px; animation: blink 1.4s steps(2) infinite; box-shadow: 0 0 10px var(--human); }
+#human .hd small { display: block; margin-top: 4px; font-weight: 400; letter-spacing: .04em; text-transform: none; color: var(--muted); }
+@keyframes blink { 50% { opacity: .2; } }
+#human .cards { flex: 1; min-width: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.hcard { all: unset; cursor: pointer; padding: 9px 14px; border-right: 1px solid rgba(255,65,39,.18); display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.hcard:last-child { border-right: 0; }
+.hcard:hover, .hcard:focus-visible { background: rgba(255,65,39,.08); }
+.hcard .t { display: flex; gap: 8px; align-items: baseline; white-space: nowrap; min-width: 0; font: 500 10.5px/1 var(--display); font-stretch: 75%; letter-spacing: .06em; color: var(--muted); }
+.hcard .t b { flex: none; color: var(--human); font-weight: 700; letter-spacing: .12em; }
+.hcard .t .pid { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.hcard .t .w { flex: none; margin-left: auto; color: var(--ink); }
+.hcard .ti { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hcard .n { color: #ffb9a6; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── the plot ────────────────────────────────── */
+#plot { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+#axis { flex: none; height: 30px; position: relative; border-bottom: 1px solid var(--rule2); }
+#lanes { flex: 1; min-height: 0; position: relative; }
+.zone-label { position: absolute; top: 3px; font: 600 9.5px/1 var(--display); font-stretch: 75%; letter-spacing: .2em; color: var(--faint); text-transform: uppercase; }
+.tick-l { position: absolute; bottom: 5px; transform: translateX(-50%); font: 400 10px/1 var(--display); font-stretch: 75%; color: var(--muted); letter-spacing: .04em; white-space: nowrap; }
+.tick-l.minor { color: var(--faint); }
+.now-l { position: absolute; bottom: 4px; transform: translateX(-50%); font: 700 10px/1 var(--display); font-stretch: 75%; color: var(--bg);
+  background: var(--accent); padding: 3px 5px 2px; letter-spacing: .1em; box-shadow: 0 0 14px rgba(255,178,56,.5); }
+
+.grid { position: absolute; inset: 0; pointer-events: none; }
+.gl { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--rule); }
+.gl.major { background: var(--rule2); }
+.comp-shade { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(90deg, rgba(222,206,150,.018) 0 2px, transparent 2px 6px); }
+.brk { position: absolute; top: 0; bottom: 0; background:
+  linear-gradient(90deg, var(--rule3) 0 1px, transparent 1px calc(100% - 1px), var(--rule3) calc(100% - 1px)),
+  repeating-linear-gradient(-60deg, transparent 0 5px, rgba(222,206,150,.08) 5px 6px); }
+.nowline { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--accent); box-shadow: 0 0 8px var(--accent), 0 0 22px rgba(255,178,56,.35); }
+.nowfade { position: absolute; top: 0; bottom: 0; width: 70px; background: linear-gradient(90deg, transparent, rgba(255,178,56,.05)); }
+
+.lane { position: relative; border-bottom: 1px solid var(--rule); }
+.lane:nth-child(even of .lane) { background: rgba(222,206,150,.012); }
+.lane:hover { background: rgba(222,206,150,.03); }
+.lane.flash { animation: flash 1.2s ease-out; }
+@keyframes flash { 0% { background: rgba(255,178,56,.16); } 100% { background: transparent; } }
+.lane .name { position: absolute; left: 0; top: 0; bottom: 0; padding: 6px 10px 0 0; display: flex; flex-direction: column; gap: 3px; }
+.lane .name b { font: 700 13px/1 var(--display); font-stretch: 75%; letter-spacing: .03em; }
+.lane .name small { font: 400 10px/1 var(--display); font-stretch: 75%; color: var(--muted); letter-spacing: .03em; display: flex; gap: 4px; align-items: center; }
+.lane .name small i { width: 6px; height: 6px; display: inline-block; }
+.lane.idle .name { flex-direction: row; align-items: center; gap: 10px; padding-top: 0; }
+.lane.idle .name b { color: var(--muted); font-weight: 500; font-size: 11.5px; }
+.lane.idle .name small { color: var(--faint); }
+.track { position: absolute; top: 0; bottom: 0; right: 0; }
+
+/* a job */
+.job { position: absolute; height: 26px; }
+.job .lbl { position: absolute; left: 0; top: 0; white-space: nowrap; font: 500 9.5px/1 var(--display); font-stretch: 75%; color: var(--muted); letter-spacing: .02em; cursor: pointer; }
+.job .lbl b { color: var(--ink); font-weight: 700; margin-right: 4px; }
+.job .lbl.left { left: auto; right: calc(100% + 5px); top: 10px; text-align: right; }
+.job .bar { position: absolute; left: 0; top: 11px; height: 7px; cursor: pointer; }
+.seg { position: absolute; top: 0; height: 100%; }
+.seg:first-child { border-radius: 2px 0 0 2px; }
+.s-claimed { background: repeating-linear-gradient(90deg, var(--claimed) 0 3px, transparent 3px 5px); top: 2px; height: 3px; }
+.s-spec { background: var(--spec); }
+.s-build { background: var(--build); }
+.s-review { background: var(--review); }
+.s-approve { background: var(--approve); }
+.s-needs-human { background: repeating-linear-gradient(-45deg, var(--human) 0 3px, #5a130a 3px 6px); background-size: 8.5px 8.5px; animation: march 0.9s linear infinite; }
+@keyframes march { to { background-position: 8.5px 0; } }
+.seg.failed { box-shadow: inset 0 0 0 1px var(--changes); background: repeating-linear-gradient(-45deg, var(--review) 0 3px, var(--changes) 3px 5px); }
+.seg.live::after { content: ""; position: absolute; right: -1px; top: -3px; bottom: -3px; width: 3px; background: currentColor; animation: pulse 1.6s ease-in-out infinite; }
+.s-spec.live { color: var(--spec); } .s-build.live { color: var(--build); } .s-review.live { color: var(--review); }
+.s-approve.live { color: var(--approve); } .s-needs-human.live { color: var(--human); } .s-claimed.live { color: var(--claimed); }
+.seg.live { box-shadow: 0 0 10px -1px currentColor; }
+@keyframes pulse { 50% { opacity: .25; } }
+.tk { position: absolute; top: 20px; width: 0; height: 0; transform: translateX(-3.5px); border-left: 3.5px solid transparent; border-right: 3.5px solid transparent; border-bottom: 5px solid var(--pass); }
+.tk.CHANGES { border-bottom-color: var(--changes); filter: drop-shadow(0 0 3px var(--changes)); }
+.tk.CHANGES::after { content: "✕"; position: absolute; left: 1px; top: -1px; font: 700 8px/1 var(--display); color: var(--changes); }
+.tk.pending { border: 0; width: 6px; height: 6px; transform: translateX(-3px); border-radius: 50%; box-shadow: inset 0 0 0 1px var(--review); top: 19.5px; animation: pulse 1.6s ease-in-out infinite; }
+.mg { position: absolute; top: 10px; width: 9px; height: 9px; transform: translateX(-4.5px) rotate(45deg); background: var(--bg); border: 2px solid var(--merged); box-shadow: 0 0 8px rgba(65,212,127,.55); }
+.mg::after { content: ""; position: absolute; inset: 1.5px; background: var(--merged); }
+
+.job.settled { opacity: .32; filter: saturate(.35); }
+.job.settled .mg { box-shadow: none; }
+.job.settled:hover { opacity: .9; filter: none; }
+.job:hover .lbl, .job.focus .lbl { color: var(--ink); }
+.job:hover .bar, .job.focus .bar { outline: 1px solid var(--rule3); outline-offset: 2px; }
+.job.focus .bar { outline: 1px solid var(--accent); animation: ring 1s ease-out 2; }
+@keyframes ring { 0% { outline-offset: 7px; } 100% { outline-offset: 2px; } }
+.lane.idle .job { height: 18px; }
+.lane.idle .job .bar { top: 8px; height: 2px; }
+.lane.idle .job .lbl, .lane.idle .tk { display: none; }
+.lane.idle .mg { top: 5px; width: 7px; height: 7px; transform: translateX(-3.5px) rotate(45deg); border-width: 1.5px; }
+
+/* right-margin state tags */
+.tag { position: absolute; transform: translateY(-50%); white-space: nowrap; font: 700 9px/1 var(--display); font-stretch: 75%; letter-spacing: .1em; padding: 3px 4px 2px; border: 1px solid currentColor; cursor: pointer; }
+.tag.k-needs-human { color: var(--bg); background: var(--human); border-color: var(--human); box-shadow: 0 0 12px rgba(255,65,39,.6); animation: blink 1.4s steps(2) infinite; }
+.tag.k-review-failed { color: var(--changes); background: rgba(255,123,61,.12); }
+.tag.k-reviewing { color: var(--review); } .tag.k-approve { color: var(--approve); } .tag.k-build { color: var(--build); }
+.tag.k-spec { color: var(--spec); } .tag.k-claimed { color: var(--claimed); border-style: dashed; }
+.flag { position: absolute; width: 14px; height: 16px; transform: translate(-1px, -13px); }
+
+/* ── legend ──────────────────────────────────── */
+footer { flex: none; display: flex; align-items: center; gap: 22px; padding-top: 10px; border-top: 1px solid var(--rule2); }
+footer .cap { flex: none; max-width: 400px; color: var(--muted); font-size: 12px; font-style: italic; }
+footer .lg { flex: 1; display: flex; flex-wrap: wrap; gap: 6px 16px; font: 400 10px/1 var(--display); font-stretch: 75%; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; }
+footer .lg span { display: inline-flex; align-items: center; gap: 6px; position: relative; }
+.sw { display: inline-block; width: 20px; height: 7px; position: relative; }
+
+/* ── popover ─────────────────────────────────── */
+#pop { position: fixed; z-index: 60; width: 300px; padding: 12px 14px; background: rgba(14,16,12,.97); border: 1px solid var(--rule3);
+  box-shadow: 0 18px 40px -12px #000, 0 0 0 1px rgba(0,0,0,.6); pointer-events: none; opacity: 0; transform: translateY(4px); transition: opacity .12s, transform .12s; }
+#pop.on { opacity: 1; transform: none; }
+#pop.pinned { pointer-events: auto; border-color: var(--accent); }
+#pop .id { font: 500 10px/1 var(--display); font-stretch: 75%; letter-spacing: .06em; color: var(--muted); }
+#pop h3 { margin: 5px 0 8px; font: 600 15px/1.2 var(--text); }
+#pop .st { display: inline-block; font: 700 9.5px/1 var(--display); font-stretch: 75%; letter-spacing: .12em; text-transform: uppercase; padding: 3px 5px 2px; margin-bottom: 9px; }
+#pop dl { display: grid; grid-template-columns: 74px 1fr; gap: 4px 8px; margin: 0; font: 400 11px/1.3 var(--display); font-stretch: 75%; }
+#pop dt { color: var(--faint); text-transform: uppercase; letter-spacing: .08em; font-size: 9.5px; padding-top: 1px; }
+#pop dd { margin: 0; color: var(--ink); }
+#pop .rv { display: flex; flex-wrap: wrap; gap: 3px 9px; }
+#pop .rv span { white-space: nowrap; }
+#pop .PASS { color: var(--pass); } #pop .CHANGES { color: var(--changes); } #pop .pending { color: var(--muted); }
+#pop .note { margin-top: 9px; padding-top: 8px; border-top: 1px dashed var(--rule3); color: #ffcf9e; font-size: 12.5px; }
+#pop .hint { margin-top: 8px; font: 400 9.5px/1 var(--display); font-stretch: 75%; color: var(--faint); letter-spacing: .06em; }
+
+/* staggered load */
+.lane { animation: rise .5s cubic-bezier(.2,.7,.2,1) both; }
+@keyframes rise { from { opacity: 0; transform: translateX(-8px); } }
+.job .bar { transform-origin: left; animation: draw .7s cubic-bezier(.2,.7,.2,1) both; animation-delay: inherit; }
+@keyframes draw { from { transform: scaleX(0); } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><b>ANDON</b><span>SHIFT LOG</span></div>
+  <div class="counts" id="counts"></div>
+  <div class="clock" id="clock"></div>
+</header>
+<section id="human" aria-label="Needs a human">
+  <div class="hd">Needs a human<small>/factory approve | rework</small></div>
+  <div class="cards" id="hcards"></div>
+</section>
+<section id="plot" aria-label="Jobs over time">
+  <div id="axis"></div>
+  <div id="lanes"></div>
+</section>
+<footer>
+  <div class="cap">Each lane is a project; each bar is one job, colored by the stage it was in. The amber line is now; left of the break, time is compressed.</div>
+  <div class="lg" id="legend"></div>
+</footer>
+<div id="pop" role="dialog" aria-live="polite"></div>
+
+<script src="data.js"></script>
+<script>
+(function () {
+  const F = window.FACTORY;
+  const { NOW, projects, jobs } = F;
+  const MIN = 60000, FULL = 12 * 60;
+  const AMAX = Math.max(...jobs.map((j) => (NOW - j.claimedAt) / MIN)) * 1.08;
+  const COLORS = { 'needs-human': 'var(--human)', 'review-failed': 'var(--changes)', reviewing: 'var(--review)', approve: 'var(--approve)',
+    build: 'var(--build)', spec: 'var(--spec)', claimed: 'var(--claimed)', merged: 'var(--merged)', settled: 'var(--faint)' };
+  const TAG = { 'review-failed': '✕ CHANGES', reviewing: 'REVIEW', approve: 'APPROVE', build: 'BUILD', spec: 'SPEC', claimed: 'CLAIMED' };
+  const ACTIVE = (j) => j.stage !== 'merged';
+  const mergeFailed = (j) => j.stage === 'needs-human' && j.note.startsWith('merge failed');
+  const hhmm = (t) => new Date(t).toISOString().slice(11, 16);
+  const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const num = (j) => j.id.slice(0, 3);
+  const slug = (j) => j.id.slice(4);
+  const projName = (id) => projects.find((p) => p.id === id).name;
+  const short = { security: 'sec', contract: 'ctr', code: 'code', ui: 'ui', ux: 'ux' };
+
+  // ── geometry ──
+  const G = { label: 168, comp: 120, brk: 14, right: 74, full: 900 };
+  const fullLeft = () => G.comp + G.brk;
+  const nowX = () => fullLeft() + G.full;
+  function x(t) {
+    const a = Math.max(0, (NOW - t) / MIN);
+    if (a <= FULL) return fullLeft() + G.full * (1 - a / FULL);
+    const f = (Math.log(AMAX) - Math.log(a)) / (Math.log(AMAX) - Math.log(FULL));
+    return Math.max(0, f) * G.comp;
+  }
+
+  function segments(j) {
+    const out = []; let rev = 0;
+    j.history.forEach((h, i) => {
+      const next = j.history[i + 1];
+      if (h.stage === 'merged') return;
+      let round = null;
+      if (h.stage === 'review') { rev++; round = j.rounds[rev - 1] ?? null; }
+      out.push({ stage: h.stage, from: h.at, to: next ? next.at : NOW, round, last: !next });
+    });
+    return out;
+  }
+
+  function labelText(j) { return j.kind === 'settled' ? num(j) : `${num(j)} ${slug(j)}`; }
+  function layout(projJobs) {
+    const placed = projJobs.map((j) => {
+      const start = x(j.claimedAt);
+      const end = ACTIVE(j) ? nowX() : x(j.enteredAt);
+      const lw = labelText(j).length * 5.3 + 6;
+      const e = Math.max(end, start + 4);
+      // a bar too short for its label carries it on the left, right-aligned to the bar's start
+      const left = e - start < lw && start - lw - 4 > 0;
+      return { j, start, end: e, left, lw, from: left ? start - lw - 4 : start, extent: left ? e + 8 : Math.max(e + 8, start + lw) };
+    }).sort((a, b) => a.start - b.start);
+    const rows = [];
+    for (const p of placed) {
+      let r = rows.findIndex((last) => last + 6 <= p.from);
+      if (r === -1) { r = rows.length; rows.push(0); }
+      rows[r] = p.extent; p.row = r;
+    }
+    return { placed, rows: Math.max(rows.length, 1) };
+  }
+
+  // ── header ──
+  function header() {
+    const order = ['needs-human', 'review-failed', 'reviewing', 'approve', 'build', 'spec', 'claimed', 'merged', 'settled'];
+    const words = { 'needs-human': 'need a human', 'review-failed': 'review failed', reviewing: 'in review', approve: 'awaiting approver',
+      build: 'building', spec: 'writing spec', claimed: 'claimed', merged: 'merged 24h', settled: 'settled' };
+    document.getElementById('counts').innerHTML = order.map((k) => {
+      const n = jobs.filter((j) => j.kind === k).length;
+      return n ? `<span><i style="background:${COLORS[k]}"></i><em>${n}</em>${words[k]}</span>` : '';
+    }).join('');
+    const d = new Date(NOW);
+    const day = d.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).toUpperCase();
+    document.getElementById('clock').innerHTML = `<strong>${hhmm(NOW)} UTC</strong>${day} · ${projects.length} PROJECTS · ${jobs.length} JOBS`;
+  }
+
+  // ── needs a human strip ──
+  function human() {
+    const box = document.getElementById('hcards');
+    box.innerHTML = '';
+    jobs.filter((j) => j.kind === 'needs-human').sort((a, b) => a.enteredAt - b.enteredAt).forEach((j) => {
+      const b = el('button', 'hcard');
+      b.innerHTML = `<span class="t"><b>${mergeFailed(j) ? '⚑ MERGE FAILED' : '⚑ ESCALATED'}</b><span class="pid">${esc(projName(j.project))} / ${esc(j.id)}</span><span class="w">waiting ${F.ago(j.enteredAt)}</span></span>
+        <span class="ti">${esc(j.title)}</span><span class="n">${esc(j.note)}</span>`;
+      b.addEventListener('click', (e) => { e.stopPropagation(); focusJob(j.key); });
+      box.appendChild(b);
+    });
+  }
+
+  // ── axis + grid ──
+  function axis(height) {
+    const ax = document.getElementById('axis');
+    ax.innerHTML = '';
+    const L = G.label;
+    ax.appendChild(Object.assign(el('div', 'zone-label', 'earlier'), { style: `left:${L}px` }));
+    ax.appendChild(Object.assign(el('div', 'zone-label', 'last 12 hours'), { style: `left:${L + fullLeft() + 6}px` }));
+    const grid = el('div', 'grid');
+    grid.style.left = L + 'px';
+    grid.appendChild(Object.assign(el('div', 'comp-shade'), { style: `left:0;width:${G.comp}px` }));
+    grid.appendChild(Object.assign(el('div', 'brk'), { style: `left:${G.comp}px;width:${G.brk}px` }));
+    for (const d of [3, 1]) {
+      const t = NOW - d * 1440 * MIN; if ((NOW - t) / MIN > AMAX) continue;
+      const px = x(t);
+      grid.appendChild(Object.assign(el('div', 'gl'), { style: `left:${px}px` }));
+      ax.appendChild(Object.assign(el('div', 'tick-l minor', `−${d}d`), { style: `left:${L + px}px` }));
+    }
+    ax.appendChild(Object.assign(el('div', 'tick-l minor', '−12h'), { style: `left:${L + G.comp + G.brk / 2}px` }));
+    const firstHour = Math.ceil((NOW - FULL * MIN) / 3600000) * 3600000;
+    for (let t = firstHour; t < NOW; t += 3600000) {
+      const px = x(t), h = new Date(t).getUTCHours();
+      grid.appendChild(Object.assign(el('div', h % 3 === 0 ? 'gl major' : 'gl'), { style: `left:${px}px` }));
+      if (NOW - t > 45 * MIN && NOW - t < (FULL - 45) * MIN) ax.appendChild(Object.assign(el('div', h % 3 === 0 ? 'tick-l' : 'tick-l minor', hhmm(t)), { style: `left:${L + px}px` }));
+    }
+    grid.appendChild(Object.assign(el('div', 'nowfade'), { style: `left:${nowX() - 70}px` }));
+    grid.appendChild(Object.assign(el('div', 'nowline'), { style: `left:${nowX()}px` }));
+    ax.appendChild(Object.assign(el('div', 'now-l', `NOW ${hhmm(NOW)}`), { style: `left:${L + nowX()}px` }));
+    return grid;
+  }
+
+  // ── lanes ──
+  const byKey = new Map();
+  function render() {
+    const lanesEl = document.getElementById('lanes');
+    const W = lanesEl.clientWidth, H = lanesEl.clientHeight;
+    G.full = W - G.label - G.comp - G.brk - G.right;
+    lanesEl.innerHTML = '';
+    byKey.clear();
+
+    const lanes = projects.map((p) => {
+      const pj = jobs.filter((j) => j.project === p.id);
+      const idle = pj.every((j) => j.kind === 'settled');
+      return { p, pj, idle, ...layout(pj) };
+    });
+    // fit everything: active lanes share the height left after the hairline lanes
+    const IDLE_H = 18, PAD = 6;
+    const activeRows = lanes.filter((l) => !l.idle).reduce((s, l) => s + l.rows, 0);
+    const idleH = lanes.filter((l) => l.idle).length * IDLE_H;
+    const activeN = lanes.filter((l) => !l.idle).length;
+    const MIN_LANE = 40;
+    const laneH = (l, rh) => (l.idle ? IDLE_H : Math.max(l.rows * rh + PAD, MIN_LANE));
+    let RH = 46;
+    while (RH > 24 && lanes.reduce((s, l) => s + laneH(l, RH), 0) > H - 2) RH--;
+
+    lanesEl.appendChild(axis(H));
+    lanes.forEach((l, li) => {
+      const lane = el('div', 'lane' + (l.idle ? ' idle' : ''));
+      lane.dataset.project = l.p.id;
+      lane.style.height = laneH(l, RH) + 'px';
+      lane.style.animationDelay = li * 35 + 'ms';
+      const live = l.pj.filter((j) => j.kind !== 'settled');
+      const dots = live.map((j) => `<i style="background:${COLORS[j.kind]}" title="${esc(j.id)}"></i>`).join('');
+      const settled = l.pj.length - live.length;
+      lane.appendChild(el('div', 'name', l.idle
+        ? `<b>${esc(l.p.name)}</b><small>idle · ${settled} settled</small>`
+        : `<b>${esc(l.p.name)}</b><small>${dots}<span>${live.filter(ACTIVE).length} active${settled ? ` · ${settled} settled` : ''}</span></small>`));
+      const track = el('div', 'track');
+      track.style.left = G.label + 'px';
+      for (const p of l.placed) track.appendChild(jobEl(p, l.idle ? 0 : p.row * RH + 3 + Math.floor((laneH(l, RH) - PAD - l.rows * RH) / 2) + Math.floor((RH - 26) / 2), RH, l.idle, li));
+      lane.appendChild(track);
+      lanesEl.appendChild(lane);
+    });
+  }
+
+  function jobEl(p, top, RH, idle, li) {
+    const { j, start, end } = p;
+    const frag = document.createDocumentFragment();
+    const d = el('div', `job ${j.kind}`);
+    d.style.left = start + 'px'; d.style.top = top + 'px'; d.style.width = end - start + 'px';
+    d.style.animationDelay = li * 35 + 120 + 'ms';
+    d.dataset.key = j.key;
+    const lbl = el('div', 'lbl' + (p.left ? ' left' : ''), j.kind === 'settled' ? num(j) : `<b>${num(j)}</b>${esc(slug(j))}`);
+    d.appendChild(lbl);
+    const bar = el('div', 'bar');
+    bar.style.width = end - start + 'px';
+    bar.style.animationDelay = li * 35 + 160 + 'ms';
+    const segs = segments(j);
+    segs.forEach((s) => {
+      const sx = x(s.from) - start, ex = (s.last && ACTIVE(j) ? nowX() : x(s.to)) - start;
+      const seg = el('div', `seg s-${s.stage}`);
+      seg.style.left = sx + 'px'; seg.style.width = Math.max(ex - sx, s.last && ACTIVE(j) ? 3 : 1) + 'px';
+      if (s.round && Object.values(s.round.reviews).some((r) => r.verdict === 'CHANGES')) seg.classList.add('failed');
+      if (s.last && ACTIVE(j)) seg.classList.add('live');
+      bar.appendChild(seg);
+      if (s.round && !idle) {
+        const pend = [];
+        for (const [k, r] of Object.entries(s.round.reviews)) {
+          if (r.finishedAt === null) { pend.push(k); continue; }
+          d.appendChild(Object.assign(el('div', `tk ${r.verdict}`), { style: `left:${x(r.finishedAt) - start}px`, title: `R${s.round.round} ${k}: ${r.verdict}` }));
+        }
+        pend.forEach((k, i) => d.appendChild(Object.assign(el('div', 'tk pending'), { style: `left:${ex - 4 - i * 8}px`, title: `R${s.round.round} ${k}: pending` })));
+      }
+    });
+    d.appendChild(bar);
+    if (j.stage === 'merged') d.appendChild(Object.assign(el('div', 'mg'), { style: `left:${end - start}px` }));
+    d.addEventListener('mouseenter', (e) => show(j, e));
+    d.addEventListener('mousemove', (e) => move(e));
+    d.addEventListener('mouseleave', () => hide());
+    d.addEventListener('click', (e) => { e.stopPropagation(); show(j, e); pin(); });
+    byKey.set(j.key, d);
+    frag.appendChild(d);
+
+    // state tag in the right margin, past the NOW line
+    if (ACTIVE(j) && !idle) {
+      const ty = top + 14.5;
+      if (j.kind === 'needs-human') {
+        const f = el('div', 'flag', `<svg viewBox="0 0 14 16" width="14" height="16"><path d="M1 0v16" stroke="#ff4127" stroke-width="1.5"/><path d="M1.8 1h11l-3 3.5 3 3.5h-11z" fill="#ff4127"/></svg>`);
+        f.style.left = nowX() + 'px'; f.style.top = ty + 'px';
+        frag.appendChild(f);
+      }
+      const t = el('div', `tag k-${j.kind}`, j.kind === 'needs-human' ? (mergeFailed(j) ? 'MERGE ✕' : 'HUMAN') : TAG[j.kind]);
+      t.style.left = nowX() + (j.kind === 'needs-human' ? 16 : 7) + 'px'; t.style.top = ty + 'px';
+      t.addEventListener('mouseenter', (e) => show(j, e)); t.addEventListener('mousemove', move); t.addEventListener('mouseleave', hide);
+      t.addEventListener('click', (e) => { e.stopPropagation(); show(j, e); pin(); });
+      frag.appendChild(t);
+    }
+    return frag;
+  }
+
+  // ── popover ──
+  const pop = document.getElementById('pop');
+  let pinned = false;
+  function show(j, e) {
+    if (pinned) return;
+    const cur = j.history[j.history.length - 1].stage;
+    const kindColor = COLORS[j.kind];
+    const dark = ['needs-human', 'merged', 'review-failed', 'build', 'approve', 'reviewing', 'spec'].includes(j.kind);
+    const rounds = j.rounds.map((r) => `<div class="rv"><span style="color:var(--faint)">R${r.round}</span>${Object.entries(r.reviews).map(([k, v]) =>
+      `<span class="${v.verdict}">${v.verdict === 'PASS' ? '✓' : v.verdict === 'CHANGES' ? '✕' : '○'} ${k}${v.finishedAt ? ` ${F.ago(v.finishedAt)}` : ''}</span>`).join('')}</div>`).join('');
+    pop.innerHTML = `<div class="id">${esc(projName(j.project))} / ${esc(j.id)}</div>
+      <h3>${esc(j.title)}</h3>
+      <span class="st" style="background:${kindColor};color:${dark ? 'var(--bg)' : 'var(--ink)'}">${esc(j.kind === 'needs-human' && mergeFailed(j) ? 'Merge failed: needs a human' : F.kinds[j.kind])}</span>
+      <dl>
+        <dt>Stage</dt><dd>${esc(cur)} · ${j.stage === 'merged' ? `merged ${F.ago(j.enteredAt)} ago` : `for ${F.ago(j.enteredAt)}`}</dd>
+        <dt>Round</dt><dd>${j.round > 0 ? `${j.round} / ${j.maxRound}` : '—'}</dd>
+        <dt>Claimed</dt><dd>${F.ago(j.claimedAt)} ago · ${hhmm(j.claimedAt)} UTC</dd>
+        <dt>Branch</dt><dd>${esc(j.branch)}</dd>
+        ${j.rounds.length ? `<dt>Reviews</dt><dd>${rounds}</dd>` : ''}
+        ${j.decision ? `<dt>Decision</dt><dd>${esc(j.decision)}</dd>` : ''}
+      </dl>
+      ${j.note ? `<div class="note">${esc(j.note)}</div>` : ''}
+      <div class="hint">${pinned ? 'click anywhere to close' : 'click to pin'}</div>`;
+    pop.classList.add('on');
+    move(e);
+  }
+  function move(e) {
+    if (pinned || !e) return;
+    const w = 300, h = pop.offsetHeight;
+    let left = e.clientX + 16, top = e.clientY + 14;
+    if (left + w > innerWidth - 10) left = e.clientX - w - 16;
+    if (top + h > innerHeight - 10) top = e.clientY - h - 14;
+    pop.style.left = left + 'px'; pop.style.top = top + 'px';
+  }
+  function hide() { if (!pinned) pop.classList.remove('on'); }
+  function pin() { pinned = true; pop.classList.add('pinned'); pop.querySelector('.hint').textContent = 'click anywhere to close'; }
+  function unpin() { pinned = false; pop.classList.remove('pinned', 'on'); document.querySelectorAll('.job.focus').forEach((n) => n.classList.remove('focus')); }
+  document.addEventListener('click', unpin);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') unpin(); });
+  pop.addEventListener('click', (e) => e.stopPropagation());
+
+  function focusJob(key) {
+    unpin();
+    const d = byKey.get(key); if (!d) return;
+    const j = jobs.find((x) => x.key === key);
+    const r = d.querySelector('.bar').getBoundingClientRect();
+    const lane = d.closest('.lane');
+    lane.classList.remove('flash'); void lane.offsetWidth; lane.classList.add('flash');
+    d.classList.add('focus');
+    show(j, { clientX: Math.min(r.right, innerWidth - 340), clientY: r.bottom });
+    pin();
+  }
+
+  // ── legend ──
+  function legend() {
+    const sw = (cls, extra = '') => `<i class="sw"><i class="seg ${cls}" style="left:0;width:100%;${extra}"></i></i>`;
+    document.getElementById('legend').innerHTML = [
+      [sw('s-claimed'), 'claimed'], [sw('s-spec'), 'spec'], [sw('s-build'), 'build'], [sw('s-review'), 'review'],
+      [sw('s-review failed'), 'review failed'], [sw('s-approve'), 'approve'], [sw('s-needs-human'), 'needs a human'],
+      [`<i class="sw"><i class="mg" style="left:10px;top:-1px"></i></i>`, 'merged'],
+      [`<i class="sw" style="opacity:.35;filter:saturate(.35)"><i class="seg s-build" style="left:0;width:16px"></i><i class="mg" style="left:16px;top:-1px"></i></i>`, 'settled >24h'],
+      [`<i class="sw"><i class="tk PASS" style="left:5px;top:1px"></i><i class="tk CHANGES" style="left:15px;top:1px"></i></i>`, 'reviewer pass / changes'],
+      [`<i class="sw"><i class="tk pending" style="left:9px;top:0"></i></i>`, 'reviewer pending'],
+    ].map(([g, t]) => `<span>${g}${t}</span>`).join('');
+  }
+
+  header(); human(); legend(); render();
+  if (document.fonts) document.fonts.ready.then(render);
+  // re-fit whenever the lane area changes size (window resize, fonts settling the header and strip)
+  let last = '';
+  new ResizeObserver(() => {
+    const l = document.getElementById('lanes'), k = `${l.clientWidth}x${l.clientHeight}`;
+    if (k !== last) { last = k; unpin(); render(); }
+  }).observe(document.getElementById('lanes'));
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Andon · Overview · 02 Assembly lines</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Saira+Semi+Condensed:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Caveat:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --paper: #eef3f7; --sheet: #f6f9fb; --ink: #15366a; --ink2: #3a5f96; --faint: #9fb5d0; --line: #bccde1;
+  --red: #c7362a; --red-bg: rgba(199, 54, 42, .07); --green: #17705c; --green-bg: #e3f0ec;
+  --sans: "Saira Semi Condensed", "Barlow Semi Condensed", "Arial Narrow", "Helvetica Neue", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --hand: "Caveat", "Bradley Hand", "Segoe Print", cursive;
+  --gut: 178px; --andon: 216px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  font: 13px/1.3 var(--sans); color: var(--ink); background: var(--paper); overflow: hidden;
+  background-image:
+    linear-gradient(rgba(31, 78, 140, .11) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(31, 78, 140, .11) 1px, transparent 1px),
+    linear-gradient(rgba(31, 78, 140, .05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(31, 78, 140, .05) 1px, transparent 1px);
+  background-size: 60px 60px, 60px 60px, 12px 12px, 12px 12px;
+  -webkit-font-smoothing: antialiased;
+}
+.frame { position: absolute; inset: 12px; border: 1.5px solid var(--ink); display: flex; flex-direction: column; background: color-mix(in srgb, var(--sheet) 72%, transparent); }
+.frame::before { content: ""; position: absolute; inset: 3px; border: .5px solid var(--ink2); pointer-events: none; }
+/* zone marks along the frame edge, like a drawing sheet */
+.zones { position: absolute; top: -11px; left: 0; right: 0; display: flex; font: 500 8px var(--mono); color: var(--ink2); pointer-events: none; }
+.zones span { flex: 1; text-align: center; }
+
+/* ── header ─────────────────────────── */
+header { flex: none; display: grid; grid-template-columns: auto 1fr auto; align-items: end; gap: 28px; padding: 14px 22px 10px; border-bottom: 1px solid var(--ink); }
+.mark { display: flex; align-items: baseline; gap: 12px; }
+.mark h1 { margin: 0; font: 700 26px/1 var(--sans); letter-spacing: .16em; }
+.mark .sub { font: 500 11px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ink2); }
+.tally { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; font: 500 10.5px var(--mono); color: var(--ink2); }
+.tally .t { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.tally b { font: 600 13px var(--mono); color: var(--ink); }
+.tally .t.hot b, .tally .t.hot { color: var(--red); }
+.live { display: flex; align-items: center; gap: 8px; font: 500 10.5px var(--mono); color: var(--ink2); text-transform: uppercase; letter-spacing: .08em; }
+.live .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); animation: beat 2s infinite; }
+@keyframes beat { 0% { box-shadow: 0 0 0 0 rgba(23, 112, 92, .5); } 70%, 100% { box-shadow: 0 0 0 7px transparent; } }
+
+/* ── the sheet ──────────────────────── */
+.sheet { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--gut) var(--andon) repeat(5, minmax(0, 1fr)); grid-auto-rows: min-content; align-content: start; padding: 0 14px 0 22px; position: relative; }
+.colhead { padding: 8px 10px 6px; position: relative; }
+.colhead .top { display: flex; align-items: center; gap: 7px; }
+.balloon { width: 19px; height: 19px; border: 1px solid var(--ink); border-radius: 50%; display: grid; place-items: center; font: 600 9px var(--mono); flex: none; }
+.colhead h2 { margin: 0; font: 600 13px/1 var(--sans); letter-spacing: .14em; text-transform: uppercase; }
+.colhead .who { margin-left: auto; font: 400 9.5px var(--mono); color: var(--ink2); }
+.dim { position: relative; height: 9px; margin-top: 7px; }
+.dim::before, .dim::after { content: ""; position: absolute; top: 0; height: 9px; border-left: 1px solid var(--ink2); }
+.dim::before { left: 0; } .dim::after { right: 0; }
+.dim i { position: absolute; left: 1px; right: 1px; top: 4px; border-top: .75px solid var(--ink2); }
+.dim i::before, .dim i::after { content: ""; position: absolute; top: -3.5px; border: 3px solid transparent; }
+.dim i::before { left: 0; border-right: 6px solid var(--ink2); border-left: 0; }
+.dim i::after { right: 0; border-left: 6px solid var(--ink2); border-right: 0; }
+.dim span { position: absolute; left: 50%; top: -1px; transform: translateX(-50%); background: var(--sheet); padding: 0 5px; font: 500 8.5px/9px var(--mono); color: var(--ink2); white-space: nowrap; }
+.colhead.andon h2, .colhead.andon .balloon { color: var(--red); border-color: var(--red); }
+.colhead.andon .dim::before, .colhead.andon .dim::after { border-color: var(--red); }
+.colhead.andon .dim i { border-color: var(--red); }
+.colhead.andon .dim i::before { border-right-color: var(--red); } .colhead.andon .dim i::after { border-left-color: var(--red); }
+.colhead.andon .dim span { color: var(--red); }
+.corner { display: flex; flex-direction: column; justify-content: flex-end; padding: 10px 10px 8px 0; font: 500 9.5px/1.35 var(--mono); color: var(--ink2); text-transform: uppercase; letter-spacing: .06em; }
+.headrule { grid-column: 1 / -1; border-top: 1px solid var(--ink); }
+
+/* the andon column, hatched in red pencil all the way down */
+.andon-band { position: absolute; top: 0; bottom: 0; left: calc(22px + var(--gut)); width: var(--andon); pointer-events: none; z-index: 0;
+  background: repeating-linear-gradient(-45deg, rgba(199, 54, 42, .07) 0 1px, transparent 1px 7px);
+  border-left: 1px solid rgba(199, 54, 42, .45); border-right: 1px solid rgba(199, 54, 42, .45); }
+
+/* ── lanes ──────────────────────────── */
+.lane { display: contents; }
+.lane > div { min-height: 50px; border-bottom: .75px dashed var(--line); padding: 5px 8px; display: flex; flex-wrap: wrap; align-content: center; gap: 5px; position: relative; z-index: 1;
+  animation: draw .5s cubic-bezier(.2, .7, .2, 1) both; animation-delay: calc(var(--i) * 45ms + var(--c) * 18ms); }
+.lane > div + div { border-left: .5px solid color-mix(in srgb, var(--line) 60%, transparent); }
+@keyframes draw { from { opacity: 0; transform: translateX(-6px); } }
+.gutter { flex-direction: column; flex-wrap: nowrap !important; align-items: flex-start; justify-content: center; align-content: stretch !important; gap: 2px !important; padding-left: 0 !important; }
+.gutter .pn { display: flex; align-items: center; gap: 7px; font: 600 14px/1 var(--sans); letter-spacing: .02em; }
+.lamp { width: 8px; height: 8px; flex: none; border: 1px solid var(--ink); background: var(--ink); }
+.lamp.hot { border-color: var(--red); background: var(--red); animation: blink 1.4s ease-in-out infinite; }
+.lamp.idle { background: transparent; border-color: var(--faint); }
+@keyframes blink { 50% { opacity: .3; } }
+.gutter .meta { font: 400 9.5px var(--mono); color: var(--ink2); padding-left: 15px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.gutter .meta b { font-weight: 600; color: var(--ink); }
+.gutter .meta .hot { color: var(--red); font-weight: 600; }
+.gutter::after { content: ""; position: absolute; right: 6px; top: 50%; width: 14px; border-top: .75px solid var(--faint); }
+
+/* slim idle lanes */
+.lane.idle > div { min-height: 22px; padding-top: 2px; padding-bottom: 2px; }
+.lane.idle .gutter .pn { font-size: 12px; color: var(--ink2); font-weight: 500; }
+.lane.idle .span { grid-column: 2 / -1; flex-wrap: nowrap; align-items: center; gap: 10px; font: 400 9.5px var(--mono); color: var(--faint); }
+.lane.idle .span::before { content: ""; flex: 1; order: 2; border-top: .75px dotted var(--faint); }
+.lane.idle .span .r { order: 3; }
+.lane.idle .span .l { order: 1; }
+
+/* ── job tokens ─────────────────────── */
+.tok { all: unset; box-sizing: border-box; cursor: pointer; position: relative; flex: 1 1 100%; min-width: 0; max-width: 100%;
+  display: flex; flex-direction: column; gap: 2px; padding: 3px 7px 4px; border: 1px solid var(--ink); background: var(--sheet); transition: transform .12s, box-shadow .12s; }
+.tok:hover, .tok:focus-visible, .tok.pinned { transform: translate(-1px, -1px); box-shadow: 2px 2px 0 var(--ink); }
+.tok:focus-visible { outline: 1.5px solid var(--ink); outline-offset: 2px; }
+.tok .l1 { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.tok .num { font: 600 11px/1 var(--mono); flex: none; }
+.tok .sl { font: 500 11.5px/1.05 var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tok .l2 { display: flex; align-items: center; gap: 6px; font: 400 9.5px/1 var(--mono); color: var(--ink2); min-width: 0; }
+.tok .age { margin-left: auto; white-space: nowrap; }
+.tok .rd { white-space: nowrap; }
+.tok .tag { font: 600 8.5px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+
+/* verdict boxes */
+.vs { display: flex; gap: 2px; }
+.v { width: 15px; height: 12px; display: grid; place-items: center; font: 600 7.5px/1 var(--mono); text-transform: uppercase; border: .75px solid var(--ink); }
+.v.PASS { background: var(--ink); color: var(--sheet); }
+.v.CHANGES { background: var(--red); border-color: var(--red); color: #fff; }
+.v.pending { border-style: dashed; color: var(--ink2); animation: wait 1.6s ease-in-out infinite; }
+@keyframes wait { 50% { background: rgba(31, 78, 140, .12); } }
+
+/* claimed: a dashed placeholder, title not yet known */
+.k-claimed { border-style: dashed; background: transparent; }
+.k-claimed .sl { font-style: italic; color: var(--ink2); }
+/* spec: pencil hatching, being drafted */
+.k-spec { background: repeating-linear-gradient(45deg, rgba(31, 78, 140, .09) 0 1px, var(--sheet) 1px 5px); }
+/* build: the machine is running, an animated feed bar along the bottom */
+.k-build { border-width: 1.5px; padding-bottom: 8px; }
+.k-build::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+  background: repeating-linear-gradient(-45deg, var(--ink) 0 4px, transparent 4px 8px); background-size: 11.3px 3px; animation: feed .9s linear infinite; }
+@keyframes feed { to { background-position: 11.3px 0; } }
+/* reviewing: double rule */
+.k-reviewing { border: 3px double var(--ink); padding: 3px 6px 4px; }
+/* review failed: red pencil, circled by hand */
+.k-review-failed { border: 3px double var(--red); padding: 3px 6px 4px; color: var(--red); background: var(--red-bg); }
+.k-review-failed .l2 { color: var(--red); }
+.circle { position: absolute; inset: -6px -7px; width: calc(100% + 14px); height: calc(100% + 12px); pointer-events: none; overflow: visible; }
+.circle path { fill: none; stroke: var(--red); stroke-width: 1.4; vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-dasharray: 400; stroke-dashoffset: 400; animation: pencil .9s .7s ease-out forwards; }
+@keyframes pencil { to { stroke-dashoffset: 0; } }
+/* approve: solid ink, awaiting a signature */
+.k-approve { background: var(--ink); color: var(--sheet); }
+.k-approve .l2 { color: #c9d7ea; }
+.k-approve .v.PASS { background: var(--sheet); color: var(--ink); border-color: var(--sheet); }
+.k-approve .v { border-color: #c9d7ea; }
+.k-approve::before { content: ""; position: absolute; right: 4px; top: 4px; width: 9px; height: 9px; border-top: 1.5px solid var(--sheet); border-right: 1.5px solid var(--sheet); }
+/* merged (last 24h): green ink, done */
+.k-merged { border-color: var(--green); color: var(--green); background: var(--green-bg); }
+.k-merged .l2 { color: var(--green); }
+/* needs-human: red pencil, in the andon column */
+.k-needs-human { border: 1.5px solid var(--red); color: var(--red); background: #fbecea; box-shadow: 3px 3px 0 rgba(199, 54, 42, .25); }
+.k-needs-human .l2 { color: var(--red); }
+.k-needs-human .why { font: 600 14px/1 var(--hand); color: var(--red); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.k-needs-human .tag { padding: 1px 3px; border: 1px solid var(--red); }
+.k-needs-human.mf .tag { background: var(--red); color: #fff; }
+.k-needs-human:hover, .k-needs-human:focus-visible, .k-needs-human.pinned { box-shadow: 3px 3px 0 var(--red); }
+
+/* where an escalated job stopped: a ghost in its last station */
+.ghost { flex: 1 1 100%; display: flex; align-items: center; gap: 6px; padding: 3px 7px; border: 1px dashed rgba(199, 54, 42, .55); font: 600 15px/1 var(--hand); color: rgba(199, 54, 42, .8); }
+.ghost .num { font: 500 10px var(--mono); }
+/* settled: collapsed into a count */
+.settled { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; font: 500 9.5px var(--mono); color: var(--ink2);
+  border: .75px solid var(--faint); background: repeating-linear-gradient(90deg, transparent 0 3px, rgba(31, 78, 140, .06) 3px 4px); }
+.settled b { font-weight: 600; color: var(--ink); }
+.cell-empty { width: 100%; text-align: center; color: var(--line); font: 400 10px var(--mono); }
+
+/* ── footer: legend + title block ───── */
+footer { flex: none; display: grid; grid-template-columns: 1fr auto; border-top: 1px solid var(--ink); }
+.legend { padding: 8px 22px 9px; display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+.how { font: 500 10.5px var(--mono); color: var(--ink2); }
+.how em { font: 700 16px/1 var(--hand); color: var(--red); font-style: normal; }
+.keys { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.key { display: flex; align-items: center; gap: 5px; font: 500 10px var(--mono); color: var(--ink2); white-space: nowrap; }
+.sw { width: 26px; height: 13px; border: 1px solid var(--ink); background: var(--sheet); position: relative; flex: none; }
+.sw.claimed { border-style: dashed; background: transparent; }
+.sw.spec { background: repeating-linear-gradient(45deg, rgba(31, 78, 140, .2) 0 1px, var(--sheet) 1px 4px); }
+.sw.build { border-width: 1.5px; }
+.sw.build::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: repeating-linear-gradient(-45deg, var(--ink) 0 3px, transparent 3px 6px); }
+.sw.reviewing { border: 3px double var(--ink); }
+.sw.failed { border: 3px double var(--red); background: var(--red-bg); border-radius: 0; outline: 1px solid var(--red); outline-offset: 2px; }
+.sw.approve { background: var(--ink); }
+.sw.merged { border-color: var(--green); background: var(--green-bg); }
+.sw.settled { border: .75px solid var(--faint); background: repeating-linear-gradient(90deg, transparent 0 3px, rgba(31, 78, 140, .1) 3px 4px); }
+.sw.esc { border: 1.5px solid var(--red); background: #fbecea; }
+.sw.mf { border: 1.5px solid var(--red); background: var(--red); }
+.key .v { width: 13px; }
+.tb { display: grid; grid-template-columns: repeat(3, auto); border-left: 1px solid var(--ink); font: 500 9px/1.2 var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+.tb > div { padding: 5px 10px; border-right: .75px solid var(--ink2); border-bottom: .75px solid var(--ink2); display: flex; flex-direction: column; gap: 2px; justify-content: center; }
+.tb > div:nth-child(3n) { border-right: 0; }
+.tb > div:nth-last-child(-n+3) { border-bottom: 0; }
+.tb small { font-size: 7.5px; color: var(--ink2); }
+.tb b { font: 600 11px var(--mono); letter-spacing: .02em; color: var(--ink); text-transform: none; }
+
+/* ── popover ────────────────────────── */
+.pop { position: fixed; z-index: 50; width: 300px; background: var(--sheet); border: 1.5px solid var(--ink); box-shadow: 4px 4px 0 rgba(21, 54, 106, .22);
+  font: 400 11px/1.4 var(--mono); color: var(--ink); opacity: 0; transform: translateY(3px); pointer-events: none; transition: opacity .12s, transform .12s; }
+.pop.on { opacity: 1; transform: none; pointer-events: auto; }
+.pop.red { border-color: var(--red); box-shadow: 4px 4px 0 rgba(199, 54, 42, .25); }
+.pop .ph { padding: 8px 10px 7px; border-bottom: .75px solid var(--ink2); }
+.pop .pid { font: 500 10px var(--mono); color: var(--ink2); }
+.pop .pt { font: 600 15px/1.15 var(--sans); margin-top: 2px; }
+.pop dl { margin: 0; padding: 7px 10px; display: grid; grid-template-columns: 92px 1fr; gap: 3px 8px; }
+.pop dt { color: var(--ink2); text-transform: uppercase; font-size: 9px; letter-spacing: .08em; padding-top: 1px; }
+.pop dd { margin: 0; }
+.pop .rr { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.pop .rr .rn { font-weight: 600; width: 20px; }
+.pop .vk { display: inline-flex; align-items: center; gap: 3px; margin-right: 4px; }
+.pop .note { margin: 0 10px 9px; padding: 5px 7px; border-left: 2px solid var(--red); background: var(--red-bg); font: 600 15px/1.15 var(--hand); color: var(--red); }
+.pop .note.calm { border-color: var(--ink2); background: rgba(31, 78, 140, .06); color: var(--ink); }
+.pop .foot { padding: 5px 10px 7px; border-top: .75px dashed var(--line); font-size: 9.5px; color: var(--ink2); }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } .circle path { stroke-dashoffset: 0; } }
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="zones" aria-hidden="true"><span>A</span><span>B</span><span>C</span><span>D</span><span>E</span><span>F</span><span>G</span><span>H</span></div>
+  <header>
+    <div class="mark"><h1>ANDON</h1><span class="sub">Overview · Assembly lines</span></div>
+    <div class="tally" id="tally"></div>
+    <div class="live"><span class="dot"></span><span id="clock"></span></div>
+  </header>
+  <main class="sheet" id="sheet" aria-label="Projects by station"></main>
+  <footer>
+    <div class="legend">
+      <div class="how">How to read this: each lane is a project and each column a station; jobs move left to right, and anything in the <em>red-pencil column</em> needs you.</div>
+      <div class="keys" id="keys"></div>
+    </div>
+    <div class="tb" id="tb"></div>
+  </footer>
+</div>
+<div class="pop" id="pop" role="dialog" aria-live="polite"></div>
+
+<script src="data.js"></script>
+<script>
+(function () {
+  const F = window.FACTORY;
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const ABBR = { security: 'se', contract: 'ct', code: 'cd', ui: 'ui', ux: 'ux' };
+  const COLS = [
+    { key: 'andon', name: 'Andon', who: 'a human' },
+    ...F.stations.map((s) => ({ key: s.key, name: s.name, who: s.who })),
+  ];
+  const colOf = (j) => ({ 'needs-human': 'andon', claimed: 'spec', spec: 'spec', build: 'build', reviewing: 'review', 'review-failed': 'review', approve: 'approve', merged: 'merged' })[j.kind];
+  const isMergeFail = (j) => j.kind === 'needs-human' && /^merge failed/.test(j.note);
+  const curRound = (j) => j.rounds[j.rounds.length - 1];
+  const sliver = (j) => (j.title === j.id ? j.id.replace(/^\d+-/, '') : j.title);
+  const num = (j) => j.id.slice(0, 3);
+
+  // ── group and sort the lanes: escalations first, then by how much is moving; idle lanes last
+  const lanes = F.projects.map((p, idx) => {
+    const jobs = F.jobs.filter((j) => j.project === p.id);
+    const active = jobs.filter((j) => j.kind !== 'merged' && j.kind !== 'settled');
+    const settled = jobs.filter((j) => j.kind === 'settled');
+    const merged = jobs.filter((j) => j.kind === 'merged');
+    const hot = jobs.filter((j) => j.kind === 'needs-human').length;
+    const failed = jobs.filter((j) => j.kind === 'review-failed').length;
+    const oldest = active.length ? Math.min(...active.map((j) => j.claimedAt)) : null;
+    const lastMerge = [...settled, ...merged].reduce((m, j) => Math.max(m, j.enteredAt), 0);
+    return { p, idx, jobs, active, settled, merged, hot, failed, oldest, lastMerge, idle: active.length === 0 && merged.length === 0 };
+  }).sort((a, b) => (a.idle - b.idle) || (b.hot - a.hot) || (b.failed - a.failed) || (b.active.length - a.active.length) || (a.idx - b.idx));
+
+  // ── header tally
+  const count = (k) => F.jobs.filter((j) => j.kind === k).length;
+  const tally = [
+    ['needs-human', 'need a human', true], ['review-failed', 'review failed', true], ['reviewing', 'in review'], ['approve', 'at approval'],
+    ['build', 'building'], ['spec', 'in spec'], ['claimed', 'claimed'], ['merged', 'merged 24h'], ['settled', 'settled'],
+  ];
+  $('#tally').innerHTML = tally.map(([k, label, hot]) => `<span class="t${hot && count(k) ? ' hot' : ''}"><b>${String(count(k)).padStart(2, '0')}</b>${label}</span>`).join('');
+  $('#clock').textContent = `live · ${new Date(F.NOW).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+
+  // ── column heads
+  const perCol = Object.fromEntries(COLS.map((c) => [c.key, F.jobs.filter((j) => colOf(j) === c.key).length]));
+  let html = `<div class="andon-band" aria-hidden="true"></div>`;
+  html += `<div class="corner"><span>${F.projects.length} projects</span><span>${F.jobs.length} jobs</span></div>`;
+  html += COLS.map((c, i) => `
+    <div class="colhead${c.key === 'andon' ? ' andon' : ''}">
+      <div class="top"><span class="balloon">${c.key === 'andon' ? '!' : String(i).padStart(2, '0')}</span><h2>${c.name}</h2><span class="who">${c.who}</span></div>
+      <div class="dim"><i></i><span>${String(perCol[c.key]).padStart(2, '0')}${c.key === 'merged' ? ' · 24h' : ''}</span></div>
+    </div>`).join('');
+  html += `<div class="headrule"></div>`;
+
+  // ── tokens
+  const verdicts = (j) => {
+    const r = curRound(j);
+    if (!r) return '';
+    return `<span class="vs">${Object.entries(r.reviews).map(([k, v]) => `<span class="v ${v.verdict}" title="${k}: ${v.verdict}">${ABBR[k] || k.slice(0, 2)}</span>`).join('')}</span>`;
+  };
+  const roundTag = (j) => (j.round > 0 ? `<span class="rd">R${j.round}/${j.maxRound}</span>` : '');
+  const circle = `<svg class="circle" viewBox="0 0 112 40" preserveAspectRatio="none" aria-hidden="true"><path d="M8,22 C4,8 52,1 96,6 C112,9 112,31 92,35 C60,41 10,39 4,25 C1,15 16,6 30,5"/></svg>`;
+
+  const token = (j) => {
+    const k = j.kind;
+    const age = F.ago(j.enteredAt);
+    let l2;
+    if (k === 'needs-human') {
+      const mf = isMergeFail(j);
+      const why = j.note.replace(/^(approver|merge failed|review budget spent): ?/, '');
+      return `<button class="tok k-needs-human${mf ? ' mf' : ''}" data-key="${esc(j.key)}" aria-label="${esc(j.id)}: ${mf ? 'merge failed' : 'escalated'}">
+        <span class="l1"><span class="num">${num(j)}</span><span class="sl">${esc(sliver(j))}</span></span>
+        <span class="l2"><span class="tag">${mf ? '⨯ merge' : '⚑ esc'}</span><span class="why">${esc(why)}</span><span class="age">${age}</span></span></button>`;
+    }
+    if (k === 'reviewing' || k === 'review-failed' || k === 'approve') l2 = `${verdicts(j)}${roundTag(j)}<span class="age">${age}</span>`;
+    else if (k === 'build') {
+      const prev = curRound(j);
+      const rework = prev && Object.values(prev.reviews).some((v) => v.verdict === 'CHANGES');
+      l2 = `<span class="tag">${rework ? `rework → R${j.round + 1}` : 'building'}</span><span class="age">${age}</span>`;
+    } else if (k === 'merged') l2 = `<span class="tag">✓ ${esc(j.note.replace('merged ', ''))}</span>${roundTag(j)}<span class="age">${age} ago</span>`;
+    else if (k === 'claimed') l2 = `<span class="tag">claimed</span><span class="age">${age}</span>`;
+    else l2 = `<span class="tag">drafting spec</span><span class="age">${age}</span>`;
+    return `<button class="tok k-${k}" data-key="${esc(j.key)}" aria-label="${esc(j.id)}: ${esc(F.kinds[k])}">
+      <span class="l1"><span class="num">${num(j)}</span><span class="sl">${esc(sliver(j))}</span></span>
+      <span class="l2">${l2}</span>${k === 'review-failed' ? circle : ''}</button>`;
+  };
+
+  // the station an escalated job stopped at: the stage it was in just before needs-human
+  const haltedAt = (j) => { const h = j.history; const prev = h[h.length - 2]; return prev ? colOf({ kind: prev.stage === 'review' ? 'reviewing' : prev.stage }) : null; };
+
+  lanes.forEach((L, i) => {
+    if (L.idle) {
+      html += `<div class="lane idle" style="--i:${i}">
+        <div class="gutter" style="--c:0"><span class="pn"><span class="lamp idle"></span>${esc(L.p.name)}</span></div>
+        <div class="span" style="--c:1"><span class="l">idle · last merge ${F.ago(L.lastMerge)} ago</span><span class="r settled">settled <b>×${L.settled.length}</b></span></div>
+      </div>`;
+      return;
+    }
+    const meta = [`<b>${L.active.length}</b> active`];
+    if (L.oldest !== null) meta.push(`oldest ${F.ago(L.oldest)}`);
+    html += `<div class="lane" style="--i:${i}">
+      <div class="gutter" style="--c:0"><span class="pn"><span class="lamp${L.hot ? ' hot' : ''}"></span>${esc(L.p.name)}</span><span class="meta">${meta.join(' · ')}</span>${L.hot ? `<span class="meta"><span class="hot">${L.hot} stopped at andon</span></span>` : ''}</div>`;
+    COLS.forEach((c, ci) => {
+      const here = L.jobs.filter((j) => colOf(j) === c.key);
+      let inner = here.map(token).join('');
+      // ghosts: escalated jobs leave a mark where they stopped
+      for (const j of L.jobs) if (j.kind === 'needs-human' && haltedAt(j) === c.key) inner += `<span class="ghost"><span class="num">${num(j)}</span>${isMergeFail(j) ? 'merge broke here' : 'stopped here'} → andon</span>`;
+      if (c.key === 'merged' && L.settled.length) inner += `<span class="settled">settled <b>×${L.settled.length}</b></span>`;
+      if (!inner) inner = `<span class="cell-empty">·</span>`;
+      html += `<div style="--c:${ci + 1}">${inner}</div>`;
+    });
+    html += `</div>`;
+  });
+  $('#sheet').innerHTML = html;
+
+  // ── legend and title block
+  const keys = [
+    ['esc', 'escalated'], ['mf', 'merge failed'], ['failed', 'review failed'], ['reviewing', 'in review'], ['approve', 'at approval'],
+    ['build', 'building'], ['spec', 'spec'], ['claimed', 'claimed'], ['merged', 'merged ≤24h'], ['settled', 'settled'],
+  ];
+  $('#keys').innerHTML = keys.map(([c, l]) => `<span class="key"><span class="sw ${c}"></span>${l}</span>`).join('') +
+    `<span class="key"><span class="v PASS">cd</span>pass</span><span class="key"><span class="v CHANGES">se</span>changes</span><span class="key"><span class="v pending">ux</span>pending</span>`;
+  const active = F.jobs.filter((j) => !['merged', 'settled'].includes(j.kind)).length;
+  $('#tb').innerHTML = [
+    ['Sheet', '02 / 05'], ['Drawing', 'Assembly lines'], ['Scale', '1 lane : 1 project'],
+    ['Active', String(active)], ['Settle after', '24 h'], ['Rev', 'A · draft'],
+  ].map(([s, b]) => `<div><small>${s}</small><b>${b}</b></div>`).join('');
+
+  // ── popover: hover or focus previews, click pins
+  const pop = $('#pop');
+  let pinned = null;
+  const byKey = Object.fromEntries(F.jobs.map((j) => [j.key, j]));
+  const projName = Object.fromEntries(F.projects.map((p) => [p.id, p.name]));
+  const fill = (j) => {
+    const rounds = j.rounds.map((r) => `<div class="rr"><span class="rn">R${r.round}</span>${Object.entries(r.reviews).map(([k, v]) =>
+      `<span class="vk"><span class="v ${v.verdict}">${ABBR[k] || k.slice(0, 2)}</span>${k}</span>`).join('')}</div>`).join('');
+    const red = j.kind === 'needs-human' || j.kind === 'review-failed';
+    pop.className = `pop${red ? ' red' : ''}`;
+    pop.innerHTML = `
+      <div class="ph"><div class="pid">${esc(projName[j.project])} / ${esc(j.id)}</div><div class="pt">${esc(j.title)}</div></div>
+      <dl>
+        <dt>Stage</dt><dd>${esc(F.kinds[j.kind])}</dd>
+        <dt>${j.stage === 'merged' ? 'Merged' : 'In stage'}</dt><dd>${F.ago(j.enteredAt)}${j.stage === 'merged' ? ' ago' : ''}</dd>
+        <dt>Claimed</dt><dd>${F.ago(j.claimedAt)} ago</dd>
+        <dt>Round</dt><dd>${j.round > 0 ? `${j.round} / ${j.maxRound}` : `— / ${j.maxRound}`}</dd>
+        ${j.decision ? `<dt>Decision</dt><dd>${esc(j.decision)}</dd>` : ''}
+        ${rounds ? `<dt>Reviews</dt><dd>${rounds}</dd>` : ''}
+      </dl>
+      ${j.note ? `<div class="note${red ? '' : ' calm'}">${esc(j.note)}</div>` : ''}
+      <div class="foot">${esc(j.branch)}${j.kind === 'needs-human' ? ' · /factory approve | rework' : ''}</div>`;
+  };
+  const place = (el) => {
+    const r = el.getBoundingClientRect();
+    pop.classList.add('on');
+    const w = pop.offsetWidth, h = pop.offsetHeight;
+    let x = r.right + 10, y = r.top - 4;
+    if (x + w > innerWidth - 12) x = r.left - w - 10;
+    if (y + h > innerHeight - 12) y = innerHeight - h - 12;
+    pop.style.left = `${Math.max(12, x)}px`; pop.style.top = `${Math.max(12, y)}px`;
+  };
+  const show = (el) => { const j = byKey[el.dataset.key]; if (!j) return; fill(j); place(el); };
+  const hide = () => { if (!pinned) pop.classList.remove('on'); };
+  document.querySelectorAll('.tok').forEach((el) => {
+    el.addEventListener('mouseenter', () => { if (!pinned) show(el); });
+    el.addEventListener('mouseleave', hide);
+    el.addEventListener('focus', () => { if (!pinned) show(el); });
+    el.addEventListener('blur', hide);
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (pinned === el) { el.classList.remove('pinned'); pinned = null; return; }
+      if (pinned) pinned.classList.remove('pinned');
+      pinned = el; el.classList.add('pinned'); show(el);
+    });
+  });
+  const unpin = () => { if (pinned) pinned.classList.remove('pinned'); pinned = null; pop.classList.remove('on'); };
+  document.addEventListener('click', (e) => { if (!pop.contains(e.target)) unpin(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') unpin(); });
+})();
+</script>
+</body>
+</html>
