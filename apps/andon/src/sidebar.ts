@@ -37,7 +37,7 @@ export interface SidebarModel {
   projects: SidebarRow[];
 }
 
-/** Stages a job never leaves: it's done, never active. `abandoned` comes with a later v1 addition. */
+/** Stages a job never leaves: it's done, never active (`merged`, and the contract's `abandoned`). */
 const TERMINAL = new Set(['merged', 'abandoned']);
 
 /** Active: not settled, not merged (or otherwise terminal), and not waiting on a human. Only a
@@ -49,13 +49,14 @@ export const reviewFailed = (j: Job): boolean => j.stage === 'build' && j.round 
 
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 const redBadge = (n: number): Badge => ({ tone: 'red', count: n, label: plural(n, 'needs a human', 'need a human') });
+const grayBadge = (n: number): Badge => ({ tone: 'gray', count: n, label: `${n} active` });
 
 /** One project's state, dot, and badge (red needs-human count, else gray active count, else none). */
 export function projectStatus(jobs: readonly Job[]): { state: ProjectState; badge: Badge | null } {
   const human = jobs.filter((j) => j.stage === 'needs-human').length;
   const active = jobs.filter(isActive);
   const state: ProjectState = human > 0 ? 'needs-human' : active.some(reviewFailed) ? 'review-failed' : active.length > 0 ? 'active' : 'idle';
-  const badge = human > 0 ? redBadge(human) : active.length > 0 ? { tone: 'gray' as const, count: active.length, label: `${active.length} active` } : null;
+  const badge = human > 0 ? redBadge(human) : active.length > 0 ? grayBadge(active.length) : null;
   return { state, badge };
 }
 
