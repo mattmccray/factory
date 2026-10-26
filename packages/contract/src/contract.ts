@@ -98,6 +98,18 @@ const SCHEMA = 'factory/v1';
 const JOB_ID = /^\d{3}-[a-z0-9-]+$/;
 /** True when `id` is a well-formed job id (`^\d{3}-[a-z0-9-]+$`), safe to build a path from. */
 export const isJobId = (id: string): boolean => JOB_ID.test(id);
+/** The slug `claim` accepts: the job id with its `NNN-` prefix removed. */
+export const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+/** The longest slug `claim` accepts, in characters. */
+export const SLUG_MAX = 40;
+/** The highest job number; `claim` refuses once it is taken. */
+export const JOB_NUMBER_MAX = 999;
+
+/** Throws a one-line reason unless `slug` is one `claim` accepts (`SLUG_PATTERN`, at most `SLUG_MAX`). */
+export function checkSlug(slug: string): void {
+  if (slug.length > SLUG_MAX) throw new Error(`slug ${JSON.stringify(slug)} is ${slug.length} characters (at most ${SLUG_MAX})`);
+  if (!SLUG_PATTERN.test(slug)) throw new Error(`slug ${JSON.stringify(slug)} must match ${SLUG_PATTERN.source}`);
+}
 const REVIEWER_KEY = /^[a-z][a-z0-9-]*$/;
 const RESERVED_KEYS = ['spec-writer', 'builder', 'approver'];
 const ROLES: readonly Role[] = ['spec-writer', 'builder', 'reviewer', 'approver'];

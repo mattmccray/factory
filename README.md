@@ -41,7 +41,8 @@ The rules that hold it together, from the `factory/v1` contract:
 - **The event log is the truth.** Each job has an append-only `factory/jobs/<id>/events.jsonl`.
   `job.json` is a derived snapshot that can be deleted and rebuilt from the log at any time.
 - **The CLI is the only writer of job state.** The orchestrator (the Claude Code session running
-  `/factory`) runs `factory/cli.ts event …`; the CLI takes every timestamp from the system clock,
+  `/factory`) runs `factory/cli.ts claim …` to start a job and `factory/cli.ts event …` after
+  that; the CLI hands out every job id, takes every timestamp from the system clock,
   enforces the allowed transitions, reads verdicts from the agents' files, appends to the log, and
   rebuilds `job.json`. No agent or model writes job state by hand.
 - **Reviewers are configured.** Which reviewers run, the review budget, the gate commands, and
@@ -77,7 +78,7 @@ There are two CLIs, and they do different jobs:
 | Command | What it is | Runs |
 |---|---|---|
 | `factory …` | the linked source CLI, from your factory clone | `init`, `upgrade` (it also has the core commands, but use the installed copy for those) |
-| `bun factory/cli.ts …` | the project's installed copy, a self-contained managed file | `doctor`, `show`, `event`, `rebuild` |
+| `bun factory/cli.ts …` | the project's installed copy, a self-contained managed file | `doctor`, `show`, `claim`, `event`, `rebuild`, `abandon` |
 
 `factory init` writes the skill and agents under `.claude/`, `factory/cli.ts`,
 `factory/CONTRACT.md`, a default `factory/config.json` (only if there is none), and
@@ -196,8 +197,10 @@ bun factory/cli.ts show 001-csv-export   # stage and timing summary
 ### 6. Side by side
 
 Run as many Claude Code sessions as you like, one job each: each job has its own worktree,
-branch, and job folder. The shared steps, claiming work (which takes the next job id and ticks
-the backlog) and merging into the target branch, happen under a short lock, `factory/.lock/`. Before
+branch, and job folder. Job ids come from the CLI: `bun factory/cli.ts claim <slug>` picks the
+next number under its own lock and prints the id, so two sessions never get the same one. The
+shared steps, claiming work (running `claim` and ticking the backlog) and merging into the target
+branch, happen under a short lock, `factory/.lock/`. Before
 claiming, each session runs an **overlap check** against the live jobs; if the new work looks
 likely to change the same area, it asks you whether to start it anyway or take a different
 backlog line.
