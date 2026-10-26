@@ -3,7 +3,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { assetPath, dockIcon, init, onTray, setDock, setTray, trayIcon } from './backend';
+import { assetPath, dockIcon, init, onTray, reloadScript, setDock, setTray, trayIcon } from './backend';
 import type { ShellApp, ShellTraySpec, ShellWinState } from './backend';
 import { trayNotice, traySpec } from './badge';
 
@@ -227,4 +227,9 @@ test('AC5: when the agent fails to start, the tray shows the reason with the out
   expect(last?.tooltip).toStartWith('Andon: could not start the agent');
   expect(last).toMatchObject({ title: '', icon: join(ASSETS, 'tray-idle.png'), template: true });
   expectIdle(l);
+});
+
+test('the reload after starting the agent (or on another port) keeps ?shell=mac', () => {
+  expect(reloadScript(8766)).toBe('location.replace("http://127.0.0.1:8766/?shell=mac")');
+  expect(reloadScript(9123)).toBe('location.replace("http://127.0.0.1:9123/?shell=mac")');
 });

@@ -18,6 +18,12 @@ export function resolvePort(env: Readonly<Record<string, string | undefined>>): 
 
 export const agentUrl = (port: number): string => `http://127.0.0.1:${port}`;
 
+/** The query that tells the page it runs in the Mac shell (the traffic-light inset, drag regions, vibrancy). */
+export const SHELL_QUERY = '?shell=mac';
+
+/** The page the main window shows: the agent's UI in Mac-shell mode. tinyjs.json's `url` is this at the default port. */
+export const pageUrl = (port: number): string => `${agentUrl(port)}/${SHELL_QUERY}`;
+
 /** `bun <repo>/packages/andon-agent/src/main.ts`; `bun` may be an absolute path. */
 export const agentCommand = (repo: string, bun = 'bun'): string[] => [bun, `${repo.replace(/\/+$/, '')}/packages/andon-agent/src/main.ts`];
 

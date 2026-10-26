@@ -1,11 +1,13 @@
 // The shell's boundaries: no contract, agent, or UI code runs in it, its logic is runtime-neutral
 // (AC5), only backend.ts names Tiny or txiki (through Tiny's own vendored types, narrowed to
-// `ShellApp`), the window loads the agent on loopback with the page's Tiny API denied (AC6), the
+// `ShellApp`), the window loads the agent on loopback with the page's Tiny API denied but for its
+// drag regions (AC6), the
 // shell pins the Tiny JS it was tested on, and the backend entry is the Bun bundle of backend.ts.
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BACKEND_OUT, bundleBackend } from '../build';
+import { DEFAULT_PORT, pageUrl } from './autostart';
 import { isRecord } from './state';
 
 const shellDir = join(import.meta.dir, '..');
@@ -154,29 +156,41 @@ describe('AC6: tinyjs.json', () => {
       name: 'andon',
       title: 'Andon',
       size: '1280x820',
+      minSize: '1100x700',
       id: 'dev.factory.andon',
       version: '0.1.0',
       minTinyjsVersion: '0.65.0',
       icon: 'assets/icon.png',
-      url: 'http://127.0.0.1:8766/',
-      api: { disable: ['*'] },
+      url: 'http://127.0.0.1:8766/?shell=mac',
+      chrome: { frame: false, windowControls: true, windowControlsPos: { x: 18, y: 20 }, vibrancy: 'sidebar' },
+      api: { disable: ['*'], enable: ['win.startDrag', 'win.zoom'] },
       backend: 'build/backend.js',
     });
   });
 
-  test('the main window loads the agent at http://127.0.0.1:<port>/', () => {
+  test('the main window loads the agent at http://127.0.0.1:<port>/?shell=mac, the same page the reload uses', () => {
     expect(typeof cfg.url).toBe('string');
     const url = new URL(String(cfg.url));
     expect(url.protocol).toBe('http:');
     expect(url.hostname).toBe('127.0.0.1');
     expect(url.port).toMatch(/^\d+$/);
-    expect(String(cfg.url)).toBe(`http://127.0.0.1:${url.port}/`);
-    expect(url.port).toBe('8766');
+    expect(url.pathname).toBe('/');
+    expect(url.search).toBe('?shell=mac');
+    expect(url.hash).toBe('');
+    expect(url.port).toBe(String(DEFAULT_PORT));
+    expect(String(cfg.url)).toBe(pageUrl(DEFAULT_PORT));
     expect(cfg.mainWindow).not.toBe(false);
   });
 
-  test('the api gate disables every Tiny call for the page and grants no origin anything', () => {
-    expect(cfg.api).toEqual({ disable: ['*'] });
+  test('the window hides the title bar, keeps the native traffic lights over the sidebar, and floors its size', () => {
+    expect(cfg.chrome).toEqual({ frame: false, windowControls: true, windowControlsPos: { x: 18, y: 20 }, vibrancy: 'sidebar' });
+    expect(cfg.minSize).toBe('1100x700');
+  });
+
+  test('the api gate denies every Tiny call for the page except the two its drag regions make', () => {
+    // Tiny's page runtime turns a mousedown on [data-tiny-drag] into `win.startDrag` (a double-click
+    // into `win.zoom`), and the backend's gate checks both: they are the narrowest exception.
+    expect(cfg.api).toEqual({ disable: ['*'], enable: ['win.startDrag', 'win.zoom'] });
     expect(cfg.inject).toBeUndefined();
   });
 
