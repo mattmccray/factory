@@ -82,3 +82,7 @@ export function chipTime(key: string, verdict: string, span: AgentSpan | null, n
 const ABBR: Record<string, string> = { security: 'SEC' };
 /** A reviewer key's chip label: SEC for security, else the first four letters upper-cased. */
 export const abbr = (k: string): string => ABBR[k] ?? k.toUpperCase().slice(0, 4);
+
+const CHIP: Record<string, string> = { security: 'se', contract: 'ct', code: 'cd', ui: 'ui', ux: 'ux' };
+/** A reviewer key's two-letter token chip label (design §6): se, ct, cd, ui, ux, else its first two letters. */
+export const chipLabel = (k: string): string => CHIP[k] ?? k.slice(0, 2).toLowerCase();

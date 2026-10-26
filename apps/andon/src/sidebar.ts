@@ -3,6 +3,7 @@
 // subtitle, the status bar's legend and settle text, and the shell mode read from the page URL.
 // Nothing here touches the DOM; App.svelte and the frame components only lay it out.
 import type { Job } from './job';
+import { isReviewFailed } from './lanes';
 import type { Status } from './live';
 import { ALL, needsHuman } from './projects';
 import type { Selection } from './projects';
@@ -44,8 +45,9 @@ const TERMINAL = new Set(['merged', 'abandoned']);
  *  merged job settles, so excluding the terminal stages excludes every settled job too. */
 export const isActive = (j: Job): boolean => !TERMINAL.has(j.stage) && j.stage !== 'needs-human';
 
-/** Review failed: back in `build` after a round whose latest recorded reviews include a non-PASS verdict. */
-export const reviewFailed = (j: Job): boolean => j.stage === 'build' && j.round > 0 && Object.values(j.reviews).some((v) => v !== 'PASS');
+/** Review failed: the lanes' §5 kind rule (stage `review`, every verdict in, at least one CHANGES), so the
+ *  sidebar's orange dot, the lane tier, and the gutter's "sent back" count always agree. */
+export const reviewFailed = (j: Job): boolean => isReviewFailed(j);
 
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 const redBadge = (n: number): Badge => ({ tone: 'red', count: n, label: plural(n, 'needs a human', 'need a human') });
@@ -100,15 +102,22 @@ export interface Subtitle {
   scope: string; // "All Projects", or the selected project's name
   running: string; // "12 running"
   waiting: string | null; // "3 waiting on you" (shown red), or null at zero
+  elsewhere: string | null; // a focused project: "2 waiting elsewhere" (other projects' needs-human jobs, red), or null at zero
 }
 
-/** "<scope> — N running, M waiting on you"; running excludes needs-human, and the waiting part is omitted at zero. */
+/**
+ * "<scope> — N running, M waiting on you"; running excludes needs-human, and the waiting part is
+ * omitted at zero. A focused project adds "K waiting elsewhere" when other projects need a human.
+ */
 export function subtitle(s: UiState, sel: Selection, running: number, waiting: number): Subtitle {
-  const scope = sel === ALL ? 'All Projects' : (s.projects.find((p) => p.id === sel)?.name ?? 'All Projects');
-  return { scope, running: `${running} running`, waiting: waiting > 0 ? `${waiting} waiting on you` : null };
+  const focused = sel !== ALL && s.projects.some((p) => p.id === sel);
+  const scope = focused ? (s.projects.find((p) => p.id === sel)?.name ?? 'All Projects') : 'All Projects';
+  const human = needsHuman(s);
+  const others = focused ? human.total - (human.byProject[sel] ?? 0) : 0;
+  return { scope, running: `${running} running`, waiting: waiting > 0 ? `${waiting} waiting on you` : null, elsewhere: others > 0 ? `${others} waiting elsewhere` : null };
 }
 
-export const subtitleText = (t: Subtitle): string => `${t.scope} — ${t.running}${t.waiting !== null ? `, ${t.waiting}` : ''}`;
+export const subtitleText = (t: Subtitle): string => [`${t.scope} — ${t.running}`, t.waiting, t.elsewhere].filter((x) => x !== null).join(', ');
 
 // ---- the status bar ----
 

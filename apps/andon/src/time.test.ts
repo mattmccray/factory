@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { HOUR, NOW, before, job } from './fixtures';
-import { abbr, chipTime, clock, fmt, fmtShort, reviewerSpan } from './time';
+import { abbr, chipLabel, chipTime, clock, fmt, fmtShort, reviewerSpan } from './time';
 
 describe('formatting', () => {
   test('fmt and fmtShort match the vendored dashboard', () => {
@@ -52,5 +52,13 @@ describe('timers (AC2)', () => {
     expect(at('ui', 'pending')).toEqual({ title: 'ui stopped · 1m 0s', short: '1m', running: false });
     expect(at('contract', 'pending')).toEqual({ title: 'contract: pending', short: '', running: false });
     expect(reviewerSpan(j, 'code', 2)).toBeNull();
+  });
+});
+
+describe('token chip labels (025 AC6)', () => {
+  test('two letters: se, ct, cd, ui, ux, otherwise the first two letters', () => {
+    expect(['security', 'contract', 'code', 'ui', 'ux'].map(chipLabel)).toEqual(['se', 'ct', 'cd', 'ui', 'ux']);
+    expect(['perf', 'a11y', 'docs-site', 'q'].map(chipLabel)).toEqual(['pe', 'a1', 'do', 'q']);
+    expect(abbr('security')).toBe('SEC'); // the drawer keeps abbr
   });
 });
