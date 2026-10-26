@@ -129,18 +129,18 @@ its project's `settleAfterHours`:
 | settled | stage `merged`, merged earlier |
 | abandoned | stage `abandoned`: closed without merging (Job 0). It's never on the board; it's listed in Settled. |
 
-**Why a job stopped.** Job 0 adds a snapshot field naming the event that put the job into
-needs-human (`escalated` or `merge-failed`). Andon shows the merge-failed variant from that
-field. Projects whose installed CLI predates Job 0 don't write it, and readers ignore what they
-don't know. For those projects, Andon falls back to a rule that is exact for the common case:
-`decision === 'APPROVE'` while in needs-human can only mean the approver approved and the merge
-failed. A job whose `decision` is `APPROVE (human)` with no field is shown as needs-human with
-the tag "Approved · not merged".
+**Why a job stopped.** Job 0 (022) added two snapshot fields: `stoppedBy` (`escalated` or
+`merge-failed`) and `stoppedFrom` (the working stage the job left). Andon shows the merge-failed
+variant from `stoppedBy`. A snapshot written before them lacks both keys, and readers treat a
+missing key as `null` (`factory rebuild` derives them from the log). With `stoppedBy` null in
+needs-human, Andon falls back to a rule that is exact for the common case:
+`decision === 'APPROVE'` can only mean the approver approved and the merge failed. A job whose
+`decision` is `APPROVE (human)` with no `stoppedBy` is shown with the tag "Approved · not merged".
 
 **Columns.** A claimed job sits in Spec, as today. A needs-human job sits in **Andon**, and leaves
 a dashed red ghost, "**040** stopped here → Andon" (or "merge broke here → Andon"), in the column
-of the stage it was in when it escalated. That's the last working stage in `timing.stages` before
-`needs-human`. Clicking the ghost opens the job. Merged holds merged jobs only; settled jobs are
+of the stage it was in when it escalated: `stoppedFrom`, or, when that is null, the last working
+stage in `timing.stages` before `needs-human`. Clicking the ghost opens the job. Merged holds merged jobs only; settled jobs are
 not on the board (see Settled).
 
 **Lane order**, top to bottom:
@@ -372,11 +372,11 @@ Job 0 changes the contract; jobs A–D build the UI. Each leaves Andon working a
 the new fields), then A, B, C, D. A doesn't depend on Job 0, so it can go first if Job 0 is still
 in exploration.
 
-- **0. `needs-human-exits`** (contract; start with `/factory explore`). Every change here is
+- **0. `needs-human-exits`** (contract; done: job 022). Every change here is
   additive within v1, and is reviewed by `factory-contract` with `docs/contract/v1.md` updated in
   the same diff.
-  - **Why it stopped:** a new optional snapshot field recording the event that entered
-    needs-human (`escalated` | `merge-failed`), plus the stage it stopped from.
+  - **Why it stopped:** snapshot fields `stoppedBy` (`escalated` | `merge-failed`) and
+    `stoppedFrom` (the stage it stopped from). *Done: job 022.*
   - **Abandon:** a new `job.abandoned` event (`reason`), leading to a new terminal stage
     `abandoned`. It sets `endedAt`, and `note` becomes the reason. Like `merged`, the terminal
     stage rejects every later event.
@@ -396,7 +396,7 @@ in exploration.
   - **Readers:** the agent and Andon treat `abandoned` as settled.
 
 
-- **A. `andon-mac-frame`** (sections 3, 4, 11): the frame (sidebar, toolbar, status bar, empty
+- **A. `andon-mac-frame`** (sections 3, 4, 11; done: job 023): the frame (sidebar, toolbar, status bar, empty
   inspector slot), the visual tokens with light and dark, the project sidebar replacing the
   switcher, the connection footer, and the shell chrome (`frame: false`, traffic-light position,
   vibrancy, drag regions, `?shell=mac`). Today's board renders inside the new frame unchanged.
