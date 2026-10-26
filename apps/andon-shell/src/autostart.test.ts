@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { agentCommand, DEFAULT_PORT, ensureAgent, probeAgent, resolvePort } from './autostart';
+import { agentCommand, DEFAULT_PORT, ensureAgent, pageUrl, probeAgent, resolvePort, SHELL_QUERY } from './autostart';
 import type { AutostartDeps } from './autostart';
 import type { Http } from './http';
 
@@ -91,4 +91,11 @@ test('AC4: the probe is GET /projects, and only a 2xx counts', async () => {
   expect(await probeAgent(answer(403))).toBe(false);
   expect(await probeAgent(answer('refused'))).toBe(false);
   expect(asked).toEqual(['/projects', '/projects', '/projects']);
+});
+
+test('the page URL is the agent on loopback with ?shell=mac, at any port', () => {
+  expect(SHELL_QUERY).toBe('?shell=mac');
+  expect(pageUrl(DEFAULT_PORT)).toBe('http://127.0.0.1:8766/?shell=mac');
+  expect(pageUrl(9123)).toBe('http://127.0.0.1:9123/?shell=mac');
+  expect(new URL(pageUrl(9123)).searchParams.get('shell')).toBe('mac');
 });

@@ -2,12 +2,13 @@
 // runtime-neutral logic (shell.ts, autostart.ts) to Tiny's `app.tray`, `app.icon`, `app.badge`,
 // `app.notify`, and `onTray`, and to txiki's `tjs.spawn` (for the agent, and for curl: see curl.ts). `bun run
 // andon:shell:build` bundles it into build/backend.js, the plain-JS entry tinyjs.json names.
-// The window's page (the agent-served UI) gets no Tiny API: tinyjs.json's `api` gate denies it all.
+// The window's page (the agent-served UI) gets no Tiny API but the two calls its drag regions make
+// (`win.startDrag`, `win.zoom`): tinyjs.json's `api` gate denies the rest.
 /// <reference path="../types/tiny.d.ts" />
 /// <reference path="../types/tjs.d.ts" />
 import { QUIT_ID, SHOW_ID, trayNotice } from './badge';
 import type { TraySpec } from './badge';
-import { agentCommand, agentUrl, DEFAULT_PORT, ensureAgent, probeAgent, resolvePort } from './autostart';
+import { agentCommand, agentUrl, DEFAULT_PORT, ensureAgent, pageUrl, probeAgent, resolvePort } from './autostart';
 import type { Agent, Child } from './autostart';
 import { curlArgv, responseFromCurl } from './curl';
 import type { Http } from './http';
@@ -122,6 +123,9 @@ function spawnChild(argv: string[], env: Record<string, string>): Child {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** The script that reloads the main window onto the agent's page, in Mac-shell mode. */
+export const reloadScript = (port: number): string => `location.replace(${JSON.stringify(pageUrl(port))})`;
+
 // ---- lifecycle ----
 
 let shell: Shell | null = null;
@@ -161,8 +165,9 @@ export function init(app: ShellApp): void {
       showNotice(app, repo, agent.reason);
       return;
     }
-    // The window loaded tinyjs.json's URL before the agent answered (or on another port): load it now.
-    if (agent.started || port !== DEFAULT_PORT) app.window('main').eval(`location.replace(${JSON.stringify(`${url}/`)})`);
+    // The window loaded tinyjs.json's URL before the agent answered (or on another port): load it
+    // now, keeping `?shell=mac` so the page keeps its Mac frame.
+    if (agent.started || port !== DEFAULT_PORT) app.window('main').eval(reloadScript(port));
     shell = startShell({
       http,
       tray: (spec, running) => setTray(app, repo, spec, running),
