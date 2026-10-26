@@ -377,13 +377,23 @@ in exploration.
   the same diff.
   - **Why it stopped:** a new optional snapshot field recording the event that entered
     needs-human (`escalated` | `merge-failed`), plus the stage it stopped from.
-  - **Abandon:** a new `job.abandoned` event (`reason`), allowed from `needs-human`, leading to a
-    new terminal stage `abandoned`. It sets `endedAt`, and `note` becomes the reason.
-  - **Skill:** a `/factory abandon <id> <reason>` command that logs it and cleans up (removes the
-    worktree and releases the lock, keeping the branch for reference).
+  - **Abandon:** a new `job.abandoned` event (`reason`), leading to a new terminal stage
+    `abandoned`. It sets `endedAt`, and `note` becomes the reason. Like `merged`, the terminal
+    stage rejects every later event.
+  - **Where it's allowed:** from `needs-human`, freely. From a working stage (spec, build, review,
+    approve) only with `--force`, as the way out of a stuck job. Abandon never stops agents: you
+    stop the session driving the job first, then abandon. The CLI can't tell whether a session
+    is still running (the lock is short and global), so `--force` is the user's word that it
+    isn't. If one is, its next event is rejected because the stage is terminal, and it stops.
+  - **CLI:** `factory abandon <id> "<reason>" [--force] [--delete-branch]` logs the event, removes
+    the worktree, and keeps the branch unless `--delete-branch` is given. It lives in the CLI, not
+    only the skill, so a terminal, a script, or (later) andon-agent can run it without an AI
+    session. With no flag it keeps the branch: deleting unmerged commits is the step that can't
+    be undone, so it must be asked for explicitly.
+  - **Skill:** `/factory abandon <id> <reason>` asks two questions before calling the CLI: confirm
+    the abandon (and, from a working stage, that its session is stopped), then keep or delete the
+    branch, defaulting to keep.
   - **Readers:** the agent and Andon treat `abandoned` as settled.
-  - **To settle in exploration:** whether abandon is also allowed from working stages (which means
-    stopping running agents), and whether the branch is kept or deleted.
 
 
 - **A. `andon-mac-frame`** (sections 3, 4, 11): the frame (sidebar, toolbar, status bar, empty
@@ -423,6 +433,10 @@ in exploration.
 - **Needs Me:** every unaddressed needs-human job, plus review-failed (section 10).
 - **Why a job stopped, and abandon:** both are contract additions in Job 0, done before the UI's
   B and C jobs.
+- **Abandoning a running job:** not directly. Stop its session first; then abandon works from
+  any stage with `--force`, which covers stuck jobs (section 13).
+- **The branch on abandon:** the skill asks (default keep); the CLI keeps it unless
+  `--delete-branch` is given.
 - **Interactive Andon, later:** a separate exploration, not part of this rollout. The direction
   is two levels, with no durable runner until one is clearly needed:
   1. andon-agent runs the project's installed `factory` CLI for actions that need no AI
