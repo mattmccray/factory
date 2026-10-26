@@ -1,6 +1,7 @@
 # CLI-owned job ids
 
-- Status: ready
+- Status: done
+- Job: 024-cli-owned-job-ids (merged 2525363, 2026-10-26)
 - Sources: the weakly-todos duplicate `005` incident (two parallel sessions claimed `005-week-view-pager` and `005-links-footer`), `packages/cli/src/core.ts`, `packages/contract/src/store.ts`, `docs/contract/v1.md`
 - Date: 2026-10-26
 
