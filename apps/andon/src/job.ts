@@ -26,6 +26,11 @@ export interface AgentSpan {
   verdict: string | null;
 }
 
+/** Why a job is (or was last) in `needs-human` (docs/contract/v1.md "`job.json`"). */
+export type StoppedBy = 'escalated' | 'merge-failed';
+/** The stages a job does its work in, before it stops for a human. */
+export type WorkingStage = 'claimed' | 'spec' | 'build' | 'review' | 'approve';
+
 export interface Job {
   id: string;
   title: string;
@@ -38,6 +43,8 @@ export interface Job {
   history: Array<{ round: number; reviews: Record<string, ReviewState> }>;
   decision: string | null;
   note: string;
+  stoppedBy: StoppedBy | null; // null: not stopped, or a snapshot written before the field (a missing key)
+  stoppedFrom: WorkingStage | null; // the working stage it left for needs-human; null as for stoppedBy
   startedAt: string | null;
   stageEnteredAt: string | null;
   endedAt: string | null;
@@ -59,6 +66,8 @@ export type ContractShapesChecked = [
   Expect<Assignable<JobSnapshot, Job>>,
   Expect<Assignable<ContractStageSpan, StageSpan>>,
   Expect<Assignable<ContractAgentSpan, AgentSpan>>,
+  Expect<Assignable<JobSnapshot['stoppedBy'], Job['stoppedBy']>>,
+  Expect<Assignable<JobSnapshot['stoppedFrom'], Job['stoppedFrom']>>,
   Expect<Assignable<Config['reviewers'], BoardConfig['reviewers']>>,
   Expect<Assignable<Config['dashboard']['settleAfterHours'], BoardConfig['settleAfterHours']>>,
 ];
@@ -99,6 +108,11 @@ function agentSpan(v: unknown): AgentSpan | null {
   return { role, key: str(v.key), round: num(v.round), startedAt, finishedAt: str(v.finishedAt), ms: num(v.ms), verdict: str(v.verdict) };
 }
 
+const STOPPED_BY: readonly StoppedBy[] = ['escalated', 'merge-failed'];
+const WORKING: readonly WorkingStage[] = ['claimed', 'spec', 'build', 'review', 'approve'];
+/** One of `allowed`, or null for a missing key or any other value. */
+const oneOf = <T extends string>(allowed: readonly T[], v: unknown): T | null => allowed.find((a) => a === v) ?? null;
+
 const present = <T>(v: T | null): v is T => v !== null;
 
 /** Narrows one `job.json` value. Anything without a string `id` is dropped; unknown fields are ignored. */
@@ -121,6 +135,8 @@ export function toJob(v: unknown): Job | null {
       .map((h) => ({ round: num(h.round) ?? 0, reviews: reviews(h.reviews) })),
     decision: str(v.decision),
     note: str(v.note) ?? '',
+    stoppedBy: oneOf(STOPPED_BY, v.stoppedBy),
+    stoppedFrom: oneOf(WORKING, v.stoppedFrom),
     startedAt: str(v.startedAt),
     stageEnteredAt: str(v.stageEnteredAt),
     endedAt: str(v.endedAt),

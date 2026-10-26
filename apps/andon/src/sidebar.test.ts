@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { buildBoard } from './board';
-import { HOUR, NOW, before, job } from './fixtures';
+import { HOUR, NOW, before, job, tag } from './fixtures';
+import { kindOf } from './lanes';
 import { ALL, SELECTION_KEY, boardJobs, loadSelection, resolveSelection, saveSelection } from './projects';
 import { LEGEND, MAC_INSET, footer, frame, isActive, projectStatus, reviewFailed, settleHours, settleText, shellMode, sidebarModel, subtitle, subtitleText, title } from './sidebar';
 import { applyEvent, emptyState } from './state';
@@ -8,7 +9,7 @@ import type { UiState } from './state';
 
 // Registered out of name order, so the sidebar's sort shows.
 const ZED = { id: 'zzzzzzzzzzzz', name: 'zed', root: '/r/zed' }; // two needs-human, one active
-const ALPHA = { id: 'aaaaaaaaaaaa', name: 'Alpha', root: '/r/alpha' }; // review failed, back in build
+const ALPHA = { id: 'aaaaaaaaaaaa', name: 'Alpha', root: '/r/alpha' }; // review failed: a complete round with a CHANGES
 const MID = { id: 'mmmmmmmmmmmm', name: 'mid', root: '/r/mid' }; // active only
 const BETA = { id: 'bbbbbbbbbbbb', name: 'beta', root: '/r/beta' }; // idle: only settled jobs
 const NEW = { id: 'nnnnnnnnnnnn', name: 'new', root: '/r/new' }; // no board yet
@@ -21,7 +22,7 @@ function state(): UiState {
     jobs: [
       { id: '001-a', stage: 'needs-human', updated: before(HOUR) },
       { id: '002-b', stage: 'needs-human', updated: before(HOUR) },
-      { id: '003-c', stage: 'build', round: 1, reviews: { code: 'CHANGES' }, updated: before(HOUR) }, // failed, but red wins
+      { id: '003-c', stage: 'review', round: 1, reviews: { code: 'CHANGES' }, updated: before(HOUR) }, // failed, but red wins
       { id: '004-d', stage: 'merged', endedAt: before(HOUR), updated: before(HOUR) },
     ],
   });
@@ -29,7 +30,7 @@ function state(): UiState {
     project: ALPHA.id,
     config: { reviewers: ['code', 'ui'], dashboard: { settleAfterHours: 2 } },
     jobs: [
-      { id: '001-a', stage: 'build', round: 1, reviews: { code: 'PASS', ui: 'CHANGES' }, updated: before(HOUR) },
+      { id: '001-a', stage: 'review', round: 1, reviews: { code: 'PASS', ui: 'CHANGES' }, updated: before(HOUR) },
       { id: '002-b', stage: 'review', round: 1, reviews: { code: 'pending' }, updated: before(HOUR) },
     ],
   });
@@ -38,7 +39,7 @@ function state(): UiState {
     config: {},
     jobs: [
       { id: '001-a', stage: 'claimed', updated: before(HOUR) },
-      { id: '002-b', stage: 'build', round: 2, reviews: { code: 'PASS' }, updated: before(HOUR) }, // human-approved rework: not failed
+      { id: '002-b', stage: 'build', round: 1, reviews: { code: 'CHANGES' }, updated: before(HOUR) }, // back in build after CHANGES: rework, not failed
       { id: '003-c', stage: 'approve', updated: before(HOUR) },
     ],
   });
@@ -93,11 +94,16 @@ describe('the sidebar model (AC1)', () => {
     for (const stage of ['merged', 'needs-human', 'abandoned']) expect(isActive(job({ id: '1', stage }))).toBe(false);
   });
 
-  test('review failed: back in build after a round with a non-PASS verdict', () => {
-    expect(reviewFailed(job({ id: '1', stage: 'build', round: 1, reviews: { code: 'CHANGES' } }))).toBe(true);
-    expect(reviewFailed(job({ id: '1', stage: 'build', round: 2, reviews: { code: 'PASS', ui: 'PASS' } }))).toBe(false);
-    expect(reviewFailed(job({ id: '1', stage: 'build', round: 0 }))).toBe(false); // the first build
-    expect(reviewFailed(job({ id: '1', stage: 'review', round: 1, reviews: { code: 'CHANGES' } }))).toBe(false); // still in review
+  test('review failed is the lanes\' §5 kind rule: stage review, the round complete, and a CHANGES (025 AC1)', () => {
+    const cases: Array<Record<string, unknown>> = [
+      { id: '1', stage: 'review', round: 1, reviews: { code: 'CHANGES', ui: 'PASS' } },
+      { id: '1', stage: 'review', round: 1, reviews: { code: 'CHANGES', ui: 'pending' } },
+      { id: '1', stage: 'review', round: 1, reviews: { code: 'PASS' } },
+      { id: '1', stage: 'build', round: 1, reviews: { code: 'CHANGES' } },
+      { id: '1', stage: 'build', round: 0 },
+    ];
+    expect(cases.map((c) => reviewFailed(job(c)))).toEqual([true, false, false, false, false]);
+    for (const c of cases) expect(reviewFailed(job(c))).toBe(kindOf(tag(job(c)), NOW) === 'review-failed');
   });
 });
 
@@ -157,11 +163,20 @@ describe('the footer and toolbar texts (AC3)', () => {
     const s = state();
     const board = buildBoard(boardJobs(s, ALL), NOW);
     const all = subtitle(s, ALL, board.running, board.waiting);
-    expect(all).toEqual({ scope: 'All Projects', running: '6 running', waiting: '2 waiting on you' });
+    expect(all).toEqual({ scope: 'All Projects', running: '6 running', waiting: '2 waiting on you', elsewhere: null });
     expect(subtitleText(all)).toBe('All Projects — 6 running, 2 waiting on you');
     const mid = subtitle(s, MID.id, 3, 0);
     expect(mid.waiting).toBeNull();
-    expect(subtitleText(mid)).toBe('mid — 3 running');
+    expect(subtitleText(mid)).toBe('mid — 3 running, 2 waiting elsewhere');
+  });
+
+  test('a focused project shows "N waiting elsewhere" when other projects need a human (025 AC7)', () => {
+    const s = state();
+    expect(subtitle(s, MID.id, 3, 0).elsewhere).toBe('2 waiting elsewhere');
+    expect(subtitle(s, ZED.id, 1, 2).elsewhere).toBeNull(); // its own needs-human jobs are "waiting on you"
+    expect(subtitleText(subtitle(s, ZED.id, 1, 2))).toBe('zed — 1 running, 2 waiting on you');
+    expect(subtitle(s, ALL, 6, 2).elsewhere).toBeNull();
+    expect(subtitle(s, 'gone', 6, 2).elsewhere).toBeNull();
   });
 });
 

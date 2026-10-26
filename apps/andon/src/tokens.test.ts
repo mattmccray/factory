@@ -53,8 +53,10 @@ function contrast(fg: string, bg: string): number {
 
 const LABELS = ['--label', '--label2', '--label3'];
 const STATES = ['--red', '--orange', '--green', '--blue', '--teal', '--indigo', '--purple', '--gray'];
-/** Where text sits: the toolbar and status bar, the board, the solid sidebar, cards, and the drawer and dialogs. */
-const SURFACES = ['--win', '--canvas', '--side', '--card', '--raised'];
+/** Where text sits: the toolbar and status bar, the board, the solid sidebar, cards and tokens, and the drawer and dialogs. */
+const SURFACES = ['--win', '--canvas', '--side', '--card', '--tok', '--raised'];
+/** The state-tinted token fills (025): each carries label text and its own state's -ink text. */
+const TINTS: ReadonlyArray<readonly [string, string]> = [['--tint-red', '--red-ink'], ['--tint-red-2', '--red-ink'], ['--tint-orange', '--orange-ink'], ['--tint-green', '--green-ink']];
 const DESIGN = ['--win', '--canvas', '--raised', '--label', '--label2', '--label3', '--label4', '--sep', '--sep2', '--ctl', '--ctl-h', ...STATES];
 
 describe('the design §11 tokens (AC7)', () => {
@@ -91,6 +93,19 @@ describe('the design §11 tokens (AC7)', () => {
         const ratio = Number(contrast(get(fg), get(bg)).toFixed(2));
         expect({ fg, bg, aa: ratio >= 4.5, ratio }).toEqual({ fg, bg, aa: true, ratio });
       }
+    });
+
+    test(`${name}: on each tinted token fill, the labels and its state's ink meet AA (025 AC8)`, () => {
+      for (const [bg, ink] of TINTS) for (const fg of [...LABELS, ink]) {
+        const ratio = Number(contrast(get(fg), get(bg)).toFixed(2));
+        expect({ fg, bg, aa: ratio >= 4.5, ratio }).toEqual({ fg, bg, aa: true, ratio });
+      }
+      // the CHANGES chip's text on solid orange, and a chip on the approve token (white over --on-accent over the accent fill)
+      const changes = Number(contrast(get('--on-orange'), get('--orange')).toFixed(2));
+      expect({ changes, aa: changes >= 4.5 }).toEqual({ changes, aa: true });
+      const chip = over(color(get('--on-accent')), color(get('--accent-fill')));
+      const onChip = Number(((Math.max(luminance([255, 255, 255, 1]), luminance(chip)) + 0.05) / (Math.min(luminance([255, 255, 255, 1]), luminance(chip)) + 0.05)).toFixed(2));
+      expect({ onChip, aa: onChip >= 4.5 }).toEqual({ onChip, aa: true });
     });
 
     test(`${name}: white text meets AA on the red badge and the accent fill`, () => {
