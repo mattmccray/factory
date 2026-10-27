@@ -1,13 +1,16 @@
 <script lang="ts">
   // Andon: every registered project's board, live from the agent's `GET /events`, inside the
-  // Mac-app frame (design §3): sidebar, toolbar, the Assembly Lines matrix (§5–§7), inspector slot,
-  // and status bar. Selecting a project (in the sidebar, or by its gutter name) focuses it. This wires
+  // Mac-app frame (design §3): sidebar, toolbar, the Assembly Lines matrix (§5–§7), the inspector
+  // (§8) with its Rework and Abandon sheets, the Settled sheet (§9), and the status bar. Selecting a project (in the sidebar, or by its gutter name) focuses it. This wires
   // the browser (EventSource, fetch, localStorage, the URL, a 1 s clock) to the plain modules that
   // hold the logic; the components below only lay out what those modules return.
   import { onMount } from 'svelte';
   import type { Fetcher } from './api';
   import { buildBoard, movement } from './board';
-  import Drawer from './Drawer.svelte';
+  import CommandSheet from './CommandSheet.svelte';
+  import Inspector from './Inspector.svelte';
+  import { INSPECTOR_DEFAULT, TOAST_MS, copiedText, sidebarShown, toggleSidebar } from './inspector';
+  import type { SheetKind, SidebarChoice } from './inspector';
   import { activity, buildLanes, headerOf, orderLanes } from './lanes';
   import type { LaneOrder } from './lanes';
   import Lines from './Lines.svelte';
@@ -15,7 +18,7 @@
   import type { Status } from './live';
   import { ALL, boardJobs, loadSelection, projectErrors, resolveSelection, reviewersFor, saveSelection } from './projects';
   import type { Selection } from './projects';
-  import SettledDialog from './SettledDialog.svelte';
+  import SettledSheet from './SettledSheet.svelte';
   import Sidebar from './Sidebar.svelte';
   import { footer, frame, settleHours, settleText, shellMode, sidebarModel, subtitle, title } from './sidebar';
   import StatusBar from './StatusBar.svelte';
@@ -38,9 +41,12 @@
   let selection = $state<Selection>(loadSelection(storage()));
   let openKey = $state<string | null>(null);
   let settledOpen = $state(false);
-  let settledProject = $state<string | null>(null); // a lane's "N settled" link filters the dialog
-  let sidebarOpen = $state(true);
-  let inspectorOpen = $state(false); // an empty slot until the inspector job; the drawer opens jobs
+  let settledProject = $state<string | null>(null); // a lane's "N settled" link filters the sheet
+  let sidebar = $state<SidebarChoice>({ user: true, override: false });
+  let inspectorOpen = $state(false); // open with no job: "Nothing selected"
+  let inspectorWidth = $state(INSPECTOR_DEFAULT); // not kept across reloads
+  let sheet = $state<SheetKind | null>(null); // the open Rework… or Abandon… sheet
+  let innerWidth = $state(window.innerWidth);
   const mode = shellMode(window.location.search);
 
   onMount(() => {
@@ -59,7 +65,6 @@
   });
 
   const sel = $derived(ui.projects.length > 0 ? resolveSelection(ui, selection) : selection);
-  const showProject = $derived(sel === ALL && ui.projects.length > 1);
   const jobs = $derived(boardJobs(ui, sel));
   const board = $derived(buildBoard(jobs, now, reviewersFor(ui, sel)));
   const errors = $derived(projectErrors(ui, sel));
@@ -85,16 +90,21 @@
     seen = marks.stages;
   });
 
+  // An open inspector hides the sidebar below 1640px; closing it restores the user's own choice.
+  const sidebarOpen = $derived(sidebarShown(sidebar, innerWidth, inspectorOpen));
   const win = $derived(frame(mode, sidebarOpen));
   const side = $derived(sidebarModel(ui, sel));
   const foot = $derived(footer(status, ui.projects.length));
   const sub = $derived(subtitle(ui, sel, board.running, board.waiting));
   const settle = $derived(settleText(settleHours(ui, sel)));
 
-  // The drawer finds its job on every board, so it stays open across a switch and after settling.
+  // The inspector finds its job on every board, so it stays open across a switch and after settling.
   const openItem = $derived(openKey === null ? null : (boardJobs(ui, ALL).find((b) => b.key === openKey) ?? null));
   $effect(() => {
     if (openKey !== null && openItem === null && loaded) openKey = null; // the job is gone
+  });
+  $effect(() => {
+    if (sheet !== null && openItem?.job.stage !== 'needs-human') sheet = null; // the job moved on
   });
   $effect(() => {
     if (settledOpen && !board.settled.some((b) => settledProject === null || b.project.id === settledProject)) settledOpen = false;
@@ -111,18 +121,51 @@
   function openJob(key: string): void {
     settledOpen = false;
     openKey = key;
+    inspectorOpen = true;
   }
+  function closeInspector(): void {
+    inspectorOpen = false;
+    openKey = null;
+    sheet = null;
+    sidebar = { user: sidebar.user, override: false };
+  }
+  function toggleInspector(): void {
+    if (inspectorOpen) closeInspector();
+    else inspectorOpen = true;
+  }
+
+  // Copying shows a HUD toast for 1.6s. A failed write says so; the command stays on screen to select.
+  let toast = $state<{ text: string; ok: boolean } | null>(null);
+  let toastTimer: ReturnType<typeof setTimeout> | null = null;
+  function show(text: string, ok: boolean): void {
+    if (toastTimer !== null) clearTimeout(toastTimer);
+    toast = { text, ok };
+    toastTimer = setTimeout(() => (toast = null), TOAST_MS);
+  }
+  function copy(command: string): void {
+    Promise.resolve()
+      .then(() => navigator.clipboard.writeText(command))
+      .then(
+        () => show(copiedText(command), true),
+        () => show("Couldn't copy: select the command and copy it yourself", false),
+      );
+  }
+  $effect(() => () => {
+    if (toastTimer !== null) clearTimeout(toastTimer);
+  });
+
   function onkeydown(e: KeyboardEvent): void {
     if (e.key !== 'Escape' || e.defaultPrevented) return;
-    // An open <dialog> handles its own Escape. Otherwise Escape closes the drawer, and its default
-    // is suppressed: Chromium's Escape default ("stop loading") also aborts the event stream.
+    // An open sheet (a <dialog>) handles its own Escape first. Otherwise Escape closes the
+    // inspector, and its default is suppressed: Chromium's Escape default ("stop loading") also
+    // aborts the event stream.
     if (document.querySelector('dialog[open]') !== null) return;
     e.preventDefault();
-    openKey = null;
+    if (inspectorOpen) closeInspector();
   }
 </script>
 
-<svelte:window {onkeydown} />
+<svelte:window {onkeydown} bind:innerWidth />
 
 <div class="window" class:mac={mode === 'mac'} class:nosb={!sidebarOpen} style:--inset="{win.inset}px" style:--toolbar-inset="{win.toolbarInset}px">
   <Sidebar model={side} {foot} {status} drag={win.drag} onselect={select} />
@@ -134,10 +177,11 @@
       settled={board.settled.length}
       {sidebarOpen}
       {inspectorOpen}
+      selected={openItem === null ? null : `${openItem.project.name} / ${openItem.job.id}`}
       drag={win.drag}
-      ontogglesidebar={() => (sidebarOpen = !sidebarOpen)}
+      ontogglesidebar={() => (sidebar = toggleSidebar(sidebar, innerWidth, inspectorOpen))}
       onback={() => select(ALL)}
-      ontoggleinspector={() => (inspectorOpen = !inspectorOpen)}
+      ontoggleinspector={toggleInspector}
       onsettled={() => openSettled(null)}
     />
     <main>
@@ -163,9 +207,30 @@
     </main>
     <StatusBar {settle} {now} />
   </div>
-  <aside class="inspector" class:open={inspectorOpen} id="inspector" aria-label="Inspector">
-    <p class="ins-empty">Nothing selected</p>
-  </aside>
+  <Inspector
+    item={openItem}
+    open={inspectorOpen}
+    width={inspectorWidth}
+    {now}
+    {fetcher}
+    onclose={closeInspector}
+    onresize={(w) => (inspectorWidth = w)}
+    oncopy={copy}
+    onsheet={(k) => (sheet = k)}
+  />
 </div>
-<SettledDialog settled={board.settled} {showProject} project={settledProject === null ? null : (ui.projects.find((p) => p.id === settledProject) ?? null)} open={settledOpen} onclose={() => (settledOpen = false)} onopen={openJob} />
-<Drawer item={openItem} {now} showProject={showProject || (sel !== ALL && openItem !== null && openItem.project.id !== sel)} {fetcher} onclose={() => (openKey = null)} />
+<SettledSheet
+  settled={board.settled}
+  open={settledOpen}
+  project={settledProject === null ? null : (ui.projects.find((p) => p.id === settledProject) ?? null)}
+  onclearfilter={() => (settledProject = null)}
+  onclose={() => (settledOpen = false)}
+  onopen={openJob}
+/>
+<CommandSheet kind={sheet} id={openItem?.job.id ?? ''} oncopy={copy} onclose={() => (sheet = null)} />
+<div class="hud" class:on={toast !== null} class:fail={toast !== null && !toast.ok} role="status" aria-live="polite">
+  {#if toast !== null}
+    {#if toast.ok}<svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" /></svg>{/if}
+    <span>{toast.text}</span>
+  {/if}
+</div>
