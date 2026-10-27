@@ -75,6 +75,12 @@ describe('init on an empty project (AC1)', () => {
       dashboard: { settleAfterHours: 24 },
     });
 
+    // The default config's bytes are fixed: no `name` (a folder name baked in would be wrong for other clones).
+    expect(await text(dir, 'factory/config.json')).toBe(
+      '{\n  "schema": "factory/v1",\n  "reviewers": [\n    "code"\n  ],\n  "maxRound": 2,\n  "dashboard": {\n    "settleAfterHours": 24\n  }\n}\n',
+    );
+    expect('name' in config).toBe(false);
+
     const { files } = renderClaudeCode({ config });
     for (const [path, want] of Object.entries(files)) expect({ path, text: await text(dir, path) }).toEqual({ path, text: want });
 

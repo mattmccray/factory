@@ -541,6 +541,23 @@ describe('the customize interview in SKILL.md', () => {
     expect(flat(skillOf())).toContain("Don't pass `model`");
   });
 
+  test('name: the first interview question, a refusal rule matching the parser, written first after schema', () => {
+    const raw = section();
+    const s = flat(raw);
+    const questions = [...raw.matchAll(/\n(\d)\. `([^`]+)` — /g)].map((m) => `${m[1]}:${m[2]}`);
+    expect(questions[0]).toBe('1:name');
+    expect(questions.slice(1, 3)).toEqual(['2:reviewers', '3:maxRound']);
+    const first = flat(raw.slice(raw.indexOf('\n1. `name`'), raw.indexOf('\n2. ')));
+    expect(first).toContain('current resolved name');
+    expect(first).toContain('Recommend leaving it unset when the folder name is right');
+    expect(s).toContain('holds only `schema` (`"factory/v1"`), `name`, `reviewers`,');
+    expect(s).toContain(
+      '`name`, when present, is a string of 1–64 characters (Unicode code points) with no leading or trailing whitespace and no control characters',
+    );
+    const write = flat(raw.slice(raw.indexOf('**Write.**'), raw.indexOf('**Doctor last.**')));
+    expect(write).toContain('`schema` first, then `name` first among the keys after `schema`');
+  });
+
   test('AC5: the customize section stays neutral for several configs', () => {
     const BANNED = ['Minerva', 'Andon', 'andon', 'packages/', 'apps/', 'bun run test', 'bun run check', 'here:'];
     for (const reviewers of [['alpha', 'beta-2'], ['q'], ['zeta', 'eta-1', 'theta']]) {

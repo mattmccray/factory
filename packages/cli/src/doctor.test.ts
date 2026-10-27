@@ -83,6 +83,35 @@ describe('doctor: config (AC5)', () => {
     }
   });
 
+  test('a config with a valid name is ok', async () => {
+    for (const name of ['Minerva Admin', 'Café — Ops (v2)!', 'x'.repeat(64)]) {
+      await writeConfig({ ...CONFIG, name });
+      const r = await doctor();
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('ok    config.json');
+    }
+  });
+
+  test('a config with a bad name fails with a one-line reason naming name', async () => {
+    const cases: Array<[unknown, string]> = [
+      ['', 'FAIL  config.json: config: name must not be empty'],
+      ['x'.repeat(65), 'FAIL  config.json: config: name is 65 characters (at most 64)'],
+      [' Lead', 'FAIL  config.json: config: name must not have leading or trailing whitespace'],
+      ['Trail ', 'FAIL  config.json: config: name must not have leading or trailing whitespace'],
+      ['a\nb', 'FAIL  config.json: config: name must not contain control characters'],
+      ['a\u0000b', 'FAIL  config.json: config: name must not contain control characters'],
+      ['a\u007fb', 'FAIL  config.json: config: name must not contain control characters'],
+      [42, 'FAIL  config.json: config: name must be a string'],
+      [null, 'FAIL  config.json: config: name must be a string'],
+    ];
+    for (const [name, line] of cases) {
+      await writeConfig({ ...CONFIG, name });
+      const r = await doctor();
+      expect(r.code).toBe(1);
+      expect(r.out).toContain(line);
+    }
+  });
+
   test('a config with a bad merge fails with the parser\'s reason', async () => {
     const cases: Array<[unknown, string]> = [
       [{ target: 'main', squash: true }, "FAIL  config.json: config.merge: unknown key 'squash'"],
