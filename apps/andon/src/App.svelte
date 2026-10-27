@@ -1,24 +1,31 @@
 <script lang="ts">
   // Andon: every registered project's board, live from the agent's `GET /events`, inside the
   // Mac-app frame (design §3): sidebar, toolbar, the Assembly Lines matrix (§5–§7), the inspector
-  // (§8) with its Rework and Abandon sheets, the Settled sheet (§9), and the status bar. Selecting a project (in the sidebar, or by its gutter name) focuses it. This wires
-  // the browser (EventSource, fetch, localStorage, the URL, a 1 s clock) to the plain modules that
-  // hold the logic; the components below only lay out what those modules return.
-  import { onMount } from 'svelte';
+  // (§8) with its Rework and Abandon sheets, the Settled sheet (§9), and the status bar. Selecting a project (in the sidebar, or by its gutter name) focuses it. Search,
+  // Needs Me, the keyboard map, and deep links (§10) come from find.ts, keys.ts, and route.ts. This
+  // wires the browser (EventSource, fetch, localStorage, the URL and its history, a 1 s clock) to
+  // the plain modules that hold the logic; the components below only lay out what those modules return.
+  import { onMount, untrack } from 'svelte';
   import type { Fetcher } from './api';
   import { buildBoard, movement } from './board';
   import CommandSheet from './CommandSheet.svelte';
   import Inspector from './Inspector.svelte';
   import { INSPECTOR_DEFAULT, TOAST_MS, copiedText, sidebarShown, toggleSidebar } from './inspector';
   import type { SheetKind, SidebarChoice } from './inspector';
+  import { find, needsFilter } from './find';
+  import { initialKeys, reduceKey } from './keys';
+  import type { KeyAction } from './keys';
   import { activity, buildLanes, headerOf, orderLanes } from './lanes';
   import type { LaneOrder } from './lanes';
   import Lines from './Lines.svelte';
+  import { entryOf, formatHash, historyStep, initialView, jobKey, readEntry, viewKey, viewOf } from './route';
+  import type { JobRef, View } from './route';
   import { startLive } from './live';
   import type { Status } from './live';
   import { ALL, boardJobs, loadSelection, projectErrors, resolveSelection, reviewersFor, saveSelection } from './projects';
   import type { Selection } from './projects';
   import SettledSheet from './SettledSheet.svelte';
+  import ShortcutSheet from './ShortcutSheet.svelte';
   import Sidebar from './Sidebar.svelte';
   import { footer, frame, settleHours, settleText, shellMode, sidebarModel, subtitle, title } from './sidebar';
   import StatusBar from './StatusBar.svelte';
@@ -38,14 +45,25 @@
   let ui = $state.raw<UiState>(emptyState());
   let status = $state<Status>('connecting');
   let now = $state(Date.now());
-  let selection = $state<Selection>(loadSelection(storage()));
-  let openKey = $state<string | null>(null);
-  let settledOpen = $state(false);
-  let settledProject = $state<string | null>(null); // a lane's "N settled" link filters the sheet
+  // The view on load: a present hash wins over the stored selection (route.ts `initialView`); a
+  // hash's project is saved as a click would save it.
+  const start = initialView(window.location.hash, loadSelection(storage()), ALL, window.history.state);
+  if (window.location.hash.replace(/^#/, '') !== '') saveSelection(storage(), start.project ?? ALL);
+  let selection = $state<Selection>(start.project ?? ALL);
+  let openRef = $state<JobRef | null>(start.job);
+  let openFile = $state<string | null>(start.file); // the inspector's chosen file; null: it picks
+  let settledOpen = $state(start.settled !== null);
+  let settledProject = $state<string | null>(start.settled?.project ?? null); // a lane's "N settled" link filters the sheet
   let sidebar = $state<SidebarChoice>({ user: true, override: false });
-  let inspectorOpen = $state(false); // open with no job: "Nothing selected"
+  let inspectorOpen = $state(start.inspector); // open with no job: "Nothing selected"
   let inspectorWidth = $state(INSPECTOR_DEFAULT); // not kept across reloads
-  let sheet = $state<SheetKind | null>(null); // the open Rework… or Abandon… sheet
+  let sheet = $state<SheetKind | null>(start.sheet === 'rework' || start.sheet === 'abandon' ? start.sheet : null); // the open Rework… or Abandon… sheet
+  let keysOpen = $state(start.sheet === 'keys'); // the shortcut sheet
+  let needs = $state(start.needs); // Needs Me
+  let query = $state(''); // search; not kept in the hash
+  let searchEl = $state<HTMLInputElement>();
+  let searchFocused = $state(false);
+  const openKey = $derived(openRef === null ? null : jobKey(openRef));
   let innerWidth = $state(window.innerWidth);
   const mode = shellMode(window.location.search);
 
@@ -57,16 +75,21 @@
       if (!document.hidden) now = Date.now();
     };
     document.addEventListener('visibilitychange', visible);
+    window.addEventListener('popstate', onpopstate);
     return () => {
       live.stop();
       clearInterval(timer);
       document.removeEventListener('visibilitychange', visible);
+      window.removeEventListener('popstate', onpopstate);
     };
   });
 
   const sel = $derived(ui.projects.length > 0 ? resolveSelection(ui, selection) : selection);
-  const jobs = $derived(boardJobs(ui, sel));
-  const board = $derived(buildBoard(jobs, now, reviewersFor(ui, sel)));
+  const allJobs = $derived(boardJobs(ui, sel));
+  // Needs Me keeps only the jobs that need a human, and the lanes that have any (find.ts).
+  const needed = $derived(needs ? needsFilter(ui.projects, allJobs) : null);
+  const jobs = $derived(needed?.jobs ?? allJobs);
+  const board = $derived(buildBoard(allJobs, now, reviewersFor(ui, sel)));
   const errors = $derived(projectErrors(ui, sel));
   const loaded = $derived(ui.projects.length > 0 && ui.projects.every((p) => ui.boards[p.id]?.loaded === true));
 
@@ -74,12 +97,14 @@
   // settled merges and recent activity). Lane order is sorted once every board has loaded, then a
   // lane moves only when its tier changes (lanes.ts `orderLanes`).
   const focused = $derived(sel !== ALL);
-  const shownProjects = $derived(ui.projects.filter((p) => !focused || p.id === sel));
+  const shownProjects = $derived((needed?.projects ?? ui.projects).filter((p) => !focused || p.id === sel));
   let laneOrder: LaneOrder | null = null;
-  const lines = $derived(orderLanes(buildLanes(shownProjects, jobs, now, focused), loaded && !focused ? laneOrder : null));
+  const lines = $derived(orderLanes(buildLanes(shownProjects, jobs, now, focused), loaded && !focused && !needs ? laneOrder : null));
   $effect(() => {
-    if (loaded && !focused) laneOrder = lines.order;
+    if (loaded && !focused && !needs) laneOrder = lines.order;
   });
+  // Search dims the tokens and lanes that don't match; it hides nothing.
+  const found = $derived(find(shownProjects, jobs, query, now, focused));
   const header = $derived(headerOf(lines.lanes, settleHours(ui, sel)));
   const recent = $derived(focused ? activity(jobs) : []);
 
@@ -99,15 +124,24 @@
   const settle = $derived(settleText(settleHours(ui, sel)));
 
   // The inspector finds its job on every board, so it stays open across a switch and after settling.
-  const openItem = $derived(openKey === null ? null : (boardJobs(ui, ALL).find((b) => b.key === openKey) ?? null));
+  const openItem = $derived(openRef === null ? null : (boardJobs(ui, ALL).find((b) => b.project.id === openRef?.project && b.job.id === openRef.id) ?? null));
+  // A job that was shown and is gone leaves "Nothing selected"; one a link named that never
+  // existed closes the inspector.
+  let shownKey: string | null = null;
   $effect(() => {
-    if (openKey !== null && openItem === null && loaded) openKey = null; // the job is gone
+    if (openItem !== null) shownKey = openItem.key;
+    else if (openRef !== null && loaded) {
+      if (shownKey === jobKey(openRef)) {
+        openRef = null;
+        openFile = null;
+      } else closeInspector();
+    }
   });
   $effect(() => {
-    if (sheet !== null && openItem?.job.stage !== 'needs-human') sheet = null; // the job moved on
+    if (sheet !== null && loaded && openItem?.job.stage !== 'needs-human') sheet = null; // the job moved on
   });
   $effect(() => {
-    if (settledOpen && !board.settled.some((b) => settledProject === null || b.project.id === settledProject)) settledOpen = false;
+    if (settledOpen && loaded && !board.settled.some((b) => settledProject === null || b.project.id === settledProject)) settledOpen = false;
   });
 
   function select(next: Selection): void {
@@ -119,13 +153,17 @@
     settledOpen = true;
   }
   function openJob(key: string): void {
+    const b = boardJobs(ui, ALL).find((x) => x.key === key);
+    if (b === undefined) return;
     settledOpen = false;
-    openKey = key;
+    if (openKey !== key) openFile = null;
+    openRef = { project: b.project.id, id: b.job.id };
     inspectorOpen = true;
   }
   function closeInspector(): void {
     inspectorOpen = false;
-    openKey = null;
+    openRef = null;
+    openFile = null;
     sheet = null;
     sidebar = { user: sidebar.user, override: false };
   }
@@ -154,14 +192,103 @@
     if (toastTimer !== null) clearTimeout(toastTimer);
   });
 
+  // ---- the URL: the view in the hash, and its history (route.ts) ----
+
+  const view = $derived<View>({
+    project: sel === ALL ? null : sel,
+    inspector: inspectorOpen,
+    job: openRef,
+    file: openRef === null ? null : openFile,
+    settled: settledOpen ? { project: settledProject } : null,
+    sheet: keysOpen ? 'keys' : sheet,
+    needs,
+  });
+
+  function applyView(v: View): void {
+    if ((v.project ?? ALL) !== selection) select(v.project ?? ALL);
+    openRef = v.job;
+    openFile = v.file;
+    inspectorOpen = v.inspector;
+    if (!v.inspector) sidebar = { user: sidebar.user, override: false };
+    settledOpen = v.settled !== null;
+    settledProject = v.settled?.project ?? null;
+    sheet = v.sheet === 'rework' || v.sheet === 'abandon' ? v.sheet : null;
+    keysOpen = v.sheet === 'keys';
+    needs = v.needs;
+  }
+
+  // Each change of the view pushes, replaces, or goes back (route.ts `historyStep`). `shown` is the
+  // view the current history entry holds; Back and Forward set it before applying theirs, so they
+  // never write the history themselves.
+  let shown: View | null = null;
+  const url = (v: View): string => `${window.location.pathname}${window.location.search}${formatHash(v)}`;
+  $effect(() => {
+    const next = view;
+    untrack(() => {
+      const under = readEntry(window.history.state).under;
+      if (shown === null) {
+        window.history.replaceState(entryOf(next, under), '', url(next));
+      } else {
+        const step = historyStep(shown, next, under);
+        if (step === 'push') window.history.pushState(entryOf(next, viewKey(shown)), '', url(next));
+        else if (step === 'replace') window.history.replaceState(entryOf(next, under), '', url(next));
+        else if (step === 'back') window.history.back();
+      }
+      shown = next;
+    });
+  });
+  function onpopstate(e: PopStateEvent): void {
+    const v = viewOf(window.location.hash, e.state);
+    shown = v;
+    applyView(v);
+  }
+
+  // ---- the keyboard (keys.ts) ----
+
+  let keyState = initialKeys();
+  const inField = (el: Element | null): boolean => el instanceof HTMLElement && (el.isContentEditable || el.matches('input, textarea, select'));
   function onkeydown(e: KeyboardEvent): void {
-    if (e.key !== 'Escape' || e.defaultPrevented) return;
-    // An open sheet (a <dialog>) handles its own Escape first. Otherwise Escape closes the
-    // inspector, and its default is suppressed: Chromium's Escape default ("stop loading") also
-    // aborts the event stream.
-    if (document.querySelector('dialog[open]') !== null) return;
+    if (e.defaultPrevented) return;
+    const layers = { sheet: settledOpen || sheet !== null || keysOpen, inspector: inspectorOpen, searchText: query !== '', searchFocused };
+    const r = reduceKey(keyState, { key: e.key, mod: e.ctrlKey || e.metaKey || e.altKey, inField: inField(document.activeElement) }, layers);
+    keyState = r.state;
+    // Escape's default is always suppressed: Chromium's ("stop loading") also aborts the event stream.
+    if (e.key === 'Escape') e.preventDefault();
+    if (r.action === null) return;
     e.preventDefault();
-    if (inspectorOpen) closeInspector();
+    act(r.action);
+  }
+  function act(a: KeyAction): void {
+    switch (a) {
+      case 'focus-search':
+        searchEl?.focus();
+        searchEl?.select();
+        return;
+      case 'toggle-needs':
+        needs = !needs;
+        return;
+      case 'open-keys':
+        keysOpen = true;
+        return;
+      case 'all-projects':
+        select(ALL);
+        return;
+      case 'close-sheet':
+        // the topmost first: a command sheet or the shortcuts open over the Settled sheet's place
+        if (keysOpen) keysOpen = false;
+        else if (sheet !== null) sheet = null;
+        else settledOpen = false;
+        return;
+      case 'close-inspector':
+        closeInspector();
+        return;
+      case 'clear-search':
+        query = '';
+        return;
+      case 'leave-search':
+        searchEl?.blur();
+        return;
+    }
   }
 </script>
 
@@ -179,6 +306,11 @@
       {inspectorOpen}
       selected={openItem === null ? null : `${openItem.project.name} / ${openItem.job.id}`}
       drag={win.drag}
+      bind:query
+      bind:searchEl
+      bind:searchFocused
+      {needs}
+      ontoggleneeds={() => (needs = !needs)}
       ontogglesidebar={() => (sidebar = toggleSidebar(sidebar, innerWidth, inspectorOpen))}
       onback={() => select(ALL)}
       ontoggleinspector={toggleInspector}
@@ -199,8 +331,10 @@
           <div class="nothing">Connecting to the Andon agent…</div>
         {/if}
       {:else}
-        <Lines lanes={lines.lanes} {header} {jobs} {focused} {recent} {now} selectedKey={openKey} fresh={marks.fresh} moved={marks.moved} onopen={openJob} onfocus={select} onsettled={openSettled} />
-        {#if board.shown === 0 && !focused}
+        <Lines lanes={lines.lanes} {header} {jobs} {focused} {recent} {now} {found} selectedKey={openKey} fresh={marks.fresh} moved={marks.moved} onopen={openJob} onfocus={select} onsettled={openSettled} />
+        {#if needs && lines.lanes.length === 0}
+          <div class="quiet">Nothing needs you{focused ? ' in this project' : ''}. Press <kbd>n</kbd> to show everything.</div>
+        {:else if board.shown === 0 && !focused}
           <div class="quiet">The line is quiet. Start a job with <code>/factory &lt;feature&gt;</code> or <code>/factory next</code>.</div>
         {/if}
       {/if}
@@ -213,6 +347,8 @@
     width={inspectorWidth}
     {now}
     {fetcher}
+    file={openFile}
+    onfile={(f) => (openFile = f)}
     onclose={closeInspector}
     onresize={(w) => (inspectorWidth = w)}
     oncopy={copy}
@@ -228,6 +364,7 @@
   onopen={openJob}
 />
 <CommandSheet kind={sheet} id={openItem?.job.id ?? ''} oncopy={copy} onclose={() => (sheet = null)} />
+<ShortcutSheet open={keysOpen} onclose={() => (keysOpen = false)} />
 <div class="hud" class:on={toast !== null} class:fail={toast !== null && !toast.ok} role="status" aria-live="polite">
   {#if toast !== null}
     {#if toast.ok}<svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" /></svg>{/if}

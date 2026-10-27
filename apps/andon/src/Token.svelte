@@ -7,13 +7,14 @@
 
   interface Props {
     token: TokenModel;
+    miss?: boolean; // dimmed by a search it doesn't match
     selected: boolean;
     fresh: boolean;
     moved: boolean;
     onopen: (key: string) => void;
     onhover: (key: string | null, el: HTMLElement | null) => void;
   }
-  let { token: t, selected, fresh, moved, onopen, onhover }: Props = $props();
+  let { token: t, miss = false, selected, fresh, moved, onopen, onhover }: Props = $props();
 
   let el = $state<HTMLButtonElement>();
   const show = (): void => onhover(t.key, el ?? null);
@@ -25,6 +26,7 @@
   class="tok k-{t.kind} s-{t.shape}"
   class:sel={selected}
   class:dim={t.dimmed}
+  class:miss
   class:new={fresh}
   class:moved
   type="button"
