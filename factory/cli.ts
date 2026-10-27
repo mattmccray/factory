@@ -42,7 +42,7 @@ function noExtraKeys(obj, allowed, what) {
 function parseConfig(raw) {
   if (!isRecord(raw))
     throw new Error("config: must be a JSON object");
-  noExtraKeys(raw, ["schema", "reviewers", "maxRound", "dashboard", "gate", "roles", "merge"], "config");
+  noExtraKeys(raw, ["schema", "name", "reviewers", "maxRound", "dashboard", "gate", "roles", "merge"], "config");
   if (raw.schema !== SCHEMA)
     throw new Error(`config: schema must be "${SCHEMA}"`);
   const { reviewers, maxRound, dashboard } = raw;
@@ -67,6 +67,8 @@ function parseConfig(raw) {
   if (typeof settle !== "number" || !(settle > 0))
     throw new Error("config: dashboard.settleAfterHours must be a positive number");
   const config = { schema: SCHEMA, reviewers: keys, maxRound, dashboard: { settleAfterHours: settle } };
+  if (raw.name !== undefined)
+    config.name = parseName(raw.name);
   if (raw.gate !== undefined)
     config.gate = parseGate(raw.gate);
   if (raw.roles !== undefined)
@@ -89,6 +91,22 @@ function parseMerge(merge) {
     throw new Error(`config: merge.target ${JSON.stringify(target)} is not an allowed branch name (want ${BRANCH_PATTERN.source}, no '..', no '.lock' suffix)`);
   }
   return { target };
+}
+var NAME_MAX = 64;
+var CONTROL = /[\u0000-\u001f\u007f-\u009f]/u;
+function parseName(name) {
+  if (typeof name !== "string")
+    throw new Error("config: name must be a string");
+  const length = [...name].length;
+  if (length === 0)
+    throw new Error("config: name must not be empty");
+  if (length > NAME_MAX)
+    throw new Error(`config: name is ${length} characters (at most ${NAME_MAX})`);
+  if (CONTROL.test(name))
+    throw new Error("config: name must not contain control characters");
+  if (name.trim() !== name)
+    throw new Error("config: name must not have leading or trailing whitespace");
+  return name;
 }
 function parseRoles(roles, reviewers) {
   if (!isRecord(roles))

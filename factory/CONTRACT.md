@@ -57,6 +57,7 @@ reports each such number as a `note`.
 ```json
 {
   "schema": "factory/v1",
+  "name": "Minerva Admin",
   "reviewers": ["security", "ux", "ui", "code"],
   "maxRound": 2,
   "dashboard": { "settleAfterHours": 24 },
@@ -66,6 +67,14 @@ reports each such number as a `note`.
 }
 ```
 
+- `name` — optional. The project's display name: Andon labels the project with it (see "Andon
+  agent"). A string of 1–64 characters, counted in Unicode code points, with no leading or
+  trailing whitespace and no control characters (any Unicode `Cc` code point: U+0000–U+001F,
+  U+007F–U+009F); spaces, punctuation, and non-ASCII characters are allowed. Anything else,
+  including an empty string or `null`, is an error. When `name` is absent, the project is labeled
+  with its root's basename. It is a label, not an identifier: the project id never depends on it,
+  and `factory init` never writes one. *(Added within v1, additively: a new optional key; a CLI or
+  agent from before it rejects a config that sets `name`, so upgrade first.)*
 - `reviewers` — ordered reviewer keys (`^[a-z][a-z0-9-]*$`, at least one, unique, and none may
   equal a fixed role name: `spec-writer`, `builder`, `approver`). Each key `k` writes
   `round-<N>/review-<k>.md`. The order is the chip order on the board.
@@ -572,8 +581,11 @@ Successful API responses are JSON (the UI routes below serve the UI's files); ev
 carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 405):
 
 - `GET /projects` returns `{ projects: [{ id, name, root }] }` in registry order. `id` is the
-  first 12 hex characters of the SHA-256 of the absolute `root`, and `name` is the root's
-  basename. A project whose `factory/` is missing is still listed.
+  first 12 hex characters of the SHA-256 of the absolute `root` (it never depends on `name`).
+  `name` is the project's `config.json` `name` when that config is valid and sets one, else the
+  root's basename (no `factory/`, no `config.json`, or an unreadable or invalid one); it is
+  resolved on every request. A project whose `factory/` is missing is still listed. *(Added
+  within v1, additively: before, `name` was always the basename.)*
 - `GET /projects/<pid>/board` returns `{ jobs, config }` for that project, with the same shape
   and rules as the dashboard's `GET /board`: a `job.json` that is missing or mid-write keeps the
   job's last good snapshot, unknown `job.json` fields are passed through (an `abandoned` job,
@@ -601,8 +613,12 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
   additively: a new response header on the UI routes; no status, body, or other header changed.)*
 - An unknown `<pid>`, a malformed job id, or any other path not served by the UI routes is a 404.
 - `GET /events` is a `text/event-stream` of these events, each `data` one JSON line:
-  - `projects`: `{ projects: [{ id, name, root }] }`, sent once on connect and again whenever
-    the registry's list of projects changes.
+  - `projects`: `{ projects: [{ id, name, root }] }`, with `name` resolved as in
+    `GET /projects`. Sent once on connect, again whenever the registry's list of projects
+    changes, and again whenever a project's resolved name changes (its `config.json` gains,
+    changes, or drops `name`, or turns invalid or valid), alongside that change's `board` or
+    `error` event. A `config.json` edit that leaves every resolved name unchanged sends no
+    `projects` event. *(Added within v1, additively: the re-send on a name change.)*
   - `board`: `{ project: <pid>, jobs, config }`, sent when anything under a registered
     project's `factory/jobs/` or its `factory/config.json` changes. A burst of changes is
     debounced to one `board` event per project (at most about 100 ms of delay).

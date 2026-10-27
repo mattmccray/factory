@@ -1,4 +1,5 @@
 {
+  "name": "Factory",
   "schema": "factory/v1",
   "reviewers": ["security", "code", "contract", "ui"],
   "maxRound": 2,

@@ -367,18 +367,21 @@ install stands. List the live jobs (every `factory/jobs/*/job.json` with a stage
 each with your **recommended answer** and the reason for it. Facts are yours to find; decisions
 are the user's. Never ask what the code or docs can answer (the project's test and check commands
 are facts; which of them gate a merge is a decision). Cover only the v1 overlay, in this order:
-1. `reviewers` — the ordered reviewer keys, one per review concern (e.g. correctness and test
+1. `name` — the project's display name on the dashboard. Show the current resolved name: `config.json`'s
+   `name` when set, else the repo root's folder name (`basename R`). Recommend leaving it unset
+   when the folder name is right; no `name` key means the folder name.
+2. `reviewers` — the ordered reviewer keys, one per review concern (e.g. correctness and test
    coverage, security, contract).
-2. `maxRound` — the default review budget for a new job.
-3. `dashboard.settleAfterHours` — how long a merged job stays in the Merged column.
-4. `gate` — the shell commands, in order, that must all exit 0; or no gate.
-5. `merge.target` — the branch jobs are based on and merge into: `current` (the default: the
+3. `maxRound` — the default review budget for a new job.
+4. `dashboard.settleAfterHours` — how long a merged job stays in the Merged column.
+5. `gate` — the shell commands, in order, that must all exit 0; or no gate.
+6. `merge.target` — the branch jobs are based on and merge into: `current` (the default: the
    branch the main checkout is on when a job is claimed) or a branch name such as `develop`.
    No `merge` key keeps `current`.
-6. `roles` — for any role that should not run on the default model (`opus`): its runner
+7. `roles` — for any role that should not run on the default model (`opus`): its runner
    (`claude`, the only runner in v1) and, optionally, the harness model name (e.g. a cheaper
    model for a narrow reviewer). No entry, or no `roles` key at all, keeps the default.
-7. `factory/roles/<role>.md` — for `spec-writer`, `builder`, `approver`, and each configured
+8. `factory/roles/<role>.md` — for `spec-writer`, `builder`, `approver`, and each configured
    reviewer key: the project's own rules for that role, or no file (the managed defaults apply).
 
 Anything else (a runner other than `claude`, per-role tools or effort, a tracker, any merge policy
@@ -386,8 +389,11 @@ beyond `merge.target` such as squashing, PRs, or pushing, conditional reviewers)
 
 **Refusal rules.** Check every change against these before anything is written. A change that
 breaks one is refused: tell the user which rule and why, and ask again. Nothing is written for it.
-- No key outside v1. `config.json` holds only `schema` (`"factory/v1"`), `reviewers`,
+- No key outside v1. `config.json` holds only `schema` (`"factory/v1"`), `name`, `reviewers`,
   `maxRound`, `dashboard` (only `settleAfterHours`), `gate`, `merge` (only `target`), and `roles`.
+- `name`, when present, is a string of 1–64 characters (Unicode code points) with no leading or
+  trailing whitespace and no control characters; spaces, punctuation, and non-ASCII are fine.
+  No name means leaving the key out, never an empty string.
 - Each reviewer key matches `^[a-z][a-z0-9-]*$`, is unique, and is never a fixed role name
   (`spec-writer`, `builder`, `approver`). There is at least one reviewer.
 - `maxRound` is a positive integer, and `dashboard.settleAfterHours` is a positive number.
@@ -418,7 +424,8 @@ breaks one is refused: tell the user which rule and why, and ask again. Nothing 
   finding visible, marked as covered (for example, `[accepted: <the decision>]`).
 
 **Write.** Once the user agrees to the whole set, write `factory/config.json` (two-space
-JSON, keys in the order above) and the agreed role files, and delete any role file the user
+JSON: `schema` first, then `name` first among the keys after `schema` when it is set, then the
+other keys in the order above) and the agreed role files, and delete any role file the user
 agreed to drop. Write nothing else.
 
 **Doctor last.** Run `bun factory/cli.ts doctor` from the repo root.
