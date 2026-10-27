@@ -2,7 +2,7 @@
   // The toolbar (design §3, 52px): the sidebar toggle, the title with its subtitle, the Settled
   // button, and the inspector toggle. A focused project (§7) adds a "‹" back button to All
   // Projects, and the subtitle's "N waiting elsewhere". In the Mac shell it is a drag region (its
-  // buttons are not).
+  // buttons are not). The inspector toggle names the open job, or "Nothing selected".
   import type { Subtitle } from './sidebar';
 
   interface Props {
@@ -12,13 +12,14 @@
     settled: number;
     sidebarOpen: boolean;
     inspectorOpen: boolean;
+    selected: string | null; // the open job ("project / id"), or null: nothing selected
     drag: boolean;
     ontogglesidebar: () => void;
     onback: () => void;
     ontoggleinspector: () => void;
     onsettled: () => void;
   }
-  let { title, sub, focused, settled, sidebarOpen, inspectorOpen, drag, ontogglesidebar, onback, ontoggleinspector, onsettled }: Props = $props();
+  let { title, sub, focused, settled, sidebarOpen, inspectorOpen, selected, drag, ontogglesidebar, onback, ontoggleinspector, onsettled }: Props = $props();
 </script>
 
 <header class="toolbar" data-tiny-drag={drag ? '' : undefined}>
@@ -40,7 +41,7 @@
       Settled <span class="badge" aria-hidden="true">{settled}</span>
     </button>
   {/if}
-  <button class="tb icon ins" type="button" aria-controls="inspector" aria-expanded={inspectorOpen} aria-label="Inspector" title={inspectorOpen ? 'Hide the inspector' : 'Show the inspector'} onclick={ontoggleinspector}>
+  <button class="tb icon ins" type="button" aria-controls="inspector" aria-expanded={inspectorOpen} aria-label="Inspector: {selected ?? 'Nothing selected'}" title={`${inspectorOpen ? 'Hide' : 'Show'} the inspector — ${selected ?? 'Nothing selected'}`} onclick={ontoggleinspector}>
     <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" /><path d="M10 3v10" /></svg>
   </button>
 </header>

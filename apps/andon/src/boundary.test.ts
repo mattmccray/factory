@@ -1,7 +1,8 @@
 // The UI's boundaries: contract code never runs in the UI (009 AC3), the dev server stays on
-// loopback (AC4), and index.html needs nothing a strict CSP would block (AC6).
+// loopback (AC4), index.html needs nothing a strict CSP would block (AC6), and Andon never writes
+// job state: it only reads, and its actions copy a `/factory` command (026 AC5).
 import { describe, expect, test } from 'bun:test';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import config from '../vite.config';
 import { isRecord } from './job';
@@ -70,5 +71,88 @@ describe('index.html under the CSP (009 AC6)', () => {
     expect(html).not.toMatch(/\sstyle\s*=/i);
     expect(html).not.toMatch(/\son[a-z]+\s*=/i);
     expect(html).not.toMatch(/javascript:/i);
+  });
+});
+
+describe('Andon never writes job state (026 AC5)', () => {
+  const sources = [
+    join(app, 'main.ts'),
+    ...readdirSync(import.meta.dir)
+      .filter((f) => (f.endsWith('.ts') || f.endsWith('.svelte')) && !f.endsWith('.test.ts'))
+      .map((f) => join(import.meta.dir, f)),
+  ];
+  const read = (file: string): string => readFileSync(file, 'utf8');
+
+  /** The argument text of every call to `name(`, up to its balanced closing paren. */
+  function calls(text: string, name: RegExp): string[] {
+    const out: string[] = [];
+    for (const m of text.matchAll(name)) {
+      let depth = 0;
+      let end = m.index + m[0].length - 1; // at the opening paren
+      for (let i = end; i < text.length; i++) {
+        if (text[i] === '(') depth++;
+        else if (text[i] === ')' && --depth === 0) {
+          end = i;
+          break;
+        }
+      }
+      out.push(text.slice(m.index + m[0].length, end));
+    }
+    return out;
+  }
+
+  test('every fetch is a GET: no method other than GET, and no body', () => {
+    let found = 0;
+    for (const file of sources) {
+      for (const args of calls(read(file), /\bfetch\s*\(/g)) {
+        found++;
+        const method = /\bmethod\s*:\s*['"`]?(\w+)/i.exec(args)?.[1];
+        expect({ file, args, method: method?.toUpperCase() ?? 'GET', body: /\bbody\s*:/.test(args) }).toEqual({ file, args, method: 'GET', body: false });
+      }
+    }
+    expect(found).toBeGreaterThan(0); // App.svelte's fetcher
+  });
+
+  test('no other way to send: no XMLHttpRequest, sendBeacon, WebSocket, or form post', () => {
+    for (const file of sources) {
+      const text = read(file);
+      expect({ file, hit: /\bXMLHttpRequest\b|\bsendBeacon\b|\bWebSocket\b|<form\b|method=["']post/i.exec(text)?.[0] ?? null }).toEqual({ file, hit: null });
+    }
+  });
+
+  test('Fetcher stays path-only', () => {
+    const api = read(join(import.meta.dir, 'api.ts'));
+    expect(api).toContain('export type Fetcher = (path: string) => Promise<FetchResponse>;');
+    expect(read(join(import.meta.dir, 'App.svelte'))).toMatch(/const fetcher: Fetcher = \(path\) => fetch\(path, \{ cache: 'no-store' \}\);/);
+  });
+
+  test('`/factory` appears only in a command built to be copied, or as help text', () => {
+    // A command mention: `/factory` not followed by a path character (`<root>/factory/jobs` is a path, not a command).
+    const command = /\/factory(?![\w/.-])/g;
+    let built = 0;
+    for (const file of sources) {
+      const lines = read(file).split('\n');
+      for (const line of lines) {
+        if (line.match(command) === null) continue;
+        const trimmed = line.trim();
+        if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue; // a comment
+        if (file.endsWith('inspector.ts')) {
+          // inspector.ts builds the copied strings: each mention opens a template literal.
+          for (const m of line.matchAll(command)) expect({ file, line: trimmed, opensString: line[m.index - 1] === '`' }).toEqual({ file, line: trimmed, opensString: true });
+          built++;
+          continue;
+        }
+        // Elsewhere only as help text, inside <code>…</code>, never in a fetch, URL, or handler.
+        const outside = line.replace(/<code>[^<]*<\/code>/g, '');
+        expect({ file, line: trimmed, outsideCode: command.test(outside) }).toEqual({ file, line: trimmed, outsideCode: false });
+        command.lastIndex = 0;
+      }
+    }
+    expect(built).toBe(3); // approve, rework, abandon
+  });
+
+  test('the drawer and the Settled dialog are gone', () => {
+    expect(existsSync(join(import.meta.dir, 'Drawer.svelte'))).toBe(false);
+    expect(existsSync(join(import.meta.dir, 'SettledDialog.svelte'))).toBe(false);
   });
 });

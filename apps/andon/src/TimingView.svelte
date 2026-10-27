@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The drawer's "timing" view: claim and merge times, a stage bar with its legend, a stage
+  // The inspector's "timing" view: claim and merge times, a stage bar with its legend, a stage
   // table, and an agent table. The numbers come from timing.ts and tick with `now`.
   import type { TimingView } from './timing';
 
