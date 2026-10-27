@@ -1,6 +1,7 @@
 # A project name in config.json
 
-- Status: ready
+- Status: done
+- Job: 028-project-name-config (merged 873915c, 2026-10-27)
 - Sources: `packages/andon-agent/src/index.ts` (`name: basename(root)`), `docs/contract/v1.md` ("`config.json`", "Andon agent")
 - Date: 2026-10-27
 
