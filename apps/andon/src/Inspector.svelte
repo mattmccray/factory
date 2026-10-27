@@ -4,7 +4,7 @@
   // title, branch → target, the timing summary), the needs-human box with its copy-only commands,
   // the Files list, and the selected document or the timing view. Docs are re-read when the job's
   // `updated` changes; a failed read keeps what is shown. ↑ and ↓ move between files while focus
-  // is in the inspector. Andon never runs a command; the buttons only copy it.
+  // is in the inspector. The chosen file is the caller's (`file`, from the URL), reported by `onfile`. Andon never runs a command; the buttons only copy it.
   import { tick, untrack } from 'svelte';
   import { fetchDocs } from './api';
   import type { DocFile, Fetcher } from './api';
@@ -24,18 +24,19 @@
     width: number;
     now: number;
     fetcher: Fetcher;
+    file: string | null; // the chosen file; null: the latest
+    onfile: (path: string) => void;
     onclose: () => void;
     onresize: (width: number) => void;
     oncopy: (command: string) => void;
     onsheet: (kind: SheetKind) => void;
   }
-  let { item, open, width, now, fetcher, onclose, onresize, oncopy, onsheet }: Props = $props();
+  let { item, open, width, now, fetcher, file, onfile, onclose, onresize, oncopy, onsheet }: Props = $props();
 
   const key = $derived(item?.key ?? null);
   const updated = $derived(item?.job.updated ?? null);
 
   let files = $state<DocFile[]>([]);
-  let chosen = $state<string | null>(null);
   let aside = $state<HTMLElement>();
   let docPane = $state<HTMLDivElement>();
   let closeBtn = $state<HTMLButtonElement>();
@@ -49,7 +50,6 @@
     if (key !== loadedKey) {
       loadedKey = key;
       files = [];
-      chosen = null;
       if (docPane !== undefined) docPane.scrollTop = 0;
     }
     let live = true;
@@ -87,7 +87,7 @@
   const job = $derived(item?.job ?? null);
   const kind = $derived(item === null ? null : kindOf(item, now));
   const hasTiming = $derived(job !== null && job.timing !== null && job.startedAt !== null);
-  const model = $derived(fileModel(files, hasTiming, chosen));
+  const model = $derived(fileModel(files, hasTiming, file));
   const current = $derived(model.selected);
   const sum = $derived(job === null ? null : summary(job, now));
   const lands = $derived(job === null ? null : landing(job));
@@ -102,7 +102,7 @@
 
   async function choose(path: string | null, focus: boolean): Promise<void> {
     if (path === null) return;
-    chosen = path;
+    onfile(path);
     if (docPane !== undefined) docPane.scrollTop = 0;
     if (!focus) return;
     await tick();

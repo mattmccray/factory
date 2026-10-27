@@ -3,9 +3,10 @@
   // under a sticky, blurred header (each column's square, name, count badge, and role, and the
   // gutter's "N active · M idle"). One lane per project, in the order lanes.ts gives; a lane that
   // changes place slides there in 250ms. A focused project adds its Recent activity list. The
-  // hover popover is shared by every token.
+  // hover popover is shared by every token. Search (`found`, find.ts) dims what doesn't match.
   import { flip } from 'svelte/animate';
   import type { BoardJob } from './board';
+  import type { Find } from './find';
   import Lane from './Lane.svelte';
   import { age, isHuman, kindOf, popoverOf } from './lanes';
   import type { ActivityItem, Header, Lane as LaneModel } from './lanes';
@@ -20,6 +21,7 @@
     focused: boolean;
     recent: ActivityItem[]; // a focused project's recent activity
     now: number;
+    found: Find;
     selectedKey: string | null;
     fresh: ReadonlySet<string>;
     moved: ReadonlySet<string>;
@@ -27,7 +29,7 @@
     onfocus: (pid: string) => void;
     onsettled: (pid: string) => void;
   }
-  let { lanes, header, jobs, focused, recent, now, selectedKey, fresh, moved, onopen, onfocus, onsettled }: Props = $props();
+  let { lanes, header, jobs, focused, recent, now, found, selectedKey, fresh, moved, onopen, onfocus, onsettled }: Props = $props();
 
   // The popover opens after 350ms over (or focused on) a token, and closes when it leaves.
   const HOVER_MS = 350;
@@ -75,7 +77,7 @@
     </div>
     {#each lanes as lane (lane.project.id)}
       <div class="lane-slot" animate:flip={{ duration: motionMs(250) }}>
-        <Lane {lane} {focused} {selectedKey} {fresh} {moved} onopen={open} {onfocus} {onsettled} {onhover} />
+        <Lane {lane} {focused} {found} {selectedKey} {fresh} {moved} onopen={open} {onfocus} {onsettled} {onhover} />
       </div>
     {/each}
   </div>

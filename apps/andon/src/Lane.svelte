@@ -3,9 +3,11 @@
   // status dot, "N active · <oldest claim>", "N at Andon" or "N sent back", and the "N settled"
   // link), then six cells of tokens, newest first, with "+N more" past the cap and the dashed
   // ghosts of needs-human jobs. An idle lane collapses to one row in All Projects. A token that
-  // changes column slides there in 250ms (a crossfade between the cells), then highlights.
+  // changes column slides there in 250ms (a crossfade between the cells), then highlights. Under a
+  // search, a lane with no match dims to 25% whole; in a lit lane, each token that misses dims.
   import { cubicOut } from 'svelte/easing';
   import { crossfade } from 'svelte/transition';
+  import type { Find } from './find';
   import type { Lane } from './lanes';
   import { motionMs } from './motion';
   import Token from './Token.svelte';
@@ -13,6 +15,7 @@
   interface Props {
     lane: Lane;
     focused: boolean;
+    found: Find;
     selectedKey: string | null;
     fresh: ReadonlySet<string>;
     moved: ReadonlySet<string>;
@@ -21,15 +24,17 @@
     onsettled: (pid: string) => void;
     onhover: (key: string | null, el: HTMLElement | null) => void;
   }
-  let { lane, focused, selectedKey, fresh, moved, onopen, onfocus, onsettled, onhover }: Props = $props();
+  let { lane, focused, found, selectedKey, fresh, moved, onopen, onfocus, onsettled, onhover }: Props = $props();
 
   // Only a token that moves between two cells animates; one that appears or leaves has no partner and doesn't.
   const [send, receive] = crossfade({ duration: () => motionMs(250), easing: cubicOut, fallback: () => ({ duration: 0 }) });
   const name = $derived(lane.project.name);
+  const laneMiss = $derived(found.dimLanes.has(lane.project.id));
+  const miss = (key: string): boolean => found.active && !laneMiss && !found.keys.has(key);
 </script>
 
 {#if lane.idle && !focused}
-  <div class="row lane idle" role="row" aria-label="{name}, idle">
+  <div class="row lane idle" class:miss={laneMiss} role="row" aria-label="{name}, idle">
     <div class="gut" role="rowheader">
       <button class="pn" type="button" title="Focus {name}" onclick={() => onfocus(lane.project.id)}><span class="dot gray" aria-hidden="true"></span><span class="pname">{name}</span></button>
     </div>
@@ -41,7 +46,7 @@
     </div>
   </div>
 {:else}
-  <div class="row lane" role="row" data-rows={lane.rows}>
+  <div class="row lane" class:miss={laneMiss} role="row" data-rows={lane.rows}>
     <div class="gut" role="rowheader">
       <button class="pn" type="button" title={focused ? name : `Focus ${name}`} onclick={() => onfocus(lane.project.id)}>
         <span class="dot {lane.dot}" aria-hidden="true"></span><span class="pname">{name}</span>
@@ -59,14 +64,14 @@
       <div class="cell c-{cell.column}" role="cell">
         {#each cell.tokens as t (t.key)}
           <div class="slot" in:receive={{ key: t.key }} out:send={{ key: t.key }}>
-            <Token token={t} selected={selectedKey === t.key} fresh={fresh.has(t.key)} moved={moved.has(t.key)} {onopen} {onhover} />
+            <Token token={t} miss={miss(t.key)} selected={selectedKey === t.key} fresh={fresh.has(t.key)} moved={moved.has(t.key)} {onopen} {onhover} />
           </div>
         {/each}
         {#if cell.more > 0}
           <button class="more" type="button" onclick={() => onfocus(lane.project.id)}>+{cell.more} more</button>
         {/if}
         {#each cell.ghosts as g (g.key)}
-          <button class="ghost" type="button" aria-haspopup="dialog" aria-label={g.label} onclick={() => onopen(g.key)}><span class="num">{g.num}</span>{g.text}</button>
+          <button class="ghost" class:miss={miss(g.key)} type="button" aria-haspopup="dialog" aria-label={g.label} onclick={() => onopen(g.key)}><span class="num">{g.num}</span>{g.text}</button>
         {/each}
         {#if cell.tokens.length === 0 && cell.more === 0 && cell.ghosts.length === 0}<span class="none" aria-hidden="true">—</span>{/if}
       </div>
