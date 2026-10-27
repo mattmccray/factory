@@ -248,6 +248,78 @@ describe('HTTP endpoints (AC3)', () => {
   });
 });
 
+const namesOf = (data: unknown): unknown[] => {
+  const list = field(data, 'projects');
+  return Array.isArray(list) ? list.map((p) => field(p, 'name')) : [];
+};
+
+describe('project names from config.json (AC3, AC4)', () => {
+  test('GET /projects and the projects event on connect report the config name, else the basename', async () => {
+    const named = await makeProject('named', []);
+    await writeFile(join(named, 'factory', 'config.json'), JSON.stringify({ ...CONFIG, name: 'Café — Ops (v2)!' }));
+    const plain = await makeProject('plain', []);
+    const invalid = await makeProject('invalid', []);
+    await writeFile(join(invalid, 'factory', 'config.json'), JSON.stringify({ ...CONFIG, name: ' Padded' }));
+    const bare = join(tmp, 'bare');
+    await mkdir(bare);
+    for (const r of [named, plain, invalid, bare]) await addRoot(registry, r);
+
+    const { url } = await start();
+    const want = {
+      projects: [
+        { id: projectId(named), name: 'Café — Ops (v2)!', root: named },
+        { id: projectId(plain), name: 'plain', root: plain },
+        { id: projectId(invalid), name: 'invalid', root: invalid },
+        { id: projectId(bare), name: 'bare', root: bare },
+      ],
+    };
+    expect((await getJson(`${url}/projects`)).body).toEqual(want);
+    const client = await connect(url);
+    expect((await client.next((e) => e.event === 'projects')).data).toEqual(want);
+    expect(client.seen[0]?.event).toBe('projects');
+    client.close();
+  });
+
+  test('a name gained, changed, removed, or invalidated is re-sent as projects; an edit that keeps it sends none', async () => {
+    const a = await makeProject('alpha', ['001-first-job']);
+    const b = await makeProject('beta', []);
+    await addRoot(registry, a);
+    await addRoot(registry, b);
+    const config = join(a, 'factory', 'config.json');
+    const { url } = await start();
+    const client = await connect(url);
+    expect(namesOf((await client.next((e) => e.event === 'projects')).data)).toEqual(['alpha', 'beta']);
+    await settle(150);
+
+    const step = async (body: unknown, name: string, also: 'board' | 'error'): Promise<void> => {
+      const from = client.seen.length;
+      await writeFile(config, typeof body === 'string' ? body : JSON.stringify(body));
+      const since = (e: Sse): boolean => client.seen.indexOf(e) >= from;
+      const ev = await client.next((e) => since(e) && e.event === 'projects');
+      expect(namesOf(ev.data)).toEqual([name, 'beta']);
+      const list = field(ev.data, 'projects');
+      expect(Array.isArray(list) ? list.map((p) => field(p, 'id')) : null).toEqual([projectId(a), projectId(b)]);
+      await client.next((e) => since(e) && e.event === also && field(e.data, 'project') === projectId(a));
+      expect(namesOf((await getJson(`${url}/projects`)).body)).toEqual([name, 'beta']);
+    };
+    await step({ ...CONFIG, name: 'Minerva Admin' }, 'Minerva Admin', 'board'); // gained
+    await step({ ...CONFIG, name: 'Minerva Ops' }, 'Minerva Ops', 'board'); // changed
+    await step(CONFIG, 'alpha', 'board'); // removed
+    await step({ ...CONFIG, name: 'Back' }, 'Back', 'board');
+    await step({ ...CONFIG, name: 'Back', nope: 1 }, 'alpha', 'error'); // turned invalid
+
+    // An edit that leaves the resolved name unchanged: a board event, no projects event.
+    await step({ ...CONFIG, name: 'Same' }, 'Same', 'board');
+    await settle(150);
+    const from = client.seen.length;
+    await writeFile(config, JSON.stringify({ ...CONFIG, maxRound: 3, name: 'Same' }));
+    await client.next((e) => client.seen.indexOf(e) >= from && e.event === 'board' && field(field(e.data, 'config'), 'maxRound') === 3);
+    await settle(300);
+    expect(client.seen.slice(from).some((e) => e.event === 'projects')).toBe(false);
+    client.close();
+  });
+});
+
 describe('DNS-rebinding guard', () => {
   test('a foreign Host or Origin is a 403 on every endpoint, including /events', async () => {
     const a = await makeProject('alpha', ['001-first-job']);

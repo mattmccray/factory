@@ -1,7 +1,7 @@
 // The Andon agent (docs/contract/v1.md "Andon agent"): one Bun daemon per machine that reads every
 // project listed in the Andon registry through `@factory/contract` and serves it, read-only, on
 // loopback:
-//   GET /projects                        → { projects: [{ id, name, root }] }
+//   GET /projects                        → { projects: [{ id, name, root }] } (name: config.json's `name`, else basename(root))
 //   GET /projects/<pid>/board            → { jobs, config } (a bad config is a 500 carrying the reason)
 //   GET /projects/<pid>/jobs/<id>/docs   → { files: [{ path, text }] }, that job's markdown in reading order
 //   GET /events                          → text/event-stream of `projects`, `board`, and `error` events
@@ -9,6 +9,8 @@
 // Changes are found with fs.watch, never by polling: one recursive watch on each project's
 // `factory/jobs/`, one non-recursive watch on its `factory/` (for `config.json`), and one on the
 // registry file's directory. `.worktrees/` and `.lock/` are never watched or served.
+// A project's name is resolved from its config.json on every GET /projects and on connect, and
+// `projects` is re-sent whenever a resolved name changes (or the registry's list does).
 // The board and docs readers are ported from the vendored `factory/serve.ts` (not imported).
 import { createHash } from 'node:crypto';
 import { watch } from 'node:fs';
@@ -33,7 +35,7 @@ export interface Agent {
 
 export interface ProjectInfo {
   id: string; // first 12 hex characters of sha256(root)
-  name: string; // basename(root)
+  name: string; // config.json's `name` when the config is valid and sets it, else basename(root)
   root: string; // absolute repo root
 }
 
@@ -78,6 +80,16 @@ async function readJob(p: Project, id: string): Promise<Job | undefined> {
 // Read per request, parsed strictly, so an edit to config.json shows up on the next read.
 async function readConfig(p: Project): Promise<Config> {
   return parseConfig(JSON.parse(await readFile(join(p.factory, 'config.json'), 'utf8')));
+}
+
+// The project's display name: the config's `name` when config.json is valid and sets one, else
+// the root's basename (no factory/, no config.json, unreadable, or invalid).
+async function resolveName(p: Project): Promise<string> {
+  try {
+    return (await readConfig(p)).name ?? basename(p.info.root);
+  } catch {
+    return basename(p.info.root);
+  }
 }
 
 async function board(p: Project): Promise<{ jobs: Job[]; config: Config }> {
@@ -167,7 +179,31 @@ export async function startAgent(opts: AgentOptions): Promise<Agent> {
   let projects = new Map<string, Project>();
   let stopped = false;
 
-  const list = (): ProjectInfo[] => [...projects.values()].map((p) => p.info);
+  // Resolves every project's name and returns the list. `info.name` is the name connected clients
+  // were last sent: when a resolved name differs from it (or `force`, for a registry change), the
+  // list is sent to every connected client as a `projects` event. Runs one at a time, so clients
+  // always end on the latest list.
+  let announcing: Promise<unknown> = Promise.resolve();
+  function announce(force: boolean): Promise<ProjectInfo[]> {
+    const run = announcing.then(async () => {
+      const open = [...projects.values()];
+      const names = await Promise.all(open.map(resolveName));
+      let changed = force;
+      const current = open.filter((p, i) => {
+        const name = names[i] ?? basename(p.info.root);
+        if (name !== p.info.name) {
+          p.info.name = name;
+          changed = true;
+        }
+        return !p.closed;
+      });
+      const list = current.map((p) => ({ ...p.info }));
+      if (changed) broadcast('projects', { projects: list });
+      return list;
+    });
+    announcing = run.catch(() => undefined);
+    return run;
+  }
 
   function broadcast(event: string, data: unknown): void {
     const bytes = frame(event, data);
@@ -188,6 +224,8 @@ export async function startAgent(opts: AgentOptions): Promise<Agent> {
     } catch (e) {
       if (!p.closed) broadcast('error', { project: p.info.id, reason: `config.json: ${message(e)}` });
     }
+    // A config.json edit may have changed the project's resolved name.
+    if (!p.closed) await announce(false);
   }
 
   // One `board` event per project per burst: the first change starts the window, the rest join it.
@@ -272,7 +310,7 @@ export async function startAgent(opts: AgentOptions): Promise<Agent> {
     }
     for (const [id, p] of projects) if (!next.has(id)) closeProject(p);
     projects = next;
-    if ([...projects.keys()].join(',') !== before) broadcast('projects', { projects: list() });
+    if ([...projects.keys()].join(',') !== before) await announce(true);
   }
 
   let reloading: Promise<void> = Promise.resolve();
@@ -301,7 +339,9 @@ export async function startAgent(opts: AgentOptions): Promise<Agent> {
   }
   await reload();
 
-  function events(req: Request): Response {
+  // The connecting client gets the freshly resolved list (any change is first sent to the others).
+  async function events(req: Request): Promise<Response> {
+    const list = await announce(false);
     let self: Client | null = null;
     const drop = (): void => {
       if (self === null) return;
@@ -316,7 +356,7 @@ export async function startAgent(opts: AgentOptions): Promise<Agent> {
       start(c) {
         self = c;
         clients.add(c);
-        c.enqueue(frame('projects', { projects: list() }));
+        c.enqueue(frame('projects', { projects: list }));
       },
       cancel() {
         if (self !== null) clients.delete(self);
@@ -341,7 +381,7 @@ export async function startAgent(opts: AgentOptions): Promise<Agent> {
     if (!trusted(req)) return text('Forbidden', 403);
     if (req.method !== 'GET') return text('Method not allowed', 405);
     const { pathname } = new URL(req.url);
-    if (pathname === '/projects') return json({ projects: list() });
+    if (pathname === '/projects') return json({ projects: await announce(false) });
     if (pathname === '/events') return events(req);
 
     const b = pathname.match(/^\/projects\/([^/]+)\/board$/);

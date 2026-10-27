@@ -1,4 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { find } from './find';
+import { buildLanes } from './lanes';
+import { ALL, boardJobs } from './projects';
+import { sidebarModel, subtitle, title } from './sidebar';
 import { applyEvent, applyFetched, emptyState, revOf } from './state';
 import type { UiState } from './state';
 
@@ -73,5 +77,28 @@ describe('fetched boards', () => {
     expect(applyFetched(newer, P1.id, rev, fetched)).toBe(newer);
     expect(applyFetched(s, P1.id, rev, fetched).boards[P1.id]?.jobs.map((j) => j.id)).toEqual(['009-old']);
     expect(applyFetched(s, P1.id, rev, { ok: false, reason: 'config.json: bad' }).boards[P1.id]?.error).toBe('config.json: bad');
+  });
+});
+
+describe('a renamed project (AC5)', () => {
+  test('a projects event with a new name and the same id renames it everywhere and keeps its board', () => {
+    const before = twoProjects();
+    const renamed = { ...P1, name: 'Minerva Admin' };
+    const s = applyEvent(before, 'projects', { projects: [renamed, P2] });
+    expect(s.projects).toEqual([renamed, P2]);
+    expect(s.boards[P1.id]).toBe(before.boards[P1.id]);
+
+    expect(sidebarModel(s, P1.id).projects.find((p) => p.id === P1.id)?.name).toBe('Minerva Admin');
+    expect(title(s, P1.id)).toBe('Minerva Admin');
+    expect(subtitle(s, P1.id, 0, 0).scope).toBe('Minerva Admin');
+
+    const jobs = boardJobs(s, ALL);
+    expect(jobs.filter((b) => b.project.id === P1.id).map((b) => b.project.name)).toEqual(['Minerva Admin']);
+    const lanes = buildLanes(s.projects, jobs, Date.now(), false);
+    expect(lanes.map((l) => l.project)).toEqual([{ id: P1.id, name: 'Minerva Admin' }, { id: P2.id, name: 'two' }]);
+    expect(lanes[0]?.cells.flatMap((c) => c.tokens).length).toBe(1);
+
+    expect([...find(s.projects, jobs, 'minerva admin', Date.now(), false).keys]).toEqual([`${P1.id}/001-a`]);
+    expect([...find(s.projects, jobs, 'one', Date.now(), false).keys]).toEqual([]);
   });
 });

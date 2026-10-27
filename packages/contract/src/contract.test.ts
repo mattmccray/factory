@@ -22,6 +22,32 @@ describe('parseConfig', () => {
   });
 });
 
+describe('parseConfig: name', () => {
+  test('accepts a display name with spaces, punctuation, and non-ASCII, up to 64 code points', () => {
+    const long = 'é'.repeat(63) + '😀'; // 64 code points, 65 UTF-16 units
+    for (const name of ['Minerva Admin', 'Café — Ops (v2)!', long]) {
+      expect(parseConfig({ ...base, name }).name).toBe(name);
+    }
+  });
+
+  test('absent: the result has no name', () => {
+    expect('name' in parseConfig(base)).toBe(false);
+  });
+
+  test('rejects an empty, overlong, padded, control-character, or non-string name with a one-line reason naming name', () => {
+    for (const name of ['', 'x'.repeat(65), ' Lead', 'Trail ', 'a\nb', 'a\u0000b', 'a\u007fb', 'a\u0085b', 42, null]) {
+      let reason = '';
+      try {
+        parseConfig({ ...base, name });
+      } catch (e) {
+        reason = e instanceof Error ? e.message : String(e);
+      }
+      expect(reason).toMatch(/\bname\b/);
+      expect(reason).not.toContain('\n');
+    }
+  });
+});
+
 describe('parseConfig: gate', () => {
   test('accepts an ordered gate, and a config without one', () => {
     expect(parseConfig({ ...base, gate: ['bun test', 'tsc --noEmit'] }).gate).toEqual(['bun test', 'tsc --noEmit']);

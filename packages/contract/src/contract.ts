@@ -39,6 +39,7 @@ export type FactoryEvent = EventInput & { ts: string };
 
 export interface Config {
   schema: 'factory/v1';
+  name?: string; // the project's display name (Andon); absent means the root's basename
   reviewers: string[];
   maxRound: number;
   dashboard: { settleAfterHours: number };
@@ -127,7 +128,7 @@ function noExtraKeys(obj: Record<string, unknown>, allowed: readonly string[], w
 
 export function parseConfig(raw: unknown): Config {
   if (!isRecord(raw)) throw new Error('config: must be a JSON object');
-  noExtraKeys(raw, ['schema', 'reviewers', 'maxRound', 'dashboard', 'gate', 'roles', 'merge'], 'config');
+  noExtraKeys(raw, ['schema', 'name', 'reviewers', 'maxRound', 'dashboard', 'gate', 'roles', 'merge'], 'config');
   if (raw.schema !== SCHEMA) throw new Error(`config: schema must be "${SCHEMA}"`);
   const { reviewers, maxRound, dashboard } = raw;
   if (!Array.isArray(reviewers) || reviewers.length === 0) throw new Error('config: reviewers must be a non-empty array');
@@ -144,6 +145,7 @@ export function parseConfig(raw: unknown): Config {
   const settle = dashboard.settleAfterHours;
   if (typeof settle !== 'number' || !(settle > 0)) throw new Error('config: dashboard.settleAfterHours must be a positive number');
   const config: Config = { schema: SCHEMA, reviewers: keys, maxRound, dashboard: { settleAfterHours: settle } };
+  if (raw.name !== undefined) config.name = parseName(raw.name);
   if (raw.gate !== undefined) config.gate = parseGate(raw.gate);
   if (raw.roles !== undefined) config.roles = parseRoles(raw.roles, keys);
   if (raw.merge !== undefined) config.merge = parseMerge(raw.merge);
@@ -163,6 +165,23 @@ function parseMerge(merge: unknown): MergePolicy {
     throw new Error(`config: merge.target ${JSON.stringify(target)} is not an allowed branch name (want ${BRANCH_PATTERN.source}, no '..', no '.lock' suffix)`);
   }
   return { target };
+}
+
+/** The longest project `name`, in Unicode code points. */
+export const NAME_MAX = 64;
+// Any Unicode Cc code point: U+0000–U+001F and U+007F–U+009F.
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/u;
+
+// Optional `name`: a display label, 1–NAME_MAX code points, no leading or trailing whitespace, no
+// control characters. The reason never echoes the value, so it stays one line.
+function parseName(name: unknown): string {
+  if (typeof name !== 'string') throw new Error('config: name must be a string');
+  const length = [...name].length;
+  if (length === 0) throw new Error('config: name must not be empty');
+  if (length > NAME_MAX) throw new Error(`config: name is ${length} characters (at most ${NAME_MAX})`);
+  if (CONTROL.test(name)) throw new Error('config: name must not contain control characters');
+  if (name.trim() !== name) throw new Error('config: name must not have leading or trailing whitespace');
+  return name;
 }
 
 // Optional `roles`: role name (a fixed role or a configured reviewer key) -> { runner, model? }.
