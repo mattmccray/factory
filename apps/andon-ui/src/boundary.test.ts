@@ -120,10 +120,23 @@ describe('Andon never writes job state (026 AC5)', () => {
     }
   });
 
-  test("the page never calls the Mac app's backend (032): no tiny.api.call", () => {
+  test("the page calls the Mac app's backend in one place only, with the one named method (032, 033)", () => {
+    // Every mention of Tiny's `api.call` (or a `'call'` key) across the page's sources.
+    const hits: { file: string; hit: string }[] = [];
     for (const file of sources) {
-      const text = read(file);
-      expect({ file, hit: /\bapi\s*\.\s*call\b|['"]call['"]/.exec(text)?.[0] ?? null }).toEqual({ file, hit: null });
+      for (const m of read(file).matchAll(/\bapi\s*\.\s*call\b|['"]call['"]|\[\s*['"`]call/g)) hits.push({ file: file.slice(import.meta.dir.length + 1), hit: m[0] });
+    }
+    expect(hits).toEqual([{ file: 'projectmenu.ts', hit: 'api.call' }]);
+    const text = read(join(import.meta.dir, 'projectmenu.ts'));
+    // The one method name, fixed; the one call site passes it and a `{ project }` and nothing else.
+    expect(text).toContain("export const PROJECT_MENU_METHOD = 'projectMenu';");
+    const applies = [...text.matchAll(/Reflect\.apply\(([^;]*)\);/g)].map((m) => m[1]);
+    expect(applies).toEqual(['call, api, [PROJECT_MENU_METHOD, { project }]', 'el.getAttribute, el, [PROJECT_MENU_ATTR]']);
+    // No other file reaches Tiny's api object: only sidebar.ts's push subscriber reads `api.on`.
+    for (const file of sources) {
+      const name = file.slice(import.meta.dir.length + 1);
+      if (name === 'projectmenu.ts' || name === 'sidebar.ts') continue;
+      expect({ file: name, hit: /\bhost\.api\b|\btiny\.api\b|\bapi\.on\b/.exec(read(file))?.[0] ?? null }).toEqual({ file: name, hit: null });
     }
   });
 

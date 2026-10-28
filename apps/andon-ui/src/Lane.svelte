@@ -5,6 +5,7 @@
   // ghosts of needs-human jobs. An idle lane collapses to one row in All Projects. A token that
   // changes column slides there in 250ms (a crossfade between the cells), then highlights. Under a
   // search, a lane with no match dims to 25% whole; in a lit lane, each token that misses dims.
+  // The gutter carries the project's id for the Mac app's right-click menu (projectmenu.ts).
   import { cubicOut } from 'svelte/easing';
   import { crossfade } from 'svelte/transition';
   import type { Find } from './find';
@@ -35,7 +36,7 @@
 
 {#if lane.idle && !focused}
   <div class="row lane idle" class:miss={laneMiss} role="row" aria-label="{name}, idle">
-    <div class="gut" role="rowheader">
+    <div class="gut" role="rowheader" data-project-menu={lane.project.id}>
       <button class="pn" type="button" title="Focus {name}" onclick={() => onfocus(lane.project.id)}><span class="dot gray" aria-hidden="true"></span><span class="pname">{name}</span></button>
     </div>
     <div class="span" role="cell">
@@ -47,7 +48,7 @@
   </div>
 {:else}
   <div class="row lane" class:miss={laneMiss} role="row" data-rows={lane.rows}>
-    <div class="gut" role="rowheader">
+    <div class="gut" role="rowheader" data-project-menu={lane.project.id}>
       <button class="pn" type="button" title={focused ? name : `Focus ${name}`} onclick={() => onfocus(lane.project.id)}>
         <span class="dot {lane.dot}" aria-hidden="true"></span><span class="pname">{name}</span>
       </button>

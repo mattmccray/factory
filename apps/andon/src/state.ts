@@ -13,6 +13,8 @@ export interface AppJob {
 export interface AppProject {
   id: string;
   name: string;
+  /** The project's folder, for its right-click menu; null when the feed gives no non-empty string. */
+  root: string | null;
 }
 
 export interface AppBoard {
@@ -43,11 +45,14 @@ export function toJobs(v: unknown): AppJob[] {
   return out;
 }
 
-/** The project list of a `projects` payload, or null when it isn't one. */
+/** The project list of a `projects` payload, or null when it isn't one. A project without a
+ *  non-empty string `root` is kept, with `root: null` (it gets no right-click menu). */
 export function toProjects(v: unknown): AppProject[] | null {
   if (!isRecord(v) || !Array.isArray(v.projects)) return null;
   const out: AppProject[] = [];
-  for (const p of v.projects) if (isRecord(p) && typeof p.id === 'string') out.push({ id: p.id, name: str(p.name) });
+  for (const p of v.projects) {
+    if (isRecord(p) && typeof p.id === 'string') out.push({ id: p.id, name: str(p.name), root: typeof p.root === 'string' && p.root !== '' ? p.root : null });
+  }
   return out;
 }
 

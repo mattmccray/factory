@@ -18,6 +18,7 @@
   import { activity, buildLanes, headerOf, orderLanes } from './lanes';
   import type { LaneOrder } from './lanes';
   import Lines from './Lines.svelte';
+  import { menuArmer, projectMenuCaller, swallowsClick } from './projectmenu';
   import { entryOf, formatHash, historyStep, initialView, jobKey, readEntry, viewKey, viewOf } from './route';
   import type { JobRef, View } from './route';
   import { startLive } from './live';
@@ -82,7 +83,33 @@
       const hidden = statusBarHidden(data);
       if (hidden !== null) statusBarOff = hidden;
     });
+    // The Mac app's right-click menu on a project row or gutter: armed for the project under the
+    // pointer, and a control-click there doesn't click through (projectmenu.ts). A browser: nothing.
+    const ask = projectMenuCaller(mode, Reflect.get(window, 'tiny'));
+    const arm = ask === null ? null : menuArmer(mode, ask);
+    const onpointerover = (e: PointerEvent): void => arm?.point(e.target);
+    const onpointerout = (e: PointerEvent): void => {
+      if (e.relatedTarget === null) arm?.leave();
+    };
+    const onmousedown = (e: MouseEvent): void => arm?.press(e.target, e);
+    const onclickcapture = (e: MouseEvent): void => {
+      if (arm === null || !swallowsClick(mode, e.target, e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    if (arm !== null) {
+      window.addEventListener('pointerover', onpointerover);
+      window.addEventListener('pointerout', onpointerout);
+      window.addEventListener('mousedown', onmousedown, true);
+      window.addEventListener('click', onclickcapture, true);
+    }
     return () => {
+      if (arm !== null) {
+        window.removeEventListener('pointerover', onpointerover);
+        window.removeEventListener('pointerout', onpointerout);
+        window.removeEventListener('mousedown', onmousedown, true);
+        window.removeEventListener('click', onclickcapture, true);
+      }
       offStatusBar?.();
       live.stop();
       clearInterval(timer);
