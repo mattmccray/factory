@@ -1,8 +1,9 @@
-// The inspector's pure model (design §8, §9): the copy-only commands, the verdict tones, the
+// The inspector's pure model (design §8, §9): the needs-human commands, the verdict tones, the
 // inspector's width, the sidebar's auto-hide rule, the file list (today's groupsOf() and pickFile()
 // with a timing row and the current round), and the Settled sheet's rows. Andon never runs a
-// command: these strings are only put on the clipboard for the person to run. Nothing here
-// touches the DOM; Inspector.svelte, CommandSheet.svelte, and SettledSheet.svelte lay it out.
+// command itself: these strings go on the clipboard for the person to run and, in the Mac app, can
+// be handed to T3 Code (handoff.ts; the Mac app builds the same string itself, and a test pins that
+// they agree). Nothing here touches the DOM; Inspector.svelte, CommandSheet.svelte, and SettledSheet.svelte lay it out.
 import type { DocFile } from './api';
 import { mergedAt } from './board';
 import type { BoardJob } from './board';

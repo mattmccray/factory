@@ -23,7 +23,7 @@ import {
   verdictTone,
 } from './inspector';
 
-describe('the copy-only commands (AC1)', () => {
+describe('the needs-human commands (AC1)', () => {
   const id = '040-tag-migration';
   const messy = '  drop the "tags" column\\after backfill\nthen re-run\r\nthe gate  ';
   const escaped = '"drop the \\"tags\\" column\\\\after backfill then re-run the gate"';

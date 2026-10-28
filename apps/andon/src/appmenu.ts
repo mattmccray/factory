@@ -97,7 +97,7 @@ export const statusBarPayload = (hidden: boolean): { hidden: boolean } => ({ hid
 export const SETTINGS_WINDOW_ID = 'settings';
 export const SETTINGS_TITLE = 'Settings';
 /** Fixed: the window opens at this size and can't be resized. */
-export const SETTINGS_SIZE = '480x260';
+export const SETTINGS_SIZE = '480x360';
 /** The query that tells the page it is the Settings view (in the Mac app). */
 export const SETTINGS_QUERY = '?shell=mac&view=settings';
 
