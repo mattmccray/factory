@@ -24,8 +24,9 @@ import type { Http } from './http';
 import type { DockLook } from './lantern';
 import { startApp } from './app';
 import type { App } from './app';
-import { oneAtATime, trayClickAction } from './trayclick';
+import { bringBackAction, oneAtATime, trayClickAction } from './trayclick';
 import { SETTINGS_WINDOW_ID, STATUS_BAR_EVENT, STATUS_BAR_ID, STATUS_BAR_KEY, appMenu, menuAction, settingsWindow, statusBarLabel, statusBarPayload, storedHidden } from './appmenu';
+import type { SettingsWindowOptions } from './appmenu';
 import { DEFAULT_HANDOFF_MODE, T3_HANDOFF_KEY, fromSettingsWindow, settingChange, settingsSnapshot, storedMode } from './settings';
 import type { HandoffMode, Settings } from './settings';
 import { draftFailureText, draftLink, fromMainWindow, githubRepo, handoffRequest, originArgv, sendArgv, sendFailureText } from './handoff';
@@ -39,8 +40,8 @@ import type { Availability, MenuProject, ProjectAction } from './projectmenu';
 // picks the members the Mac app calls, so its whole dependence on Tiny is listed here, in one place,
 // and the test fakes stay small.
 
-/** The fields of the main window's state the tray click reads. */
-export type MacWinState = Pick<TinyWinState, 'minimized' | 'fullscreen' | 'allSpaces'>;
+/** The fields of the main window's state the tray click and Settings…'s bring-back step read. */
+export type MacWinState = Pick<TinyWinState, 'minimized' | 'fullscreen' | 'allSpaces' | 'visible'>;
 /** The window ops the adapter calls. `getState` resolves null when there is no state to give. */
 export type MacWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpaces' | 'eval' | 'minimize' | 'zoom' | 'setResizable'> & {
   getState(): Promise<MacWinState | null>;
@@ -66,6 +67,8 @@ export type MacTraySpec = Parameters<MacApp['tray']['set']>[0];
 /** Compile-time proof that the app Tiny passes in is a MacApp. */
 type Holds<T extends true> = T;
 type TinyAppIsMacApp = Holds<TinyApp extends MacApp ? true : false>;
+/** Compile-time proof that the Settings window's options are options Tiny's `win.open` takes. */
+type SettingsOptionsOpen = Holds<SettingsWindowOptions extends TinyOpenWindowOptions ? true : false>;
 
 // Fixed at build time by build.ts (`Bun.build` `define`).
 declare const __ANDON_REPO__: string;
@@ -290,9 +293,32 @@ export async function onTray(id: string | null, app: MacApp): Promise<void> {
   }
 }
 
-/** Settings…: open the Settings window, or, when it is already open, show and focus it. One click at a
- *  time, so a quick second click can't open a second window while the first is still opening. */
+/** Settings…'s first step: bring the main window back, restoring it if minimized and showing it if
+ *  hidden, so its child, the Settings window, is visible too. No state: show it as is. A step that
+ *  throws is logged, and Settings… still goes on. */
+async function bringBackMain(app: MacApp): Promise<void> {
+  const main = app.window('main');
+  let state: MacWinState | null;
+  try {
+    state = await main.getState();
+  } catch (err) {
+    console.log(`andon: window state unavailable (${String(err)}); showing the window as is`);
+    state = null;
+  }
+  const action = bringBackAction(state);
+  try {
+    if (action.restore) main.restore();
+    if (action.show) main.show();
+  } catch (err) {
+    console.log(`andon: could not bring the main window back (${String(err)})`);
+  }
+}
+
+/** Settings…: bring the main window back, then open the Settings window (a child of it), or, when it
+ *  is already open, show and focus it. One click at a time, so a quick second click can't open a
+ *  second window while the first is still opening. */
 const openSettings = oneAtATime(async (app: MacApp): Promise<void> => {
+  await bringBackMain(app);
   let open: string[];
   try {
     open = await app.windows();
@@ -301,7 +327,7 @@ const openSettings = oneAtATime(async (app: MacApp): Promise<void> => {
     open = [];
   }
   if (open.includes(SETTINGS_WINDOW_ID)) {
-    app.window(SETTINGS_WINDOW_ID).show(); // brings it to the front and focuses it
+    app.window(SETTINGS_WINDOW_ID).show(); // brings it to the front, above the main window, and focuses it
     return;
   }
   app.win.open(SETTINGS_WINDOW_ID, settingsWindow(servicePort));

@@ -1,7 +1,7 @@
 // The Mac app's menu bar: Andon (Settings…, which opens the Settings window), the stock Edit menu,
 // View (the status bar toggle), Window (Minimize, Zoom, Andon), and Help (the project on GitHub).
 // The menu spec, its ids, the label for a status bar state, what a click does, how the stored status
-// bar choice reads, and the Settings window's id, title, size, and page all live here,
+// bar choice reads, and the Settings window's id, title, size, page, and chrome all live here,
 // runtime-neutral; backend.ts sets the menu, opens the window, and carries out the actions.
 import { serviceUrl } from './autostart';
 
@@ -104,12 +104,26 @@ export const SETTINGS_QUERY = '?shell=mac&view=settings';
 /** The Settings page: the same index.html the service serves at `/`, in its settings view. */
 export const settingsUrl = (port: number): string => `${serviceUrl(port)}/${SETTINGS_QUERY}`;
 
-/** How the Settings window opens: a standard titled frame (not the main window's frameless chrome),
- *  the settings page on the service's port, at its fixed size. */
-export const settingsWindow = (port: number): { page: string; title: string; size: string; minSize: string; chrome: { frame: true } } => ({
+/** The Settings window's options: what `settingsWindow` returns. */
+export interface SettingsWindowOptions {
+  page: string;
+  title: string;
+  size: string;
+  minSize: string;
+  chrome: { frame: true; windowControls: ['close'] };
+  parent: 'main';
+}
+
+/** How the Settings window opens: a standard titled frame (not the main window's frameless chrome)
+ *  with only the close button (a fixed-size settings window has nothing to minimize or zoom), the
+ *  settings page on the service's port, at its fixed size, as a child of the main window: it stays
+ *  above the board and moves, hides, and minimizes with it, while the board stays usable (not modal).
+ *  `parent` is open-time only in Tiny, so it is here, not set afterward. */
+export const settingsWindow = (port: number): SettingsWindowOptions => ({
   page: settingsUrl(port),
   title: SETTINGS_TITLE,
   size: SETTINGS_SIZE,
   minSize: SETTINGS_SIZE,
-  chrome: { frame: true },
+  chrome: { frame: true, windowControls: ['close'] },
+  parent: 'main',
 });

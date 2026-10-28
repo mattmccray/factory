@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { oneAtATime, trayClickAction } from './trayclick';
+import { bringBackAction, oneAtATime, trayClickAction } from './trayclick';
 
 const ALL = [true, false];
 /** Every combination of the visibility flags Tiny reports, for an ordinary window. */
@@ -46,4 +46,15 @@ test('rework 1: a failed run does not jam later clicks', async () => {
   await expect(run()).rejects.toThrow('boom');
   await expect(run()).rejects.toThrow('boom');
   expect(runs).toBe(2);
+});
+
+test('037: Settings… brings the main window back: a minimized one is restored and shown, a hidden one shown, a visible one left alone', () => {
+  expect(bringBackAction({ minimized: false, visible: true })).toEqual({ restore: false, show: false });
+  expect(bringBackAction({ minimized: false, visible: false })).toEqual({ restore: false, show: true });
+  expect(bringBackAction({ minimized: true, visible: true })).toEqual({ restore: true, show: true });
+  expect(bringBackAction({ minimized: true, visible: false })).toEqual({ restore: true, show: true });
+});
+
+test('037: with no state, Settings… treats the main window as hidden: shown, not restored', () => {
+  expect(bringBackAction(null)).toEqual({ restore: false, show: true });
 });
