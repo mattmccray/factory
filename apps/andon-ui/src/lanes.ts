@@ -55,7 +55,7 @@ export function kindOf(b: BoardJob, now: number): Kind {
 /** The short sha of a merged job: its `note` without the `merged ` prefix the contract writes. */
 export const shaOf = (j: Job): string => (j.note.startsWith('merged ') ? j.note.slice('merged '.length).trim() : '');
 
-/** A token's line-2 tag (design §6), or null for the kinds that show none. */
+/** A token's line-2 tag (design §6), or null for the kinds that show none (a merged token is one line: no tag). */
 export function tagOf(j: Job, kind: Kind): string | null {
   switch (kind) {
     case 'needs-human':
@@ -70,13 +70,10 @@ export function tagOf(j: Job, kind: Kind): string | null {
       return 'Drafting spec';
     case 'claimed':
       return 'Claimed';
-    case 'merged':
-    case 'settled':
-      return shaOf(j) || 'Merged';
     case 'abandoned':
       return 'Abandoned';
     default:
-      return null; // reviewing, approve
+      return null; // reviewing, approve, merged, settled
   }
 }
 
@@ -205,6 +202,16 @@ export function age(ms: number): string {
   return `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`;
 }
 
+/** The largest unit of `age` only, floored: 42s, 45m, 1h (for 1h 59m), 2d (for 2d 23h). A merged token's time. */
+export function shortAge(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60);
+  if (s < 60) return `${s}s`;
+  if (m < 60) return `${m}m`;
+  if (m < 1440) return `${Math.floor(m / 60)}h`;
+  return `${Math.floor(m / 1440)}d`;
+}
+
 export interface Chip {
   key: string; // the reviewer key
   label: string; // two letters
@@ -228,8 +235,8 @@ export interface TokenModel {
   title: string;
   tag: string | null;
   chips: Chip[]; // the current round's verdicts, in project reviewer order
-  round: string | null; // "R1/2"
-  time: string | null; // time in stage, or "<ago> ago" for a merged job; null for a legacy job
+  round: string | null; // "R1/2"; null for a merged or settled job (one line)
+  time: string | null; // time in stage, or the largest-unit time since the merge ("1h") for a merged or settled job; null for a legacy job
   note: string | null; // line 3: needs-human and merge-failed only
   branch: string;
   dimmed: boolean; // a settled job in a focused Merged cell
@@ -241,6 +248,7 @@ const CHIPPED = new Set<Kind>(['reviewing', 'review-failed', 'approve', 'build']
 /** The line-1 title: the job's title, or (until the spec names it) its id without the number. */
 const titleOf = (j: Job): string => (j.title === j.id ? j.id.replace(/^\d+-/, '') : j.title);
 
+/** The popover's time: time in stage, or the full "<age> ago" since the merge. */
 const sinceText = (j: Job, kind: Kind, now: number): string | null => {
   if (kind === 'merged' || kind === 'settled') {
     const t = mergedAt(j);
@@ -249,9 +257,18 @@ const sinceText = (j: Job, kind: Kind, now: number): string | null => {
   return j.stageEnteredAt === null ? null : age(now - time(j.stageEnteredAt));
 };
 
+/** The token's time: time in stage, or for a merged or settled job the largest unit since the merge ("1h", no "ago"). */
+const tokenTime = (j: Job, kind: Kind, now: number): string | null => {
+  if (kind !== 'merged' && kind !== 'settled') return sinceText(j, kind, now);
+  const t = mergedAt(j);
+  return t > 0 ? shortAge(now - t) : null;
+};
+
+/** One job's token. A merged or settled token is one line (number, title, time): no tag, chips, round, or note. */
 export function tokenOf(b: BoardJob, now: number, dimmed = false): TokenModel {
   const j = b.job;
   const kind = kindOf(b, now);
+  const merged = kind === 'merged' || kind === 'settled';
   return {
     key: b.key,
     kind,
@@ -261,8 +278,8 @@ export function tokenOf(b: BoardJob, now: number, dimmed = false): TokenModel {
     title: titleOf(j),
     tag: tagOf(j, kind),
     chips: CHIPPED.has(kind) && j.round > 0 ? chipsOf(j.reviews, b.reviewers, kind === 'reviewing') : [],
-    round: j.round > 0 ? `R${j.round}/${j.maxRound ?? 2}` : null,
-    time: sinceText(j, kind, now),
+    round: !merged && j.round > 0 ? `R${j.round}/${j.maxRound ?? 2}` : null,
+    time: tokenTime(j, kind, now),
     note: isHuman(kind) && j.note !== '' ? j.note : null,
     branch: j.branch || `factory/${j.id}`,
     dimmed,

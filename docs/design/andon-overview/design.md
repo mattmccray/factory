@@ -175,7 +175,8 @@ different stations need one token's height, and four jobs all in Build need four
 
 ## 6. Tokens (Job B)
 
-A token is a 6px-radius button, 2–3 lines tall, with a 3px state-colored bar on its left edge.
+A token is a 6px-radius button, 2–3 lines tall (a merged token is one), with a 3px state-colored
+bar on its left edge.
 
 - **Line 1:** the job number in mono (`040`), then the title, both ellipsized.
 - **Line 2:** a state tag, then reviewer verdict chips for the current round, then `R1/2`, then
@@ -191,7 +192,7 @@ A token is a 6px-radius button, 2–3 lines tall, with a 3px state-colored bar o
 | build | indigo bar | "Building" (or "Rework → R2") | an indeterminate 2px progress line on the bottom edge |
 | spec | teal bar, faint diagonal hatch | "Drafting spec", teal | |
 | claimed | dashed gray border, no fill | "Claimed", italic | the title is the id until the spec names it |
-| merged | green border, green-tinted fill | "✓ 3c9e01a" (short sha), green | "1h 4m ago" instead of the time in stage |
+| merged | green border, green-tinted fill | none: **one line** | line 1 only: the number, the title (ellipsized), and the time since the merge in its largest unit (`42s`, `45m`, `1h`, `2d`; no "ago"), right-aligned, never wrapping. No sha, ✓, chips, round, or branch: the sha, the round, and the full "1h 4m ago" are in the hover and the inspector. Settled tokens (dimmed) are the same |
 
 **Verdict chips** are 14px mono, with two-letter abbreviations in the project's reviewer order
 (`security` se, `contract` ct, `code` cd, `ui` ui, `ux` ux; otherwise the first two letters).
@@ -211,7 +212,8 @@ motion is disabled under `prefers-reduced-motion`.
 Selecting a project (in the sidebar, by clicking its gutter name, or with `#project=`) shows only
 that lane, taller, with **no cap**: every active job is shown, and the lane grows to fit its
 fullest cell.
-- tokens show full titles (wrapping to 2 lines) and the branch;
+- tokens show full titles (wrapping to 2 lines) and the branch, except merged and settled
+  tokens: they stay one line (the title may wrap to 2 lines, the time beside it) with no branch;
 - Merged also lists that project's settled jobs, dimmed;
 - below the lane is a **Recent activity** list of the last 14 events: time, job number, what
   happened ("R2 ui: PASS", "entered review", "merged 3c9e01a"), and how long ago. Each one opens

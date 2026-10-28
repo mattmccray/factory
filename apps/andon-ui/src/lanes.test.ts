@@ -40,7 +40,7 @@ describe('kinds (AC1)', () => {
     expect(tagText({ id: '001-a', stage: 'build', round: 2, reviews: { code: 'CHANGES' } })).toBe('Rework → R3');
     expect(tagText({ id: '001-a', stage: 'spec' })).toBe('Drafting spec');
     expect(tagText({ id: '001-a', stage: 'claimed' })).toBe('Claimed');
-    expect(tagText({ id: '001-a', stage: 'merged', endedAt: before(HOUR), note: 'merged 3c9e01a' })).toBe('3c9e01a');
+    expect(tagText({ id: '001-a', stage: 'merged', endedAt: before(HOUR), note: 'merged 3c9e01a' })).toBeNull(); // a merged token is one line: no tag
   });
 
   test('a build job after CHANGES is kind build, not review-failed', () => {
@@ -368,15 +368,64 @@ describe('tokens (AC6)', () => {
     expect(build.chips.map((c) => c.pulse)).toEqual([false]);
   });
 
-  test('line 1, line 2, and line 3', () => {
+  test('line 1, line 2, and line 3 (working and needs-human kinds)', () => {
     const human = tokenOf(at({ id: '040-tag-migration', title: 'Migrate tags', stage: 'needs-human', round: 1, stageEnteredAt: before(6 * HOUR + 6 * MINUTE), note: 'approver: drops tags', ...stopped('escalated', 'approve') }), NOW, false);
     expect([human.num, human.title, human.tag, human.time, human.note]).toEqual(['040', 'Migrate tags', 'Escalated', '6h 6m', 'approver: drops tags']);
-    const merged = tokenOf(at({ id: '039-digest', stage: 'merged', round: 1, endedAt: before(64 * MINUTE), note: 'merged 3c9e01a' }), NOW, false);
-    expect([merged.tag, merged.time, merged.note, merged.round]).toEqual(['3c9e01a', '1h 4m ago', null, 'R1/2']);
     const claimed = tokenOf(at({ id: '017-stage-diff', title: '017-stage-diff', stage: 'claimed' }), NOW, false);
     expect([claimed.num, claimed.title, claimed.time]).toEqual(['017', 'stage-diff', null]); // the title is the id until the spec names it; legacy: no time
     const build = tokenOf(at({ id: '022-x', stage: 'build', note: 'R1 ui: a note' }), NOW, false);
     expect(build.note).toBeNull(); // only needs-human and merge-failed get a third line
+  });
+
+  test('a merged token is one line: number, title, and the largest-unit time; no tag, chips, round, or note (038 AC1)', () => {
+    const merged = tokenOf(at({ id: '039-digest', title: 'Digest', stage: 'merged', round: 1, endedAt: before(64 * MINUTE), note: 'merged 3c9e01a' }), NOW, false);
+    expect([merged.kind, merged.num, merged.title, merged.time, merged.tag, merged.round, merged.chips, merged.note]).toEqual(['merged', '039', 'Digest', '1h', null, null, [], null]);
+    const times = [42_000, 45 * MINUTE, HOUR + 59 * MINUTE, 71 * HOUR].map((ms) => tokenOf(at({ id: '039-x', stage: 'merged', round: 1, endedAt: before(ms) }), NOW, false).time);
+    expect(times).toEqual(['42s', '45m', '1h', '2d']);
+    for (const t of times) expect(t).not.toContain('ago');
+  });
+
+  test('a settled (dimmed) token is the same one line (038 AC1)', () => {
+    const settled = tokenOf(at({ id: '039-old', stage: 'merged', round: 2, reviews: { code: 'PASS' }, endedAt: before(71 * HOUR), note: 'merged 3c9e01a' }, P1, ['code']), NOW, true);
+    expect([settled.kind, settled.shape, settled.label, settled.dimmed, settled.time, settled.tag, settled.round, settled.chips, settled.note]).toEqual(['settled', 'faded', 'Settled', true, '2d', null, null, [], null]);
+    const legacy = tokenOf(at({ id: '039-legacy', stage: 'merged', note: 'merged 0ac41de' }), NOW, false);
+    expect(legacy.time).toBeNull(); // no merge time recorded: no time, as before
+  });
+
+  test('the other kinds keep their tag, chips, round, time in stage, note, and branch (038 AC5)', () => {
+    const reviewers = ['code', 'ui'];
+    const tok = (f: Record<string, unknown>) => tokenOf(at(f, P1, reviewers), NOW, false);
+    const pick = (t: ReturnType<typeof tokenOf>) => [t.kind, t.tag, t.chips.map((c) => `${c.label}:${c.verdict}`), t.round, t.time, t.note, t.branch];
+    expect(pick(tok({ id: '040-a', stage: 'needs-human', round: 1, stageEnteredAt: before(6 * HOUR + 6 * MINUTE), note: 'approver: drops tags', ...stopped('escalated', 'approve') }))).toEqual(['needs-human', 'Escalated', [], 'R1/2', '6h 6m', 'approver: drops tags', 'factory/x']);
+    expect(pick(tok({ id: '041-a', stage: 'needs-human', round: 1, stageEnteredAt: before(38 * MINUTE), note: 'conflict', ...stopped('merge-failed', 'approve') }))).toEqual(['merge-failed', 'Merge failed', [], 'R1/2', '38m', 'conflict', 'factory/x']);
+    expect(pick(tok({ id: '042-a', stage: 'review', round: 1, stageEnteredAt: before(38 * MINUTE), reviews: { code: 'PASS', ui: 'CHANGES' } }))).toEqual(['review-failed', 'Changes', ['cd:PASS', 'ui:CHANGES'], 'R1/2', '38m', null, 'factory/x']);
+    expect(pick(tok({ id: '043-a', stage: 'review', round: 2, stageEnteredAt: before(38 * MINUTE), reviews: { code: 'pending', ui: 'PASS' } }))).toEqual(['reviewing', null, ['cd:pending', 'ui:PASS'], 'R2/2', '38m', null, 'factory/x']);
+    expect(pick(tok({ id: '044-a', stage: 'approve', round: 1, stageEnteredAt: before(38 * MINUTE), reviews: { code: 'PASS', ui: 'PASS' } }))).toEqual(['approve', null, ['cd:PASS', 'ui:PASS'], 'R1/2', '38m', null, 'factory/x']);
+    expect(pick(tok({ id: '045-a', stage: 'build', round: 1, stageEnteredAt: before(6 * HOUR + 6 * MINUTE), reviews: { code: 'CHANGES' } }))).toEqual(['build', 'Rework → R2', ['cd:CHANGES'], 'R1/2', '6h 6m', null, 'factory/x']);
+    expect(pick(tok({ id: '046-a', stage: 'spec', stageEnteredAt: before(38 * MINUTE) }))).toEqual(['spec', 'Drafting spec', [], null, '38m', null, 'factory/x']);
+    expect(pick(tok({ id: '047-a', stage: 'claimed', stageEnteredAt: before(38 * MINUTE) }))).toEqual(['claimed', 'Claimed', [], null, '38m', null, 'factory/x']);
+  });
+
+  test('the merged token markup is one line: the time on line 1, no line 2 or branch (038 AC2)', () => {
+    const svelte = readFileSync(join(import.meta.dir, 'Token.svelte'), 'utf8');
+    // merged and settled kinds take the one-line layout
+    expect(svelte).toMatch(/const oneLine = \$derived\(t\.kind === 'merged' \|\| t\.kind === 'settled'\)/);
+    // line 1 holds the number, the title, and (one line only) the time
+    const l1 = /<span class="l1">([\s\S]*?)<\/span>\n/.exec(svelte)?.[1] ?? '';
+    expect(l1).toContain('<span class="num">{t.num}</span>');
+    expect(l1).toContain('<span class="sl">{t.title}</span>');
+    expect(l1).toMatch(/\{#if oneLine && t\.time !== null\}<span class="age">\{t\.time\}<\/span>\{\/if\}/);
+    // line 2 and the branch line render only when it is not one line
+    expect(svelte).toMatch(/\{#if !oneLine\}\s*<span class="l2">/);
+    expect(svelte).toMatch(/\{#if !oneLine\}<span class="br">\{t\.branch\}<\/span>\{\/if\}/);
+    // no merged check icon on a tag that no longer exists
+    expect(svelte).not.toContain("t.shape === 'check'");
+    // the time on line 1 never shrinks or wraps; the title is what gives way
+    const css = readFileSync(join(import.meta.dir, 'app.css'), 'utf8');
+    const rule = /\.tok \.l1 \.age \{([^}]*)\}/.exec(css)?.[1] ?? '';
+    expect(rule).toContain('flex: none');
+    expect(css).toMatch(/\.tok \.age \{[^}]*margin-left: auto[^}]*white-space: nowrap/);
+    expect(css).toMatch(/\.tok \.sl \{[^}]*min-width: 0[^}]*text-overflow: ellipsis/);
   });
 
   test('every kind has a distinct tag, edge, or shape (never color alone)', () => {
