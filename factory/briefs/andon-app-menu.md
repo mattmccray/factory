@@ -1,6 +1,7 @@
 # Andon's app menu
 
-- Status: ready
+- Status: done
+- Job: 032-andon-app-menu (merged c2571a5, 2026-10-28)
 - Sources: Matt's notes on context and application menu additions (2026-10-28); `apps/andon/types/tiny.d.ts` (`TinyMenu`, `app.menu`, `app.push`)
 - Date: 2026-10-28
 
