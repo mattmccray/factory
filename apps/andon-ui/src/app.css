@@ -87,7 +87,8 @@ svg.i { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-widt
   background: var(--ctl-h); color: var(--label2); flex: none; }
 .badge.red { background: var(--badge-red); color: #fff; }
 .service { flex: none; padding: 10px 18px 12px; font-size: 11px; color: var(--label2); display: flex; align-items: center; gap: 7px; border-top: .5px solid var(--sep); }
-.service .dot { width: 7px; height: 7px; }
+.service .dot { width: 7px; height: 7px; flex: none; }
+.service .txt { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .service .dot.gray { box-shadow: none; background: var(--gray); }
 .service .dot.red { box-shadow: none; }
 

@@ -54,8 +54,10 @@ project, inside a **native-feeling macOS app** (sidebar, toolbar, inspector). On
   (red with the needs-human count, or gray with the active count, or none when idle). Selecting a
   project focuses it (section 7). This replaces today's project `<select>`, and the selection
   still persists under the existing `andon.project` key.
-- **Footer**: the service connection ("Connected · andon-service · 12 projects", or "Connecting…" or
-  "Unreachable"), with a green, gray, or red dot. This replaces the header's status.
+- **Footer**: the service connection on one line ("Connected · 12 projects", or "Connecting…" or
+  "Unreachable"), with a green, gray, or red dot; it never wraps, and truncates with an ellipsis
+  if it can't fit. The hover tooltip names the service ("Connected to the Andon service"), the same
+  text screen readers announce. This replaces the header's status.
 - The mock-up's disabled "Reports" section (Weekly and Monthly ledger) is **left out** until the
   Ledger report exists.
 

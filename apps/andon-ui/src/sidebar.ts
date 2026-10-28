@@ -88,7 +88,7 @@ export interface Footer {
 }
 
 export function footer(status: Status, projects: number): Footer {
-  if (status === 'live') return { text: `Connected · andon-service · ${plural(projects, 'project', 'projects')}`, dot: 'green' };
+  if (status === 'live') return { text: `Connected · ${plural(projects, 'project', 'projects')}`, dot: 'green' };
   if (status === 'down') return { text: 'Unreachable', dot: 'red' };
   return { text: 'Connecting…', dot: 'gray' };
 }
