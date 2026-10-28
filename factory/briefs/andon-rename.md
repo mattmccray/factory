@@ -1,6 +1,7 @@
 # Rename Andon's parts: the service, the UI, and the app
 
-- Status: ready
+- Status: done
+- Job: 029-andon-rename (merged a53cb9c, 2026-10-27)
 - Sources: `HANDOFF.md` (Decision 10, "Andon architecture"), `docs/contract/v1.md` ("Andon agent"), `README.md` ("Andon"), `docs/design/andon-overview/design.md`
 - Date: 2026-10-27
 
