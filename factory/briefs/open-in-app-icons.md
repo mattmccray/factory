@@ -1,6 +1,7 @@
 # App icons in the project menu's Open in submenu
 
-- Status: ready
+- Status: done
+- Job: 043-open-in-app-icons (merged 9e831f4, 2026-10-28)
 - Sources: brief `factory/briefs/project-context-menu.md` (job 033, the menu this extends); `apps/andon/src/projectmenu.ts`; `apps/andon/types/tiny.d.ts` (`TinyMenuItem`, `thumbnail`); tinyjs.app/docs/menus and /changelog (checked through 0.68.0, 2026-10-28); Tiny 0.68.0's `apps/andon/types/tiny.d.ts` (`TinyMenuItem.icon`, `TinyApp.thumbnail`)
 - Date: 2026-10-28
 
