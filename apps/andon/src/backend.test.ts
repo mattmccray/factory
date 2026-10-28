@@ -3,9 +3,10 @@
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { api, assetPath, checkApps, dockIcon, findT3, getSettings, handOff, hostHandoff, init, onContextMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, showProjectMenu, trayIcon } from './backend';
-import type { HandoffHost, MacApp, MacNavEvent, MacTraySpec, MacWinState, RunResult } from './backend';
+import { api, assetPath, checkApps, dockIcon, findT3, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runJobItem, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, showProjectMenu, trayIcon } from './backend';
+import type { HandoffHost, JobMenuHost, MacApp, MacNavEvent, MacTraySpec, MacWinState, RunResult } from './backend';
 import { itemId, projectMenuItems } from './projectmenu';
+import { jobItemId, jobMenuItems } from './jobmenu';
 import type { MenuProject } from './projectmenu';
 import type { HandoffMode, Settings } from './settings';
 import { GITHUB_ID, MINIMIZE_ID, SETTINGS_ID, SETTINGS_SIZE, SHOW_MAIN_ID, STATUS_BAR_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
@@ -802,7 +803,7 @@ test("AC2: a newer request wins over an older one's slower app check", async () 
 });
 
 test('AC2: the api names its methods, and with the app not following the service it lists no project', async () => {
-  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff']);
+  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu']);
   fakeMachine([], []);
   const { app, log } = contextApp();
   await api.projectMenu({ project: PID }, app);
@@ -1126,4 +1127,242 @@ test('036: with the app not following the service, the api lists no project, so 
   const { app, log } = handoffApp('send');
   expect(await api.handOff(APPROVE, app, MAIN_META)).toBeNull();
   expect(log).toEqual([]);
+});
+
+// ---- a job's right-click menu (040) ----
+
+const MENU_JOB = '040-job-context-menu';
+const GOOD_SESSION = { app: 't3code', environment: 'env-1', thread: 'thread-A' };
+const LINK = 't3code://threads/env-1/thread-A';
+
+/** A context app that also records `shell.open`, which can fail by throwing or by not reporting true. */
+function jobApp(opts: { open?: Error | 'false'; clipboard?: boolean | Error } = {}): ReturnType<typeof contextApp> {
+  const c = contextApp({ clipboard: typeof opts.clipboard === 'boolean' ? opts.clipboard : true });
+  const fail = opts.clipboard;
+  if (fail instanceof Error) {
+    c.app.clipboard = {
+      write: () => {
+        throw fail;
+      },
+    };
+  }
+  // Tiny types it Promise<true>; stand in a bridge that also reports failure by resolving false.
+  Reflect.set(c.app.shell, 'open', async (target: string): Promise<boolean> => {
+    c.log.push(['shell.open', target]);
+    if (opts.open instanceof Error) throw opts.open;
+    return opts.open !== 'false';
+  });
+  return c;
+}
+
+/** A fake job menu host: the listed projects, the boards the service gives (by project), and the `t3` found. */
+function jobHost(opts: { board?: unknown; boardError?: Error; t3?: string | null } = {}): { host: JobMenuHost; fetched: string[] } {
+  const fetched: string[] = [];
+  const host: JobMenuHost = {
+    projects: () => PROJECTS,
+    board: async (pid) => {
+      fetched.push(pid);
+      if (opts.boardError !== undefined) throw opts.boardError;
+      return opts.board === undefined ? { jobs: [{ id: '039-other', session: { app: 't3code', environment: 'env-9', thread: 'other' } }, { id: MENU_JOB, stage: 'build', session: GOOD_SESSION }] } : opts.board;
+    },
+    findT3: async () => (opts.t3 === undefined ? T3 : opts.t3),
+  };
+  return { host, fetched };
+}
+
+const opened = (log: unknown[][]): unknown[] => log.filter((e) => e[0] === 'shell.open').map((e) => e[1]);
+const quietly = async (f: () => Promise<void>): Promise<string[]> => {
+  const logged: string[] = [];
+  const realLog = console.log;
+  console.log = (line: string) => void logged.push(line);
+  try {
+    await f();
+  } finally {
+    console.log = realLog;
+  }
+  return logged;
+};
+
+test('040 AC1: a job with a session and t3 found gets Open in T3 Code (enabled), a separator, and Copy Job ID', async () => {
+  const { app, log } = jobApp();
+  const h = jobHost();
+  await showJobMenu({ project: PID, job: MENU_JOB }, app, h.host);
+  expect(h.fetched).toEqual([PID]);
+  expect(contexts(log).at(-1)).toEqual([
+    { id: `job-menu:t3:${PID}:${MENU_JOB}`, label: 'Open in T3 Code', enabled: true },
+    { separator: true },
+    { id: `job-menu:copy:${PID}:${MENU_JOB}`, label: 'Copy Job ID' },
+  ]);
+});
+
+test('040 AC1: Open in T3 Code opens the link from the fetched board, and Copy Job ID copies the job id', async () => {
+  const { app, log } = jobApp();
+  const h = jobHost();
+  await runJobItem(jobItemId('t3', PID, MENU_JOB), app, h.host);
+  await runJobItem(jobItemId('copy', PID, MENU_JOB), app, h.host);
+  expect(log).toEqual([
+    ['shell.open', LINK],
+    ['clipboard.write', { text: MENU_JOB }],
+  ]);
+  expect(h.fetched).toEqual([PID]); // the click fetched the board again; the copy needs none
+});
+
+test('040 AC1: the same job asked again (the opening press) keeps its menu, set again only when the answer changes', async () => {
+  const { app, log } = jobApp();
+  let t3: string | null = T3;
+  const h: JobMenuHost = { ...jobHost().host, findT3: async () => t3 };
+  await showJobMenu({ project: PID, job: MENU_JOB }, app, h);
+  log.length = 0;
+  await showJobMenu({ project: PID, job: MENU_JOB }, app, h);
+  expect(contexts(log)).toEqual([]);
+  t3 = null; // t3 removed since
+  await showJobMenu({ project: PID, job: MENU_JOB }, app, h);
+  expect(contexts(log)).toEqual([jobMenuItems(PID, MENU_JOB, false)]);
+  const hh = jobHost();
+  // a different job is armed at once (grayed), then answered
+  log.length = 0;
+  await showJobMenu({ project: PID, job: '039-other' }, app, hh.host);
+  expect(contexts(log)).toEqual([jobMenuItems(PID, '039-other', false), jobMenuItems(PID, '039-other', true)]);
+});
+
+test('040 AC2: no session, a null or malformed one, or no t3 grays Open in T3 Code out; Copy Job ID stays; the grayed item opens nothing', async () => {
+  const sessions: unknown[] = [
+    undefined,
+    null,
+    { ...GOOD_SESSION, app: 'codex' },
+    { app: 't3code', environment: 'env-1' },
+    { ...GOOD_SESSION, thread: '' },
+    { ...GOOD_SESSION, thread: 'a'.repeat(65) },
+    { ...GOOD_SESSION, thread: 'thread/A' },
+    { ...GOOD_SESSION, environment: 'env:1' },
+    't3code:env-1/thread-A',
+  ];
+  const cases: { label: string; h: ReturnType<typeof jobHost> }[] = sessions.map((session) => ({
+    label: JSON.stringify(session) ?? 'undefined',
+    h: jobHost({ board: { jobs: [session === undefined ? { id: MENU_JOB } : { id: MENU_JOB, session }] } }),
+  }));
+  cases.push({ label: 'no t3', h: jobHost({ t3: null }) });
+  for (const c of cases) {
+    const { app, log } = jobApp();
+    await quietly(async () => {
+      await showJobMenu(null, app, c.h.host); // disarm: the last case armed this same job
+      log.length = 0;
+      await showJobMenu({ project: PID, job: MENU_JOB }, app, c.h.host);
+      expect({ c: c.label, menu: contexts(log).at(-1) }).toEqual({ c: c.label, menu: jobMenuItems(PID, MENU_JOB, false) });
+      await runJobItem(jobItemId('t3', PID, MENU_JOB), app, c.h.host);
+      expect({ c: c.label, opened: opened(log) }).toEqual({ c: c.label, opened: [] });
+      await runJobItem(jobItemId('copy', PID, MENU_JOB), app, c.h.host);
+    });
+    expect(log.filter((e) => e[0] === 'clipboard.write')).toEqual([['clipboard.write', { text: MENU_JOB }]]);
+  }
+});
+
+test('040 AC3: an unknown project, a malformed job id, or extra page fields restore WebKit\'s menu and fetch nothing', async () => {
+  for (const params of [
+    { project: 'zzzzzzzzzzzz', job: MENU_JOB },
+    { project: PID, job: 'job-context-menu' },
+    { project: PID, job: '040-Bad' },
+    { project: PID, job: MENU_JOB, thread: 'thread-B' },
+    { project: PID, job: MENU_JOB, url: 't3code://threads/evil/x' },
+    { project: PID },
+    null,
+    'x',
+  ]) {
+    const { app, log } = jobApp();
+    const h = jobHost();
+    await showJobMenu(params, app, h.host);
+    expect({ params, log }).toEqual({ params, log: [['menu.setContext', null]] });
+    expect(h.fetched).toEqual([]);
+  }
+});
+
+test("040 AC3: a job missing from the board restores WebKit's menu; a failed fetch keeps it grayed", async () => {
+  const a = jobApp();
+  await showJobMenu({ project: PID, job: '041-missing' }, a.app, jobHost().host);
+  expect(contexts(a.log)).toEqual([jobMenuItems(PID, '041-missing', false), null]);
+  const b = jobApp();
+  const logged = await quietly(() => showJobMenu({ project: PID, job: MENU_JOB }, b.app, jobHost({ boardError: new Error('connection refused') }).host));
+  expect(contexts(b.log)).toEqual([jobMenuItems(PID, MENU_JOB, false)]);
+  expect(logged).toEqual([`andon: could not fetch the board for the job menu of ${MENU_JOB} (connection refused)`]);
+});
+
+test('040 AC3: a forged or unresolvable item id opens nothing; a job missing or a failed fetch on click notifies and opens nothing', async () => {
+  for (const id of [jobItemId('t3', 'zzzzzzzzzzzz', MENU_JOB), `job-menu:t3:${PID}:Bad`, `job-menu:t3:${PID}:${MENU_JOB}:${LINK}`, `job-menu:open:${PID}:${MENU_JOB}`, null, 7]) {
+    const { app, log } = jobApp();
+    const h = jobHost();
+    await runJobItem(id, app, h.host);
+    expect({ id, log }).toEqual({ id, log: [] });
+    expect(h.fetched).toEqual([]);
+  }
+  const cases: { h: ReturnType<typeof jobHost>; job: string; text: string }[] = [
+    { h: jobHost(), job: '041-missing', text: "Couldn't open 041-missing in T3 Code: the job is not on its board" },
+    { h: jobHost({ board: { jobs: [{ id: MENU_JOB }] } }), job: MENU_JOB, text: `Couldn't open ${MENU_JOB} in T3 Code: the job has no T3 Code thread recorded` },
+    { h: jobHost({ boardError: new Error('HTTP 500') }), job: MENU_JOB, text: `Couldn't open ${MENU_JOB} in T3 Code: HTTP 500` },
+  ];
+  for (const c of cases) {
+    const { app, log } = jobApp();
+    const logged = await quietly(() => runJobItem(jobItemId('t3', PID, c.job), app, c.h.host));
+    expect(log).toEqual([['notify', 'Andon', c.text]]);
+    expect(logged).toEqual([`andon: ${c.text}`]);
+  }
+});
+
+test('040 AC3: page-supplied values never reach shell.open: the link is only the fresh board\'s session', async () => {
+  const { app, log } = jobApp();
+  // the board changed between the menu and the click: the click uses the fresh one
+  let board: unknown = { jobs: [{ id: MENU_JOB, session: GOOD_SESSION }] };
+  const host: JobMenuHost = { projects: () => PROJECTS, board: async () => board, findT3: async () => T3 };
+  await showJobMenu({ project: PID, job: MENU_JOB, thread: 'evil', url: 'https://evil.example' }, app, host);
+  await api.jobMenu({ project: PID, job: MENU_JOB, thread: 'evil' }, app);
+  board = { jobs: [{ id: MENU_JOB, session: { app: 't3code', environment: 'env-2', thread: 'thread-B' } }] };
+  await runJobItem(jobItemId('t3', PID, MENU_JOB), app, host);
+  expect(opened(log)).toEqual(['t3code://threads/env-2/thread-B']);
+  // a forged t3 item id for a job without a valid session opens nothing
+  board = { jobs: [{ id: MENU_JOB, session: { app: 't3code', environment: 'env-1', thread: '../../evil' } }] };
+  log.length = 0;
+  await quietly(() => runJobItem(jobItemId('t3', PID, MENU_JOB), app, host));
+  expect(opened(log)).toEqual([]);
+});
+
+test('040 AC4: a throwing or failing shell.open notifies once and logs; so does a failed clipboard write', async () => {
+  const cases: { c: ReturnType<typeof jobApp>; item: 't3' | 'copy'; text: string }[] = [
+    { c: jobApp({ open: new Error('no application knows t3code:') }), item: 't3', text: `Couldn't open ${MENU_JOB} in T3 Code: no application knows t3code:` },
+    { c: jobApp({ open: 'false' }), item: 't3', text: `Couldn't open ${MENU_JOB} in T3 Code: T3 Code did not open the link` },
+    { c: jobApp({ clipboard: false }), item: 'copy', text: `Couldn't copy the job ID ${MENU_JOB}: the clipboard refused the write` },
+    { c: jobApp({ clipboard: new Error('pasteboard busy') }), item: 'copy', text: `Couldn't copy the job ID ${MENU_JOB}: pasteboard busy` },
+  ];
+  for (const { c, item, text } of cases) {
+    const logged = await quietly(() => runJobItem(jobItemId(item, PID, MENU_JOB), c.app, jobHost().host));
+    expect(c.log.filter((e) => e[0] === 'notify')).toEqual([['notify', 'Andon', text]]);
+    expect(logged).toEqual([`andon: ${text}`]);
+  }
+});
+
+test('040 AC5: onContextMenu sends job-menu ids to the job menu and project-menu ids to the project menu', async () => {
+  // with the app not following the service, no project is listed: neither menu runs anything
+  fakeMachine([], []);
+  const { app, log } = jobApp();
+  await onContextMenu(jobItemId('copy', PID, MENU_JOB), app);
+  await onContextMenu(itemId('copy', PID), app);
+  expect(log).toEqual([]);
+  // the real host fetches no board without a listed project, and refuses one with no service
+  await api.jobMenu({ project: PID, job: MENU_JOB }, app);
+  expect(log).toEqual([['menu.setContext', null]]);
+  await expect(hostJobMenu.board(PID)).rejects.toThrow();
+});
+
+test('040: a newer ask of either menu wins over a slower board fetch', async () => {
+  const { app, log } = jobApp();
+  let release: () => void = () => undefined;
+  const host: JobMenuHost = {
+    projects: () => PROJECTS,
+    board: () => new Promise((r) => (release = () => r({ jobs: [{ id: MENU_JOB, session: GOOD_SESSION }] }))),
+    findT3: async () => T3,
+  };
+  fakeMachine([], []);
+  const slow = showJobMenu({ project: PID, job: MENU_JOB }, app, host);
+  await showProjectMenu({ project: null }, app, PROJECTS);
+  release();
+  await slow;
+  expect(contexts(log)).toEqual([jobMenuItems(PID, MENU_JOB, false), null]);
 });

@@ -2,7 +2,8 @@
 // (AC5), only backend.ts names Tiny or txiki (through Tiny's own vendored types, narrowed to
 // `MacApp`), the window loads the service on loopback with the page's Tiny API denied but for its
 // drag regions, the status bar event the Mac app pushes (AC6), the one project menu method, the
-// Settings window's two settings methods (035), and the main window's hand-off method (036), the
+// Settings window's two settings methods (035), the main window's hand-off method (036), and the
+// job menu method (040), the
 // Mac app pins the Tiny JS it was tested on, and the backend entry is the Bun bundle of backend.ts.
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
@@ -13,6 +14,7 @@ import { DEFAULT_PORT, pageUrl } from './autostart';
 import { PROJECT_MENU_METHOD } from './projectmenu';
 import { GET_SETTINGS_METHOD, SET_SETTING_METHOD } from './settings';
 import { HAND_OFF_METHOD } from './handoff';
+import { JOB_MENU_METHOD } from './jobmenu';
 import { isRecord } from './state';
 
 const appDir = join(import.meta.dir, '..');
@@ -39,7 +41,7 @@ const readJson = (path: string): Record<string, unknown> => {
 describe('AC5: the Mac app runs no contract, service, or UI code', () => {
   test('the scan sees the logic modules and the adapter', () => {
     expect(sources).toContain(ADAPTER);
-    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts', 'appmenu.ts', 'projectmenu.ts', 'settings.ts', 'handoff.ts']) expect(sources).toContain(f);
+    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts', 'appmenu.ts', 'projectmenu.ts', 'settings.ts', 'handoff.ts', 'jobmenu.ts']) expect(sources).toContain(f);
   });
 
   test('the import matcher flags @factory/*, the UI, and the service, not the Mac app itself', () => {
@@ -182,7 +184,7 @@ describe('AC6: tinyjs.json', () => {
       icon: 'assets/icon.png',
       url: 'http://127.0.0.1:8766/?shell=mac',
       chrome: { frame: false, windowControls: true, windowControlsPos: { x: 18, y: 20 }, vibrancy: 'sidebar' },
-      api: { disable: ['*'], enable: ['win.startDrag', 'win.zoom', 'event.statusbar', 'projectMenu', 'getSettings', 'setSetting', 'handOff'] },
+      api: { disable: ['*'], enable: ['win.startDrag', 'win.zoom', 'event.statusbar', 'projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu'] },
       backend: 'build/backend.js',
     });
   });
@@ -206,7 +208,7 @@ describe('AC6: tinyjs.json', () => {
     expect(cfg.minSize).toBe('1100x700');
   });
 
-  test('the api gate denies every Tiny call for the page except its drag regions, the status bar event, projectMenu, the two settings methods, and handOff', () => {
+  test('the api gate denies every Tiny call for the page except its drag regions, the status bar event, projectMenu, the two settings methods, handOff, and jobMenu', () => {
     // Tiny's page runtime turns a mousedown on [data-tiny-drag] into `win.startDrag` (a double-click
     // into `win.zoom`), and the backend's gate checks both: they are the narrowest exception. The one
     // event the page may receive is the status bar state the backend pushes (`event.<name>` is how
@@ -216,19 +218,29 @@ describe('AC6: tinyjs.json', () => {
     // for that window. Exactly two entries more than after andon-project-menu (033). The main window's
     // hand-off (036) is the one more after andon-settings (035): the backend answers it only for the
     // main window, and it takes a project id, a job id, an action, and a note, never a command.
+    // The job menu (040) is the one more after job 037: it takes a project id and a job id, never a
+    // thread id, link, or path.
     const after035 = ['win.startDrag', 'win.zoom', 'event.statusbar', 'projectMenu', 'getSettings', 'setSetting'];
-    expect(cfg.api).toEqual({ disable: ['*'], enable: ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`, PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD] });
-    expect(cfg.api).toEqual({ disable: ['*'], enable: [...after035, 'handOff'] });
+    const after037 = [...after035, 'handOff'];
+    expect(cfg.api).toEqual({ disable: ['*'], enable: ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`, PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD] });
+    expect(cfg.api).toEqual({ disable: ['*'], enable: [...after037, 'jobMenu'] });
     const enable = isRecord(cfg.api) && Array.isArray(cfg.api.enable) ? cfg.api.enable : [];
-    expect(enable).toHaveLength(after035.length + 1);
+    expect(enable).toHaveLength(after037.length + 1);
     expect(cfg.inject).toBeUndefined();
   });
 
-  test('the backend exports exactly those four api methods', () => {
+  test('the backend exports exactly those five api methods', () => {
     const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
     const block = /^export const api = \{\n([\s\S]*?)^\};$/m.exec(adapter)?.[1] ?? '';
-    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD]);
-    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff']);
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD]);
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu']);
+  });
+
+  test('the job menu takes only the params and the app, and the page asks by the same method name', () => {
+    const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
+    expect(adapter).toContain('  jobMenu: (params: unknown, app: MacApp): Promise<void> => showJobMenu(params, app),');
+    const ui = readFileSync(join(repoDir, 'apps', 'andon-ui', 'src', 'jobmenu.ts'), 'utf8');
+    expect(ui).toContain(`export const JOB_MENU_METHOD = '${JOB_MENU_METHOD}';`);
   });
 
   test('the hand-off checks the main window first', () => {

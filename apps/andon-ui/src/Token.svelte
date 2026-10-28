@@ -4,11 +4,14 @@
   // needs-human and merge-failed, and the branch when the project is focused. A merged or settled
   // token is one line: the number, the title, and the time since the merge, with no line 2 and no
   // branch (the sha, round, and full time are in the popover and the drawer). The model comes
-  // from lanes.ts (`tokenOf`); each kind's shape class draws its non-color mark.
+  // from lanes.ts (`tokenOf`); each kind's shape class draws its non-color mark. A board token
+  // carries its job id and project id for the Mac app's right-click job menu (jobmenu.ts).
+  import { tokenJobId } from './jobmenu';
   import type { TokenModel } from './lanes';
 
   interface Props {
     token: TokenModel;
+    project: string; // the lane's project id, for the job menu marker
     miss?: boolean; // dimmed by a search it doesn't match
     selected: boolean;
     fresh: boolean;
@@ -16,12 +19,13 @@
     onopen: (key: string) => void;
     onhover: (key: string | null, el: HTMLElement | null) => void;
   }
-  let { token: t, miss = false, selected, fresh, moved, onopen, onhover }: Props = $props();
+  let { token: t, project, miss = false, selected, fresh, moved, onopen, onhover }: Props = $props();
 
   let el = $state<HTMLButtonElement>();
   const show = (): void => onhover(t.key, el ?? null);
   const hide = (): void => onhover(null, null);
   const oneLine = $derived(t.kind === 'merged' || t.kind === 'settled');
+  const jobId = $derived(tokenJobId(t.key, project));
 </script>
 
 <button
@@ -36,6 +40,8 @@
   aria-haspopup="dialog"
   aria-current={selected ? 'true' : undefined}
   data-key={t.key}
+  data-job-menu={jobId === '' ? undefined : jobId}
+  data-job-menu-project={jobId === '' ? undefined : project}
   onclick={() => onopen(t.key)}
   onpointerenter={show}
   onpointerleave={hide}

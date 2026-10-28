@@ -3,13 +3,16 @@
 // through the one backend method it may call. Tiny's context menu is one setting for the window,
 // not a popup at a point, so the page arms it while the pointer is over a sidebar project row or a
 // lane's project gutter (and again on the press that opens it), and disarms it everywhere else
-// (`null`: WebKit's own menu), so All Projects, job cells, and the rest of the page never show a
-// stale project menu. A right-click or control-click changes no selection, focus, or route.
+// (`null`: WebKit's own menu), so All Projects, ghosts, and the rest of the page never show a
+// stale project menu. A board job token instead arms the job's menu (jobmenu.ts, 040). A
+// right-click or control-click changes no selection, focus, or route.
 // Tiny doesn't tell the page when the menu closes, so there is no highlight ring.
 // In a browser nothing here does anything: the browser's own menu shows.
 // Nothing here touches the DOM itself; App.svelte wires the events, and rows mark themselves with
 // PROJECT_MENU_ATTR.
 import { isRecord } from './job';
+import { menuJobAt } from './jobmenu';
+import type { AskJobMenu } from './jobmenu';
 import type { ShellMode } from './sidebar';
 
 /** The one Mac app backend method the page calls (tinyjs.json's `api` gate enables it by name). */
@@ -62,32 +65,51 @@ export function menuProjectAt(mode: ShellMode, target: unknown): string | null {
 /** A press that opens the context menu: the secondary button, or a control-click. */
 export const opensMenu = (e: { button: number; ctrlKey: boolean }): boolean => e.button === 2 || (e.button === 0 && e.ctrlKey);
 
-/** A control-click on a project row or gutter in the Mac app opens the menu, so it must not also
- *  click through (select the project, focus it, or open the Settled sheet). */
+/** A control-click on a project row, a gutter, or a board job token in the Mac app opens the menu, so
+ *  it must not also click through (select the project or job, focus it, or open a sheet). */
 export const swallowsClick = (mode: ShellMode, target: unknown, e: { button: number; ctrlKey: boolean }): boolean =>
-  e.ctrlKey && e.button === 0 && menuProjectAt(mode, target) !== null;
+  e.ctrlKey && e.button === 0 && (menuJobAt(mode, target) !== null || menuProjectAt(mode, target) !== null);
 
 export interface MenuArmer {
-  /** The pointer moved onto `target`: ask when the project under it changed. */
+  /** The pointer moved onto `target`: ask when the project or job under it changed. */
   point(target: unknown): void;
-  /** A press on `target`: when it opens the menu, ask again for the project under it. */
+  /** A press on `target`: when it opens the menu, ask again for the project or job under it. */
   press(target: unknown, e: { button: number; ctrlKey: boolean }): void;
   /** The pointer left the window. */
   leave(): void;
 }
 
-/** Arms the window's menu as the pointer moves: one ask per change of project, and one per opening press. */
-export function menuArmer(mode: ShellMode, ask: AskMenu): MenuArmer {
-  let armed: string | null = null;
-  const set = (project: string | null, force: boolean): void => {
-    if (!force && project === armed) return;
-    armed = project;
-    ask(project);
+/** What the pointer is on: a job token (its job menu), a project row or gutter, or neither. */
+type Armed = { kind: 'job'; project: string; job: string } | { kind: 'project'; project: string } | null;
+
+function armedAt(mode: ShellMode, target: unknown, jobs: boolean): Armed {
+  const j = jobs ? menuJobAt(mode, target) : null;
+  if (j !== null) return { kind: 'job', project: j.project, job: j.job };
+  const p = menuProjectAt(mode, target);
+  return p === null ? null : { kind: 'project', project: p };
+}
+
+const sameArmed = (a: Armed, b: Armed): boolean =>
+  a === null || b === null ? a === b : a.kind === b.kind && a.project === b.project && (a.kind !== 'job' || (b.kind === 'job' && a.job === b.job));
+
+/**
+ * Arms the window's menu as the pointer moves: one ask per change of what is under it, and one per
+ * opening press. A board job token asks `askJob` with `{ project, job }` (when given); a project row or
+ * gutter asks `ask` with its id; anywhere else asks `ask(null)`.
+ */
+export function menuArmer(mode: ShellMode, ask: AskMenu, askJob: AskJobMenu | null = null): MenuArmer {
+  let armed: Armed = null;
+  const set = (next: Armed, force: boolean): void => {
+    if (!force && sameArmed(next, armed)) return;
+    armed = next;
+    if (next === null) ask(null);
+    else if (next.kind === 'project') ask(next.project);
+    else askJob?.({ project: next.project, job: next.job });
   };
   return {
-    point: (target) => set(menuProjectAt(mode, target), false),
+    point: (target) => set(armedAt(mode, target, askJob !== null), false),
     press: (target, e) => {
-      if (opensMenu(e)) set(menuProjectAt(mode, target), true);
+      if (opensMenu(e)) set(armedAt(mode, target, askJob !== null), true);
     },
     leave: () => set(null, false),
   };

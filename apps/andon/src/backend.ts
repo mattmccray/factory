@@ -2,17 +2,18 @@
 // runtime-neutral logic (app.ts, autostart.ts, appmenu.ts) to Tiny's `app.tray`, `app.icon`,
 // `app.badge`, `app.notify`, `app.menu`, `app.store`, `app.push`, `app.shell`, `app.clipboard`, the
 // `app.win.open` and `app.windows` (the Settings window), the `onTray`, `onMenu`, `onNavigate`, and
-// `onContextMenu` hooks, and the four custom `api` methods, and to
+// `onContextMenu` hooks, and the five custom `api` methods, and to
 // txiki's `tjs.spawn` and `tjs.stat` (for the service, for curl: see curl.ts, for a project's
-// right-click menu: see projectmenu.ts, and for the T3 Code hand-off: see handoff.ts). `bun run
+// right-click menu: see projectmenu.ts, for a job's: see jobmenu.ts, and for the T3 Code hand-off:
+// see handoff.ts). `bun run
 // andon:build` bundles it into build/backend.js, the plain-JS entry tinyjs.json names.
 // The windows' pages (the service-served UI) get no Tiny API but the two calls the drag regions make
 // (`win.startDrag`, `win.zoom`), the status bar event this adapter pushes (`event.statusbar`),
 // `projectMenu`, which takes a project id (or null) and nothing else, the Settings window's
 // `getSettings` and `setSetting` (see settings.ts), which answer only when Tiny's api meta names the
 // Settings window, and `handOff` (see handoff.ts), which takes a project id, a job id, an action, and
-// a note, and answers only when the meta names the main window: tinyjs.json's `api` gate denies the
-// rest.
+// a note, and answers only when the meta names the main window, and `jobMenu` (see jobmenu.ts),
+// which takes a project id and a job id and nothing else: tinyjs.json's `api` gate denies the rest.
 /// <reference path="../types/tiny.d.ts" />
 /// <reference path="../types/tjs.d.ts" />
 import { QUIT_ID, SHOW_ID, trayNotice } from './badge';
@@ -20,7 +21,10 @@ import type { TraySpec } from './badge';
 import { serviceCommand, serviceUrl, DEFAULT_PORT, ensureService, pageUrl, probeService, resolvePort } from './autostart';
 import type { Service, Child } from './autostart';
 import { curlArgv, responseFromCurl } from './curl';
+import { getJson, reason as errorReason } from './http';
 import type { Http } from './http';
+import { boardPath } from './follow';
+import { NOT_ON_BOARD, NO_SESSION, boardJob, copyFailureText, isJobItemId, jobMenuItems, jobMenuRequest, jobSession, openFailureText, parseJobItemId, threadLink } from './jobmenu';
 import type { DockLook } from './lantern';
 import { startApp } from './app';
 import type { App } from './app';
@@ -159,6 +163,8 @@ let service: Service | null = null;
 let quitting = false;
 /** The service's port, as init resolved it: the Settings window loads its page from there. */
 let servicePort = DEFAULT_PORT;
+/** The service's GET, as init built it: the job menu fetches a project's board through it. */
+let serviceHttp: Http | null = null;
 
 // ---- the status bar choice ----
 // Read from the store once at init; every change (the View menu toggle, ⌘/, or the Settings window)
@@ -214,6 +220,7 @@ export function init(app: MacApp): void {
   servicePort = port;
   const url = serviceUrl(port);
   const http = curlHttp(url);
+  serviceHttp = http;
   const repo = __ANDON_REPO__;
   statusBarRead = readStatusBar(app);
   void refreshApps(); // warm the menu's app check, so the first right-click has it
@@ -374,8 +381,11 @@ const listedProjects = (): readonly MenuProject[] => andon?.state().projects ?? 
 
 /** The last app check; null until the first one finishes. */
 let apps: Availability | null = null;
-/** Bumped by every request, so a slower app check can't set an older project's menu. */
+/** Bumped by every request (project or job), so a slower app check or board fetch can't set an older menu. */
 let menuSeq = 0;
+/** The job menu set now (its `<pid>/<job id>` and whether Open in T3 Code is enabled), or null when
+ *  another menu (or none) is. */
+let armedJob: { key: string; canOpen: boolean } | null = null;
 
 export interface RunResult {
   ok: boolean;
@@ -447,6 +457,7 @@ export async function showProjectMenu(params: unknown, app: MacApp, projects: re
   const req = menuRequest(params);
   if (req === null) return;
   const seq = ++menuSeq;
+  armedJob = null;
   const p = req.project === null ? null : menuProject(projects, req.project);
   if (p === null) {
     app.menu.setContext(null);
@@ -606,15 +617,137 @@ export async function handOff(params: unknown, app: MacApp, meta: unknown, host:
   }
 }
 
-/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, and `handOff` (tinyjs.json's gate enables each by name). */
+// ---- a job's right-click menu (040) ----
+// Armed like the project menu: the page names the job under the pointer by its project id and job id
+// (`jobMenu({ project, job })`), and nothing else. The project must be in the backend's `/projects`
+// list and the job id of the factory form; the job and its `session` come from the project's board,
+// fetched from the service over its HTTP (never from files), and the link is built only from that
+// `session`. A click fetches the board again and checks everything again.
+
+/** What the job menu needs from the host; tests pass fakes. */
+export interface JobMenuHost {
+  projects(): readonly MenuProject[];
+  /** The project's board payload from the service that listed it; rejects when it can't be read. */
+  board(pid: string): Promise<unknown>;
+  findT3(): Promise<string | null>;
+}
+
+/** The real host: the listed projects, the board from the local service, and the `t3` lookup. */
+export const hostJobMenu: JobMenuHost = {
+  projects: () => listedProjects(),
+  board: async (pid) => {
+    if (serviceHttp === null) throw new Error('the Andon service is not running');
+    return getJson(serviceHttp, boardPath(pid));
+  },
+  findT3: () => findT3(),
+};
+
+const isListedProject = (projects: readonly MenuProject[], pid: string): boolean => projects.some((p) => p.id === pid);
+
+/**
+ * The page's job menu ask: for a listed project and a job id of the factory form, the menu (Open in
+ * T3 Code grayed out until the board and the `t3` lookup say it can open), then, once the board is
+ * fetched, Open in T3 Code enabled only when `t3` is found and the job's `session` passes the check.
+ * A job missing from the board restores WebKit's menu. A malformed request, an unknown project, or a
+ * bad job id restores WebKit's menu too. A newer ask (of either menu) wins over a slower fetch.
+ */
+export async function showJobMenu(params: unknown, app: MacApp, host: JobMenuHost = hostJobMenu): Promise<void> {
+  const seq = ++menuSeq;
+  const req = jobMenuRequest(params);
+  if (req === null || !isListedProject(host.projects(), req.project)) {
+    armedJob = null;
+    app.menu.setContext(null);
+    return;
+  }
+  const key = `${req.project}/${req.job}`;
+  // The same job asked again (the opening press): keep its menu as it is until the fresh answer.
+  if (armedJob?.key !== key) setJobMenu(app, req.project, req.job, false);
+  const [fetched, t3] = await Promise.all([
+    host.board(req.project).then(
+      (board): { ok: true; board: unknown } => ({ ok: true, board }),
+      (err: unknown): { ok: false } => {
+        console.log(`andon: could not fetch the board for the job menu of ${req.job} (${errorReason(err)})`);
+        return { ok: false };
+      },
+    ),
+    host.findT3().catch(() => null),
+  ]);
+  if (seq !== menuSeq) return;
+  // A board that answered without the job: no such job to name, so WebKit's menu. A failed fetch keeps
+  // the menu, grayed out (Copy Job ID still works).
+  const job = fetched.ok ? boardJob(fetched.board, req.job) : null;
+  if (fetched.ok && job === null) {
+    armedJob = null;
+    app.menu.setContext(null);
+    return;
+  }
+  const canOpen = t3 !== null && job !== null && jobSession(job) !== null;
+  if (armedJob?.key !== key || armedJob.canOpen !== canOpen) setJobMenu(app, req.project, req.job, canOpen);
+}
+
+function setJobMenu(app: MacApp, pid: string, job: string, canOpen: boolean): void {
+  armedJob = { key: `${pid}/${job}`, canOpen };
+  app.menu.setContext(jobMenuItems(pid, job, canOpen));
+}
+
+/** The thread link for a job, from a freshly fetched board, or the reason there is none. */
+async function freshLink(host: JobMenuHost, pid: string, job: string): Promise<{ link: string } | { reason: string }> {
+  let board: unknown;
+  try {
+    board = await host.board(pid);
+  } catch (err) {
+    return { reason: errorReason(err) };
+  }
+  const j = boardJob(board, job);
+  if (j === null) return { reason: NOT_ON_BOARD };
+  const session = jobSession(j);
+  if (session === null) return { reason: NO_SESSION };
+  return { link: threadLink(session) };
+}
+
+/**
+ * A clicked job menu item. Its id is checked (ours, a listed project, a job id of the factory form),
+ * then Copy Job ID writes that job id, and Open in T3 Code, with `t3` found, fetches the board again,
+ * checks the job's `session` again, and opens the link built from it. A failure shows one
+ * notification and logs a line; an id that resolves to nothing, or no `t3` found, does nothing.
+ */
+export async function runJobItem(id: unknown, app: MacApp, host: JobMenuHost = hostJobMenu): Promise<void> {
+  const parsed = parseJobItemId(id);
+  if (parsed === null || !isListedProject(host.projects(), parsed.pid)) return;
+  const { item, pid, job } = parsed;
+  if (item === 'copy') {
+    let failed: string | null;
+    try {
+      failed = app.clipboard.write({ text: job }) ? null : 'the clipboard refused the write';
+    } catch (err) {
+      failed = errorReason(err);
+    }
+    if (failed !== null) await notifyFailure(app, copyFailureText(job, failed));
+    return;
+  }
+  if ((await host.findT3().catch(() => null)) === null) return;
+  const found = await freshLink(host, pid, job);
+  if ('reason' in found) return notifyFailure(app, openFailureText(job, found.reason));
+  let failed: string | null;
+  try {
+    failed = (await app.shell.open(found.link)) === true ? null : 'T3 Code did not open the link';
+  } catch (err) {
+    failed = errorReason(err);
+  }
+  if (failed !== null) await notifyFailure(app, openFailureText(job, failed));
+}
+
+/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, `handOff`, and `jobMenu` (tinyjs.json's gate enables each by name). */
 export const api = {
   projectMenu: (params: unknown, app: MacApp): Promise<void> => showProjectMenu(params, app, listedProjects()),
   getSettings: (_params: unknown, app: MacApp, meta: unknown): Promise<Settings | null> => getSettings(app, meta),
   setSetting: (params: unknown, app: MacApp, meta: unknown): Promise<Settings | null> => setSetting(params, app, meta),
   handOff: (params: unknown, app: MacApp, meta: unknown): Promise<HandoffOutcome | null> => handOff(params, app, meta),
+  jobMenu: (params: unknown, app: MacApp): Promise<void> => showJobMenu(params, app),
 };
 
-/** A click in the right-click menu. */
+/** A click in the right-click menu: a `job-menu:` id goes to the job menu, every other id to the project menu. */
 export async function onContextMenu(id: string, app: MacApp): Promise<void> {
+  if (isJobItemId(id)) return runJobItem(id, app);
   await runProjectItem(id, app, listedProjects(), apps?.t3 ?? null);
 }
