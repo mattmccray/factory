@@ -1,4 +1,6 @@
-# factory
+# Factory & Andon
+
+> Andon is mission control for your AI development: see every feature moving from spec to merge at a glance, and know the moment one needs you.
 
 The factory runs everyday development as a loop of Claude Code agents that talk only through
 markdown files. You hand it a feature, and it comes back merged into your local target branch, or
