@@ -37,7 +37,7 @@ If the diff touches none of it, write `VERDICT: PASS` with a one-line note sayin
   torn tails, and bad ids are refused, and a rejected event writes nothing.
 - **Tests:** every surface change is covered by a test that would fail without it.
 - **One source:** contract types, validation, and projection live in `packages/contract` and
-  aren't redefined in a second package (the leftover v0 under `factory/lib` excepted).
+  aren't redefined in a second package.
 
 ## Summary
 Say which parts of the surface the change touches, and whether it's additive.

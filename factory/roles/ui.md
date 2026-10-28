@@ -10,8 +10,7 @@ else. You don't need to run the gate for that. Don't review anything outside And
 
 ## Also read (when Andon is touched)
 - The board UX decisions in `HANDOFF.md` (decision 5).
-- The current board in `apps/andon-ui/` on `main` as the visual and behavioral baseline (and the v0
-  `factory/dashboard.html` while it still exists).
+- The current board in `apps/andon-ui/` on `main` as the visual and behavioral baseline.
 
 ## Look for
 - **The board:** it fills the viewport; each column scrolls on its own under a fixed header; the
