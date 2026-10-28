@@ -1,9 +1,10 @@
 // The Tiny JS backend adapter: the only file that touches Tiny or txiki.js. It wires the Mac app's
 // runtime-neutral logic (app.ts, autostart.ts, appmenu.ts) to Tiny's `app.tray`, `app.icon`,
-// `app.badge`, `app.notify`, `app.menu`, `app.store`, `app.push`, `app.shell`, `app.clipboard`, the
+// `app.badge`, `app.notify`, `app.menu`, `app.store`, `app.push`, `app.shell`, `app.clipboard`,
+// `app.thumbnail` (the Open in apps' icons), the
 // `app.win.open` and `app.windows` (the Settings window), the `onTray`, `onMenu`, `onNavigate`, and
 // `onContextMenu` hooks, and the five custom `api` methods, and to
-// txiki's `tjs.spawn` and `tjs.stat` (for the service, for curl: see curl.ts, for a project's
+// txiki's `tjs.spawn`, `tjs.stat`, and `tjs.remove` (for the service, for curl: see curl.ts, for a project's
 // right-click menu: see projectmenu.ts, for a job's: see jobmenu.ts, and for the T3 Code hand-off:
 // see handoff.ts). `bun run
 // andon:build` bundles it into build/backend.js, the plain-JS entry tinyjs.json names.
@@ -35,8 +36,8 @@ import { DEFAULT_HANDOFF_MODE, T3_HANDOFF_KEY, fromSettingsWindow, settingChange
 import type { HandoffMode, Settings } from './settings';
 import { draftFailureText, draftLink, fromMainWindow, githubRepo, handoffRequest, originArgv, sendArgv, sendFailureText } from './handoff';
 import type { HandoffOutcome } from './handoff';
-import { GHOSTTY_APP, VSCODE_APP, exitReason, failureText, menuProject, menuRequest, projectMenuItems, resolveAction, t3Candidates } from './projectmenu';
-import type { Availability, MenuProject, ProjectAction } from './projectmenu';
+import { APP_NAMES, BUNDLE_IDS, GHOSTTY_APP, OPEN_IN_APPS, VSCODE_APP, appFallbacks, exitReason, failureText, mdfindHit, mdfindQuery, menuProject, menuRequest, projectMenuItems, resolveAction, t3Candidates } from './projectmenu';
+import type { AppIcons, Availability, MenuProject, OpenInApp, ProjectAction } from './projectmenu';
 
 // ---- the Tiny this adapter uses ----
 // Tiny's and txiki's own declarations (vendored unedited from Tiny's template; `tinyjs
@@ -53,7 +54,7 @@ export type MacWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpace
 /** The backend `app` object Tiny passes to `init` and the hooks, narrowed to what the Mac app uses.
  *  `icon('')` resets the Dock icon to the bundle icon, `badge('')` clears the badge, and `done`
  *  settles when the launcher closes (⌘Q, or the app menu's Quit). */
-export type MacApp = Pick<TinyApp, 'icon' | 'badge' | 'notify' | 'setHideOnClose' | 'quit' | 'push' | 'windows'> &
+export type MacApp = Pick<TinyApp, 'icon' | 'badge' | 'notify' | 'setHideOnClose' | 'quit' | 'push' | 'windows' | 'thumbnail'> &
   Partial<Pick<TinyApp, 'done'>> & {
     tray: Pick<TinyApp['tray'], 'set'>;
     menu: Pick<TinyApp['menu'], 'set' | 'update' | 'setContext'>;
@@ -223,7 +224,9 @@ export function init(app: MacApp): void {
   serviceHttp = http;
   const repo = __ANDON_REPO__;
   statusBarRead = readStatusBar(app);
-  void refreshApps(); // warm the menu's app check, so the first right-click has it
+  void refreshApps(app); // warm the menu's app check, so the first right-click has it
+  resetIcons();
+  void lookupIcons(app, OPEN_IN_APPS); // the Open in icons, in the background: the menu never waits on them
   showNotice(app, repo, 'starting the service');
   app.setHideOnClose(true);
   // ⌘Q skips onTray: stop our service before Tiny exits (kill is synchronous).
@@ -381,6 +384,8 @@ const listedProjects = (): readonly MenuProject[] => andon?.state().projects ?? 
 
 /** The last app check; null until the first one finishes. */
 let apps: Availability | null = null;
+/** The project menu set now (its project id and the request that set it), or null when another menu (or none) is. */
+let armedProject: { pid: string; seq: number } | null = null;
 /** Bumped by every request (project or job), so a slower app check or board fetch can't set an older menu. */
 let menuSeq = 0;
 /** The job menu set now (its `<pid>/<job id>` and whether Open in T3 Code is enabled), or null when
@@ -436,13 +441,149 @@ export async function checkApps(): Promise<Availability> {
   return { vscode, ghostty, t3 };
 }
 
-async function refreshApps(): Promise<Availability> {
+async function refreshApps(app: MacApp): Promise<Availability> {
   try {
-    apps = await checkApps();
+    const [checked, found] = await Promise.all([checkApps(), checkFound()]);
+    apps = checked;
+    noteFound(app, found);
   } catch (err) {
     console.log(`andon: could not check the apps for the project menu (${String(err)})`);
   }
-  return apps ?? { vscode: false, ghostty: false, t3: null };
+  return apps ?? NO_APPS;
+}
+
+const NO_APPS: Availability = { vscode: false, ghostty: false, t3: null };
+
+// ---- the Open in apps' own icons (043) ----
+// Each app's `.app` is found by bundle id (Spotlight, then /Applications and ~/Applications), and
+// Tiny's `thumbnail()` renders its icon to a temp png the backend owns for the session. All three are
+// looked up once at launch, in the background; after that an app is looked up again only when the
+// app check sees its `.app` appear (`open -Rb <bundle id>`), and its icon is dropped when it goes.
+// A replaced or dropped png is deleted (best effort). The menu never waits on an icon: when a lookup
+// lands, the armed project menu is set again.
+
+/** The icon png of each app found so far. */
+let icons: AppIcons = {};
+/** Whether each app's `.app` was found on the last app check; null before the first. */
+let found: Record<OpenInApp, boolean> | null = null;
+/** Bumped per app by every lookup or drop, so a slower lookup can't land over a newer one. */
+const iconSeq: Record<OpenInApp, number> = { vscode: 0, t3: 0, ghostty: 0 };
+
+/** A fresh lifecycle: no icons (their pngs deleted), no found state, and any lookup still running ignored. */
+function resetIcons(): void {
+  for (const a of OPEN_IN_APPS) ++iconSeq[a];
+  for (const path of Object.values(icons)) if (path !== undefined) void removePng(path);
+  icons = {};
+  found = null;
+}
+
+/** Whether each app's `.app` is there now, by bundle id (LaunchServices: no Spotlight, no thumbnail). */
+export async function checkFound(): Promise<Record<OpenInApp, boolean>> {
+  const [vscode, t3, ghostty] = await Promise.all(OPEN_IN_APPS.map((a) => run(['open', '-Rb', BUNDLE_IDS[a]]).then((r) => r.ok)));
+  return { vscode: vscode === true, t3: t3 === true, ghostty: ghostty === true };
+}
+
+/** A directory at this path (a `.app` is one). */
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await tjs.stat(path)).isDirectory;
+  } catch {
+    return false;
+  }
+}
+
+/** An app's `.app`: Spotlight's first hit for its bundle id, else the first fallback present, else null. */
+export async function findAppBundle(which: OpenInApp): Promise<string | null> {
+  const out = await output(['mdfind', mdfindQuery(which)]);
+  if (out === null) console.log(`andon: mdfind failed for ${APP_NAMES[which]}; trying the Applications folders`);
+  const hit = mdfindHit(out);
+  if (hit !== null) return hit;
+  for (const p of appFallbacks(which, tjs.env.HOME)) if (await isDirectory(p)) return p;
+  return null;
+}
+
+/** An app's icon png: its `.app` found, then `app.thumbnail(<.app>, 32)`. Null, with a line logged,
+ *  when there is no `.app` or the thumbnail fails. Never throws. */
+export async function lookupIcon(app: MacApp, which: OpenInApp): Promise<string | null> {
+  const name = APP_NAMES[which];
+  let bundle: string | null;
+  try {
+    bundle = await findAppBundle(which);
+  } catch (err) {
+    console.log(`andon: could not look for ${name} (${errorReason(err)}); no icon`);
+    return null;
+  }
+  if (bundle === null) {
+    console.log(`andon: no ${name} app found; no icon`);
+    return null;
+  }
+  try {
+    const thumb = await app.thumbnail(bundle, 32);
+    if (typeof thumb.path === 'string' && thumb.path !== '') return thumb.path;
+    console.log(`andon: the ${name} thumbnail gave no png; no icon`);
+  } catch (err) {
+    console.log(`andon: could not make the ${name} icon (${errorReason(err)}); no icon`);
+  }
+  return null;
+}
+
+/** Deletes a temp png the backend owns; a failure is logged and nothing else. */
+async function removePng(path: string): Promise<void> {
+  try {
+    await tjs.remove(path);
+  } catch (err) {
+    console.log(`andon: could not delete the old icon ${path} (${errorReason(err)})`);
+  }
+}
+
+/** Puts an app's icon in place (or drops it, for null), deleting the png it replaces, and sets the
+ *  armed project menu again when the icon changed. */
+function setIcon(app: MacApp, which: OpenInApp, path: string | null): void {
+  const old = icons[which];
+  if (old === (path ?? undefined)) return;
+  const next: AppIcons = { ...icons };
+  if (path === null) delete next[which];
+  else next[which] = path;
+  icons = next;
+  if (old !== undefined) void removePng(old);
+  rearmProjectMenu(app);
+}
+
+/** Looks up these apps' icons, each on its own; each lands when it is done. */
+async function lookupIcons(app: MacApp, which: readonly OpenInApp[]): Promise<void> {
+  await Promise.all(
+    which.map(async (a) => {
+      const seq = ++iconSeq[a];
+      const path = await lookupIcon(app, a);
+      if (seq !== iconSeq[a]) {
+        if (path !== null && path !== icons[a]) void removePng(path); // a newer lookup or drop won
+        return;
+      }
+      setIcon(app, a, path);
+    }),
+  );
+}
+
+/** One app check's found/missing state: an app that appeared is looked up again, one that went has
+ *  its icon dropped; an app that didn't change runs nothing. The first check only records it (the
+ *  launch lookup covers it). */
+function noteFound(app: MacApp, now: Record<OpenInApp, boolean>): void {
+  const before = found;
+  found = now;
+  if (before === null) return;
+  const appeared = OPEN_IN_APPS.filter((a) => now[a] && !before[a]);
+  for (const a of OPEN_IN_APPS.filter((x) => !now[x] && before[x])) {
+    ++iconSeq[a];
+    setIcon(app, a, null);
+  }
+  if (appeared.length > 0) void lookupIcons(app, appeared);
+}
+
+/** Sets the armed project menu again with the icons now known, if it is still armed and no newer request came in. */
+function rearmProjectMenu(app: MacApp): void {
+  const armed = armedProject;
+  if (armed === null || armed.seq !== menuSeq) return;
+  app.menu.setContext(projectMenuItems(armed.pid, apps ?? NO_APPS, icons));
 }
 
 const sameApps = (a: Availability, b: Availability): boolean => a.vscode === b.vscode && a.ghostty === b.ghostty && a.t3 === b.t3;
@@ -458,16 +599,18 @@ export async function showProjectMenu(params: unknown, app: MacApp, projects: re
   if (req === null) return;
   const seq = ++menuSeq;
   armedJob = null;
+  armedProject = null;
   const p = req.project === null ? null : menuProject(projects, req.project);
   if (p === null) {
     app.menu.setContext(null);
     return;
   }
+  armedProject = { pid: p.id, seq };
   const known = apps;
-  if (known !== null) app.menu.setContext(projectMenuItems(p.id, known));
-  const fresh = await refreshApps();
+  if (known !== null) app.menu.setContext(projectMenuItems(p.id, known, icons));
+  const fresh = await refreshApps(app);
   if (seq !== menuSeq) return;
-  if (known === null || !sameApps(known, fresh)) app.menu.setContext(projectMenuItems(p.id, fresh));
+  if (known === null || !sameApps(known, fresh)) app.menu.setContext(projectMenuItems(p.id, fresh, icons));
 }
 
 /** The failure reason of an action, or null when it worked. */
@@ -653,6 +796,7 @@ const isListedProject = (projects: readonly MenuProject[], pid: string): boolean
  */
 export async function showJobMenu(params: unknown, app: MacApp, host: JobMenuHost = hostJobMenu): Promise<void> {
   const seq = ++menuSeq;
+  armedProject = null;
   const req = jobMenuRequest(params);
   if (req === null || !isListedProject(host.projects(), req.project)) {
     armedJob = null;

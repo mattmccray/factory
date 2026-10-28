@@ -170,8 +170,8 @@ describe("backend.ts types the adapter with Tiny's vendored types, narrowed to M
 describe('AC6: tinyjs.json', () => {
   const cfg = readJson(join(appDir, 'tinyjs.json'));
 
-  test('the Mac app pins Tiny JS 0.65.0, the version it was smoke-tested on, and nothing else moved', () => {
-    expect(cfg.minTinyjsVersion).toBe('0.65.0');
+  test('the Mac app pins Tiny JS 0.68.0, the version it was smoke-tested on, and nothing else moved', () => {
+    expect(cfg.minTinyjsVersion).toBe('0.68.0');
     expect(cfg).toEqual({
       $schema: 'https://tinyjs.app/schema/tinyjs.schema.json',
       name: 'andon',
@@ -180,7 +180,7 @@ describe('AC6: tinyjs.json', () => {
       minSize: '1100x700',
       id: 'dev.factory.andon',
       version: '0.1.0',
-      minTinyjsVersion: '0.65.0',
+      minTinyjsVersion: '0.68.0',
       icon: 'assets/icon.png',
       url: 'http://127.0.0.1:8766/?shell=mac',
       chrome: { frame: false, windowControls: true, windowControlsPos: { x: 18, y: 20 }, vibrancy: 'sidebar' },

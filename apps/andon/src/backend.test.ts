@@ -3,11 +3,11 @@
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { api, assetPath, checkApps, dockIcon, findT3, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runJobItem, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, showProjectMenu, trayIcon } from './backend';
+import { api, assetPath, checkApps, checkFound, dockIcon, findAppBundle, findT3, lookupIcon, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runJobItem, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, showProjectMenu, trayIcon } from './backend';
 import type { HandoffHost, JobMenuHost, MacApp, MacNavEvent, MacTraySpec, MacWinState, RunResult } from './backend';
 import { itemId, projectMenuItems } from './projectmenu';
 import { jobItemId, jobMenuItems } from './jobmenu';
-import type { MenuProject } from './projectmenu';
+import type { Availability, MenuProject } from './projectmenu';
 import type { HandoffMode, Settings } from './settings';
 import { GITHUB_ID, MINIMIZE_ID, SETTINGS_ID, SETTINGS_SIZE, SHOW_MAIN_ID, STATUS_BAR_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
 import { trayNotice, traySpec } from './badge';
@@ -71,6 +71,10 @@ function fakeApp(state: MacWinState | null, fail: Failures = {}): { app: MacApp;
       },
     },
     clipboard: { write: () => calls.push('clipboard.write') > 0 },
+    thumbnail: async (path) => {
+      calls.push(`thumbnail(${path})`);
+      throw new Error('no thumbnails here');
+    },
   };
   return { app, calls };
 }
@@ -1365,4 +1369,308 @@ test('040: a newer ask of either menu wins over a slower board fetch', async () 
   release();
   await slow;
   expect(contexts(log)).toEqual([jobMenuItems(PID, MENU_JOB, false), null]);
+});
+
+// ---- the Open in apps' own icons (043) ----
+
+const VSCODE_HOME = '/Users/me/Applications/Visual Studio Code.app';
+const T3_BETA = '/Applications/T3 Code (Beta).app';
+const GHOSTTY = '/Applications/Ghostty.app';
+
+/** The machine the icon lookups see. Mutable, so a test can install or remove an app between checks. */
+interface IconWorld {
+  /** Names `open -Ra` finds. */
+  installed: string[];
+  /** Bundle ids `open -Rb` finds. */
+  bundles: string[];
+  /** `mdfind`'s stdout per bundle id ('' when absent), 'fail' (exits 1), or 'throw' (can't start). */
+  mdfind: Record<string, string>;
+  /** Folders present (the fallback `.app`s). */
+  dirs: string[];
+  /** Executables present (`t3`). */
+  files: string[];
+  /** What `tjs.remove` was called with. */
+  removed: string[];
+  /** Every spawned argv. */
+  spawned: string[][];
+  /** `tjs.remove` rejects. */
+  removeFails?: boolean;
+}
+
+function iconWorld(over: Partial<IconWorld> = {}): IconWorld {
+  return { installed: [], bundles: [], mdfind: {}, dirs: [], files: [], removed: [], spawned: [], ...over };
+}
+
+const hungProcess = (): FakeProcess & { stderr: null } => ({ stdout: new ReadableStream<Uint8Array>(), stderr: null, kill: () => undefined, wait: never });
+
+/** Stand in `tjs` (and the build-time globals) for the app check, the icon lookups, and the service (which never answers). */
+function fakeIconMachine(w: IconWorld): void {
+  Reflect.set(globalThis, '__ANDON_REPO__', REPO);
+  Reflect.set(globalThis, '__ANDON_BUN__', '/the/bun');
+  Reflect.set(globalThis, 'tjs', {
+    env: { HOME: '/Users/me' },
+    spawn: (argv: string[]) => {
+      w.spawned.push(argv);
+      const [cmd, flag, arg] = argv;
+      if (cmd === 'mdfind') {
+        const id = Object.keys(w.mdfind).find((k) => (flag ?? '').includes(`"${k}"`));
+        const out = id === undefined ? '' : (w.mdfind[id] ?? '');
+        if (out === 'throw') throw new Error('no mdfind');
+        return { stdout: { text: async () => out }, stderr: null, kill: () => undefined, wait: async () => ({ exit_status: out === 'fail' ? 1 : 0, term_signal: null }) };
+      }
+      if (cmd === 'open' && flag === '-Ra') return exited(w.installed.includes(arg ?? '') ? 0 : 1);
+      if (cmd === 'open' && flag === '-Rb') return exited(w.bundles.includes(arg ?? '') ? 0 : 1);
+      return hungProcess(); // curl and the service: never answer
+    },
+    stat: async (path: string) => {
+      if (w.dirs.includes(path)) return { isFile: false, isDirectory: true, mode: 0o40755 };
+      if (w.files.includes(path)) return { isFile: true, isDirectory: false, mode: 0o100755 };
+      throw new Error('ENOENT');
+    },
+    remove: async (path: string) => {
+      w.removed.push(path);
+      if (w.removeFails === true) throw new Error('EPERM');
+    },
+  });
+}
+
+/** A fake `app.thumbnail`: a fresh temp png per call for a `.app` in `ok` (`/tmp/<app name>-<nth>.png`), a rejection otherwise. `hold`
+ *  keeps every call pending until `release()`. */
+function thumbnails(ok: string[], hold = false): { calls: [string, number | undefined][]; thumbnail: MacApp['thumbnail']; release: () => void } {
+  const calls: [string, number | undefined][] = [];
+  const waiting: (() => void)[] = [];
+  let held = hold;
+  const made = new Map<string, number>();
+  const thumbnail: MacApp['thumbnail'] = async (path, size) => {
+    calls.push([path, size]);
+    if (held) await new Promise<void>((r) => waiting.push(r));
+    if (!ok.includes(path)) throw new Error(`no such file ${path}`);
+    const n = (made.get(path) ?? 0) + 1;
+    made.set(path, n);
+    return { path: png(path, n), width: 64, height: 64 };
+  };
+  return {
+    calls,
+    thumbnail,
+    release: () => {
+      held = false;
+      for (const r of waiting.splice(0)) r();
+    },
+  };
+}
+
+/** The temp png the fake thumbnail makes for a `.app` the nth time. */
+const png = (app: string, n = 1): string => `/tmp/${(app.split('/').at(-1) ?? '').replace(/\.app$/, '')}-${n}.png`;
+const LAUNCH_ICONS = { vscode: png(VSCODE_HOME), t3: png(T3_BETA), ghostty: png(GHOSTTY) };
+
+const settle = async (): Promise<void> => {
+  for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 1));
+};
+
+/** Runs `fn` with console.log captured. */
+async function logging<T>(fn: () => Promise<T>): Promise<{ value: T; logged: string[] }> {
+  const logged: string[] = [];
+  const realLog = console.log;
+  console.log = (line: string) => void logged.push(line);
+  try {
+    return { value: await fn(), logged };
+  } finally {
+    console.log = realLog;
+  }
+}
+
+const mdfinds = (w: IconWorld): string[][] => w.spawned.filter((a) => a[0] === 'mdfind');
+
+test("043 AC3: an icon comes from mdfind's hit for the bundle id, thumbnailed at 32", async () => {
+  const w = iconWorld({ mdfind: { 'com.microsoft.VSCode': `${VSCODE_HOME}\n/Volumes/old/Visual Studio Code.app\n` }, dirs: ['/Applications/Visual Studio Code.app'] });
+  fakeIconMachine(w);
+  const { app } = contextApp();
+  const t = thumbnails([VSCODE_HOME]);
+  app.thumbnail = t.thumbnail;
+  expect(await lookupIcon(app, 'vscode')).toBe(png(VSCODE_HOME));
+  expect(mdfinds(w)).toEqual([['mdfind', 'kMDItemCFBundleIdentifier == "com.microsoft.VSCode"']]);
+  expect(t.calls).toEqual([[VSCODE_HOME, 32]]);
+});
+
+test('043 AC3: with no mdfind hit, or mdfind failing, the fixed locations are tried in order', async () => {
+  const w = iconWorld({ mdfind: { 'com.t3tools.t3code': '', 'com.mitchellh.ghostty': 'fail' }, dirs: [T3_BETA, '/Users/me/Applications/T3 Code (Beta).app', GHOSTTY] });
+  fakeIconMachine(w);
+  expect(await findAppBundle('t3')).toBe(T3_BETA);
+  const { value, logged } = await logging(() => findAppBundle('ghostty'));
+  expect(value).toBe(GHOSTTY);
+  expect(logged.some((l) => l.includes('mdfind failed for Ghostty'))).toBe(true);
+  w.mdfind['com.mitchellh.ghostty'] = 'throw';
+  expect(await logging(() => findAppBundle('ghostty')).then((r) => r.value)).toBe(GHOSTTY);
+  expect(mdfinds(w).map((a) => a[1])).toEqual(['kMDItemCFBundleIdentifier == "com.t3tools.t3code"', 'kMDItemCFBundleIdentifier == "com.mitchellh.ghostty"', 'kMDItemCFBundleIdentifier == "com.mitchellh.ghostty"']);
+});
+
+test('043 AC3: no .app found, or thumbnail() rejecting, gives no icon, logs a line, and never throws', async () => {
+  const w = iconWorld({ mdfind: { 'com.microsoft.VSCode': 'fail', 'com.mitchellh.ghostty': `${GHOSTTY}\n` } });
+  fakeIconMachine(w);
+  const { app } = contextApp();
+  const t = thumbnails([]);
+  app.thumbnail = t.thumbnail;
+  const missing = await logging(() => lookupIcon(app, 'vscode'));
+  expect(missing.value).toBeNull();
+  expect(missing.logged.some((l) => l.includes('no VS Code app found'))).toBe(true);
+  expect(t.calls).toEqual([]);
+  const rejected = await logging(() => lookupIcon(app, 'ghostty'));
+  expect(rejected.value).toBeNull();
+  expect(rejected.logged.some((l) => l.includes('could not make the Ghostty icon'))).toBe(true);
+  expect(t.calls).toEqual([[GHOSTTY, 32]]);
+  app.thumbnail = () => {
+    throw new Error('thumbnail threw');
+  };
+  expect((await logging(() => lookupIcon(app, 'ghostty'))).value).toBeNull();
+  w.mdfind['com.t3tools.t3code'] = 'throw';
+  const unstartable = await logging(() => lookupIcon(app, 't3'));
+  expect(unstartable.value).toBeNull();
+  expect(unstartable.logged.length).toBeGreaterThan(0);
+});
+
+test('043: the found/missing check asks LaunchServices by bundle id, with no mdfind or thumbnail', async () => {
+  const w = iconWorld({ bundles: ['com.t3tools.t3code'] });
+  fakeIconMachine(w);
+  expect(await checkFound()).toEqual({ vscode: false, t3: true, ghostty: false });
+  expect(w.spawned).toEqual([
+    ['open', '-Rb', 'com.microsoft.VSCode'],
+    ['open', '-Rb', 'com.t3tools.t3code'],
+    ['open', '-Rb', 'com.mitchellh.ghostty'],
+  ]);
+});
+
+/** Everything installed and found: VS Code in ~/Applications by Spotlight, T3 Code (Beta) and Ghostty in /Applications by fallback. */
+function allFound(): IconWorld {
+  return iconWorld({
+    installed: ['Visual Studio Code', 'Ghostty'],
+    bundles: ['com.microsoft.VSCode', 'com.t3tools.t3code', 'com.mitchellh.ghostty'],
+    mdfind: { 'com.microsoft.VSCode': `${VSCODE_HOME}\n` },
+    dirs: [T3_BETA, GHOSTTY],
+  });
+}
+const NO_T3: Availability = { vscode: true, ghostty: true, t3: null };
+
+test('043 AC4: a right-click before the launch lookup lands sets the menu at once with no icons; the lookup then sets it again with them', async () => {
+  const w = allFound();
+  fakeIconMachine(w);
+  const { app, log } = contextApp();
+  const t = thumbnails([VSCODE_HOME, T3_BETA, GHOSTTY], true);
+  app.thumbnail = t.thumbnail;
+  await logging(async () => {
+    init(app);
+    await showProjectMenu({ project: PID }, app, PROJECTS);
+    await settle();
+  });
+  expect(new Set(t.calls.map(([p, size]) => `${p}@${size}`))).toEqual(new Set([`${VSCODE_HOME}@32`, `${T3_BETA}@32`, `${GHOSTTY}@32`]));
+  // Set at once (from the last app check, then the fresh one), while every icon lookup still waits.
+  const before = contexts(log);
+  expect(before.length).toBeGreaterThan(0);
+  expect(before.at(-1)).toEqual(projectMenuItems(PID, NO_T3));
+  expect(JSON.stringify(before)).not.toContain('icon');
+  t.release();
+  await settle();
+  // T3 Code is grayed (no t3) and still carries its icon.
+  expect(contexts(log).at(-1)).toEqual(projectMenuItems(PID, NO_T3, LAUNCH_ICONS));
+  log.length = 0;
+  await showProjectMenu({ project: PID }, app, PROJECTS);
+  expect(contexts(log)).toEqual([projectMenuItems(PID, NO_T3, LAUNCH_ICONS)]);
+});
+
+test('043 AC4: a lookup that lands after the menu was disarmed, or after a job menu, sets nothing', async () => {
+  for (const after of ['disarm', 'job'] as const) {
+    const w = allFound();
+    fakeIconMachine(w);
+    const { app, log } = contextApp();
+    const t = thumbnails([VSCODE_HOME, T3_BETA, GHOSTTY], true);
+    app.thumbnail = t.thumbnail;
+    await logging(async () => {
+      init(app);
+      await showProjectMenu({ project: PID }, app, PROJECTS);
+      if (after === 'disarm') await showProjectMenu({ project: null }, app, PROJECTS);
+      else await showJobMenu({ project: PID, job: 'bad id' }, app, { projects: () => PROJECTS, board: async () => ({}), findT3: async () => null });
+      await settle();
+    });
+    log.length = 0;
+    t.release();
+    await settle();
+    expect({ after, contexts: contexts(log) }).toEqual({ after, contexts: [] });
+  }
+});
+
+test('043 AC5: an app check with no change looks nothing up; an app that goes has its icon dropped and deleted; one that comes back is looked up alone', async () => {
+  const w = allFound();
+  fakeIconMachine(w);
+  const { app, log } = contextApp();
+  const t = thumbnails([VSCODE_HOME, T3_BETA, GHOSTTY]);
+  app.thumbnail = t.thumbnail;
+  await logging(async () => {
+    init(app);
+    await settle();
+  });
+  const launch = LAUNCH_ICONS;
+  w.removed.length = 0; // the previous lifecycle's icons, deleted by init
+  await showProjectMenu({ project: PID }, app, PROJECTS);
+  await settle();
+  expect(contexts(log).at(-1)).toEqual(projectMenuItems(PID, NO_T3, launch));
+
+  // no change: no mdfind, no thumbnail
+  w.spawned.length = 0;
+  t.calls.length = 0;
+  await showProjectMenu({ project: PID }, app, PROJECTS);
+  await settle();
+  expect(mdfinds(w)).toEqual([]);
+  expect(t.calls).toEqual([]);
+  expect(w.removed).toEqual([]);
+
+  // Ghostty goes: its icon is dropped (no lookup), its png deleted, and the armed menu set again
+  w.bundles = w.bundles.filter((b) => b !== 'com.mitchellh.ghostty');
+  w.installed = ['Visual Studio Code'];
+  w.dirs = [T3_BETA];
+  log.length = 0;
+  await showProjectMenu({ project: PID }, app, PROJECTS);
+  await settle();
+  expect(mdfinds(w)).toEqual([]);
+  expect(t.calls).toEqual([]);
+  expect(w.removed).toEqual([png(GHOSTTY)]);
+  const noGhostty = { vscode: launch.vscode, t3: launch.t3 };
+  expect(contexts(log).at(-1)).toEqual(projectMenuItems(PID, { vscode: true, ghostty: false, t3: null }, noGhostty));
+
+  // Ghostty comes back: only Ghostty is looked up
+  w.bundles.push('com.mitchellh.ghostty');
+  w.installed.push('Ghostty');
+  w.dirs.push(GHOSTTY);
+  log.length = 0;
+  await showProjectMenu({ project: PID }, app, PROJECTS);
+  await settle();
+  expect(mdfinds(w)).toEqual([['mdfind', 'kMDItemCFBundleIdentifier == "com.mitchellh.ghostty"']]);
+  expect(t.calls).toEqual([[GHOSTTY, 32]]);
+  expect(contexts(log).at(-1)).toEqual(projectMenuItems(PID, NO_T3, { ...noGhostty, ghostty: png(GHOSTTY, 2) }));
+});
+
+test('043 AC5: a re-lookup that replaces an icon deletes the old png; a failed delete is logged and stops nothing', async () => {
+  // Ghostty's icon is found at launch (by fallback) though the first check says its bundle id is missing.
+  const w = allFound();
+  w.bundles = ['com.microsoft.VSCode', 'com.t3tools.t3code'];
+  w.removeFails = true;
+  fakeIconMachine(w);
+  const { app, log } = contextApp();
+  const t = thumbnails([VSCODE_HOME, T3_BETA, GHOSTTY]);
+  app.thumbnail = t.thumbnail;
+  await logging(async () => {
+    init(app);
+    await settle();
+  });
+  w.bundles.push('com.mitchellh.ghostty');
+  w.removed.length = 0; // the previous lifecycle's icons, deleted by init
+  w.spawned.length = 0;
+  t.calls.length = 0;
+  const { logged } = await logging(async () => {
+    await showProjectMenu({ project: PID }, app, PROJECTS);
+    await settle();
+  });
+  expect(mdfinds(w)).toEqual([['mdfind', 'kMDItemCFBundleIdentifier == "com.mitchellh.ghostty"']]);
+  expect(t.calls).toEqual([[GHOSTTY, 32]]);
+  expect(w.removed).toEqual([png(GHOSTTY)]);
+  expect(logged.some((l) => l.includes(`could not delete the old icon ${png(GHOSTTY)}`))).toBe(true);
+  expect(contexts(log).at(-1)).toEqual(projectMenuItems(PID, NO_T3, { ...LAUNCH_ICONS, ghostty: png(GHOSTTY, 2) }));
 });
