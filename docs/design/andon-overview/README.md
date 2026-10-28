@@ -12,7 +12,7 @@ the same jobs.
 - `chosen/`: the concept we picked (07, the Mac app), copied here with its fixture so it stays
   stable while we refine it. `overview.png` and `inspector.png` are its reference screenshots.
 - `design.md`: the accepted design, the contract job (0) and the four staged factory jobs (A–D)
-  that implement it in `apps/andon` and `apps/andon-shell`, and the decisions behind it.
+  that implement it in `apps/andon-ui` and `apps/andon`, and the decisions behind it.
 
 ## The fixture
 

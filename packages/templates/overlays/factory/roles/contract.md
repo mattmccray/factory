@@ -17,7 +17,7 @@ you don't need to run it (write `not run (per my rules)`).
 `schema: "factory/v1"`; event types, their fields, and their effects; the transitions the CLI
 enforces (WAIT FOR ALL included); the `job.json` snapshot; `config.json` keys; the file layout
 under `factory/`; `managed.json`; the CLI's commands, arguments, value parsing, output, and exit
-codes; the dashboard/agent endpoints and their payloads.
+codes; the dashboard and Andon service endpoints and their payloads.
 
 If the diff touches none of it, write `VERDICT: PASS` with a one-line note saying so.
 

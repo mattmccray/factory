@@ -3,7 +3,7 @@
 Status: **accepted** (2026-10-26). The reference is `chosen/andon-overview.html`, mock-up 07 from
 round 2. Its reference screenshots are `chosen/overview.png` and `chosen/inspector.png`.
 
-This document is what factory jobs implement against `apps/andon` and `apps/andon-shell`, and
+This document is what factory jobs implement against `apps/andon-ui` and `apps/andon`, and
 what the `ui` reviewer judges them by. Where it and the mock-up disagree, this document wins; the
 mock-up shows the feel. Each section that a job implements is marked **(Job A–D)**; see "Jobs".
 
@@ -25,7 +25,7 @@ project, inside a **native-feeling macOS app** (sidebar, toolbar, inspector). On
 - **At a glance.** Twelve projects and about 30 jobs fit at 1440×900 with no scrolling. State is
   readable from shape and color before any text is read.
 - **Trouble first.** Needs-human work is red, has its own column, sorts its lane to the top, and
-  is counted in the sidebar, the toolbar, and the shell's Dock badge (which already exists).
+  is counted in the sidebar, the toolbar, and the Mac app's Dock badge (which already exists).
 - **A real Mac app.** System type, system colors, hairlines, vibrancy, sheets, and an inspector.
   Never fake chrome: no drawn traffic lights or menu bar.
 - **Read-only.** Andon never writes job state; only the factory CLI does. Actions copy the exact
@@ -42,7 +42,7 @@ project, inside a **native-feeling macOS app** (sidebar, toolbar, inspector). On
 │ vibrancy │ board: header row (sticky) + one lane per project        │ resizable, │
 │          │                                                          │ pushes the │
 │          │                                                          │ board      │
-│ agent ●  ├──────────────────────────────────────────────────────────┤            │
+│ service ●├──────────────────────────────────────────────────────────┤            │
 │          │ status bar (28px)                                        │            │
 └──────────┴──────────────────────────────────────────────────────────┴────────────┘
 ```
@@ -54,7 +54,7 @@ project, inside a **native-feeling macOS app** (sidebar, toolbar, inspector). On
   (red with the needs-human count, or gray with the active count, or none when idle). Selecting a
   project focuses it (section 7). This replaces today's project `<select>`, and the selection
   still persists under the existing `andon.project` key.
-- **Footer**: the agent connection ("Connected · andon-agent · 12 projects", or "Connecting…" or
+- **Footer**: the service connection ("Connected · andon-service · 12 projects", or "Connecting…" or
   "Unreachable"), with a green, gray, or red dot. This replaces the header's status.
 - The mock-up's disabled "Reports" section (Weekly and Monthly ledger) is **left out** until the
   Ledger report exists.
@@ -85,12 +85,12 @@ hours", using the smallest `settleAfterHours` shown). The gutter header reads "1
 beside the board and **pushes** it; it never covers it. When the window is narrower than 1640px,
 opening the inspector auto-hides the sidebar, and closing it brings the sidebar back.
 
-## 4. The window: shell and browser (Job A)
+## 4. The window: the Mac app and browser (Job A)
 
-Tiny JS 0.65 supports a hidden title bar (`types/tiny.d.ts`, `TinyChromeOptions`). The shell
-should use it:
+Tiny JS 0.65 supports a hidden title bar (`types/tiny.d.ts`, `TinyChromeOptions`). The Mac
+app should use it:
 
-- In `apps/andon-shell/tinyjs.json`, set `"chrome": { "frame": false, "windowControls": true,
+- In `apps/andon/tinyjs.json`, set `"chrome": { "frame": false, "windowControls": true,
   "windowControlsPos": { "x": 18, "y": 20 }, "vibrancy": "sidebar" }`, so it applies before first
   paint. Tune the position so the traffic lights are vertically centered in the 52px toolbar row,
   over the sidebar.
@@ -294,7 +294,7 @@ Closing a layer returns focus to what opened it.
 - combinations, joined with `&`
 
 Opening the inspector or a sheet **pushes** a history entry, so Back closes it; file changes
-**replace** the entry. This fixes the mock-up's rough edge. The shell's `?shell=mac` lives in the
+**replace** the entry. This fixes the mock-up's rough edge. The Mac app's `?shell=mac` lives in the
 query, not the hash.
 
 ## 11. Visual tokens (Job A)
@@ -358,9 +358,9 @@ and the amber andon stripes go away.
 
 Old components are deleted in the job that replaces them.
 
-**Shell:** `tinyjs.json` (chrome, minSize, the `?shell=mac` URL); nothing else changes.
+**Mac app:** `tinyjs.json` (chrome, minSize, the `?shell=mac` URL); nothing else changes.
 
-**Contract:** none in jobs A–D, which only read what the agent serves. The two additions they
+**Contract:** none in jobs A–D, which only read what the service serves. The two additions they
 use (why a job stopped, and `abandoned`) come from Job 0.
 
 ## 13. Jobs
@@ -387,21 +387,21 @@ in exploration.
     isn't. If one is, its next event is rejected because the stage is terminal, and it stops.
   - **CLI:** `factory abandon <id> "<reason>" [--force] [--delete-branch]` logs the event, removes
     the worktree, and keeps the branch unless `--delete-branch` is given. It lives in the CLI, not
-    only the skill, so a terminal, a script, or (later) andon-agent can run it without an AI
+    only the skill, so a terminal, a script, or (later) the Andon service can run it without an AI
     session. With no flag it keeps the branch: deleting unmerged commits is the step that can't
     be undone, so it must be asked for explicitly.
   - **Skill:** `/factory abandon <id> <reason>` asks two questions before calling the CLI: confirm
     the abandon (and, from a working stage, that its session is stopped), then keep or delete the
     branch, defaulting to keep.
-  - **Readers:** the agent and Andon treat `abandoned` as settled.
+  - **Readers:** the Andon service and the UI treat `abandoned` as settled.
 
 
 - **A. `andon-mac-frame`** (sections 3, 4, 11; done: job 023): the frame (sidebar, toolbar, status bar, empty
   inspector slot), the visual tokens with light and dark, the project sidebar replacing the
-  switcher, the connection footer, and the shell chrome (`frame: false`, traffic-light position,
+  switcher, the connection footer, and the Mac app chrome (`frame: false`, traffic-light position,
   vibrancy, drag regions, `?shell=mac`). Today's board renders inside the new frame unchanged.
   *Accept:* the sidebar shows every project with correct badges and dots; selection persists; the
-  shell window has native traffic lights over the sidebar and drags by the toolbar; the browser
+  Mac app window has native traffic lights over the sidebar and drags by the toolbar; the browser
   shows the same app without the inset; both appearances meet AA.
 - **B. `andon-assembly-lines`** (sections 5, 6, 7): `lanes.ts` with tests, plus the matrix, the
   tokens, the hover popover, idle lanes, ghosts, crowded cells, project focus with recent
@@ -439,12 +439,12 @@ in exploration.
   `--delete-branch` is given.
 - **Interactive Andon, later:** a separate exploration, not part of this rollout. The direction
   is two levels, with no durable runner until one is clearly needed:
-  1. andon-agent runs the project's installed `factory` CLI for actions that need no AI
-     (approve, abandon), behind a per-agent token and an Origin check. The CLI stays the only
+  1. The Andon service runs the project's installed `factory` CLI for actions that need no AI
+     (approve, abandon), behind a per-service token and an Origin check. The CLI stays the only
      writer of job state.
   2. An inbox for actions that need an AI session (rework, a message to a job): Andon records the
-     request through the agent, and the `/factory` session or a resumed builder picks it up at
+     request through the service, and the `/factory` session or a resumed builder picks it up at
      its next checkpoint.
 
-  Multi-machine follows HANDOFF §10: each machine's agent owns its projects, and Andon sends
-  each action to the owning agent (over Tailscale or an SSH tunnel), with no central server.
+  Multi-machine follows HANDOFF §10: each machine's service owns its projects, and Andon sends
+  each action to the owning service (over Tailscale or an SSH tunnel), with no central server.

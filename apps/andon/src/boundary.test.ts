@@ -1,158 +1,228 @@
-// The UI's boundaries: contract code never runs in the UI (009 AC3), the dev server stays on
-// loopback (AC4), index.html needs nothing a strict CSP would block (AC6), and Andon never writes
-// job state: it only reads, and its actions copy a `/factory` command (026 AC5).
+// The Mac app's boundaries: no contract, service, or UI code runs in it, its logic is runtime-neutral
+// (AC5), only backend.ts names Tiny or txiki (through Tiny's own vendored types, narrowed to
+// `MacApp`), the window loads the service on loopback with the page's Tiny API denied but for its
+// drag regions (AC6), the
+// Mac app pins the Tiny JS it was tested on, and the backend entry is the Bun bundle of backend.ts.
 import { describe, expect, test } from 'bun:test';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import config from '../vite.config';
-import { isRecord } from './job';
+import { BACKEND_OUT, bundleBackend } from '../build';
+import { DEFAULT_PORT, pageUrl } from './autostart';
+import { isRecord } from './state';
 
-const app = join(import.meta.dir, '..');
+const appDir = join(import.meta.dir, '..');
+const repoDir = join(appDir, '..', '..');
+const ADAPTER = 'backend.ts';
+const sources = readdirSync(import.meta.dir).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'));
 
-describe('the contract boundary (009 AC3)', () => {
-  const sources = [
-    join(app, 'main.ts'),
-    ...readdirSync(import.meta.dir)
-      .filter((f) => (f.endsWith('.ts') || f.endsWith('.svelte')) && !f.endsWith('.test.ts'))
-      .map((f) => join(import.meta.dir, f)),
-  ];
+/** Every module specifier a file names: `import ... from`, `export ... from`, a bare `import '...'`, and `import()`. */
+function specifiers(text: string): string[] {
+  const out: string[] = [];
+  for (const m of text.matchAll(/(?:\bfrom|\bimport)\s*\(?\s*['"]([^'"]+)['"]/g)) if (m[1] !== undefined) out.push(m[1]);
+  return out;
+}
 
-  test('every import from @factory/contract is `import type`', () => {
-    let typeImports = 0;
-    for (const file of sources) {
-      const text = readFileSync(file, 'utf8');
-      // Every statement that names the package: `import ... from`, a side-effect import, `export ... from`, or `import()`.
-      const mentions = [...text.matchAll(/^.*['"]@factory\/contract(?:\/[^'"]*)?['"].*$/gm)].map((m) => m[0].trim());
-      for (const line of mentions) {
-        expect({ file, line, typeOnly: /^import type \{[^}]*\} from ['"]@factory\/contract['"];?$/.test(line) }).toEqual({ file, line, typeOnly: true });
-        typeImports++;
-      }
-    }
-    expect(typeImports).toBeGreaterThan(0); // job.ts checks its shapes against the contract
+/** An import the Mac app may not make: any `@factory/*` package, the UI (`apps/andon-ui`), or the service (`andon-service`). */
+const forbiddenImport = (s: string): boolean => s.startsWith('@factory/') || /(^|\/)andon-ui(\/|$)/.test(s) || s.includes('andon-service');
+
+const readJson = (path: string): Record<string, unknown> => {
+  const v: unknown = JSON.parse(readFileSync(path, 'utf8'));
+  if (!isRecord(v)) throw new Error(`${path} is not an object`);
+  return v;
+};
+
+describe('AC5: the Mac app runs no contract, service, or UI code', () => {
+  test('the scan sees the logic modules and the adapter', () => {
+    expect(sources).toContain(ADAPTER);
+    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts']) expect(sources).toContain(f);
   });
 
-  test('@factory/contract is a devDependency only', () => {
-    const pkg: unknown = JSON.parse(readFileSync(join(app, 'package.json'), 'utf8'));
-    if (!isRecord(pkg)) throw new Error('package.json is not an object');
-    const dev = isRecord(pkg.devDependencies) ? pkg.devDependencies : {};
-    expect(dev['@factory/contract']).toBe('workspace:*');
+  test('the import matcher flags @factory/*, the UI, and the service, not the Mac app itself', () => {
+    for (const s of ['@factory/contract', '@factory/andon-service', '@factory/andon-ui', '@factory/andon', '../../andon-ui/src/api', 'apps/andon-ui/src/live', '../../../packages/andon-service/src/index', 'andon-service']) {
+      expect({ s, bad: forbiddenImport(s) }).toEqual({ s, bad: true });
+    }
+    for (const s of ['./sse', './app', '../build', '../../andon/src/badge', 'apps/andon/src/state']) {
+      expect({ s, bad: forbiddenImport(s) }).toEqual({ s, bad: false });
+    }
+  });
+
+  test('no source imports an @factory/* package, apps/andon-ui, or andon-service', () => {
+    for (const f of sources) {
+      const text = readFileSync(join(import.meta.dir, f), 'utf8');
+      for (const s of specifiers(text)) {
+        expect({ file: f, specifier: s, bad: forbiddenImport(s) }).toEqual({ file: f, specifier: s, bad: false });
+      }
+      expect(text).not.toMatch(/@factory\/(contract|andon-service|andon-ui)/);
+    }
+  });
+
+  test('the logic modules import only each other: no bun:*, node:*, or tjs', () => {
+    for (const f of sources.filter((x) => x !== ADAPTER)) {
+      for (const s of specifiers(readFileSync(join(import.meta.dir, f), 'utf8'))) {
+        expect({ file: f, specifier: s, local: /^\.\/[a-z]+$/.test(s) }).toEqual({ file: f, specifier: s, local: true });
+      }
+    }
+    // the adapter's imports are local too: Tiny and txiki are globals, typed by Tiny's vendored types/
+    for (const s of specifiers(readFileSync(join(import.meta.dir, ADAPTER), 'utf8'))) expect(s).toMatch(/^\.\/[a-z]+$/);
+  });
+
+  test('package.json has no dependencies and never names @factory/contract', () => {
+    const pkg = readJson(join(appDir, 'package.json'));
+    expect(pkg.name).toBe('@factory/andon');
+    expect(pkg.private).toBe(true);
     expect(pkg.dependencies).toBeUndefined();
-    for (const key of ['peerDependencies', 'optionalDependencies']) expect(pkg[key]).toBeUndefined();
+    expect(JSON.stringify(pkg)).not.toContain('@factory/contract');
   });
 });
 
-describe('the Vite dev server (009 AC4)', () => {
-  test('binds loopback with CORS off, and still proxies /projects and /events to the agent', () => {
-    const server = isRecord(config) && isRecord(config.server) ? config.server : {};
-    expect(server.host).toBe('127.0.0.1');
-    expect(server.cors).toBe(false);
-    const proxy = isRecord(server.proxy) ? server.proxy : {};
-    expect(Object.keys(proxy).sort()).toEqual(['/events', '/projects']);
-    for (const key of ['/projects', '/events']) {
-      const entry = proxy[key];
-      expect(isRecord(entry) && entry.target).toBe(`http://127.0.0.1:${process.env.ANDON_PORT ?? '8766'}`);
-      expect(isRecord(entry) && entry.changeOrigin).toBe(true);
-      expect(isRecord(entry) && typeof entry.configure).toBe('function');
+/** Names Tiny or txiki in code: the `tjs` or `tiny` global, or a `Tiny*` type. Not the prose word "Tiny". */
+const NAMES_TINY = /\btjs\b|\btiny\b|\bTiny[A-Z]\w*/;
+/** A triple-slash reference to a file under a `types/` directory. */
+const TYPES_REFERENCE = /^\s*\/\/\/\s*<reference\s+path\s*=\s*["'][^"']*\btypes\//m;
+
+describe('only backend.ts names Tiny or txiki', () => {
+  test('the matcher flags the globals and Tiny types, not the prose word', () => {
+    for (const code of ["tjs.spawn(['curl'], {})", 'const e = tjs.env;', 'tiny.api.call()', 'function f(app: TinyApp) {}', 'let s: TinyWinState | null', 'const t: TinyTraySpec = {}']) {
+      expect({ code, flagged: NAMES_TINY.test(code) }).toEqual({ code, flagged: true });
+    }
+    for (const prose of ['// The Tiny JS app: the runtime-neutral part.', '/** Tiny calls init once. */', 'const tinyish = 1;', 'const myTjs = 2;', 'const Tiny = 3;']) {
+      expect({ prose, flagged: NAMES_TINY.test(prose) }).toEqual({ prose, flagged: false });
+    }
+  });
+
+  test('no source other than backend.ts names tjs, tiny, or a Tiny* type', () => {
+    for (const f of sources.filter((x) => x !== ADAPTER)) {
+      const hit = readFileSync(join(import.meta.dir, f), 'utf8').match(NAMES_TINY)?.[0] ?? null;
+      expect({ file: f, names: hit }).toEqual({ file: f, names: null });
     }
   });
 });
 
-describe('index.html under the CSP (009 AC6)', () => {
-  const html = readFileSync(join(app, 'index.html'), 'utf8');
+describe("backend.ts types the adapter with Tiny's vendored types, narrowed to MacApp", () => {
+  const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
 
-  test('every <script> has a src, and there is no inline script, style, or event handler', () => {
-    const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
-    expect(scripts.length).toBeGreaterThan(0);
-    for (const [, attrs = '', body = ''] of scripts) {
-      expect(attrs).toMatch(/\ssrc=["'][^"']+["']/);
-      expect(body.trim()).toBe('');
-    }
-    expect(html).not.toMatch(/<style\b/i);
-    expect(html).not.toMatch(/\sstyle\s*=/i);
-    expect(html).not.toMatch(/\son[a-z]+\s*=/i);
-    expect(html).not.toMatch(/javascript:/i);
+  test('the vendored types are present', () => {
+    for (const f of ['tiny.d.ts', 'tjs.d.ts']) expect(existsSync(join(appDir, 'types', f))).toBe(true);
+    expect(readdirSync(join(appDir, 'types')).sort()).toEqual(['tiny.d.ts', 'tjs.d.ts']);
   });
-});
 
-describe('Andon never writes job state (026 AC5)', () => {
-  const sources = [
-    join(app, 'main.ts'),
-    ...readdirSync(import.meta.dir)
-      .filter((f) => (f.endsWith('.ts') || f.endsWith('.svelte')) && !f.endsWith('.test.ts'))
-      .map((f) => join(import.meta.dir, f)),
-  ];
-  const read = (file: string): string => readFileSync(file, 'utf8');
+  test('it references both vendored files', () => {
+    expect(adapter).toMatch(/^\/\/\/ <reference path="\.\.\/types\/tiny\.d\.ts" \/>$/m);
+    expect(adapter).toMatch(/^\/\/\/ <reference path="\.\.\/types\/tjs\.d\.ts" \/>$/m);
+  });
 
-  /** The argument text of every call to `name(`, up to its balanced closing paren. */
-  function calls(text: string, name: RegExp): string[] {
-    const out: string[] = [];
-    for (const m of text.matchAll(name)) {
-      let depth = 0;
-      let end = m.index + m[0].length - 1; // at the opening paren
-      for (let i = end; i < text.length; i++) {
-        if (text[i] === '(') depth++;
-        else if (text[i] === ')' && --depth === 0) {
-          end = i;
-          break;
+  test('it declares no Tiny or txiki interface or global of its own', () => {
+    expect(adapter).not.toMatch(/\bdeclare\s+(const|let|var|namespace)\s+(tjs|tiny)\b/);
+    for (const name of ['TjsProcess', 'Tjs', 'TinyApp', 'TinyWindow', 'TinyWinState', 'TinyTraySpec']) {
+      const declared = new RegExp(`\\b(interface|type|class)\\s+${name}\\b`).test(adapter);
+      expect({ name, declared }).toEqual({ name, declared: false });
+    }
+  });
+
+  test("it exports MacApp, a Pick of Tiny's TinyApp, and the adapter's entry points take it", () => {
+    expect(adapter).toMatch(/^export type MacApp = Pick<TinyApp, [^>]+>/m);
+    expect(adapter).toMatch(/\bexport function init\(app: MacApp\)/);
+    expect(adapter).toMatch(/\bexport async function onTray\(id: string \| null, app: MacApp\)/);
+    expect(adapter).toMatch(/\bexport function setDock\(app: MacApp,/);
+    expect(adapter).toMatch(/\bexport const setTray = \(app: MacApp,/);
+    expect(adapter).toMatch(/\boneAtATime\(async \(app: MacApp\)/);
+  });
+
+  test('the reference matcher flags a types/ reference and nothing else', () => {
+    expect(TYPES_REFERENCE.test('/// <reference path="../types/tiny.d.ts" />')).toBe(true);
+    expect(TYPES_REFERENCE.test("x\n  /// <reference path='types/tjs.d.ts'/>")).toBe(true);
+    expect(TYPES_REFERENCE.test('/// <reference types="bun" />')).toBe(false);
+    expect(TYPES_REFERENCE.test('/// <reference lib="esnext.disposable" />')).toBe(false);
+  });
+
+  test('no other file in the repo references the vendored types', () => {
+    const skip = new Set(['node_modules', '.git', 'jobs', '.worktrees', '.lock', 'build', 'dist', '.build']);
+    const hits: string[] = [];
+    const walk = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.isDirectory()) {
+          if (!skip.has(e.name)) walk(join(dir, e.name));
+        } else if (/\.(ts|tsx|mts|cts|js|mjs|svelte)$/.test(e.name) && TYPES_REFERENCE.test(readFileSync(join(dir, e.name), 'utf8'))) {
+          hits.push(join(dir, e.name).slice(repoDir.length + 1));
         }
       }
-      out.push(text.slice(m.index + m[0].length, end));
-    }
-    return out;
-  }
-
-  test('every fetch is a GET: no method other than GET, and no body', () => {
-    let found = 0;
-    for (const file of sources) {
-      for (const args of calls(read(file), /\bfetch\s*\(/g)) {
-        found++;
-        const method = /\bmethod\s*:\s*['"`]?(\w+)/i.exec(args)?.[1];
-        expect({ file, args, method: method?.toUpperCase() ?? 'GET', body: /\bbody\s*:/.test(args) }).toEqual({ file, args, method: 'GET', body: false });
-      }
-    }
-    expect(found).toBeGreaterThan(0); // App.svelte's fetcher
+    };
+    walk(repoDir);
+    expect(hits).toEqual(['apps/andon/src/backend.ts']);
   });
 
-  test('no other way to send: no XMLHttpRequest, sendBeacon, WebSocket, or form post', () => {
-    for (const file of sources) {
-      const text = read(file);
-      expect({ file, hit: /\bXMLHttpRequest\b|\bsendBeacon\b|\bWebSocket\b|<form\b|method=["']post/i.exec(text)?.[0] ?? null }).toEqual({ file, hit: null });
-    }
+  test("the root tsconfig doesn't include the vendored types", () => {
+    const cfg = readJson(join(repoDir, 'tsconfig.json'));
+    expect(cfg.include).toEqual(['packages/*/src/**/*.ts', 'apps/*/src/**/*.ts', 'factory/**/*.ts']);
+  });
+});
+
+describe('AC6: tinyjs.json', () => {
+  const cfg = readJson(join(appDir, 'tinyjs.json'));
+
+  test('the Mac app pins Tiny JS 0.65.0, the version it was smoke-tested on, and nothing else moved', () => {
+    expect(cfg.minTinyjsVersion).toBe('0.65.0');
+    expect(cfg).toEqual({
+      $schema: 'https://tinyjs.app/schema/tinyjs.schema.json',
+      name: 'andon',
+      title: 'Andon',
+      size: '1280x820',
+      minSize: '1100x700',
+      id: 'dev.factory.andon',
+      version: '0.1.0',
+      minTinyjsVersion: '0.65.0',
+      icon: 'assets/icon.png',
+      url: 'http://127.0.0.1:8766/?shell=mac',
+      chrome: { frame: false, windowControls: true, windowControlsPos: { x: 18, y: 20 }, vibrancy: 'sidebar' },
+      api: { disable: ['*'], enable: ['win.startDrag', 'win.zoom'] },
+      backend: 'build/backend.js',
+    });
   });
 
-  test('Fetcher stays path-only', () => {
-    const api = read(join(import.meta.dir, 'api.ts'));
-    expect(api).toContain('export type Fetcher = (path: string) => Promise<FetchResponse>;');
-    expect(read(join(import.meta.dir, 'App.svelte'))).toMatch(/const fetcher: Fetcher = \(path\) => fetch\(path, \{ cache: 'no-store' \}\);/);
+  test('the main window loads the service at http://127.0.0.1:<port>/?shell=mac, the same page the reload uses', () => {
+    expect(typeof cfg.url).toBe('string');
+    const url = new URL(String(cfg.url));
+    expect(url.protocol).toBe('http:');
+    expect(url.hostname).toBe('127.0.0.1');
+    expect(url.port).toMatch(/^\d+$/);
+    expect(url.pathname).toBe('/');
+    expect(url.search).toBe('?shell=mac');
+    expect(url.hash).toBe('');
+    expect(url.port).toBe(String(DEFAULT_PORT));
+    expect(String(cfg.url)).toBe(pageUrl(DEFAULT_PORT));
+    expect(cfg.mainWindow).not.toBe(false);
   });
 
-  test('`/factory` appears only in a command built to be copied, or as help text', () => {
-    // A command mention: `/factory` not followed by a path character (`<root>/factory/jobs` is a path, not a command).
-    const command = /\/factory(?![\w/.-])/g;
-    let built = 0;
-    for (const file of sources) {
-      const lines = read(file).split('\n');
-      for (const line of lines) {
-        if (line.match(command) === null) continue;
-        const trimmed = line.trim();
-        if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue; // a comment
-        if (file.endsWith('inspector.ts')) {
-          // inspector.ts builds the copied strings: each mention opens a template literal.
-          for (const m of line.matchAll(command)) expect({ file, line: trimmed, opensString: line[m.index - 1] === '`' }).toEqual({ file, line: trimmed, opensString: true });
-          built++;
-          continue;
-        }
-        // Elsewhere only as help text, inside <code>…</code>, never in a fetch, URL, or handler.
-        const outside = line.replace(/<code>[^<]*<\/code>/g, '');
-        expect({ file, line: trimmed, outsideCode: command.test(outside) }).toEqual({ file, line: trimmed, outsideCode: false });
-        command.lastIndex = 0;
-      }
-    }
-    expect(built).toBe(3); // approve, rework, abandon
+  test('the window hides the title bar, keeps the native traffic lights over the sidebar, and floors its size', () => {
+    expect(cfg.chrome).toEqual({ frame: false, windowControls: true, windowControlsPos: { x: 18, y: 20 }, vibrancy: 'sidebar' });
+    expect(cfg.minSize).toBe('1100x700');
   });
 
-  test('the drawer and the Settled dialog are gone', () => {
-    expect(existsSync(join(import.meta.dir, 'Drawer.svelte'))).toBe(false);
-    expect(existsSync(join(import.meta.dir, 'SettledDialog.svelte'))).toBe(false);
+  test('the api gate denies every Tiny call for the page except the two its drag regions make', () => {
+    // Tiny's page runtime turns a mousedown on [data-tiny-drag] into `win.startDrag` (a double-click
+    // into `win.zoom`), and the backend's gate checks both: they are the narrowest exception.
+    expect(cfg.api).toEqual({ disable: ['*'], enable: ['win.startDrag', 'win.zoom'] });
+    expect(cfg.inject).toBeUndefined();
   });
+
+  test('the backend entry is the Bun bundle', () => {
+    expect(join(appDir, String(cfg.backend))).toBe(BACKEND_OUT);
+  });
+
+  test('the app is a regular app (a Dock icon, the window shown at launch) with the unlit lantern as its icon', () => {
+    expect('activation' in cfg).toBe(false);
+    expect(cfg.icon).toBe('assets/icon.png');
+    expect(existsSync(join(appDir, 'assets', 'icon.png'))).toBe(true);
+  });
+});
+
+test('the bundle is one self-contained ESM file with the service location fixed in', async () => {
+  const js = await bundleBackend({ repo: '/the/repo', bun: '/the/bun' });
+  expect(js).not.toMatch(/^\s*import\s/m); // nothing left to resolve under txiki
+  expect(js).not.toMatch(/\brequire\(/);
+  expect(js).not.toContain('__ANDON_REPO__');
+  expect(js).toContain('"/the/repo"');
+  expect(js).toContain('"/the/bun"');
+  expect(js).toMatch(/export\s*\{[^}]*\binit\b/);
+  expect(js).toMatch(/export\s*\{[^}]*\bonTray\b/);
 });

@@ -13,7 +13,7 @@ The gate is the code reviewer's job; you don't need to run it (write `not run (p
   handling (stale-lock breaks, a rejected event that leaves files behind).
 - **Log integrity:** anything that can lose, reorder, or corrupt `events.jsonl`, or let a
   model supply a timestamp or a verdict.
-- **The agent serves HTTP:** `andon-agent` and the dashboard server — bind address, static
+- **The service serves HTTP:** `andon-service` and the dashboard server — bind address, static
   serving that can reach dot-dirs (`.worktrees`, `.lock`) or files outside the tree, DNS
   rebinding / `Host` and `Origin` checks, cross-origin access to the event stream, request
   sizes. Flag anything that widens exposure beyond loopback.

@@ -225,24 +225,25 @@ factory upgrade --force
 ## Andon
 
 Andon is the dashboard: a board per project, with live timers for each stage and each reviewer,
-a needs-human row, and a job drawer with the files and timing. It has two parts, run from the
-factory clone:
+a needs-human row, and a job drawer with the files and timing. It has three parts, run from the
+factory clone: the Andon service (a daemon), the Andon UI it serves, and Andon, the Mac app.
+The service and the UI:
 
 ```sh
-bun run andon:build      # once, and after pulling: builds the UI the agent serves
-bun run andon            # the andon-agent daemon: http://127.0.0.1:8766/
+bun run andon:ui:build   # once, and after pulling: builds the UI the service serves
+bun run andon:service    # the Andon service: http://127.0.0.1:8766/
 ```
 
-The agent is one Bun daemon per machine. It watches the projects in `~/.andon/projects.json`
+The Andon service is one Bun daemon per machine. It watches the projects in `~/.andon/projects.json`
 (`factory init` adds each project; set `ANDON_HOME` to move the file and `ANDON_PORT` to change
 the port), streams changes to the UI, and never writes job state.
 
-The desktop shell wraps the UI in a window with a tray badge counting needs-human jobs and
-native notifications on escalate and merge. It starts the agent if none is running:
+Andon, the Mac app, wraps the UI in a window with a tray badge counting needs-human jobs and
+native notifications on escalate and merge. It starts the service if none is running:
 
 ```sh
-bun run andon:shell:build   # build the shell (and the UI)
-bun run andon:shell         # run it
+bun run andon:build   # build the Mac app (and the UI)
+bun run andon         # run it
 ```
 
 ## This repo's self-hosting

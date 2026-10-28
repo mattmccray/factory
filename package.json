@@ -9,13 +9,13 @@
   ],
   "scripts": {
     "test": "bun test --pass-with-no-tests ./packages ./apps",
-    "check": "tsc --noEmit && bun run --cwd apps/andon check",
+    "check": "tsc --noEmit && bun run --cwd apps/andon-ui check",
     "cli:link": "cd packages/cli && bun link",
-    "andon": "bun packages/andon-agent/src/main.ts",
-    "andon:build": "bun run --cwd apps/andon build",
-    "andon:dev": "bun run --cwd apps/andon dev",
-    "andon:shell:build": "bun run andon:build && bun run --cwd apps/andon-shell build",
-    "andon:shell": "bun run --cwd apps/andon-shell dev",
+    "andon": "bun run --cwd apps/andon dev",
+    "andon:build": "bun run andon:ui:build && bun run --cwd apps/andon build",
+    "andon:service": "bun packages/andon-service/src/main.ts",
+    "andon:ui:build": "bun run --cwd apps/andon-ui build",
+    "andon:ui:dev": "bun run --cwd apps/andon-ui dev",
     "factory:event": "bun factory/cli.ts event"
   },
   "devDependencies": {

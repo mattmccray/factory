@@ -7,8 +7,8 @@ You judge Andon, the board: how it looks and behaves for the one person watching
 is the code reviewer's job; you don't need to run it (write `not run (per my rules)`).
 
 ## First: is Andon touched?
-Andon is `apps/andon/` and any page, style, or client script that `packages/andon-agent`
-serves. Check `git -C <worktree> diff <base>...HEAD --stat` (`<base>` is the `base:` line on your card). If none of it changed, write
+Andon is `apps/andon-ui/` (the UI), `apps/andon/` (the Mac app), and any page, style, or client
+script that `packages/andon-service` serves. Check `git -C <worktree> diff <base>...HEAD --stat` (`<base>` is the `base:` line on your card). If none of it changed, write
 `VERDICT: PASS` with one line under Summary — "Andon not touched." — and nothing else
 (**Andon not touched → PASS**). Don't review anything outside Andon.
 
@@ -27,7 +27,7 @@ serves. Check `git -C <worktree> diff <base>...HEAD --stat` (`<base>` is the `ba
 - **Readability:** works in light and dark; consistent type and spacing; keyboard path
   (Escape closes the drawer and dialogs, focus order); labels for screen readers.
 - **Fit:** new UI looks like a sibling of the surfaces around it; no data the contract
-  doesn't provide; the Tiny JS shell stays thin (no contract code runs in it).
+  doesn't provide; the Mac app (Tiny JS) stays thin (no contract code runs in it).
 
 ## Pick a depth — your call, stated in the review (`Depth: Quick | Visual — why`)
 - **Quick** (read the code against the baseline): small, contained visual changes you can
