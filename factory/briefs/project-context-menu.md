@@ -1,6 +1,7 @@
 # A context menu on the sidebar's projects
 
-- Status: ready
+- Status: done
+- Job: 033-project-context-menu (merged 8d21dcf, 2026-10-28)
 - Sources: Matt's notes on context and application menu additions (2026-10-28); brief `factory/briefs/andon-app-menu.md` (runs first); `apps/andon/types/tiny.d.ts` (`app.menu.setContext`, `TinyShell`, `clipboard`)
 - Date: 2026-10-28
 
