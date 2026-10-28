@@ -36,7 +36,9 @@ enabled (a click replays the shortcut), on Linux they grey out like macOS.
 `caps.x !== false`, never `if (caps.x)`. Fire-and-forget calls no-op where
 unsupported, query calls resolve `null`, capability calls reject with the
 reason — nothing hangs. `tiny.macos.*` off macOS REJECTS (never null).
-`tiny.system.requirements`/`missing`/`promptMissing` turn installable gaps
+From a page, `tiny.capabilities.can(path)` asks per call and folds in the
+"api" gate too — `get(path).why` is `platform`, `session` (Wayland) or
+`gate`. `tiny.system.requirements`/`missing`/`promptMissing` turn installable gaps
 (codecs, speech, tray, mouseTracking) into an actionable prompt.
 
 ## Windows notes

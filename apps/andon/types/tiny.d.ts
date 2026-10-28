@@ -21,6 +21,15 @@ declare interface TinyMenuItem {
   checked?: boolean;
   /** false = grayed out */
   enabled?: boolean;
+  /**
+   * Optional icon beside the label: a png path (absolute or project-relative),
+   * 'sf:<name>' for an SF Symbol (macOS only) or 'emoji:<glyph>' for a colour
+   * emoji drawn at menu size (no asset needed). Shown in menu bars and
+   * right-click menus on all three platforms, in tray menus on macOS and
+   * Windows. Where it can't be drawn (sf: off macOS, an unreadable file,
+   * Linux tray menus) the item shows its label alone.
+   */
+  icon?: string;
   submenu?: TinyMenuItem[];
   separator?: boolean;
   /** a stock entry in place of your own item: 'standard' is the whole stock
@@ -1171,8 +1180,8 @@ declare interface Tiny {
     architecture(): Promise<string>;
     /** What this machine can actually do — anything ABSENT is supported.
      *  Mostly booleans (`sampler` is 'page' | 'native'), plus `api`: what
-     *  the tinyjs.json "api" gate denies THIS origin, so a wrapped page can
-     *  hide UI for calls it would only watch fail. */
+     *  the tinyjs.json "api" gate denies THIS origin. A page usually wants
+     *  tiny.capabilities.can() instead, which answers both at once. */
     capabilities(): Promise<Record<string, boolean | string> & {
       api?: { gated: boolean; denied: string[] };
     }>;
@@ -1343,7 +1352,39 @@ declare interface Tiny {
     on(fn: (id: string) => void): () => void;
     onClick(fn: () => void): () => void;
   };
+
+  /** What THIS page can actually do, keyed by the tiny.* path you'd call
+   *  ('clipboard.write', 'app.badge'; a leading 'tiny.' is fine). One answer
+   *  for the OS, the Linux session and tinyjs.json's "api" gate for this
+   *  page's origin. Await `ready` once; everything else is synchronous.
+   *  Informational: the backend gate still decides every call. */
+  capabilities: {
+    /** resolves once the answer has arrived, or after 3s without one — it
+     *  never hangs; a late answer fires onChange. Until then can() is false. */
+    readonly ready: Promise<void>;
+    /** true when the call works here. 'ns.*' is true when ANY path under
+     *  ns works. */
+    can(path: string): boolean;
+    /** why not, when it doesn't */
+    get(path: string): TinyCapability;
+    /** every path that works here, sorted */
+    list(): string[];
+    /** fires when the answer changes, including when the first one lands */
+    onChange(fn: (change: { added: string[]; removed: string[] }) => void): () => void;
+    /** ask the backend again; fires onChange if anything differs */
+    refresh(): Promise<void>;
+  };
 }
+
+declare type TinyCapability =
+  | { ok: true }
+  /** 'gate': tinyjs.json "api" denies it — `needs` are the names to enable */
+  | { ok: false; why: 'gate'; needs: string[] }
+  /** 'platform': this OS can't; 'session': this Linux session can't (Wayland).
+   *  `feature` is the system.capabilities() key that says so. */
+  | { ok: false; why: 'platform' | 'session'; feature: string }
+  /** 'unknown': no such path; 'pending': no answer yet */
+  | { ok: false; why: 'unknown' | 'pending' };
 
 declare const tiny: Tiny;
 
@@ -1450,6 +1491,9 @@ declare interface TinyApp {
   /** Same shape as tiny.notify, and the same result: true once handed to
    *  the OS, false only when the macOS dev fallback couldn't show it. */
   notify(title: string, body?: string, opts?: TinyNotifyOptions): Promise<boolean>;
+  /** Same dialogs and cancellation results as tiny.dialog, also with
+   *  mainWindow: false. Runs in the launcher, without a WebView. */
+  dialog: Tiny['dialog'];
   /** hides the APP (NSApp hide): focus returns to the previous app;
    *  hide({ app: false }) puts away the main window alone */
   hide(opts?: TinyHideOptions): void;

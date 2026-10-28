@@ -1,4 +1,4 @@
-# The tiny.* / app API — full tour (current as of tinyjs 0.65.0)
+# The tiny.* / app API — full tour (current as of tinyjs 0.68.0)
 
 The `tiny` global is injected into every page automatically (no script tag);
 TypeScript definitions ship in types/tiny.d.ts. Backend handlers receive the
@@ -181,6 +181,9 @@ tiny.menu.set([
                                              // alone means ⌘⇧
     { id: 'mute', label: 'Mute', checked: true },
     { id: 'no', label: 'Nope', enabled: false },
+    { id: 'hi', label: 'Hi', icon: 'emoji:👋' },    // icon: png path, 'sf:<symbol>'
+                                             // (macOS) or 'emoji:<glyph>'; label
+                                             // only where it can't draw (Linux tray)
     { separator: true },
     { id: 'more', label: 'More', submenu: [{ id: 'a', label: 'Sub' }] },
   ]}]);
@@ -219,6 +222,11 @@ tiny.menu.onContext((id) => ...);       // backend: export onContextMenu
 
 ## Dialogs (native, application-modal, all three OSes)
 
+The backend has the same seven calls on `app.dialog`, with the same
+arguments and results. They work in async `init`/`onTray`/`onMenu` handlers
+and with `"mainWindow": false`, without creating a WebView. Page calls keep
+their `dialog.*` origin gate; backend calls are trusted app code.
+
 ```js
 await tiny.dialog.openFile();     // path | null       openFiles() -> paths[] | null
 await tiny.dialog.pickFolder();   // path | null       saveFile() -> path|null
@@ -254,8 +262,9 @@ await tiny.win.stopFind();
 tiny.api.on('navigate', (e) => {});   // { window, kind, url, error? }
 tiny.api.on('download', (d) => {});   // { id, url, filename, path, state, bytes?, total? }
 tiny.api.on('popup', (p) => {});      // { window, url, action }
-const caps = await tiny.system.capabilities();
-caps.api;                             // { gated, denied: [...] } for THIS origin
+await tiny.capabilities.ready;         // then sync, for THIS origin:
+tiny.capabilities.can('clipboard.read');   // false under "wrapper"
+tiny.capabilities.get('clipboard.read');   // { ok:false, why:'gate', needs:['clip.read'] }
 ```
 
 ```js
@@ -492,6 +501,16 @@ const caps = await tiny.system.capabilities();
 // exception rule: caps.sampler is a STRING present everywhere ('native' |
 // 'page' — informational, don't branch); caps.ai reflects the BUILD (needs
 // a launcher compiled against FoundationModels) plus macOS 26 at runtime.
+
+// Per CALL instead (page only): OS + Linux session + the "api" gate at once.
+await tiny.capabilities.ready;              // once; can/get/list are sync
+tiny.capabilities.can('app.badge');         // 'tray.*' = any tray call works
+tiny.capabilities.get('win.setPosition');   // { ok:false, why:'session', feature:'windowPosition' }
+tiny.capabilities.list();                   // every working path, sorted
+tiny.capabilities.onChange(({ added, removed }) => {});  // fires on first answer too
+// why: 'gate' (needs: names to enable) | 'platform' | 'session' | 'unknown' | 'pending'
+// ready resolves within 3s even with no answer (never hangs); a late one fires onChange.
+// Informational — the backend gate still decides. Doesn't cover the app's own api methods.
 
 // requirements — turn "missing system pieces" into an actionable prompt
 await tiny.system.requirements(ids?, { refresh: true });

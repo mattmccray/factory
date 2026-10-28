@@ -125,7 +125,9 @@ those), or per-origin keyholes as above — keyed off
 the calling frame's origin as the ENGINE reports it, not as the page claims.
 With `origins` present, an origin matching no key gets nothing, so a redirect
 to an unlisted domain inherits no access. Denied calls reject with a readable
-reason, and `capabilities().api.denied` lets the page hide UI it can't use.
+reason, and `tiny.capabilities.can('notify')` (sync after `await
+tiny.capabilities.ready`) lets the page hide UI it can't use — always
+allowed, even under `"none"`; `get(path).needs` names what to enable.
 Events are gated too: a page the app didn't ship hears tinyjs's own events
 only as their calls allow (`menu.*`, `win.*`… — the `"wrapper"` preset
 keeps menu, tray, window, theme and notification events), and an event
