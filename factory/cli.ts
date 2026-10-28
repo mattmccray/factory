@@ -28,6 +28,31 @@ function checkSlug(slug) {
   if (!SLUG_PATTERN.test(slug))
     throw new Error(`slug ${JSON.stringify(slug)} must match ${SLUG_PATTERN.source}`);
 }
+var SESSION_APP = "t3code";
+var SESSION_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
+function parseSession(value) {
+  const want = `want ${SESSION_APP}:<environmentId>/<threadId>, each id 1-64 of [A-Za-z0-9-]`;
+  if (typeof value !== "string")
+    throw new Error(`field 'session' must be a string (${want})`);
+  const colon = value.indexOf(":");
+  if (colon < 0)
+    throw new Error(`field 'session' has no ':' (${want})`);
+  const app = value.slice(0, colon);
+  if (app !== SESSION_APP)
+    throw new Error(`field 'session' app must be "${SESSION_APP}" (${want})`);
+  const ids = value.slice(colon + 1).split("/");
+  if (ids.length !== 2)
+    throw new Error(`field 'session' must have exactly one '/' (${want})`);
+  const [environment = "", thread = ""] = ids;
+  if (!SESSION_ID_PATTERN.test(environment))
+    throw new Error(`field 'session' environment id is malformed (${want})`);
+  if (!SESSION_ID_PATTERN.test(thread))
+    throw new Error(`field 'session' thread id is malformed (${want})`);
+  return { app: SESSION_APP, environment, thread };
+}
+function isSession(v) {
+  return isRecord(v) && Object.keys(v).length === 3 && v.app === SESSION_APP && typeof v.environment === "string" && SESSION_ID_PATTERN.test(v.environment) && typeof v.thread === "string" && SESSION_ID_PATTERN.test(v.thread);
+}
 var REVIEWER_KEY = /^[a-z][a-z0-9-]*$/;
 var RESERVED_KEYS = ["spec-writer", "builder", "approver"];
 var ROLES = ["spec-writer", "builder", "reviewer", "approver"];
@@ -198,7 +223,7 @@ function parseEventInput(type, fields, ctx) {
   const allow = (...keys) => noExtraKeys(fields, keys, `${type}: extra field`);
   switch (type) {
     case "job.claimed": {
-      allow("brief", "issue", "maxRound");
+      allow("brief", "issue", "maxRound", "session");
       if (!ctx)
         throw new Error("job.claimed: needs the job id and config from the CLI");
       if (ctx.target !== undefined && !isTargetBranch(ctx.target))
@@ -207,6 +232,8 @@ function parseEventInput(type, fields, ctx) {
       const claimed = { type, schema: SCHEMA, id: ctx.id, maxRound, brief: nullableStr(fields, "brief"), issue: nullableStr(fields, "issue") };
       if (ctx.target !== undefined)
         claimed.target = ctx.target;
+      if (fields.session !== undefined)
+        claimed.session = parseSession(fields.session);
       return claimed;
     }
     case "job.titled":
@@ -239,12 +266,20 @@ function parseEventInput(type, fields, ctx) {
     case "job.escalated":
       allow("reason");
       return { type, reason: str(fields, "reason") };
-    case "job.reworked":
-      allow("k", "maxRound");
-      return { type, k: posInt(fields, "k"), maxRound: posInt(fields, "maxRound") };
-    case "job.human-approved":
-      allow();
-      return { type };
+    case "job.reworked": {
+      allow("k", "maxRound", "session");
+      const reworked = { type, k: posInt(fields, "k"), maxRound: posInt(fields, "maxRound") };
+      if (fields.session !== undefined)
+        reworked.session = parseSession(fields.session);
+      return reworked;
+    }
+    case "job.human-approved": {
+      allow("session");
+      const approved = { type };
+      if (fields.session !== undefined)
+        approved.session = parseSession(fields.session);
+      return approved;
+    }
     case "merge.failed":
       allow("reason");
       return { type, reason: str(fields, "reason") };
@@ -410,6 +445,7 @@ function closeOpenAgents(s, ts) {
     }
   }
 }
+var storedSession = (v) => isSession(v) ? { app: v.app, environment: v.environment, thread: v.thread } : null;
 function apply(s, e) {
   s.updated = e.ts;
   switch (e.type) {
@@ -497,10 +533,12 @@ function apply(s, e) {
       s.maxRound = e.maxRound;
       s.decision = null;
       s.note = "";
+      s.session = storedSession(e.session) ?? s.session;
       enterStage(s, "build", e.ts);
       return;
     case "job.human-approved":
       s.decision = "APPROVE (human)";
+      s.session = storedSession(e.session) ?? s.session;
       return;
     case "job.merged":
       s.endedAt = e.ts;
@@ -538,6 +576,7 @@ function project(events) {
     stoppedFrom: null,
     brief: first.brief,
     issue: first.issue,
+    session: storedSession(first.session),
     startedAt: first.ts,
     stageEnteredAt: first.ts,
     endedAt: null,
@@ -1091,7 +1130,7 @@ async function deleteBranch(repo, branch) {
 
 // packages/cli/src/core.ts
 var USAGE = {
-  claim: "usage: claim <slug> [brief=\u2026] [issue=\u2026] [maxRound=\u2026]",
+  claim: "usage: claim <slug> [brief=\u2026] [issue=\u2026] [maxRound=\u2026] [session=t3code:<environmentId>/<threadId>]",
   event: "usage: event <id> <type> [field=value \u2026]",
   rebuild: "usage: rebuild <id> | --all",
   show: "usage: show <id>",
