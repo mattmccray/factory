@@ -5,7 +5,7 @@ import { buildBoard } from './board';
 import { HOUR, NOW, before, job, tag } from './fixtures';
 import { kindOf } from './lanes';
 import { ALL, SELECTION_KEY, boardJobs, loadSelection, resolveSelection, saveSelection } from './projects';
-import { LEGEND, MAC_INSET, footer, frame, isActive, projectStatus, reviewFailed, settleHours, settleText, shellMode, sidebarModel, subtitle, subtitleText, title } from './sidebar';
+import { LEGEND, MAC_INSET, STATUS_BAR_EVENT, footer, frame, isActive, projectStatus, pushSubscriber, reviewFailed, settleHours, settleText, shellMode, sidebarModel, statusBarHidden, subtitle, subtitleText, title } from './sidebar';
 import { applyEvent, emptyState } from './state';
 import type { UiState } from './state';
 
@@ -224,5 +224,63 @@ describe('the shell mode (AC4)', () => {
   test('a browser: no inset, no drag regions, and a solid sidebar', () => {
     expect(frame('browser', true)).toEqual({ inset: 0, toolbarInset: 0, drag: false, transparentSidebar: false });
     expect(frame('browser', false)).toEqual({ inset: 0, toolbarInset: 0, drag: false, transparentSidebar: false });
+  });
+});
+
+describe("the Mac app's status bar event (032 AC5)", () => {
+  /** A stand-in for the page's `window.tiny`: records subscriptions and delivers pushes. */
+  function fakeHost(): { host: unknown; listeners: Map<string, (data: unknown) => void>; offs: string[] } {
+    const listeners = new Map<string, (data: unknown) => void>();
+    const offs: string[] = [];
+    const host = {
+      api: {
+        on(event: string, fn: (data: unknown) => void): () => void {
+          listeners.set(event, fn);
+          return () => void offs.push(event);
+        },
+      },
+    };
+    return { host, listeners, offs };
+  }
+
+  test('the event is `statusbar`', () => {
+    expect(STATUS_BAR_EVENT).toBe('statusbar');
+  });
+
+  test('in the Mac app the page subscribes through window.tiny.api.on, and can unsubscribe', () => {
+    const { host, listeners, offs } = fakeHost();
+    const subscribe = pushSubscriber('mac', host);
+    expect(subscribe).not.toBeNull();
+    const got: unknown[] = [];
+    const off = subscribe?.(STATUS_BAR_EVENT, (d) => got.push(d));
+    listeners.get('statusbar')?.({ hidden: true });
+    expect(got).toEqual([{ hidden: true }]);
+    off?.();
+    expect(offs).toEqual(['statusbar']);
+  });
+
+  test('in a browser the page subscribes to nothing, even with a tiny global present', () => {
+    expect(pushSubscriber('browser', fakeHost().host)).toBeNull();
+    expect(pushSubscriber(shellMode(''), fakeHost().host)).toBeNull();
+  });
+
+  test('without a usable window.tiny the page subscribes to nothing', () => {
+    for (const host of [undefined, null, 1, 'tiny', [], {}, { api: null }, { api: {} }, { api: { on: 'x' } }]) {
+      expect({ host, sub: pushSubscriber('mac', host) }).toEqual({ host, sub: null });
+    }
+  });
+
+  test('an unsubscribe that Tiny did not hand back is a no-op', () => {
+    const off = pushSubscriber('mac', { api: { on: () => undefined } })?.('statusbar', () => undefined);
+    expect(off).toBeFunction();
+    expect(() => off?.()).not.toThrow();
+  });
+
+  test('hidden: true hides, hidden: false shows, and a malformed payload changes nothing', () => {
+    expect(statusBarHidden({ hidden: true })).toBe(true);
+    expect(statusBarHidden({ hidden: false })).toBe(false);
+    for (const d of [undefined, null, true, 'hidden', [], {}, { hidden: 'true' }, { hidden: 1 }, { shown: true }]) {
+      expect({ d, hidden: statusBarHidden(d) }).toEqual({ d, hidden: null });
+    }
   });
 });

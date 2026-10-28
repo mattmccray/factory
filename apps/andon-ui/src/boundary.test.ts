@@ -120,6 +120,13 @@ describe('Andon never writes job state (026 AC5)', () => {
     }
   });
 
+  test("the page never calls the Mac app's backend (032): no tiny.api.call", () => {
+    for (const file of sources) {
+      const text = read(file);
+      expect({ file, hit: /\bapi\s*\.\s*call\b|['"]call['"]/.exec(text)?.[0] ?? null }).toEqual({ file, hit: null });
+    }
+  });
+
   test('Fetcher stays path-only', () => {
     const api = read(join(import.meta.dir, 'api.ts'));
     expect(api).toContain('export type Fetcher = (path: string) => Promise<FetchResponse>;');
