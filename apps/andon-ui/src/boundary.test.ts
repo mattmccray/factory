@@ -120,22 +120,34 @@ describe('Andon never writes job state (026 AC5)', () => {
     }
   });
 
-  test("the page calls the Mac app's backend in one place only, with the one named method (032, 033)", () => {
+  test("the page calls the Mac app's backend in two places only, each with its own fixed method names (032, 033, 035)", () => {
     // Every mention of Tiny's `api.call` (or a `'call'` key) across the page's sources.
     const hits: { file: string; hit: string }[] = [];
     for (const file of sources) {
       for (const m of read(file).matchAll(/\bapi\s*\.\s*call\b|['"]call['"]|\[\s*['"`]call/g)) hits.push({ file: file.slice(import.meta.dir.length + 1), hit: m[0] });
     }
-    expect(hits).toEqual([{ file: 'projectmenu.ts', hit: 'api.call' }]);
+    expect(hits.sort((a, b) => a.file.localeCompare(b.file))).toEqual([
+      { file: 'projectmenu.ts', hit: 'api.call' },
+      { file: 'settings.ts', hit: 'api.call' },
+    ]);
     const text = read(join(import.meta.dir, 'projectmenu.ts'));
     // The one method name, fixed; the one call site passes it and a `{ project }` and nothing else.
     expect(text).toContain("export const PROJECT_MENU_METHOD = 'projectMenu';");
     const applies = [...text.matchAll(/Reflect\.apply\(([^;]*)\);/g)].map((m) => m[1]);
     expect(applies).toEqual(['call, api, [PROJECT_MENU_METHOD, { project }]', 'el.getAttribute, el, [PROJECT_MENU_ATTR]']);
+    // The settings caller (035): its two fixed method names, the get with no params and the set with
+    // only the status bar change.
+    const settings = read(join(import.meta.dir, 'settings.ts'));
+    expect(settings).toContain("export const GET_SETTINGS_METHOD = 'getSettings';");
+    expect(settings).toContain("export const SET_SETTING_METHOD = 'setSetting';");
+    expect([...settings.matchAll(/Reflect\.apply\(([^;]*?)\)\)/g)].map((m) => m[1])).toEqual([
+      'call, api, [GET_SETTINGS_METHOD, null]',
+      "call, api, [SET_SETTING_METHOD, { key: 'statusBarHidden', value: hidden }]",
+    ]);
     // No other file reaches Tiny's api object: only sidebar.ts's push subscriber reads `api.on`.
     for (const file of sources) {
       const name = file.slice(import.meta.dir.length + 1);
-      if (name === 'projectmenu.ts' || name === 'sidebar.ts') continue;
+      if (name === 'projectmenu.ts' || name === 'sidebar.ts' || name === 'settings.ts') continue;
       expect({ file: name, hit: /\bhost\.api\b|\btiny\.api\b|\bapi\.on\b/.exec(read(file))?.[0] ?? null }).toEqual({ file: name, hit: null });
     }
   });

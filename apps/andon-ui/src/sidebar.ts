@@ -1,7 +1,7 @@
 // The frame's pure model (design §3, §4): the sidebar's rows (All Projects and every registered
 // project, each with a status dot and a badge), the connection footer, the toolbar's title and
-// subtitle, the status bar's legend and settle text, the shell mode read from the page URL, and the
-// Mac app's status bar event.
+// subtitle, the status bar's legend and settle text, the shell mode and view read from the page URL,
+// and the Mac app's status bar event.
 // Nothing here touches the DOM; App.svelte and the frame components only lay it out.
 import { isRecord } from './job';
 import type { Job } from './job';
@@ -161,6 +161,15 @@ export const MAC_INSET = 78;
 /** `?shell=mac` (the Mac app loads the page with it) is the Mac app; anything else is a browser. */
 export function shellMode(search: string): ShellMode {
   return new URLSearchParams(search).get('shell') === 'mac' ? 'mac' : 'browser';
+}
+
+/** What the page shows: the board, or (in the Mac app's Settings window) the settings view. */
+export type AppView = 'board' | 'settings';
+
+/** `?shell=mac&view=settings` is the settings view; every other URL (a plain browser with
+ *  `view=settings` too) is the board. */
+export function appView(search: string): AppView {
+  return shellMode(search) === 'mac' && new URLSearchParams(search).get('view') === 'settings' ? 'settings' : 'board';
 }
 
 // ---- the Mac app's status bar choice ----

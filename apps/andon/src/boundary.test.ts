@@ -1,7 +1,8 @@
 // The Mac app's boundaries: no contract, service, or UI code runs in it, its logic is runtime-neutral
 // (AC5), only backend.ts names Tiny or txiki (through Tiny's own vendored types, narrowed to
 // `MacApp`), the window loads the service on loopback with the page's Tiny API denied but for its
-// drag regions, the status bar event the Mac app pushes (AC6), and the one project menu method, the
+// drag regions, the status bar event the Mac app pushes (AC6), the one project menu method, and the
+// Settings window's two settings methods (035), the
 // Mac app pins the Tiny JS it was tested on, and the backend entry is the Bun bundle of backend.ts.
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
@@ -10,6 +11,7 @@ import { BACKEND_OUT, bundleBackend } from '../build';
 import { STATUS_BAR_EVENT } from './appmenu';
 import { DEFAULT_PORT, pageUrl } from './autostart';
 import { PROJECT_MENU_METHOD } from './projectmenu';
+import { GET_SETTINGS_METHOD, SET_SETTING_METHOD } from './settings';
 import { isRecord } from './state';
 
 const appDir = join(import.meta.dir, '..');
@@ -36,7 +38,7 @@ const readJson = (path: string): Record<string, unknown> => {
 describe('AC5: the Mac app runs no contract, service, or UI code', () => {
   test('the scan sees the logic modules and the adapter', () => {
     expect(sources).toContain(ADAPTER);
-    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts', 'appmenu.ts', 'projectmenu.ts']) expect(sources).toContain(f);
+    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts', 'appmenu.ts', 'projectmenu.ts', 'settings.ts']) expect(sources).toContain(f);
   });
 
   test('the import matcher flags @factory/*, the UI, and the service, not the Mac app itself', () => {
@@ -179,7 +181,7 @@ describe('AC6: tinyjs.json', () => {
       icon: 'assets/icon.png',
       url: 'http://127.0.0.1:8766/?shell=mac',
       chrome: { frame: false, windowControls: true, windowControlsPos: { x: 18, y: 20 }, vibrancy: 'sidebar' },
-      api: { disable: ['*'], enable: ['win.startDrag', 'win.zoom', 'event.statusbar', 'projectMenu'] },
+      api: { disable: ['*'], enable: ['win.startDrag', 'win.zoom', 'event.statusbar', 'projectMenu', 'getSettings', 'setSetting'] },
       backend: 'build/backend.js',
     });
   });
@@ -203,22 +205,38 @@ describe('AC6: tinyjs.json', () => {
     expect(cfg.minSize).toBe('1100x700');
   });
 
-  test('the api gate denies every Tiny call for the page except its drag regions, the status bar event, and projectMenu', () => {
+  test('the api gate denies every Tiny call for the page except its drag regions, the status bar event, projectMenu, and the two settings methods', () => {
     // Tiny's page runtime turns a mousedown on [data-tiny-drag] into `win.startDrag` (a double-click
     // into `win.zoom`), and the backend's gate checks both: they are the narrowest exception. The one
     // event the page may receive is the status bar state the backend pushes (`event.<name>` is how
     // Tiny gates a pushed event). The one backend method the page may call is the project menu's,
     // by its bare name (Tiny gates the app's own api methods that way): it takes a project id only.
-    // Exactly one entry more than after andon-app-menu (032).
-    expect(cfg.api).toEqual({ disable: ['*'], enable: ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`, PROJECT_MENU_METHOD] });
-    expect(cfg.api).toEqual({ disable: ['*'], enable: ['win.startDrag', 'win.zoom', 'event.statusbar', 'projectMenu'] });
+    // The Settings window's two methods (035) are named the same way; the backend answers them only
+    // for that window. Exactly two entries more than after andon-project-menu (033).
+    expect(cfg.api).toEqual({ disable: ['*'], enable: ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`, PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD] });
+    expect(cfg.api).toEqual({ disable: ['*'], enable: ['win.startDrag', 'win.zoom', 'event.statusbar', 'projectMenu', 'getSettings', 'setSetting'] });
     expect(cfg.inject).toBeUndefined();
   });
 
-  test('the backend exports exactly that one api method', () => {
+  test('the backend exports exactly those three api methods', () => {
     const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
     const block = /^export const api = \{\n([\s\S]*?)^\};$/m.exec(adapter)?.[1] ?? '';
-    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([PROJECT_MENU_METHOD]);
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD]);
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual(['projectMenu', 'getSettings', 'setSetting']);
+  });
+
+  test('both settings methods check the window first', () => {
+    const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
+    for (const fn of ['getSettings', 'setSetting']) {
+      const body = new RegExp(`export async function ${fn}\\([^)]*\\)[^{]*\\{\\n([^\\n]*)`).exec(adapter)?.[1]?.trim();
+      expect({ fn, first: body }).toEqual({ fn, first: 'if (!fromSettingsWindow(meta)) return null;' });
+    }
+  });
+
+  test('the Settings page asks by the same method names', () => {
+    const ui = readFileSync(join(repoDir, 'apps', 'andon-ui', 'src', 'settings.ts'), 'utf8');
+    expect(ui).toContain(`export const GET_SETTINGS_METHOD = '${GET_SETTINGS_METHOD}';`);
+    expect(ui).toContain(`export const SET_SETTING_METHOD = '${SET_SETTING_METHOD}';`);
   });
 
   test('the page asks for the project menu by the same method name', () => {

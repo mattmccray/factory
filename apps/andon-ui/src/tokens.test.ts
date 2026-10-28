@@ -116,6 +116,37 @@ describe('the design §11 tokens (AC7)', () => {
     });
   }
 
+  test('035 AC7: the settings view takes every color from the tokens, and each text color meets AA on each of its backgrounds, in both appearances', () => {
+    const rules = [...css.matchAll(/(?<=^|\})\s*(\.settings[^{]*)\{([^}]*)\}/gm)].map((m) => ({ sel: (m[1] ?? '').trim(), body: m[2] ?? '' }));
+    expect(rules.map((r) => r.sel)).toEqual(['.settings', '.settings h2', '.settings .set-box', '.settings .set-row', '.settings .set-row input', '.settings .set-row input:disabled + span']);
+    const texts = new Set<string>();
+    const backs = new Set<string>();
+    for (const { sel, body } of rules) {
+      for (const d of body.matchAll(/(?:^|;)\s*([\w-]+)\s*:\s*([^;]+)/g)) {
+        const prop = d[1] ?? '';
+        const value = (d[2] ?? '').trim();
+        if (!/color|background|border/.test(prop)) continue;
+        // Every color is a token: no raw hex, rgb, or named color.
+        expect({ sel, prop, value, raw: /#[0-9a-f]{3,8}\b|rgba?\(|\b(white|black)\b/i.test(value) }).toEqual({ sel, prop, value, raw: false });
+        const token = /var\((--[\w-]+)\)/.exec(value)?.[1];
+        if (prop === 'color' && token !== undefined) texts.add(token);
+        if (prop === 'background' && token !== undefined) backs.add(token);
+      }
+    }
+    expect([...texts].sort()).toEqual(['--label', '--label2', '--label3']);
+    expect([...backs].sort()).toEqual(['--card', '--win']);
+    for (const tokens of [dark, light]) {
+      for (const fg of texts) for (const bg of backs) {
+        const ratio = Number(contrast(tokens.get(fg) ?? '', tokens.get(bg) ?? '').toFixed(2));
+        expect({ fg, bg, aa: ratio >= 4.5, ratio }).toEqual({ fg, bg, aa: true, ratio });
+      }
+      // the checked box: the white check mark on the accent fill
+      const check = Number(contrast('#ffffff', tokens.get('--accent-fill') ?? '').toFixed(2));
+      expect({ check, aa: check >= 4.5 }).toEqual({ check, aa: true });
+    }
+    expect(css).toMatch(/\.settings \.set-row input \{[^}]*accent-color: var\(--accent-fill\)/);
+  });
+
   test('text never uses a raw state color or --label4: a state color as text is its -ink variant', () => {
     const raw = new RegExp(`(?:^|[;{\\s])color\\s*:\\s*var\\((?:${[...STATES, '--label4'].join('|')})\\)`, 'gm');
     expect([...css.matchAll(raw)].map((m) => m[0].trim())).toEqual([]);

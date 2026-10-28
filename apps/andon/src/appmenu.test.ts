@@ -4,12 +4,17 @@ import {
   GITHUB_URL,
   MINIMIZE_ID,
   SETTINGS_ID,
+  SETTINGS_SIZE,
+  SETTINGS_TITLE,
+  SETTINGS_WINDOW_ID,
   SHOW_MAIN_ID,
   STATUS_BAR_EVENT,
   STATUS_BAR_ID,
   ZOOM_ID,
   appMenu,
   menuAction,
+  settingsUrl,
+  settingsWindow,
   statusBarLabel,
   statusBarPayload,
   storedHidden,
@@ -17,7 +22,7 @@ import {
 import type { Menu } from './appmenu';
 
 const expected = (toggle: string): Menu[] => [
-  { role: 'app', items: [{ id: SETTINGS_ID, label: 'Settings…', key: ',', enabled: false }] },
+  { role: 'app', items: [{ id: SETTINGS_ID, label: 'Settings…', key: ',', enabled: true }] },
   { role: 'edit' },
   { title: 'View', items: [{ id: STATUS_BAR_ID, label: toggle, key: '/' }] },
   {
@@ -48,14 +53,15 @@ describe('AC1: the menu spec', () => {
 });
 
 describe('AC2: clicks and the stored value', () => {
-  test('each id maps to its action; Settings… and unknown ids do nothing', () => {
+  test('each id maps to its action; unknown ids do nothing', () => {
+    expect(menuAction(SETTINGS_ID)).toEqual({ kind: 'open-settings' });
     expect(menuAction(STATUS_BAR_ID)).toEqual({ kind: 'toggle-status-bar' });
     expect(menuAction(MINIMIZE_ID)).toEqual({ kind: 'minimize' });
     expect(menuAction(ZOOM_ID)).toEqual({ kind: 'zoom' });
     expect(menuAction(SHOW_MAIN_ID)).toEqual({ kind: 'show-main' });
     expect(menuAction(GITHUB_ID)).toEqual({ kind: 'open', url: 'https://github.com/mattmccray/factory' });
     expect(GITHUB_URL).toBe('https://github.com/mattmccray/factory');
-    for (const id of [SETTINGS_ID, 'about', 'show', 'quit', '', 'STATUSBAR']) expect({ id, action: menuAction(id) }).toEqual({ id, action: null });
+    for (const id of ['about', 'SETTINGS', 'settings-window', 'show', 'quit', '', 'STATUSBAR']) expect({ id, action: menuAction(id) }).toEqual({ id, action: null });
   });
 
   test('only a stored true means hidden; missing or malformed means shown', () => {
@@ -67,5 +73,29 @@ describe('AC2: clicks and the stored value', () => {
     expect(STATUS_BAR_EVENT).toBe('statusbar');
     expect(statusBarPayload(true)).toEqual({ hidden: true });
     expect(statusBarPayload(false)).toEqual({ hidden: false });
+  });
+});
+
+describe('035 AC1: Settings… and the Settings window', () => {
+  test('Settings… is enabled with ⌘, for either status bar state', () => {
+    for (const hidden of [false, true]) {
+      const item = appMenu(hidden)[0]?.items?.[0];
+      expect(item).toEqual({ id: SETTINGS_ID, label: 'Settings…', key: ',', enabled: true });
+    }
+  });
+
+  test('the window: id `settings`, titled Settings, a fixed size, a standard frame, the settings view on the port', () => {
+    expect(SETTINGS_WINDOW_ID).toBe('settings');
+    expect(SETTINGS_TITLE).toBe('Settings');
+    expect(SETTINGS_SIZE).toMatch(/^\d+x\d+$/);
+    expect(settingsUrl(8766)).toBe('http://127.0.0.1:8766/?shell=mac&view=settings');
+    expect(settingsUrl(9123)).toBe('http://127.0.0.1:9123/?shell=mac&view=settings');
+    expect(settingsWindow(9123)).toEqual({
+      page: 'http://127.0.0.1:9123/?shell=mac&view=settings',
+      title: 'Settings',
+      size: SETTINGS_SIZE,
+      minSize: SETTINGS_SIZE,
+      chrome: { frame: true },
+    });
   });
 });
