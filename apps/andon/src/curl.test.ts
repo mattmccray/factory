@@ -33,7 +33,7 @@ test('an error status is not ok, and an interim 100 head is skipped', async () =
   expect(await res.text()).toBe('config.json: bad');
 });
 
-test('no output at all (the agent is unreachable) rejects, and cancelling the body stops curl', async () => {
+test('no output at all (the service is unreachable) rejects, and cancelling the body stops curl', async () => {
   let cancels = 0;
   expect(responseFromCurl(streamOf([]), () => cancels++)).rejects.toThrow('unreachable');
   await Bun.sleep(1);
@@ -43,7 +43,7 @@ test('no output at all (the agent is unreachable) rejects, and cancelling the bo
   expect(cancels).toBe(2);
 });
 
-test('against a real server, curl sends the agent its own Host and no Origin', async () => {
+test('against a real server, curl sends the service its own Host and no Origin', async () => {
   const seen: Array<[string | null, string | null]> = [];
   const server = Bun.serve({
     hostname: '127.0.0.1',

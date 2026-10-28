@@ -1,4 +1,4 @@
-// Live updates from the agent's `GET /events`, with no polling. Each `projects` event (sent on
+// Live updates from the service's `GET /events`, with no polling. Each `projects` event (sent on
 // every connect and reconnect, and when the registry changes) fetches every listed project's
 // board once; after that, `board` and `error` events keep each project current.
 import type { Fetcher } from './api';
@@ -34,8 +34,8 @@ const parse = (e: unknown): { ok: true; data: unknown } | { ok: false } => {
 };
 
 /**
- * Follows the agent's events. `connect` opens `GET /events`; the browser retries a dropped
- * stream itself, and a stream it has given up on (CLOSED, e.g. the agent answered with an error)
+ * Follows the service's events. `connect` opens `GET /events`; the browser retries a dropped
+ * stream itself, and a stream it has given up on (CLOSED, e.g. the service answered with an error)
  * is reopened after `RECONNECT_MS`.
  */
 export function startLive(opts: {
@@ -72,8 +72,8 @@ export function startLive(opts: {
     source = src;
     src.addEventListener('projects', on('projects'));
     src.addEventListener('board', on('board'));
-    // `error` is both the agent's named event (a MessageEvent with data) and EventSource's own
-    // connection error (no data): the first updates a project, the second marks the agent down.
+    // `error` is both the service's named event (a MessageEvent with data) and EventSource's own
+    // connection error (no data): the first updates a project, the second marks the service down.
     src.addEventListener('error', (e) => {
       if (parse(e).ok) return on('error')(e);
       if (stopped || src !== source) return;

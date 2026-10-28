@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { boardPath, startFollow } from './follow';
 import type { Http, HttpResponse } from './http';
-import type { ShellState } from './state';
+import type { AppState } from './state';
 
 const P1 = { id: 'aaaaaaaaaaaa', name: 'one', root: '/r/one' };
 const P2 = { id: 'bbbbbbbbbbbb', name: 'two', root: '/r/two' };
@@ -36,8 +36,8 @@ const json = (status: number, body: unknown): HttpResponse => {
   return { ok: status >= 200 && status < 300, status, body: null, text: async () => text };
 };
 
-/** A fake agent: `/events` answers with the next queued stream (or fails); boards come from `boards`. */
-function fakeAgent(boards: (pid: string) => HttpResponse) {
+/** A fake service: `/events` answers with the next queued stream (or fails); boards come from `boards`. */
+function fakeService(boards: (pid: string) => HttpResponse) {
   const asked: string[] = [];
   const streams: Stream[] = [];
   const queue: Array<Stream | 'fail' | 'refused'> = [];
@@ -57,22 +57,22 @@ function fakeAgent(boards: (pid: string) => HttpResponse) {
   return { http, asked, streams, queue };
 }
 
-const ids = (s: ShellState, pid: string) => s.boards[pid]?.jobs.map((j) => `${j.id}:${j.stage}`);
+const ids = (s: AppState, pid: string) => s.boards[pid]?.jobs.map((j) => `${j.id}:${j.stage}`);
 
 test('AC3: a projects event fetches each listed board once; board and error events then update that project', async () => {
-  const agent = fakeAgent((pid) =>
+  const service = fakeService((pid) =>
     pid === P2.id ? json(500, 'config.json: bad\nmore') : json(200, { jobs: [{ id: '001-a', stage: 'review', title: 'A', extra: 1 }], config: {} }),
   );
   const boards: string[] = [];
   let opens = 0;
-  const f = startFollow({ http: agent.http, onOpen: () => opens++, onBoard: (pid) => boards.push(pid) });
+  const f = startFollow({ http: service.http, onOpen: () => opens++, onBoard: (pid) => boards.push(pid) });
   await wait();
-  const s = agent.streams[0];
+  const s = service.streams[0];
   if (s === undefined) throw new Error('no stream');
   expect(opens).toBe(1);
   s.send('projects', { projects: [P1, P2] });
   await wait();
-  expect(agent.asked).toEqual(['/events', boardPath(P1.id), boardPath(P2.id)]);
+  expect(service.asked).toEqual(['/events', boardPath(P1.id), boardPath(P2.id)]);
   expect(ids(f.state(), P1.id)).toEqual(['001-a:review']);
   expect(f.state().boards[P2.id]?.error).toBe('config.json: bad');
   expect(boards).toEqual([P1.id]);
@@ -87,18 +87,18 @@ test('AC3: a projects event fetches each listed board once; board and error even
   expect(f.state().boards[P1.id]?.error).toBe('config.json: worse');
   expect(ids(f.state(), P1.id)).toEqual(['001-a:review']); // keeps its last jobs
   expect(boards).toEqual([P1.id, P2.id]);
-  expect(agent.asked).toHaveLength(3); // no more fetches: events carry the boards
+  expect(service.asked).toHaveLength(3); // no more fetches: events carry the boards
   f.stop();
   await wait();
   expect(s.cancelled).toBe(true);
 });
 
 test('AC3: malformed JSON, an unknown event, or a board for an unlisted project leaves the state unchanged', async () => {
-  const agent = fakeAgent(() => json(200, { jobs: [] }));
-  const states: ShellState[] = [];
-  const f = startFollow({ http: agent.http, onState: (st) => states.push(st) });
+  const service = fakeService(() => json(200, { jobs: [] }));
+  const states: AppState[] = [];
+  const f = startFollow({ http: service.http, onState: (st) => states.push(st) });
   await wait();
-  const s = agent.streams[0];
+  const s = service.streams[0];
   if (s === undefined) throw new Error('no stream');
   s.send('projects', { projects: [P1] });
   await wait();
@@ -120,16 +120,16 @@ test('AC3: a board event that lands while its fetch is in flight wins over the o
   const gate = new Promise<void>((r) => {
     release = r;
   });
-  const agent = fakeAgent(() => json(200, { jobs: [{ id: '001-a', stage: 'spec' }] }));
+  const service = fakeService(() => json(200, { jobs: [{ id: '001-a', stage: 'spec' }] }));
   const slow: Http = async (path) => {
     if (path !== '/events') await gate;
-    return agent.http(path);
+    return service.http(path);
   };
   const f = startFollow({ http: slow });
   await wait();
-  agent.streams[0]?.send('projects', { projects: [P1] });
+  service.streams[0]?.send('projects', { projects: [P1] });
   await wait();
-  agent.streams[0]?.send('board', { project: P1.id, jobs: [{ id: '001-a', stage: 'build' }] });
+  service.streams[0]?.send('board', { project: P1.id, jobs: [{ id: '001-a', stage: 'build' }] });
   await wait();
   release();
   await wait();
@@ -138,33 +138,33 @@ test('AC3: a board event that lands while its fetch is in flight wins over the o
 });
 
 test('AC3: a failed or dropped stream is reopened after the fixed delay, and boards are only fetched on projects events', async () => {
-  const agent = fakeAgent(() => json(200, { jobs: [] }));
-  agent.queue.push('refused', 'fail');
+  const service = fakeService(() => json(200, { jobs: [] }));
+  service.queue.push('refused', 'fail');
   const downs: string[] = [];
   let opens = 0;
-  const f = startFollow({ http: agent.http, retryMs: 20, onOpen: () => opens++, onDown: (w) => downs.push(w) });
+  const f = startFollow({ http: service.http, retryMs: 20, onOpen: () => opens++, onDown: (w) => downs.push(w) });
   await wait(2);
-  expect(agent.asked).toEqual(['/events']); // refused
+  expect(service.asked).toEqual(['/events']); // refused
   await wait(10);
-  expect(agent.asked).toEqual(['/events']); // not before the delay
+  expect(service.asked).toEqual(['/events']); // not before the delay
   await wait(20);
-  expect(agent.asked).toEqual(['/events', '/events']); // a 500
+  expect(service.asked).toEqual(['/events', '/events']); // a 500
   await wait(30);
-  expect(agent.asked).toEqual(['/events', '/events', '/events']); // open
+  expect(service.asked).toEqual(['/events', '/events', '/events']); // open
   expect(opens).toBe(1);
   expect(downs).toEqual(['connection refused', 'GET /events: HTTP 500']);
 
-  agent.streams[0]?.send('projects', { projects: [P1, P2] });
+  service.streams[0]?.send('projects', { projects: [P1, P2] });
   await wait();
-  agent.streams[0]?.close(); // the agent restarted
+  service.streams[0]?.close(); // the service restarted
   await wait(40);
   expect(opens).toBe(2);
-  agent.streams[1]?.send('projects', { projects: [P1] });
+  service.streams[1]?.send('projects', { projects: [P1] });
   await wait(100); // idle: nothing is fetched on a timer
-  expect(agent.asked).toEqual(['/events', '/events', '/events', boardPath(P1.id), boardPath(P2.id), '/events', boardPath(P1.id)]);
+  expect(service.asked).toEqual(['/events', '/events', '/events', boardPath(P1.id), boardPath(P2.id), '/events', boardPath(P1.id)]);
   expect(downs).toEqual(['connection refused', 'GET /events: HTTP 500', 'the event stream ended']);
   f.stop();
-  agent.streams[1]?.close();
+  service.streams[1]?.close();
   await wait(50);
-  expect(agent.asked).toHaveLength(7); // a stopped follower never reconnects
+  expect(service.asked).toHaveLength(7); // a stopped follower never reconnects
 });

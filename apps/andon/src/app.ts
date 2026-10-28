@@ -1,4 +1,4 @@
-// The shell's logic, wired together behind a small host interface: follow the agent, keep the
+// The Mac app's logic, wired together behind a small host interface: follow the service, keep the
 // tray (its needs-human count and its lantern), the Dock lantern, and the Dock badge current, and
 // send a notification on escalate and merge. Each host hook fires only when its value changes. The Tiny
 // adapter (backend.ts) supplies the host. Runtime-neutral.
@@ -10,9 +10,9 @@ import { diffBoard, noBaselines, noticeText, retainProjects } from './notify';
 import type { Baselines, NoticeText } from './notify';
 import { badgeText, dockLook, trayRunning } from './lantern';
 import type { DockLook } from './lantern';
-import type { ShellState } from './state';
+import type { AppState } from './state';
 
-export interface ShellHost {
+export interface AppHost {
   http: Http;
   /** The tray: its title and tooltip (`traySpec`), and whether jobs are running (the filled lantern). */
   tray(spec: TraySpec, running: boolean): void;
@@ -24,8 +24,8 @@ export interface ShellHost {
   log?(line: string): void;
 }
 
-export interface Shell {
-  state(): ShellState;
+export interface App {
+  state(): AppState;
   stop(): void;
 }
 
@@ -37,10 +37,10 @@ interface Shown {
   badge: string;
 }
 
-export function startShell(host: ShellHost, opts: { retryMs?: number } = {}): Shell {
+export function startApp(host: AppHost, opts: { retryMs?: number } = {}): App {
   let base: Baselines = noBaselines();
   let shown: Shown | null = null;
-  const show = (s: ShellState): void => {
+  const show = (s: AppState): void => {
     const n = needsHumanCount(s);
     const spec = traySpec(n);
     const next: Shown = { title: spec.title, tooltip: spec.tooltip, running: trayRunning(s), look: dockLook(s), badge: badgeText(n) };
@@ -55,10 +55,10 @@ export function startShell(host: ShellHost, opts: { retryMs?: number } = {}): Sh
     retryMs: opts.retryMs,
     onOpen() {
       base = noBaselines(); // a reconnect re-baselines every project
-      host.log?.('andon-shell: following the agent');
+      host.log?.('andon: following the service');
     },
     onDown(why) {
-      host.log?.(`andon-shell: ${why}; reconnecting`);
+      host.log?.(`andon: ${why}; reconnecting`);
     },
     onProjects(projects) {
       base = retainProjects(

@@ -1,5 +1,5 @@
 // A server-sent events frame parser (the WHATWG "event stream" rules), fed text in arbitrary
-// chunks. It knows nothing about the agent's events: it emits every complete named event once,
+// chunks. It knows nothing about the service's events: it emits every complete named event once,
 // with its full data. Runtime-neutral: no Bun, Node, or txiki imports.
 
 export interface SseEvent {
@@ -28,14 +28,14 @@ export function createSseParser(emit: (e: SseEvent) => void): SseParser {
       data = [];
       return;
     }
-    if (text.startsWith(':')) return; // a comment (the agent's keep-alives)
+    if (text.startsWith(':')) return; // a comment (the service's keep-alives)
     const colon = text.indexOf(':');
     const name = colon < 0 ? text : text.slice(0, colon);
     let value = colon < 0 ? '' : text.slice(colon + 1);
     if (value.startsWith(' ')) value = value.slice(1);
     if (name === 'event') event = value;
     else if (name === 'data') data.push(value);
-    // `id`, `retry`, and unknown fields are ignored: the shell reconnects on its own schedule.
+    // `id`, `retry`, and unknown fields are ignored: the Mac app reconnects on its own schedule.
   }
 
   return {

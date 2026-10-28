@@ -4,7 +4,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { assetPath, dockIcon, init, onTray, reloadScript, setDock, setTray, trayIcon } from './backend';
-import type { ShellApp, ShellTraySpec, ShellWinState } from './backend';
+import type { MacApp, MacTraySpec, MacWinState } from './backend';
 import { trayNotice, traySpec } from './badge';
 
 /** Which window ops fail. Mutable, so a test can heal the window between clicks. Each failing op is
@@ -15,13 +15,13 @@ interface Failures {
   show?: boolean;
 }
 
-function fakeApp(state: ShellWinState | null, fail: Failures = {}): { app: ShellApp; calls: string[] } {
+function fakeApp(state: MacWinState | null, fail: Failures = {}): { app: MacApp; calls: string[] } {
   const calls: string[] = [];
   const op = (name: string, failing: boolean | undefined): void => {
     calls.push(name);
     if (failing === true) throw new Error(`${name} failed`);
   };
-  const app: ShellApp = {
+  const app: MacApp = {
     tray: { set: () => calls.push('tray.set') },
     icon: (path) => calls.push(`icon(${path})`) > 0,
     badge: (text) => calls.push(`badge(${text})`) > 0,
@@ -47,7 +47,7 @@ function fakeApp(state: ShellWinState | null, fail: Failures = {}): { app: Shell
 
 // The adapter reads only `minimized`, `fullscreen`, and `allSpaces`; Tiny's `visible` and `focused`
 // play no part (rework 2), so a window in front and one hidden look the same to it.
-const st = (minimized: boolean, fullscreen = false): ShellWinState => ({ minimized, fullscreen, allSpaces: false });
+const st = (minimized: boolean, fullscreen = false): MacWinState => ({ minimized, fullscreen, allSpaces: false });
 /** Show on the Space the user is on: join every Space, show, then pin it back to one. */
 const showHere = (...mid: string[]): string[] => ['main.getState', 'main.allSpaces(true)', ...mid, 'main.show', 'main.allSpaces(false)'];
 
@@ -122,13 +122,13 @@ test('AC4: a failed click does not jam the next one', async () => {
 // ---- the lantern: Dock icon, tray icon, badge ----
 
 const REPO = resolve(import.meta.dir, '..', '..', '..');
-const ASSETS = join(REPO, 'apps', 'andon-shell', 'assets');
+const ASSETS = join(REPO, 'apps', 'andon', 'assets');
 
 /** A fake app that records the Dock icon, the badge, and every tray spec. */
-function lanternApp(): { app: ShellApp; icons: string[]; badges: string[]; trays: ShellTraySpec[] } {
+function lanternApp(): { app: MacApp; icons: string[]; badges: string[]; trays: MacTraySpec[] } {
   const icons: string[] = [];
   const badges: string[] = [];
-  const trays: ShellTraySpec[] = [];
+  const trays: MacTraySpec[] = [];
   const { app } = fakeApp(null);
   app.icon = (p) => icons.push(p) > 0;
   app.badge = (t) => badges.push(t) > 0;
@@ -168,10 +168,10 @@ test('AC4: the tray icon is the outlined or filled lantern, as a template image,
     expect(dirname(String(t.icon))).toBe(ASSETS);
     expect(existsSync(String(t.icon))).toBe(true);
   }
-  expect(assetPath('/the/repo/', 'x.png')).toBe('/the/repo/apps/andon-shell/assets/x.png');
+  expect(assetPath('/the/repo/', 'x.png')).toBe('/the/repo/apps/andon/assets/x.png');
 });
 
-// ---- init: the idle look before the agent answers and after it fails to start ----
+// ---- init: the idle look before the service answers and after it fails to start ----
 
 interface FakeProcess {
   stdout: ReadableStream<Uint8Array> | null;
@@ -181,11 +181,11 @@ interface FakeProcess {
 
 const never = <T>(): Promise<T> => new Promise<T>(() => undefined);
 
-/** Stand in txiki's `tjs` and the build-time repo path. `curl` runs `curl`; any other spawn runs `agent`. */
-function fakeGlobals(curl: () => FakeProcess, agent: () => FakeProcess): void {
+/** Stand in txiki's `tjs` and the build-time repo path. `curl` runs `curl`; any other spawn runs `service`. */
+function fakeGlobals(curl: () => FakeProcess, service: () => FakeProcess): void {
   Reflect.set(globalThis, '__ANDON_REPO__', REPO);
   Reflect.set(globalThis, '__ANDON_BUN__', '/the/bun');
-  Reflect.set(globalThis, 'tjs', { env: {}, spawn: (argv: string[]) => (argv[0] === 'curl' ? curl() : agent()) });
+  Reflect.set(globalThis, 'tjs', { env: {}, spawn: (argv: string[]) => (argv[0] === 'curl' ? curl() : service()) });
 }
 
 afterEach(() => {
@@ -198,7 +198,7 @@ function expectIdle(l: ReturnType<typeof lanternApp>): void {
   expect(l.badges.every((t) => t === '')).toBe(true);
 }
 
-test('AC5: before the agent answers, the tray shows the notice with the outlined lantern, and the Dock is idle', () => {
+test('AC5: before the service answers, the tray shows the notice with the outlined lantern, and the Dock is idle', () => {
   const hung: FakeProcess = { stdout: new ReadableStream<Uint8Array>(), kill: () => undefined, wait: never };
   fakeGlobals(
     () => hung,
@@ -206,11 +206,11 @@ test('AC5: before the agent answers, the tray shows the notice with the outlined
   );
   const l = lanternApp();
   init(l.app);
-  expect(l.trays).toEqual([{ ...trayNotice('starting the agent'), icon: join(ASSETS, 'tray-idle.png'), template: true }]);
+  expect(l.trays).toEqual([{ ...trayNotice('starting the service'), icon: join(ASSETS, 'tray-idle.png'), template: true }]);
   expectIdle(l);
 });
 
-test('AC5: when the agent fails to start, the tray shows the reason with the outlined lantern, and the Dock is idle', async () => {
+test('AC5: when the service fails to start, the tray shows the reason with the outlined lantern, and the Dock is idle', async () => {
   const unreachable = (): FakeProcess => ({
     stdout: new ReadableStream<Uint8Array>({ start: (c) => c.close() }),
     kill: () => undefined,
@@ -224,12 +224,12 @@ test('AC5: when the agent fails to start, the tray shows the reason with the out
   for (let i = 0; i < 50 && l.trays.length < 2; i++) await new Promise((r) => setTimeout(r, 2));
   expect(l.trays).toHaveLength(2);
   const last = l.trays.at(-1);
-  expect(last?.tooltip).toStartWith('Andon: could not start the agent');
+  expect(last?.tooltip).toStartWith('Andon: could not start the service');
   expect(last).toMatchObject({ title: '', icon: join(ASSETS, 'tray-idle.png'), template: true });
   expectIdle(l);
 });
 
-test('the reload after starting the agent (or on another port) keeps ?shell=mac', () => {
+test('the reload after starting the service (or on another port) keeps ?shell=mac', () => {
   expect(reloadScript(8766)).toBe('location.replace("http://127.0.0.1:8766/?shell=mac")');
   expect(reloadScript(9123)).toBe('location.replace("http://127.0.0.1:9123/?shell=mac")');
 });

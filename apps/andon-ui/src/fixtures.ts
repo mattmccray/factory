@@ -1,7 +1,7 @@
-// Test fixtures: jobs as the agent sends them (plain JSON), narrowed the way the UI narrows them,
+// Test fixtures: jobs as the service sends them (plain JSON), narrowed the way the UI narrows them,
 // plus the design's 12-project, 30-job fleet (docs/design/andon-overview/README.md "The fixture")
 // for the Assembly Lines fit check. `writeFleet` lays the fleet out on disk as a throwaway Andon
-// home (a registry and 12 project roots) that a real agent can serve, for screenshots.
+// home (a registry and 12 project roots) that a real service can serve, for screenshots.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BoardJob } from './board';
@@ -96,7 +96,7 @@ const FLEET_JOBS: readonly FleetJob[] = [
   { project: 'factory', id: '022-board-timeline', title: 'Timeline view for the Andon overview', stage: 'build', history: [['claimed', 52], ['spec', 50], ['build', 31]], rounds: [] },
   { project: 'factory', id: '023-upgrade-dry-run', title: 'factory upgrade --dry-run prints the plan', stage: 'review', history: [['claimed', 140], ['spec', 138], ['build', 121], ['review', 64]],
     rounds: [{ at: 64, reviews: { security: ['PASS', 41], contract: ['pending', null], code: ['pending', null], ui: ['PASS', 58] } }] },
-  { project: 'factory', id: '021-tinyjs-065-types', title: 'Move the shell to Tiny JS 0.65 types', stage: 'merged', history: [['claimed', 410], ['spec', 405], ['build', 380], ['review', 300], ['approve', 230], ['merged', 214]],
+  { project: 'factory', id: '021-tinyjs-065-types', title: 'Move the Mac app to Tiny JS 0.65 types', stage: 'merged', history: [['claimed', 410], ['spec', 405], ['build', 380], ['review', 300], ['approve', 230], ['merged', 214]],
     rounds: [{ at: 300, reviews: { security: ['PASS', 270], contract: ['PASS', 262], code: ['PASS', 241], ui: ['PASS', 255] } }], decision: 'APPROVE', note: 'merged 7905ffe' },
   { project: 'factory', id: '020-overlay-outcome', title: 'Overlay outcome rule in role templates', stage: 'merged', history: [['claimed', 2900], ['spec', 2890], ['build', 2860], ['review', 2790], ['build', 2740], ['review', 2690], ['approve', 2640], ['merged', 2620]],
     rounds: [{ at: 2790, reviews: { security: ['PASS', 2770], contract: ['CHANGES', 2750], code: ['PASS', 2760], ui: ['PASS', 2775] } }, { at: 2690, reviews: { security: ['PASS', 2670], contract: ['PASS', 2655], code: ['PASS', 2660], ui: ['PASS', 2680] } }],
@@ -218,7 +218,7 @@ export function fleetJobs(now: number = NOW): BoardJob[] {
 /**
  * Writes the fleet under `home` as a throwaway Andon home: `projects.json` and one project root
  * per project (`<home>/<name>/factory/config.json` and `jobs/<id>/job.json`), with times measured
- * back from `now`. Run an agent on it with `ANDON_HOME=<home> ANDON_PORT=<port> bun run andon`.
+ * back from `now`. Run the service on it with `ANDON_HOME=<home> ANDON_PORT=<port> bun run andon:service`.
  */
 export function writeFleet(home: string, now: number = Date.now()): void {
   const roots: string[] = [];

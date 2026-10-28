@@ -1,4 +1,4 @@
-// The slice of a fetch `Response` the shell reads, and the GET it is handed. A real `fetch`
+// The slice of a fetch `Response` the Mac app reads, and the GET it is handed. A real `fetch`
 // response satisfies it; under txiki the adapter supplies its own (see curl.ts). Runtime-neutral.
 
 export interface HttpResponse {
@@ -8,7 +8,7 @@ export interface HttpResponse {
   text(): Promise<string>;
 }
 
-/** GETs a path on the agent (`/projects`, `/events`, ...). Rejects when the agent is unreachable. */
+/** GETs a path on the service (`/projects`, `/events`, ...). Rejects when the service is unreachable. */
 export type Http = (path: string) => Promise<HttpResponse>;
 
 /** GETs JSON. A non-2xx response throws with the first line of its body (e.g. `config.json: <reason>`). */

@@ -1,9 +1,9 @@
 // A GET through the system `curl`, for the txiki backend. txiki.js 26.6.0's `fetch` does stream
 // response bodies, but it sends `Host: 127.0.0.1` without the port and adds an
-// `Origin: http://127.0.0.1` of its own, so the agent's DNS-rebinding guard answers every request
+// `Origin: http://127.0.0.1` of its own, so the service's DNS-rebinding guard answers every request
 // with a 403 (a header given in `init` is appended, not replaced). curl sends `Host:
 // 127.0.0.1:<port>` and no `Origin`, which is exactly what the UI's requests look like to the
-// agent. The adapter spawns `curlArgv(url)` and hands its stdout here. Runtime-neutral: this file
+// service. The adapter spawns `curlArgv(url)` and hands its stdout here. Runtime-neutral: this file
 // only builds the command line and parses curl's `--include` output.
 import type { HttpResponse } from './http';
 
@@ -29,7 +29,7 @@ const concat = (a: Uint8Array, b: Uint8Array): Uint8Array => {
 
 /**
  * Reads curl's `--include` stdout: the status line and headers, then the body as a stream. Rejects
- * when curl printed no response (the agent is unreachable). Cancelling the body calls `cancel`, so
+ * when curl printed no response (the service is unreachable). Cancelling the body calls `cancel`, so
  * the adapter can stop the curl process. `stdout` is anything with a byte reader: a web
  * `ReadableStream`, or txiki's process stream (whose `bytes()` Bun's stream type won't accept).
  */
@@ -44,7 +44,7 @@ export async function responseFromCurl(stdout: Pick<ReadableStream<Uint8Array>, 
       const m = /^HTTP\/[\d.]+ (\d{3})/.exec(head);
       if (m === null || m[1] === undefined) {
         cancel();
-        throw new Error('the agent sent no HTTP response');
+        throw new Error('the service sent no HTTP response');
       }
       status = Number(m[1]);
       buf = buf.subarray(end + HEAD_END.length);
@@ -54,7 +54,7 @@ export async function responseFromCurl(stdout: Pick<ReadableStream<Uint8Array>, 
     const { value, done } = await reader.read();
     if (done) {
       cancel();
-      throw new Error('the agent is unreachable');
+      throw new Error('the service is unreachable');
     }
     buf = concat(buf, value);
   }

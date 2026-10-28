@@ -58,7 +58,7 @@
         if (live) files = f;
       },
       () => {
-        // the agent is unreachable or the job is gone: keep what is shown
+        // the service is unreachable or the job is gone: keep what is shown
       },
     );
     return () => {

@@ -6,10 +6,10 @@ factory/.lock/
 factory/jobs/
 factory/.worktrees/
 
-# Andon UI build output (bun run andon:build)
-apps/andon/dist/
+# Andon UI build output (bun run andon:ui:build)
+apps/andon-ui/dist/
 
-# Andon shell build output (bun run andon:shell:build): the bundled backend, Tiny's dev and dist dirs
-apps/andon-shell/build/
-apps/andon-shell/.build/
-apps/andon-shell/dist/
+# Andon (the Mac app) build output (bun run andon:build): the bundled backend, Tiny's dev and dist dirs
+apps/andon/build/
+apps/andon/.build/
+apps/andon/dist/

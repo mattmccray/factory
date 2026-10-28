@@ -1,12 +1,12 @@
 import { expect, test } from 'bun:test';
 import { needsHumanCount, TRAY_MENU, trayNotice, traySpec } from './badge';
 import type { TrayMenuItem } from './badge';
-import type { ShellJob, ShellState } from './state';
+import type { AppJob, AppState } from './state';
 
-const job = (id: string, stage: string): ShellJob => ({ id, title: id, stage, note: '' });
+const job = (id: string, stage: string): AppJob => ({ id, title: id, stage, note: '' });
 
 test('AC1: the count is every needs-human job across the listed projects, and nothing else', () => {
-  const s: ShellState = {
+  const s: AppState = {
     projects: [
       { id: 'aaaaaaaaaaaa', name: 'one' },
       { id: 'bbbbbbbbbbbb', name: 'two' },
@@ -35,7 +35,7 @@ test('the tray menu has "Show Andon" and "Quit"', () => {
 
 test('AC3: every tray spec is a toggle (primaryAction) and keeps the unchanged menu', () => {
   const menu: TrayMenuItem[] = [{ id: 'show', label: 'Show Andon' }, { separator: true }, { id: 'quit', label: 'Quit' }];
-  for (const spec of [traySpec(0), traySpec(1), traySpec(7), trayNotice('starting the agent'), trayNotice('the agent exited before answering')]) {
+  for (const spec of [traySpec(0), traySpec(1), traySpec(7), trayNotice('starting the service'), trayNotice('the service exited before answering')]) {
     expect(spec.primaryAction).toBe(true);
     expect(spec.menu).toEqual(menu);
   }

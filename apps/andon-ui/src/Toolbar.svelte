@@ -1,7 +1,7 @@
 <script lang="ts">
   // The toolbar (design §3, 52px): the sidebar toggle, the title with its subtitle, the Settled
   // button, and the inspector toggle. A focused project (§7) adds a "‹" back button to All
-  // Projects, and the subtitle's "N waiting elsewhere". In the Mac shell it is a drag region (its
+  // Projects, and the subtitle's "N waiting elsewhere". In the Mac app it is a drag region (its
   // buttons are not). The inspector toggle names the open job, or "Nothing selected". Search and
   // the Needs Me toggle (§10) sit before Settled; `/` focuses the field and `n` flips the toggle.
   import type { Subtitle } from './sidebar';

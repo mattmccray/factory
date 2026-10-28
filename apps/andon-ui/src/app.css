@@ -44,7 +44,7 @@
   }
 }
 * { box-sizing: border-box; }
-/* No page background: in the Mac shell the native sidebar vibrancy shows through where the frame is transparent. */
+/* No page background: in the Mac app the native sidebar vibrancy shows through where the frame is transparent. */
 html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
 body { font: 13px/1.35 var(--sys); color: var(--label); -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
 button, select, input { font: inherit; color: inherit; }
@@ -59,7 +59,7 @@ svg.i { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-widt
 .window.mac { background: transparent; }
 .window.nosb { --sbw: 0px; }
 
-/* sidebar: a source list; solid in a browser, transparent over the native vibrancy in the Mac shell */
+/* sidebar: a source list; solid in a browser, transparent over the native vibrancy in the Mac app */
 .sidebar { min-width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; background: var(--side); border-right: .5px solid var(--hairline); }
 .window.mac .sidebar { background: transparent; }
 .window.nosb .sidebar { visibility: hidden; }
@@ -83,10 +83,10 @@ svg.i { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-widt
 .badge { min-width: 18px; height: 16px; padding: 0 5px; border-radius: 8px; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center;
   background: var(--ctl-h); color: var(--label2); flex: none; }
 .badge.red { background: var(--badge-red); color: #fff; }
-.agent { flex: none; padding: 10px 18px 12px; font-size: 11px; color: var(--label2); display: flex; align-items: center; gap: 7px; border-top: .5px solid var(--sep); }
-.agent .dot { width: 7px; height: 7px; }
-.agent .dot.gray { box-shadow: none; background: var(--gray); }
-.agent .dot.red { box-shadow: none; }
+.service { flex: none; padding: 10px 18px 12px; font-size: 11px; color: var(--label2); display: flex; align-items: center; gap: 7px; border-top: .5px solid var(--sep); }
+.service .dot { width: 7px; height: 7px; }
+.service .dot.gray { box-shadow: none; background: var(--gray); }
+.service .dot.red { box-shadow: none; }
 
 /* main column */
 .main { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--canvas); }

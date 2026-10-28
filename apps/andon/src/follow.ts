@@ -1,4 +1,4 @@
-// Follows the agent's `GET /events` (`projects`, `board`, `error`), with no polling, like the UI's
+// Follows the service's `GET /events` (`projects`, `board`, `error`), with no polling, like the UI's
 // live.ts. Each `projects` event (sent on every connect, and when the registry changes) fetches
 // `GET /projects/<pid>/board` once per listed project; after that, `board` and `error` events keep
 // each project current. A stream that fails or ends is reopened after a fixed delay. Boards are
@@ -9,7 +9,7 @@ import type { Http } from './http';
 import { createSseParser } from './sse';
 import type { SseEvent } from './sse';
 import { emptyState, isListed, isRecord, revOf, setBoard, setError, setProjects, toJobs, toProjects } from './state';
-import type { ShellJob, ShellProject, ShellState } from './state';
+import type { AppJob, AppProject, AppState } from './state';
 
 export const RECONNECT_MS = 3000;
 
@@ -21,15 +21,15 @@ export interface FollowHandlers {
   /** The stream failed or ended; it is reopened after the delay. */
   onDown?(why: string): void;
   /** A `projects` event replaced the list. */
-  onProjects?(projects: ShellProject[]): void;
+  onProjects?(projects: AppProject[]): void;
   /** A project's board was applied (from a `board` event or its fetch). */
-  onBoard?(pid: string, jobs: ShellJob[]): void;
+  onBoard?(pid: string, jobs: AppJob[]): void;
   /** The state changed. */
-  onState?(s: ShellState): void;
+  onState?(s: AppState): void;
 }
 
 export interface Follower {
-  state(): ShellState;
+  state(): AppState;
   stop(): void;
 }
 
@@ -47,19 +47,19 @@ export function startFollow(opts: FollowHandlers & { http: Http; retryMs?: numbe
   let retry: ReturnType<typeof setTimeout> | null = null;
   let reader: { cancel(): Promise<void> } | null = null;
 
-  const set = (next: ShellState): boolean => {
+  const set = (next: AppState): boolean => {
     if (stopped || next === state) return false;
     state = next;
     opts.onState?.(state);
     return true;
   };
-  const board = (pid: string, jobs: ShellJob[]): void => {
+  const board = (pid: string, jobs: AppJob[]): void => {
     if (set(setBoard(state, pid, jobs))) opts.onBoard?.(pid, jobs);
   };
 
   async function load(pid: string): Promise<void> {
     const rev = revOf(state, pid);
-    let result: { ok: true; jobs: ShellJob[] } | { ok: false; reason: string };
+    let result: { ok: true; jobs: AppJob[] } | { ok: false; reason: string };
     try {
       const data = await getJson(opts.http, boardPath(pid));
       result = { ok: true, jobs: toJobs(isRecord(data) ? data.jobs : null) };

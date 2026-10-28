@@ -1,5 +1,5 @@
 // The drawer's tiny markdown renderer, ported from the vendored dashboard. The input is
-// HTML-escaped before any markup is added, so its output is safe to insert as HTML. The agent
+// HTML-escaped before any markup is added, so its output is safe to insert as HTML. The service
 // serves no job images, so an image renders as its alt text.
 
 export const esc = (s: string): string =>

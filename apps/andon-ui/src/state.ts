@@ -1,4 +1,4 @@
-// UI state: every registered project and its last board, driven by the agent's `GET /events`
+// UI state: every registered project and its last board, driven by the service's `GET /events`
 // stream (`projects`, `board`, `error`) and one `GET /projects/<pid>/board` per project when the
 // project list arrives. Every update returns a new state; nothing here touches the DOM.
 import { isRecord, toConfig, toJobs, toProjects } from './job';

@@ -4,29 +4,29 @@ import { connect as tcp } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { addRoot, appendEvent, parseConfig, parseEventInput, registryPath } from '@factory/contract';
-import { projectId, startAgent } from './index';
-import type { Agent } from './index';
+import { projectId, startService } from './index';
+import type { Service } from './index';
 
 const CONFIG = { schema: 'factory/v1', reviewers: ['security', 'code'], maxRound: 2, dashboard: { settleAfterHours: 24 } };
 
 let tmp: string;
 let registry: string;
-let agent: Agent | null;
+let service: Service | null;
 const logs: string[] = [];
 beforeEach(async () => {
-  tmp = await realpath(await mkdtemp(join(tmpdir(), 'andon-agent-')));
+  tmp = await realpath(await mkdtemp(join(tmpdir(), 'andon-service-')));
   registry = registryPath(join(tmp, 'andon'));
-  agent = null;
+  service = null;
   logs.length = 0;
 });
 afterEach(async () => {
-  await agent?.stop();
+  await service?.stop();
   await rm(tmp, { recursive: true, force: true });
 });
 
-const start = async (uiDir?: string): Promise<Agent> => {
-  agent = await startAgent({ port: 0, registryPath: registry, log: (l) => logs.push(l), ...(uiDir === undefined ? {} : { uiDir }) });
-  return agent;
+const start = async (uiDir?: string): Promise<Service> => {
+  service = await startService({ port: 0, registryPath: registry, log: (l) => logs.push(l), ...(uiDir === undefined ? {} : { uiDir }) });
+  return service;
 };
 const writeAt = async (path: string, text: string): Promise<void> => {
   await mkdir(join(path, '..'), { recursive: true });
@@ -444,7 +444,7 @@ describe('the event stream (AC4, AC5)', () => {
     await addRoot(registry, a);
     const { url } = await start();
     await writeFile(registry, '{"schema":"factory/v2","projects":[]}');
-    // Wait for the agent to reload and log the rejection (deadline 2 s), not a fixed delay.
+    // Wait for the service to reload and log the rejection (deadline 2 s), not a fixed delay.
     const deadline = Date.now() + 2000;
     while (!logs.some((l) => l.includes('schema')) && Date.now() < deadline) await settle(20);
     expect(logs.some((l) => l.includes('schema'))).toBe(true);
@@ -535,8 +535,8 @@ describe('the built UI (AC5)', () => {
       expect(field((await getJson(`${url}/projects`)).body, 'projects')).toEqual([{ id: projectId(a), name: 'alpha', root: a }]);
       expect((await getJson(`${url}/projects/${projectId(a)}/board`)).status).toBe(200);
       expect((await getJson(`${url}/projects/nope/board`)).status).toBe(404);
-      await agent?.stop();
-      agent = null;
+      await service?.stop();
+      service = null;
     }
   });
 

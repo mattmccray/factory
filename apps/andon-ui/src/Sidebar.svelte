@@ -1,6 +1,6 @@
 <script lang="ts">
   // The sidebar (design §3): All Projects with its needs-human badge, every registered project with
-  // its status dot and badge, and the agent's connection in the footer. In the Mac shell its top
+  // its status dot and badge, and the service's connection in the footer. In the Mac app its top
   // strip leaves room for the traffic lights and drags the window. The rows come from sidebar.ts.
   import type { Status } from './live';
   import { ALL } from './projects';
@@ -20,7 +20,7 @@
   // A row's accessible name: the name, then what its dot and badge show ("minerva, needs a human, 1 needs a human").
   const label = (name: string, state: string | null, badge: Badge | null): string => [name, state, badge?.label].filter((x) => x !== null && x !== undefined).join(', ');
   // Announced to screen readers only when the connection changes, not when the project count does.
-  const ANNOUNCE: Record<Status, string> = { connecting: 'Connecting to the Andon agent', live: 'Connected to the Andon agent', down: 'The Andon agent is unreachable' };
+  const ANNOUNCE: Record<Status, string> = { connecting: 'Connecting to the Andon service', live: 'Connected to the Andon service', down: 'The Andon service is unreachable' };
 </script>
 
 <aside class="sidebar" id="sidebar" aria-label="Sidebar">
@@ -51,7 +51,7 @@
       </ul>
     {/if}
   </nav>
-  <div class="agent">
+  <div class="service">
     <span class="dot {foot.dot}" aria-hidden="true"></span><span>{foot.text}</span>
     <span class="sr-only" role="status">{ANNOUNCE[status]}</span>
   </div>

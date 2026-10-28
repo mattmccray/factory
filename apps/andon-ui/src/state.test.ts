@@ -17,7 +17,7 @@ function twoProjects(): UiState {
   return s;
 }
 
-describe('applying agent events (AC3)', () => {
+describe('applying service events (AC3)', () => {
   test('a projects event replaces the project list, keeping boards of projects still listed', () => {
     const P3 = { id: 'cccccccccccc', name: 'three', root: '/r/three' };
     const s = applyEvent(twoProjects(), 'projects', { projects: [P2, P3] });

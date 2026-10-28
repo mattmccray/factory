@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { registryPath } from '@factory/contract';
-import { startAgent } from './index';
+import { startService } from './index';
 
 const SPECIFIER = /(?:^|\s)(?:import|export)\s(?:[^'"]*?\sfrom\s)?['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]\s*\)|require\(\s*['"]([^'"]+)['"]\s*\)/gm;
 
@@ -13,7 +13,7 @@ const sources = async (): Promise<Array<{ file: string; text: string }>> => {
 };
 
 // AC6: contract code comes only from `@factory/contract`, never the installed copy or a `..` path.
-test('packages/andon-agent imports contract code only from @factory/contract', async () => {
+test('packages/andon-service imports contract code only from @factory/contract', async () => {
   const all = await sources();
   expect(all.map((s) => s.file)).toContain('index.ts');
   const seen: string[] = [];
@@ -32,7 +32,7 @@ test('packages/andon-agent imports contract code only from @factory/contract', a
 });
 
 // AC4: changes are found by fs.watch, never by polling.
-test('the agent source has no setInterval and no polling loop', async () => {
+test('the service source has no setInterval and no polling loop', async () => {
   for (const { file, text } of await sources()) {
     if (file.endsWith('.test.ts')) continue;
     expect({ file, setInterval: text.includes('setInterval') }).toEqual({ file, setInterval: false });
@@ -44,7 +44,7 @@ test('the agent source has no setInterval and no polling loop', async () => {
   expect(index).toMatch(/\bwatch\(/);
 });
 
-// AC6: the agent listens on loopback only.
+// AC6: the service listens on loopback only.
 let stop: (() => Promise<void>) | null = null;
 let tmp: string | null = null;
 afterEach(async () => {
@@ -54,13 +54,13 @@ afterEach(async () => {
   tmp = null;
 });
 
-test('startAgent listens on 127.0.0.1 only', async () => {
+test('startService listens on 127.0.0.1 only', async () => {
   tmp = await mkdtemp(join(tmpdir(), 'andon-bind-'));
-  const agent = await startAgent({ port: 0, registryPath: registryPath(tmp), log: () => undefined });
-  stop = agent.stop;
-  const url = new URL(agent.url);
+  const service = await startService({ port: 0, registryPath: registryPath(tmp), log: () => undefined });
+  stop = service.stop;
+  const url = new URL(service.url);
   expect(url.hostname).toBe('127.0.0.1');
-  expect((await fetch(`${agent.url}/projects`)).status).toBe(200);
+  expect((await fetch(`${service.url}/projects`)).status).toBe(200);
   const external = Object.values(networkInterfaces())
     .flatMap((list) => list ?? [])
     .find((i) => i.family === 'IPv4' && !i.internal);
@@ -76,8 +76,8 @@ test('startAgent listens on 127.0.0.1 only', async () => {
   expect(index).toMatch(/hostname: HOSTNAME/);
 });
 
-// AC7: the contract doc documents the registry, init's registration, and the agent's surface.
-test('docs/contract/v1.md documents the registry, init registration, and the agent endpoints', async () => {
+// AC7: the contract doc documents the registry, init's registration, and the service's surface.
+test('docs/contract/v1.md documents the registry, init registration, and the service endpoints', async () => {
   const doc = await readFile(join(import.meta.dir, '..', '..', '..', 'docs', 'contract', 'v1.md'), 'utf8');
   for (const want of [
     '## Andon registry',
@@ -85,7 +85,11 @@ test('docs/contract/v1.md documents the registry, init registration, and the age
     '`~/.andon`',
     '{ "schema": "factory/v1", "projects": [{ "root": "/absolute/repo/root" }] }',
     'note: not registered with Andon (<registry path>): <reason>',
-    '## Andon agent',
+    '## Andon service',
+    '`bun run andon:service`',
+    '`packages/andon-service`',
+    '`apps/andon-ui/dist`',
+    '`bun run andon:ui:build`',
     '`GET /projects`',
     '`GET /projects/<pid>/board`',
     '`GET /projects/<pid>/jobs/<id>/docs`',
@@ -99,5 +103,6 @@ test('docs/contract/v1.md documents the registry, init registration, and the age
   ]) {
     expect({ want, found: doc.includes(want) }).toEqual({ want, found: true });
   }
-  expect(doc.indexOf('## Dashboard endpoints')).toBeLessThan(doc.indexOf('## Andon agent'));
+  expect(doc.indexOf('## Dashboard endpoints')).toBeLessThan(doc.indexOf('## Andon service'));
+  expect(doc).not.toMatch(/andon[- ]agent/i);
 });

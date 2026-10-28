@@ -4,13 +4,13 @@ import type { TraySpec } from './badge';
 import type { DockLook } from './lantern';
 import type { Http } from './http';
 import type { NoticeText } from './notify';
-import { startShell } from './shell';
+import { startApp } from './app';
 
 const P = { id: 'aaaaaaaaaaaa', name: 'factory', root: '/r/factory' };
 const enc = new TextEncoder();
 const wait = (ms = 5) => new Promise((r) => setTimeout(r, ms));
 
-test('the shell keeps the tray count current and notifies on escalate and merge, re-baselining on reconnect', async () => {
+test('the Mac app keeps the tray count current and notifies on escalate and merge, re-baselining on reconnect', async () => {
   const controls: Array<ReadableStreamDefaultController<Uint8Array>> = [];
   let board: unknown = { jobs: [{ id: '001-a', title: 'Alpha', stage: 'review', note: '' }] };
   const http: Http = async (path) => {
@@ -23,7 +23,7 @@ test('the shell keeps the tray count current and notifies on escalate and merge,
   const send = (event: string, data: unknown) => controls.at(-1)?.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
   const trays: TraySpec[] = [];
   const notes: NoticeText[] = [];
-  const shell = startShell({ http, tray: (t) => trays.push(t), dock: () => undefined, badge: () => undefined, notify: (n) => notes.push(n) }, { retryMs: 5 });
+  const app = startApp({ http, tray: (t) => trays.push(t), dock: () => undefined, badge: () => undefined, notify: (n) => notes.push(n) }, { retryMs: 5 });
   await wait();
   send('projects', { projects: [P] });
   await wait();
@@ -53,7 +53,7 @@ test('the shell keeps the tray count current and notifies on escalate and merge,
   await wait();
   expect(notes.at(-1)).toEqual({ title: 'Beta merged', subtitle: 'factory · 002-b', body: 'merged def' });
   expect(notes).toHaveLength(2);
-  shell.stop();
+  app.stop();
 });
 
 test('AC3: the Dock look, the tray, and the badge are each set only when their value changes', async () => {
@@ -70,7 +70,7 @@ test('AC3: the Dock look, the tray, and the badge are each set only when their v
   const looks: DockLook[] = [];
   const trays: Array<{ spec: TraySpec; running: boolean }> = [];
   const badges: string[] = [];
-  const shell = startShell(
+  const app = startApp(
     { http, tray: (spec, running) => trays.push({ spec, running }), dock: (l) => looks.push(l), badge: (t) => badges.push(t), notify: () => undefined },
     { retryMs: 5 },
   );
@@ -104,5 +104,5 @@ test('AC3: the Dock look, the tray, and the badge are each set only when their v
   ]);
   expect(badges).toEqual(['', '1', '2', '']);
   for (const t of trays) expect(t.spec).toEqual(traySpec(Number(t.spec.title)));
-  shell.stop();
+  app.stop();
 });

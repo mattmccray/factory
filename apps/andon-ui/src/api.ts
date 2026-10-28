@@ -1,4 +1,4 @@
-// Reads from the Andon agent. The fetch function is passed in, so tests can fake the agent.
+// Reads from the Andon service. The fetch function is passed in, so tests can fake the service.
 import type { BoardJob } from './board';
 import { isRecord } from './job';
 import { boardPath, docsPath } from './projects';

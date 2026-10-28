@@ -6,7 +6,7 @@
 export interface WindowFlags {
   minimized: boolean;
   fullscreen: boolean;
-  /** Already on every Space (the shell never sets this). */
+  /** Already on every Space (the Mac app never sets this). */
   allSpaces: boolean;
 }
 

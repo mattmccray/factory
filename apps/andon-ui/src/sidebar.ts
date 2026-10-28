@@ -86,7 +86,7 @@ export interface Footer {
 }
 
 export function footer(status: Status, projects: number): Footer {
-  if (status === 'live') return { text: `Connected · andon-agent · ${plural(projects, 'project', 'projects')}`, dot: 'green' };
+  if (status === 'live') return { text: `Connected · andon-service · ${plural(projects, 'project', 'projects')}`, dot: 'green' };
   if (status === 'down') return { text: 'Unreachable', dot: 'red' };
   return { text: 'Connecting…', dot: 'gray' };
 }
@@ -149,14 +149,14 @@ export function settleHours(s: UiState, sel: Selection): number[] {
   return s.projects.filter((p) => sel === ALL || sel === p.id).map((p) => s.boards[p.id]?.config.settleAfterHours ?? 24);
 }
 
-// ---- the window: shell or browser ----
+// ---- the window: the Mac app or a browser ----
 
 export type ShellMode = 'mac' | 'browser';
 
 /** The traffic lights' reserved width, at the top-left of the sidebar (or the toolbar when the sidebar is hidden). */
 export const MAC_INSET = 78;
 
-/** `?shell=mac` (the Tiny JS shell loads the page with it) is the Mac shell; anything else is a browser. */
+/** `?shell=mac` (the Mac app loads the page with it) is the Mac app; anything else is a browser. */
 export function shellMode(search: string): ShellMode {
   return new URLSearchParams(search).get('shell') === 'mac' ? 'mac' : 'browser';
 }

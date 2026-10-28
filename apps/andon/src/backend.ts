@@ -1,48 +1,48 @@
-// The Tiny JS backend adapter: the only file that touches Tiny or txiki.js. It wires the shell's
-// runtime-neutral logic (shell.ts, autostart.ts) to Tiny's `app.tray`, `app.icon`, `app.badge`,
-// `app.notify`, and `onTray`, and to txiki's `tjs.spawn` (for the agent, and for curl: see curl.ts). `bun run
-// andon:shell:build` bundles it into build/backend.js, the plain-JS entry tinyjs.json names.
-// The window's page (the agent-served UI) gets no Tiny API but the two calls its drag regions make
+// The Tiny JS backend adapter: the only file that touches Tiny or txiki.js. It wires the Mac app's
+// runtime-neutral logic (app.ts, autostart.ts) to Tiny's `app.tray`, `app.icon`, `app.badge`,
+// `app.notify`, and `onTray`, and to txiki's `tjs.spawn` (for the service, and for curl: see curl.ts). `bun run
+// andon:build` bundles it into build/backend.js, the plain-JS entry tinyjs.json names.
+// The window's page (the service-served UI) gets no Tiny API but the two calls its drag regions make
 // (`win.startDrag`, `win.zoom`): tinyjs.json's `api` gate denies the rest.
 /// <reference path="../types/tiny.d.ts" />
 /// <reference path="../types/tjs.d.ts" />
 import { QUIT_ID, SHOW_ID, trayNotice } from './badge';
 import type { TraySpec } from './badge';
-import { agentCommand, agentUrl, DEFAULT_PORT, ensureAgent, pageUrl, probeAgent, resolvePort } from './autostart';
-import type { Agent, Child } from './autostart';
+import { serviceCommand, serviceUrl, DEFAULT_PORT, ensureService, pageUrl, probeService, resolvePort } from './autostart';
+import type { Service, Child } from './autostart';
 import { curlArgv, responseFromCurl } from './curl';
 import type { Http } from './http';
 import type { DockLook } from './lantern';
-import { startShell } from './shell';
-import type { Shell } from './shell';
+import { startApp } from './app';
+import type { App } from './app';
 import { oneAtATime, trayClickAction } from './trayclick';
 
 // ---- the Tiny this adapter uses ----
 // Tiny's and txiki's own declarations (vendored unedited from Tiny's template; `tinyjs
-// update-project` refreshes them) type the `tjs` global and the `app` Tiny passes in. ShellApp
-// picks the members the shell calls, so its whole dependence on Tiny is listed here, in one place,
+// update-project` refreshes them) type the `tjs` global and the `app` Tiny passes in. MacApp
+// picks the members the Mac app calls, so its whole dependence on Tiny is listed here, in one place,
 // and the test fakes stay small.
 
 /** The fields of the main window's state the tray click reads. */
-export type ShellWinState = Pick<TinyWinState, 'minimized' | 'fullscreen' | 'allSpaces'>;
+export type MacWinState = Pick<TinyWinState, 'minimized' | 'fullscreen' | 'allSpaces'>;
 /** The window ops the adapter calls. `getState` resolves null when there is no state to give. */
-export type ShellWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpaces' | 'eval'> & {
-  getState(): Promise<ShellWinState | null>;
+export type MacWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpaces' | 'eval'> & {
+  getState(): Promise<MacWinState | null>;
 };
-/** The backend `app` object Tiny passes to `init` and the hooks, narrowed to what the shell uses.
+/** The backend `app` object Tiny passes to `init` and the hooks, narrowed to what the Mac app uses.
  *  `icon('')` resets the Dock icon to the bundle icon, `badge('')` clears the badge, and `done`
  *  settles when the launcher closes (⌘Q, or the app menu's Quit). */
-export type ShellApp = Pick<TinyApp, 'icon' | 'badge' | 'notify' | 'setHideOnClose' | 'quit'> &
+export type MacApp = Pick<TinyApp, 'icon' | 'badge' | 'notify' | 'setHideOnClose' | 'quit'> &
   Partial<Pick<TinyApp, 'done'>> & {
     tray: Pick<TinyApp['tray'], 'set'>;
-    window(id: string): ShellWindow;
+    window(id: string): MacWindow;
   };
 /** What the adapter hands `app.tray.set`. */
-export type ShellTraySpec = Parameters<ShellApp['tray']['set']>[0];
+export type MacTraySpec = Parameters<MacApp['tray']['set']>[0];
 
-/** Compile-time proof that the app Tiny passes in is a ShellApp. */
+/** Compile-time proof that the app Tiny passes in is a MacApp. */
 type Holds<T extends true> = T;
-type TinyAppIsShellApp = Holds<TinyApp extends ShellApp ? true : false>;
+type TinyAppIsMacApp = Holds<TinyApp extends MacApp ? true : false>;
 
 // Fixed at build time by build.ts (`Bun.build` `define`).
 declare const __ANDON_REPO__: string;
@@ -50,10 +50,10 @@ declare const __ANDON_BUN__: string;
 
 // ---- the lantern images ----
 // By absolute path under the repo: Tiny doesn't ship `assets/` as runtime data, and the repo path
-// is fixed at build time (the same one the agent is started from), so it works in `tinyjs dev`
+// is fixed at build time (the same one the service is started from), so it works in `tinyjs dev`
 // and in a built app alike.
 
-export const assetPath = (repo: string, file: string): string => `${repo.replace(/\/+$/, '')}/apps/andon-shell/assets/${file}`;
+export const assetPath = (repo: string, file: string): string => `${repo.replace(/\/+$/, '')}/apps/andon/assets/${file}`;
 
 /** The Dock icon for a look: '' (the bundle's unlit icon.png) for idle, else the lit lantern. */
 export const dockIcon = (repo: string, look: DockLook): string =>
@@ -62,15 +62,15 @@ export const dockIcon = (repo: string, look: DockLook): string =>
 /** The tray lantern: outlined when no jobs are running, filled when they are. */
 export const trayIcon = (repo: string, running: boolean): string => assetPath(repo, running ? 'tray-running.png' : 'tray-idle.png');
 
-export function setDock(app: ShellApp, repo: string, look: DockLook): void {
-  if (!app.icon(dockIcon(repo, look))) console.log(`andon-shell: could not set the ${look} Dock icon`);
+export function setDock(app: MacApp, repo: string, look: DockLook): void {
+  if (!app.icon(dockIcon(repo, look))) console.log(`andon: could not set the ${look} Dock icon`);
 }
 
-export const setTray = (app: ShellApp, repo: string, spec: TraySpec, running: boolean): void =>
+export const setTray = (app: MacApp, repo: string, spec: TraySpec, running: boolean): void =>
   app.tray.set({ ...spec, icon: trayIcon(repo, running), template: true });
 
-/** No board to show (the agent hasn't answered, or never will): the idle look, no badge, and the notice. */
-function showNotice(app: ShellApp, repo: string, text: string): void {
+/** No board to show (the service hasn't answered, or never will): the idle look, no badge, and the notice. */
+function showNotice(app: MacApp, repo: string, text: string): void {
   setTray(app, repo, trayNotice(text), false);
   setDock(app, repo, 'idle');
   app.badge('');
@@ -113,7 +113,7 @@ function spawnChild(argv: string[], env: Record<string, string>): Child {
     stop() {
       if (exited) return;
       try {
-        p.kill('SIGTERM'); // the agent's own handler stops its watchers and exits
+        p.kill('SIGTERM'); // the service's own handler stops its watchers and exits
       } catch {
         // already gone
       }
@@ -123,52 +123,52 @@ function spawnChild(argv: string[], env: Record<string, string>): Child {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** The script that reloads the main window onto the agent's page, in Mac-shell mode. */
+/** The script that reloads the main window onto the service's page, in Mac-app mode. */
 export const reloadScript = (port: number): string => `location.replace(${JSON.stringify(pageUrl(port))})`;
 
 // ---- lifecycle ----
 
-let shell: Shell | null = null;
-let agent: Agent | null = null;
+let andon: App | null = null;
+let service: Service | null = null;
 let quitting = false;
 
 function stopAll(): void {
   quitting = true;
-  shell?.stop();
-  shell = null;
-  agent?.stop(); // a no-op for an agent the shell found already running
-  agent = null;
+  andon?.stop();
+  andon = null;
+  service?.stop(); // a no-op for a service the Mac app found already running
+  service = null;
 }
 
-export function init(app: ShellApp): void {
+export function init(app: MacApp): void {
   quitting = false; // a fresh lifecycle (Tiny calls init once; tests call it after a Quit)
   const port = resolvePort(tjs.env);
-  const url = agentUrl(port);
+  const url = serviceUrl(port);
   const http = curlHttp(url);
   const repo = __ANDON_REPO__;
-  showNotice(app, repo, 'starting the agent');
+  showNotice(app, repo, 'starting the service');
   app.setHideOnClose(true);
-  // ⌘Q skips onTray: stop our agent before Tiny exits (kill is synchronous).
+  // ⌘Q skips onTray: stop our service before Tiny exits (kill is synchronous).
   void app.done?.then(stopAll, stopAll);
 
   void (async () => {
-    agent = await ensureAgent({
-      probe: () => probeAgent(http),
+    service = await ensureService({
+      probe: () => probeService(http),
       spawn: spawnChild,
       sleep,
-      command: agentCommand(__ANDON_REPO__, __ANDON_BUN__),
+      command: serviceCommand(__ANDON_REPO__, __ANDON_BUN__),
       port,
     });
     if (quitting) return stopAll();
-    if (!agent.ok) {
-      console.log(`andon-shell: ${agent.reason}`);
-      showNotice(app, repo, agent.reason);
+    if (!service.ok) {
+      console.log(`andon: ${service.reason}`);
+      showNotice(app, repo, service.reason);
       return;
     }
-    // The window loaded tinyjs.json's URL before the agent answered (or on another port): load it
+    // The window loaded tinyjs.json's URL before the service answered (or on another port): load it
     // now, keeping `?shell=mac` so the page keeps its Mac frame.
-    if (agent.started || port !== DEFAULT_PORT) app.window('main').eval(reloadScript(port));
-    shell = startShell({
+    if (service.started || port !== DEFAULT_PORT) app.window('main').eval(reloadScript(port));
+    andon = startApp({
       http,
       tray: (spec, running) => setTray(app, repo, spec, running),
       dock: (look) => setDock(app, repo, look),
@@ -185,14 +185,14 @@ const SPACE_SETTLE_MS = 150;
 
 /** A left click on the icon: show the main window in front, on this Space. It never hides it:
  *  Tiny's `focused` isn't reliable at click time (rework 2); the close button hides the window. */
-const showMain = oneAtATime(async (app: ShellApp): Promise<void> => {
+const showMain = oneAtATime(async (app: MacApp): Promise<void> => {
   const main = app.window('main');
-  let state: ShellWinState | null;
+  let state: MacWinState | null;
   try {
     state = await main.getState();
   } catch (err) {
     // No state to decide on: still show the window, just without the Space move.
-    console.log(`andon-shell: window state unavailable (${String(err)}); showing the window as is`);
+    console.log(`andon: window state unavailable (${String(err)}); showing the window as is`);
     main.show();
     return;
   }
@@ -213,7 +213,7 @@ const showMain = oneAtATime(async (app: ShellApp): Promise<void> => {
 });
 
 /** A menu item's id, or null for a left click on the icon (the tray spec sets `primaryAction`). */
-export async function onTray(id: string | null, app: ShellApp): Promise<void> {
+export async function onTray(id: string | null, app: MacApp): Promise<void> {
   if (id === null) return showMain(app);
   if (id === SHOW_ID) app.window('main').show();
   if (id === QUIT_ID) {

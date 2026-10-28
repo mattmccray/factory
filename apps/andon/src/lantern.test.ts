@@ -1,14 +1,14 @@
 import { expect, test } from 'bun:test';
 import { needsHumanCount, traySpec } from './badge';
 import { badgeText, dockLook, trayRunning } from './lantern';
-import type { ShellJob, ShellState } from './state';
+import type { AppJob, AppState } from './state';
 
 const A = 'aaaaaaaaaaaa';
 const B = 'bbbbbbbbbbbb';
-const job = (id: string, stage: string): ShellJob => ({ id, title: id, stage, note: '' });
-const board = (...jobs: ShellJob[]) => ({ jobs, error: null, rev: 1 });
+const job = (id: string, stage: string): AppJob => ({ id, title: id, stage, note: '' });
+const board = (...jobs: AppJob[]) => ({ jobs, error: null, rev: 1 });
 /** Project A listed with the given jobs; project B has a board but isn't listed. */
-const listed = (jobs: ShellJob[], unlisted: ShellJob[] = []): ShellState => ({
+const listed = (jobs: AppJob[], unlisted: AppJob[] = []): AppState => ({
   projects: [{ id: A, name: 'one' }],
   boards: { [A]: board(...jobs), [B]: board(...unlisted) },
 });
@@ -42,7 +42,7 @@ test('AC1: jobs of unlisted projects and unknown stages are ignored', () => {
   expect(dockLook(s)).toBe('idle');
   expect(trayRunning(s)).toBe(false);
   // across several listed projects: any one of them counts
-  const two: ShellState = {
+  const two: AppState = {
     projects: [
       { id: A, name: 'one' },
       { id: B, name: 'two' },

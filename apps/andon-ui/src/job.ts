@@ -1,5 +1,5 @@
-// The UI's view of the agent's JSON (docs/contract/v1.md "`job.json` — the derived snapshot" and
-// "Andon agent"). The UI is a tolerant reader: it narrows `unknown` into the fields it shows,
+// The UI's view of the service's JSON (docs/contract/v1.md "`job.json` — the derived snapshot" and
+// "Andon service"). The UI is a tolerant reader: it narrows `unknown` into the fields it shows,
 // ignores fields it doesn't know, and treats a job with no `timing` (or no `startedAt`) as legacy.
 // It imports `@factory/contract` with `import type` only (erased under `verbatimModuleSyntax`), to
 // check its shapes against the contract's at compile time; it never runs contract code, so it
@@ -59,7 +59,7 @@ export interface BoardConfig {
 
 // Compile-time drift checks, one way: a real contract value must be accepted by the UI's wider
 // shape. Narrowing a UI field so it no longer accepts the contract's type fails `bun run check`.
-// (`ProjectInfo` is unchecked: the contract exports no type for the agent's project entries.)
+// (`ProjectInfo` is unchecked: the contract exports no type for the service's project entries.)
 type Assignable<From, To> = [From] extends [To] ? true : false;
 type Expect<T extends true> = T;
 export type ContractShapesChecked = [

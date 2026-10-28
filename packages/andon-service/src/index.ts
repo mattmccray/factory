@@ -1,4 +1,4 @@
-// The Andon agent (docs/contract/v1.md "Andon agent"): one Bun daemon per machine that reads every
+// The Andon service (docs/contract/v1.md "Andon service"): one Bun daemon per machine that reads every
 // project listed in the Andon registry through `@factory/contract` and serves it, read-only, on
 // loopback:
 //   GET /projects                        → { projects: [{ id, name, root }] } (name: config.json's `name`, else basename(root))
@@ -20,7 +20,7 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
 import { parseConfig, readRegistry } from '@factory/contract';
 import type { Config } from '@factory/contract';
 
-export interface AgentOptions {
+export interface ServiceOptions {
   port: number; // 0 picks a free port
   registryPath: string; // `$ANDON_HOME/projects.json`
   debounceMs?: number; // the burst window before one `board` event per project (default 50)
@@ -28,7 +28,7 @@ export interface AgentOptions {
   uiDir?: string; // the Andon UI build (`apps/andon/dist`), served at `/`; absent or unbuilt: `/` is a 404
 }
 
-export interface Agent {
+export interface Service {
   url: string;
   stop: () => Promise<void>;
 }
@@ -140,7 +140,7 @@ const json = (body: unknown): Response => Response.json(body, { headers: NO_STOR
 const text = (body: string, status: number): Response => new Response(body, { status, headers: NO_STORE });
 const notFound = (): Response => text('Not found', 404);
 
-/** The Content-Security-Policy sent on successful UI route responses only (docs/contract/v1.md "Andon agent"). */
+/** The Content-Security-Policy sent on successful UI route responses only (docs/contract/v1.md "Andon service"). */
 export const UI_CSP =
   "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
@@ -171,8 +171,8 @@ type Client = ReadableStreamDefaultController<Uint8Array>;
 const encoder = new TextEncoder();
 const frame = (event: string, data: unknown): Uint8Array => encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
-/** Starts the agent on `127.0.0.1:<port>`. */
-export async function startAgent(opts: AgentOptions): Promise<Agent> {
+/** Starts the service on `127.0.0.1:<port>`. */
+export async function startService(opts: ServiceOptions): Promise<Service> {
   const debounceMs = opts.debounceMs ?? 50;
   const log = opts.log ?? ((line: string) => console.error(line));
   const clients = new Set<Client>();
@@ -367,7 +367,7 @@ export async function startAgent(opts: AgentOptions): Promise<Agent> {
   }
 
   // DNS-rebinding guard: loopback binding alone does not stop a page whose hostname resolves to
-  // 127.0.0.1, so the Host must name this agent, and an Origin, when sent, must be this agent's.
+  // 127.0.0.1, so the Host must name this service, and an Origin, when sent, must be this service's.
   let boundPort = 0;
   function trusted(req: Request): boolean {
     const hosts = [`127.0.0.1:${boundPort}`, `localhost:${boundPort}`];

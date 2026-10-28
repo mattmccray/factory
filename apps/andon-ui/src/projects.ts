@@ -79,7 +79,7 @@ export function projectErrors(s: UiState, sel: Selection): Array<{ id: string; n
   return out;
 }
 
-/** The agent path of a job's docs, in that job's own project. */
+/** The service path of a job's docs, in that job's own project. */
 export const docsPath = (b: Pick<BoardJob, 'project' | 'job'>): string => `/projects/${encodeURIComponent(b.project.id)}/jobs/${encodeURIComponent(b.job.id)}/docs`;
 
 export const boardPath = (pid: string): string => `/projects/${encodeURIComponent(pid)}/board`;

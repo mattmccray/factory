@@ -42,7 +42,7 @@ describe('the contract boundary (009 AC3)', () => {
 });
 
 describe('the Vite dev server (009 AC4)', () => {
-  test('binds loopback with CORS off, and still proxies /projects and /events to the agent', () => {
+  test('binds loopback with CORS off, and still proxies /projects and /events to the service', () => {
     const server = isRecord(config) && isRecord(config.server) ? config.server : {};
     expect(server.host).toBe('127.0.0.1');
     expect(server.cors).toBe(false);

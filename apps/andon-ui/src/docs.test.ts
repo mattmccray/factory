@@ -51,7 +51,7 @@ describe('markdown', () => {
     expect(html).toContain('<pre><code>x &lt; y</code></pre>');
   });
 
-  test('an image renders as its alt text (the agent serves no job images)', () => {
+  test('an image renders as its alt text (the service serves no job images)', () => {
     expect(markdown('![desktop](ui/a.png)')).toContain('[image: desktop]');
   });
 });

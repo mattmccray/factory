@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Andon: every registered project's board, live from the agent's `GET /events`, inside the
+  // Andon: every registered project's board, live from the service's `GET /events`, inside the
   // Mac-app frame (design §3): sidebar, toolbar, the Assembly Lines matrix (§5–§7), the inspector
   // (§8) with its Rework and Abandon sheets, the Settled sheet (§9), and the status bar. Selecting a project (in the sidebar, or by its gutter name) focuses it. Search,
   // Needs Me, the keyboard map, and deep links (§10) come from find.ts, keys.ts, and route.ts. This
@@ -324,11 +324,11 @@
       {/if}
       {#if ui.projects.length === 0}
         {#if status === 'down'}
-          <div class="nothing">The Andon agent isn't answering.<br /><br />Start it from the factory repo: <code>bun run andon</code></div>
+          <div class="nothing">The Andon service isn't answering.<br /><br />Start it from the factory repo: <code>bun run andon:service</code></div>
         {:else if status === 'live'}
           <div class="nothing">No projects are registered.<br /><br />Run <code>factory init</code> in a repo to add it.</div>
         {:else}
-          <div class="nothing">Connecting to the Andon agent…</div>
+          <div class="nothing">Connecting to the Andon service…</div>
         {/if}
       {:else}
         <Lines lanes={lines.lanes} {header} {jobs} {focused} {recent} {now} {found} selectedKey={openKey} fresh={marks.fresh} moved={marks.moved} onopen={openJob} onfocus={select} onsettled={openSettled} />

@@ -1,9 +1,9 @@
-// Which boards notify. A project's first board after the shell starts or reconnects is its
+// Which boards notify. A project's first board after the Mac app starts or reconnects is its
 // baseline and notifies nothing. After that, a job notifies when its `stage` moves into
 // `needs-human` (from `job.escalated` or `merge.failed`) or into `merged`; a job first seen after
 // the baseline notifies only if it arrives already in one of those stages. Runtime-neutral.
 import { NEEDS_HUMAN } from './badge';
-import type { ShellJob } from './state';
+import type { AppJob } from './state';
 
 export const MERGED = 'merged';
 
@@ -23,7 +23,7 @@ export const noBaselines = (): Baselines => ({});
 const noticeKind = (stage: string): Notice['kind'] | null => (stage === NEEDS_HUMAN ? 'needs-human' : stage === MERGED ? 'merged' : null);
 
 /** Diffs a project's new board against its baseline, and returns the new baseline. */
-export function diffBoard(base: Baselines, pid: string, jobs: ShellJob[]): { base: Baselines; notices: Notice[] } {
+export function diffBoard(base: Baselines, pid: string, jobs: AppJob[]): { base: Baselines; notices: Notice[] } {
   const prev = base[pid];
   const next: Record<string, string> = {};
   const notices: Notice[] = [];

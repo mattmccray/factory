@@ -1,5 +1,5 @@
 {
-  "name": "@factory/andon-agent",
+  "name": "@factory/andon-service",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,7 +8,7 @@
     ".": "./src/index.ts"
   },
   "bin": {
-    "andon-agent": "src/main.ts"
+    "andon-service": "src/main.ts"
   },
   "dependencies": {
     "@factory/contract": "workspace:*"

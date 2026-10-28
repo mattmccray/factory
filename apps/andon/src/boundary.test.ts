@@ -1,8 +1,8 @@
-// The shell's boundaries: no contract, agent, or UI code runs in it, its logic is runtime-neutral
+// The Mac app's boundaries: no contract, service, or UI code runs in it, its logic is runtime-neutral
 // (AC5), only backend.ts names Tiny or txiki (through Tiny's own vendored types, narrowed to
-// `ShellApp`), the window loads the agent on loopback with the page's Tiny API denied but for its
+// `MacApp`), the window loads the service on loopback with the page's Tiny API denied but for its
 // drag regions (AC6), the
-// shell pins the Tiny JS it was tested on, and the backend entry is the Bun bundle of backend.ts.
+// Mac app pins the Tiny JS it was tested on, and the backend entry is the Bun bundle of backend.ts.
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -10,8 +10,8 @@ import { BACKEND_OUT, bundleBackend } from '../build';
 import { DEFAULT_PORT, pageUrl } from './autostart';
 import { isRecord } from './state';
 
-const shellDir = join(import.meta.dir, '..');
-const repoDir = join(shellDir, '..', '..');
+const appDir = join(import.meta.dir, '..');
+const repoDir = join(appDir, '..', '..');
 const ADAPTER = 'backend.ts';
 const sources = readdirSync(import.meta.dir).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'));
 
@@ -22,26 +22,37 @@ function specifiers(text: string): string[] {
   return out;
 }
 
+/** An import the Mac app may not make: any `@factory/*` package, the UI (`apps/andon-ui`), or the service (`andon-service`). */
+const forbiddenImport = (s: string): boolean => s.startsWith('@factory/') || /(^|\/)andon-ui(\/|$)/.test(s) || s.includes('andon-service');
+
 const readJson = (path: string): Record<string, unknown> => {
   const v: unknown = JSON.parse(readFileSync(path, 'utf8'));
   if (!isRecord(v)) throw new Error(`${path} is not an object`);
   return v;
 };
 
-describe('AC5: the shell runs no contract, agent, or UI code', () => {
+describe('AC5: the Mac app runs no contract, service, or UI code', () => {
   test('the scan sees the logic modules and the adapter', () => {
     expect(sources).toContain(ADAPTER);
     for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts']) expect(sources).toContain(f);
   });
 
-  test('no source imports @factory/contract, @factory/andon-agent, or apps/andon', () => {
+  test('the import matcher flags @factory/*, the UI, and the service, not the Mac app itself', () => {
+    for (const s of ['@factory/contract', '@factory/andon-service', '@factory/andon-ui', '@factory/andon', '../../andon-ui/src/api', 'apps/andon-ui/src/live', '../../../packages/andon-service/src/index', 'andon-service']) {
+      expect({ s, bad: forbiddenImport(s) }).toEqual({ s, bad: true });
+    }
+    for (const s of ['./sse', './app', '../build', '../../andon/src/badge', 'apps/andon/src/state']) {
+      expect({ s, bad: forbiddenImport(s) }).toEqual({ s, bad: false });
+    }
+  });
+
+  test('no source imports an @factory/* package, apps/andon-ui, or andon-service', () => {
     for (const f of sources) {
       const text = readFileSync(join(import.meta.dir, f), 'utf8');
       for (const s of specifiers(text)) {
-        const bad = s.startsWith('@factory/') || /(^|\/)andon(\/|$)/.test(s) || s.includes('apps/andon/') || s.includes('andon-agent');
-        expect({ file: f, specifier: s, bad }).toEqual({ file: f, specifier: s, bad: false });
+        expect({ file: f, specifier: s, bad: forbiddenImport(s) }).toEqual({ file: f, specifier: s, bad: false });
       }
-      expect(text).not.toMatch(/@factory\/(contract|andon-agent)/);
+      expect(text).not.toMatch(/@factory\/(contract|andon-service|andon-ui)/);
     }
   });
 
@@ -56,8 +67,8 @@ describe('AC5: the shell runs no contract, agent, or UI code', () => {
   });
 
   test('package.json has no dependencies and never names @factory/contract', () => {
-    const pkg = readJson(join(shellDir, 'package.json'));
-    expect(pkg.name).toBe('@factory/andon-shell');
+    const pkg = readJson(join(appDir, 'package.json'));
+    expect(pkg.name).toBe('@factory/andon');
     expect(pkg.private).toBe(true);
     expect(pkg.dependencies).toBeUndefined();
     expect(JSON.stringify(pkg)).not.toContain('@factory/contract');
@@ -74,7 +85,7 @@ describe('only backend.ts names Tiny or txiki', () => {
     for (const code of ["tjs.spawn(['curl'], {})", 'const e = tjs.env;', 'tiny.api.call()', 'function f(app: TinyApp) {}', 'let s: TinyWinState | null', 'const t: TinyTraySpec = {}']) {
       expect({ code, flagged: NAMES_TINY.test(code) }).toEqual({ code, flagged: true });
     }
-    for (const prose of ['// The Tiny JS shell: the runtime-neutral part.', '/** Tiny calls init once. */', 'const tinyish = 1;', 'const myTjs = 2;', 'const Tiny = 3;']) {
+    for (const prose of ['// The Tiny JS app: the runtime-neutral part.', '/** Tiny calls init once. */', 'const tinyish = 1;', 'const myTjs = 2;', 'const Tiny = 3;']) {
       expect({ prose, flagged: NAMES_TINY.test(prose) }).toEqual({ prose, flagged: false });
     }
   });
@@ -87,12 +98,12 @@ describe('only backend.ts names Tiny or txiki', () => {
   });
 });
 
-describe("backend.ts types the adapter with Tiny's vendored types, narrowed to ShellApp", () => {
+describe("backend.ts types the adapter with Tiny's vendored types, narrowed to MacApp", () => {
   const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
 
   test('the vendored types are present', () => {
-    for (const f of ['tiny.d.ts', 'tjs.d.ts']) expect(existsSync(join(shellDir, 'types', f))).toBe(true);
-    expect(readdirSync(join(shellDir, 'types')).sort()).toEqual(['tiny.d.ts', 'tjs.d.ts']);
+    for (const f of ['tiny.d.ts', 'tjs.d.ts']) expect(existsSync(join(appDir, 'types', f))).toBe(true);
+    expect(readdirSync(join(appDir, 'types')).sort()).toEqual(['tiny.d.ts', 'tjs.d.ts']);
   });
 
   test('it references both vendored files', () => {
@@ -108,13 +119,13 @@ describe("backend.ts types the adapter with Tiny's vendored types, narrowed to S
     }
   });
 
-  test("it exports ShellApp, a Pick of Tiny's TinyApp, and the adapter's entry points take it", () => {
-    expect(adapter).toMatch(/^export type ShellApp = Pick<TinyApp, [^>]+>/m);
-    expect(adapter).toMatch(/\bexport function init\(app: ShellApp\)/);
-    expect(adapter).toMatch(/\bexport async function onTray\(id: string \| null, app: ShellApp\)/);
-    expect(adapter).toMatch(/\bexport function setDock\(app: ShellApp,/);
-    expect(adapter).toMatch(/\bexport const setTray = \(app: ShellApp,/);
-    expect(adapter).toMatch(/\boneAtATime\(async \(app: ShellApp\)/);
+  test("it exports MacApp, a Pick of Tiny's TinyApp, and the adapter's entry points take it", () => {
+    expect(adapter).toMatch(/^export type MacApp = Pick<TinyApp, [^>]+>/m);
+    expect(adapter).toMatch(/\bexport function init\(app: MacApp\)/);
+    expect(adapter).toMatch(/\bexport async function onTray\(id: string \| null, app: MacApp\)/);
+    expect(adapter).toMatch(/\bexport function setDock\(app: MacApp,/);
+    expect(adapter).toMatch(/\bexport const setTray = \(app: MacApp,/);
+    expect(adapter).toMatch(/\boneAtATime\(async \(app: MacApp\)/);
   });
 
   test('the reference matcher flags a types/ reference and nothing else', () => {
@@ -137,7 +148,7 @@ describe("backend.ts types the adapter with Tiny's vendored types, narrowed to S
       }
     };
     walk(repoDir);
-    expect(hits).toEqual(['apps/andon-shell/src/backend.ts']);
+    expect(hits).toEqual(['apps/andon/src/backend.ts']);
   });
 
   test("the root tsconfig doesn't include the vendored types", () => {
@@ -147,9 +158,9 @@ describe("backend.ts types the adapter with Tiny's vendored types, narrowed to S
 });
 
 describe('AC6: tinyjs.json', () => {
-  const cfg = readJson(join(shellDir, 'tinyjs.json'));
+  const cfg = readJson(join(appDir, 'tinyjs.json'));
 
-  test('the shell pins Tiny JS 0.65.0, the version it was smoke-tested on, and nothing else moved', () => {
+  test('the Mac app pins Tiny JS 0.65.0, the version it was smoke-tested on, and nothing else moved', () => {
     expect(cfg.minTinyjsVersion).toBe('0.65.0');
     expect(cfg).toEqual({
       $schema: 'https://tinyjs.app/schema/tinyjs.schema.json',
@@ -168,7 +179,7 @@ describe('AC6: tinyjs.json', () => {
     });
   });
 
-  test('the main window loads the agent at http://127.0.0.1:<port>/?shell=mac, the same page the reload uses', () => {
+  test('the main window loads the service at http://127.0.0.1:<port>/?shell=mac, the same page the reload uses', () => {
     expect(typeof cfg.url).toBe('string');
     const url = new URL(String(cfg.url));
     expect(url.protocol).toBe('http:');
@@ -195,17 +206,17 @@ describe('AC6: tinyjs.json', () => {
   });
 
   test('the backend entry is the Bun bundle', () => {
-    expect(join(shellDir, String(cfg.backend))).toBe(BACKEND_OUT);
+    expect(join(appDir, String(cfg.backend))).toBe(BACKEND_OUT);
   });
 
   test('the app is a regular app (a Dock icon, the window shown at launch) with the unlit lantern as its icon', () => {
     expect('activation' in cfg).toBe(false);
     expect(cfg.icon).toBe('assets/icon.png');
-    expect(existsSync(join(shellDir, 'assets', 'icon.png'))).toBe(true);
+    expect(existsSync(join(appDir, 'assets', 'icon.png'))).toBe(true);
   });
 });
 
-test('the bundle is one self-contained ESM file with the agent location fixed in', async () => {
+test('the bundle is one self-contained ESM file with the service location fixed in', async () => {
   const js = await bundleBackend({ repo: '/the/repo', bun: '/the/bun' });
   expect(js).not.toMatch(/^\s*import\s/m); // nothing left to resolve under txiki
   expect(js).not.toMatch(/\brequire\(/);

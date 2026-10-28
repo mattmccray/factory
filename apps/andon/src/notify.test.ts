@@ -1,13 +1,13 @@
 import { expect, test } from 'bun:test';
 import { diffBoard, noBaselines, noticeText, retainProjects } from './notify';
 import type { Baselines, Notice } from './notify';
-import type { ShellJob } from './state';
+import type { AppJob } from './state';
 
 const P = 'aaaaaaaaaaaa';
 const Q = 'bbbbbbbbbbbb';
-const job = (id: string, stage: string, note = ''): ShellJob => ({ id, title: `Title ${id}`, stage, note });
+const job = (id: string, stage: string, note = ''): AppJob => ({ id, title: `Title ${id}`, stage, note });
 
-function run(base: Baselines, pid: string, jobs: ShellJob[]): { base: Baselines; notices: Notice[] } {
+function run(base: Baselines, pid: string, jobs: AppJob[]): { base: Baselines; notices: Notice[] } {
   return diffBoard(base, pid, jobs);
 }
 
@@ -50,7 +50,7 @@ test('AC2: a job first seen after the baseline notifies only if it arrives in ne
 
 test('AC2: a reconnect re-baselines without notifying', () => {
   const before = run(noBaselines(), P, [job('001-a', 'review')]).base;
-  // The shell resets its baselines when a stream opens; the next board is a baseline again.
+  // The Mac app resets its baselines when a stream opens; the next board is a baseline again.
   const after = run(noBaselines(), P, [job('001-a', 'needs-human', 'x')]);
   expect(after.notices).toEqual([]);
   expect(run(before, P, [job('001-a', 'needs-human', 'x')]).notices).toHaveLength(1);

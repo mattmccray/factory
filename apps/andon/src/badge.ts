@@ -1,11 +1,11 @@
 // The tray badge: how many jobs need a human across every registered project, and the tray spec
 // built from that count. Runtime-neutral.
-import type { ShellState } from './state';
+import type { AppState } from './state';
 
 export const NEEDS_HUMAN = 'needs-human';
 
 /** Jobs whose `stage` is `needs-human`, across the listed projects only. */
-export function needsHumanCount(s: ShellState): number {
+export function needsHumanCount(s: AppState): number {
   let n = 0;
   for (const p of s.projects) for (const j of s.boards[p.id]?.jobs ?? []) if (j.stage === NEEDS_HUMAN) n++;
   return n;
@@ -31,5 +31,5 @@ const spec = (title: string, tooltip: string): TraySpec => ({ title, tooltip, me
 export const traySpec = (n: number): TraySpec =>
   n === 0 ? spec('', 'Andon: all clear') : spec(String(n), `Andon: ${n} ${n === 1 ? 'needs' : 'need'} a human`);
 
-/** Before the agent answers, or when it never does (`reason` is the one-line failure). */
+/** Before the service answers, or when it never does (`reason` is the one-line failure). */
 export const trayNotice = (text: string): TraySpec => spec('', `Andon: ${text}`);

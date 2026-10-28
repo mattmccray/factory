@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { buildBoard } from './board';
 import { HOUR, NOW, before, job, tag } from './fixtures';
 import { kindOf } from './lanes';
@@ -147,10 +149,21 @@ describe('the selection (AC2)', () => {
 
 describe('the footer and toolbar texts (AC3)', () => {
   test('the footer: connected with the project count, connecting, or unreachable, each with its dot', () => {
-    expect(footer('live', 12)).toEqual({ text: 'Connected · andon-agent · 12 projects', dot: 'green' });
-    expect(footer('live', 1)).toEqual({ text: 'Connected · andon-agent · 1 project', dot: 'green' });
+    expect(footer('live', 12)).toEqual({ text: 'Connected · andon-service · 12 projects', dot: 'green' });
+    expect(footer('live', 1)).toEqual({ text: 'Connected · andon-service · 1 project', dot: 'green' });
     expect(footer('connecting', 3)).toEqual({ text: 'Connecting…', dot: 'gray' });
     expect(footer('down', 3)).toEqual({ text: 'Unreachable', dot: 'red' });
+  });
+
+  test('the connection is announced, and shown with no projects, as the Andon service (029 AC4)', () => {
+    const sidebar = readFileSync(join(import.meta.dir, 'Sidebar.svelte'), 'utf8');
+    for (const want of ["connecting: 'Connecting to the Andon service'", "live: 'Connected to the Andon service'", "down: 'The Andon service is unreachable'"]) {
+      expect({ want, found: sidebar.includes(want) }).toEqual({ want, found: true });
+    }
+    const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
+    expect(app).toContain("The Andon service isn't answering.<br /><br />Start it from the factory repo: <code>bun run andon:service</code>");
+    expect(app).toContain('Connecting to the Andon service…');
+    for (const text of [sidebar, app]) expect(text).not.toMatch(/andon[- ]agent/i);
   });
 
   test('the title is "Andon", or the selected project\'s name', () => {
@@ -194,14 +207,14 @@ describe('the status bar', () => {
 });
 
 describe('the shell mode (AC4)', () => {
-  test('shell=mac is the Mac shell; anything else is a browser', () => {
+  test('shell=mac is the Mac app; anything else is a browser', () => {
     expect(shellMode('?shell=mac')).toBe('mac');
     expect(shellMode('shell=mac')).toBe('mac');
     expect(shellMode('?x=1&shell=mac')).toBe('mac');
     for (const search of ['', '?', '?shell=', '?shell=MAC', '?shell=win', '?shellmac', '?x=shell=mac']) expect({ search, mode: shellMode(search) }).toEqual({ search, mode: 'browser' });
   });
 
-  test('the Mac shell: the 78px inset, drag regions, and a transparent sidebar', () => {
+  test('the Mac app: the 78px inset, drag regions, and a transparent sidebar', () => {
     expect(frame('mac', true)).toEqual({ inset: MAC_INSET, toolbarInset: 0, drag: true, transparentSidebar: true });
     expect(MAC_INSET).toBe(78);
     // with the sidebar hidden, the toolbar makes room for the traffic lights instead

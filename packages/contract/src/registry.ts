@@ -1,6 +1,6 @@
 // The Andon machine registry (docs/contract/v1.md "Andon registry"): one JSON file per machine,
 // `$ANDON_HOME/projects.json` (default `~/.andon/projects.json`), listing registered project
-// roots. `factory init` adds to it and the Andon agent reads it. Parsing is strict; a write is a
+// roots. `factory init` adds to it and the Andon service reads it. Parsing is strict; a write is a
 // temp file plus rename, so a reader never sees a partial file.
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';

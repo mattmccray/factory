@@ -12,6 +12,10 @@
     "apps/andon": {
       "name": "@factory/andon",
       "version": "0.0.0",
+    },
+    "apps/andon-ui": {
+      "name": "@factory/andon-ui",
+      "version": "0.0.0",
       "devDependencies": {
         "@factory/contract": "workspace:*",
         "@sveltejs/vite-plugin-svelte": "^7.3.1",
@@ -20,15 +24,11 @@
         "vite": "^8.3.5",
       },
     },
-    "apps/andon-shell": {
-      "name": "@factory/andon-shell",
-      "version": "0.0.0",
-    },
-    "packages/andon-agent": {
-      "name": "@factory/andon-agent",
+    "packages/andon-service": {
+      "name": "@factory/andon-service",
       "version": "0.0.0",
       "bin": {
-        "andon-agent": "src/main.ts",
+        "andon-service": "src/main.ts",
       },
       "dependencies": {
         "@factory/contract": "workspace:*",
@@ -63,9 +63,9 @@
   "packages": {
     "@factory/andon": ["@factory/andon@workspace:apps/andon"],
 
-    "@factory/andon-agent": ["@factory/andon-agent@workspace:packages/andon-agent"],
+    "@factory/andon-service": ["@factory/andon-service@workspace:packages/andon-service"],
 
-    "@factory/andon-shell": ["@factory/andon-shell@workspace:apps/andon-shell"],
+    "@factory/andon-ui": ["@factory/andon-ui@workspace:apps/andon-ui"],
 
     "@factory/cli": ["@factory/cli@workspace:packages/cli"],
 
