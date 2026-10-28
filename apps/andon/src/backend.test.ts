@@ -74,9 +74,10 @@ function fakeApp(state: MacWinState | null, fail: Failures = {}): { app: MacApp;
   return { app, calls };
 }
 
-// The adapter reads only `minimized`, `fullscreen`, and `allSpaces`; Tiny's `visible` and `focused`
-// play no part (rework 2), so a window in front and one hidden look the same to it.
-const st = (minimized: boolean, fullscreen = false): MacWinState => ({ minimized, fullscreen, allSpaces: false });
+// The tray click reads only `minimized`, `fullscreen`, and `allSpaces`; Tiny's `visible` and `focused`
+// play no part in it (rework 2), so a window in front and one hidden look the same to it. Settings…'s
+// bring-back step also reads `visible` (037).
+const st = (minimized: boolean, fullscreen = false, visible = true): MacWinState => ({ minimized, fullscreen, allSpaces: false, visible });
 /** Show on the Space the user is on: join every Space, show, then pin it back to one. */
 const showHere = (...mid: string[]): string[] => ['main.getState', 'main.allSpaces(true)', ...mid, 'main.show', 'main.allSpaces(false)'];
 
@@ -265,9 +266,12 @@ test('the reload after starting the service (or on another port) keeps ?shell=ma
 
 // ---- the app menu ----
 
+/** The main window's state as the menu fake reports it: a state, null, or `'fail'` (`getState` rejects). */
+type MainState = { current: MacWinState | null | 'fail' };
+
 /** A fake app that records the menu bar, the store, the pushes, and the shell, with `stored` as the
- *  status bar choice in the store. */
-function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<string, unknown>; open: Set<string> } {
+ *  status bar choice in the store, and `main.current` as the main window's state. */
+function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<string, unknown>; open: Set<string>; main: MainState } {
   const log: unknown[][] = [];
   const store = new Map<string, unknown>([['statusBarHidden', stored]]);
   const { app } = fakeApp(st(false));
@@ -295,8 +299,13 @@ function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<s
       return true;
     },
   };
+  const main: MainState = { current: st(false) };
   app.window = (id) => ({
-    getState: async () => st(false),
+    getState: async () => {
+      const state = main.current;
+      if (state === 'fail') throw new Error(`${id}.getState failed`);
+      return state;
+    },
     restore: () => log.push([`${id}.restore`]),
     setAllSpaces: (on) => log.push([`${id}.allSpaces`, on]),
     show: () => log.push([`${id}.show`]),
@@ -313,7 +322,7 @@ function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<s
       log.push(['win.open', id, opts]);
     },
   };
-  return { app, log, store, open };
+  return { app, log, store, open, main };
 }
 
 /** init, with the service never answering, then let the stored choice be read. */
@@ -410,7 +419,7 @@ test('035 AC1: Settings… opens the settings window on the service port, not re
   m.log.length = 0;
   await onMenu(SETTINGS_ID, m.app);
   expect(m.log).toEqual([
-    ['win.open', 'settings', { page: 'http://127.0.0.1:8766/?shell=mac&view=settings', title: 'Settings', size: SETTINGS_SIZE, minSize: SETTINGS_SIZE, chrome: { frame: true } }],
+    ['win.open', 'settings', { page: 'http://127.0.0.1:8766/?shell=mac&view=settings', title: 'Settings', size: SETTINGS_SIZE, minSize: SETTINGS_SIZE, chrome: { frame: true, windowControls: ['close'] }, parent: 'main' }],
     ['settings.resizable', false],
   ]);
   m.log.length = 0;
@@ -444,6 +453,95 @@ test('035 AC1: once the settings window is closed, Settings… opens it again', 
   m.log.length = 0;
   await onMenu(SETTINGS_ID, m.app);
   expect(m.log.map((e) => e[0])).toEqual(['win.open', 'settings.resizable']);
+});
+
+// ---- Settings… brings the main window back first (037) ----
+
+const openCall = (port = 8766): unknown[] => ['win.open', 'settings', settingsWindow(port)];
+
+test('037 AC2: with the main window up, Settings… opens the close-only child window, not resizable, and leaves main alone', async () => {
+  const m = await initMenu(null);
+  m.main.current = st(false, false, true);
+  m.log.length = 0;
+  await onMenu(SETTINGS_ID, m.app);
+  expect(m.log).toEqual([openCall(), ['settings.resizable', false]]);
+  expect(m.log.some((e) => e[0] === 'main.restore' || e[0] === 'main.show')).toBe(false);
+});
+
+test('037 AC3: with the main window hidden, Settings… shows it, then opens Settings; once open, shows main, then Settings', async () => {
+  const m = await initMenu(null);
+  m.main.current = st(false, false, false);
+  m.log.length = 0;
+  await onMenu(SETTINGS_ID, m.app);
+  expect(m.log).toEqual([['main.show'], openCall(), ['settings.resizable', false]]);
+  m.log.length = 0;
+  await onMenu(SETTINGS_ID, m.app);
+  expect(m.log).toEqual([['main.show'], ['settings.show']]);
+});
+
+test('037 AC4: with the main window minimized, Settings… restores and shows it, then opens Settings; once open, then shows Settings', async () => {
+  const m = await initMenu(null);
+  m.main.current = st(true, false, false);
+  m.log.length = 0;
+  await onMenu(SETTINGS_ID, m.app);
+  expect(m.log).toEqual([['main.restore'], ['main.show'], openCall(), ['settings.resizable', false]]);
+  m.log.length = 0;
+  await onMenu(SETTINGS_ID, m.app);
+  expect(m.log).toEqual([['main.restore'], ['main.show'], ['settings.show']]);
+});
+
+test('037 AC5: with Settings open, Settings… never opens a second window: main is brought back, then Settings shown and focused', async () => {
+  const m = await initMenu(null);
+  await onMenu(SETTINGS_ID, m.app);
+  for (const state of [st(false, false, false), st(true, false, false), st(false, false, true)]) {
+    m.main.current = state;
+    m.log.length = 0;
+    await onMenu(SETTINGS_ID, m.app);
+    expect(m.log.filter((e) => e[0] === 'win.open')).toEqual([]);
+    expect(m.log.at(-1)).toEqual(['settings.show']);
+    expect(m.log.filter((e) => e[0] === 'settings.show')).toHaveLength(1);
+  }
+});
+
+test('037 AC5: two quick clicks with the main window hidden open one window and bring main back once', async () => {
+  const m = await initMenu(null);
+  m.main.current = st(true, false, false);
+  m.log.length = 0;
+  await Promise.all([onMenu(SETTINGS_ID, m.app), onMenu(SETTINGS_ID, m.app)]);
+  expect(m.log).toEqual([['main.restore'], ['main.show'], openCall(), ['settings.resizable', false]]);
+});
+
+test('037 AC6: when the main window state cannot be read (rejects or null), Settings… shows main, no restore, and still opens or shows Settings', async () => {
+  for (const current of ['fail', null] as const) {
+    const m = await initMenu(null);
+    m.main.current = current;
+    m.log.length = 0;
+    await onMenu(SETTINGS_ID, m.app);
+    expect(m.log).toEqual([['main.show'], openCall(), ['settings.resizable', false]]);
+    m.log.length = 0;
+    await onMenu(SETTINGS_ID, m.app);
+    expect(m.log).toEqual([['main.show'], ['settings.show']]);
+  }
+});
+
+test('037: a main window that throws on show still lets Settings… open Settings', async () => {
+  const m = await initMenu(null);
+  m.main.current = st(false, false, false);
+  const base = m.app.window;
+  m.app.window = (id) => {
+    const w = base(id);
+    if (id !== 'main') return w;
+    return {
+      ...w,
+      show: () => {
+        m.log.push(['main.show']);
+        throw new Error('main.show failed');
+      },
+    };
+  };
+  m.log.length = 0;
+  await onMenu(SETTINGS_ID, m.app);
+  expect(m.log).toEqual([['main.show'], openCall(), ['settings.resizable', false]]);
 });
 
 const SETTINGS_META = { window: 'settings', origin: 'http://127.0.0.1:8766' };

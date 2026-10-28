@@ -84,7 +84,7 @@ describe('035 AC1: Settings… and the Settings window', () => {
     }
   });
 
-  test('the window: id `settings`, titled Settings, a fixed size, a standard frame, the settings view on the port', () => {
+  test('the window: id `settings`, titled Settings, a fixed size, a standard frame with only the close button, a child of main, the settings view on the port', () => {
     expect(SETTINGS_WINDOW_ID).toBe('settings');
     expect(SETTINGS_TITLE).toBe('Settings');
     expect(SETTINGS_SIZE).toMatch(/^\d+x\d+$/);
@@ -95,7 +95,8 @@ describe('035 AC1: Settings… and the Settings window', () => {
       title: 'Settings',
       size: SETTINGS_SIZE,
       minSize: SETTINGS_SIZE,
-      chrome: { frame: true },
+      chrome: { frame: true, windowControls: ['close'] },
+      parent: 'main',
     });
   });
 });
