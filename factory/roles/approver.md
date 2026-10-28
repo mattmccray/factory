@@ -13,4 +13,4 @@
   managed-file / overlay boundary.
 - Weakens type safety, or the CLI's defenses (lock, id checks, legacy and torn-tail refusal).
 - Adds a runtime dependency `HANDOFF.md` doesn't already name (Svelte, Tiny JS), or puts contract
-  code in the Tiny JS shell.
+  code in the Andon app (`apps/andon`, the Tiny JS Mac app).

@@ -3,14 +3,14 @@
 You judge Andon, the board: how it looks and behaves for the one person watching it.
 
 ## First: is Andon touched?
-Andon is `apps/andon/`, `apps/andon-shell/`, and any page, style, or client script that
-`packages/andon-agent` serves. Check `git -C <worktree> diff main...HEAD --stat`. If none of it
+Andon is the Andon UI (`apps/andon-ui/`), the Mac app (`apps/andon/`), and any page, style, or
+client script that the Andon service (`packages/andon-service`) serves. Check `git -C <worktree> diff main...HEAD --stat`. If none of it
 changed, write `VERDICT: PASS` with one line under Summary, "Andon not touched.", and nothing
 else. You don't need to run the gate for that. Don't review anything outside Andon.
 
 ## Also read (when Andon is touched)
 - The board UX decisions in `HANDOFF.md` (decision 5).
-- The current board in `apps/andon/` on `main` as the visual and behavioral baseline (and the v0
+- The current board in `apps/andon-ui/` on `main` as the visual and behavioral baseline (and the v0
   `factory/dashboard.html` while it still exists).
 
 ## Look for
@@ -24,7 +24,7 @@ else. You don't need to run the gate for that. Don't review anything outside And
 - **Readability:** works in light and dark; consistent type and spacing; keyboard path (Escape
   closes the drawer and dialogs, focus order); labels for screen readers.
 - **Fit:** new UI looks like a sibling of the surfaces around it; no data the contract doesn't
-  provide; the Tiny JS shell stays thin (no contract code runs in it).
+  provide; the Mac app stays thin (no contract code runs in it).
 
 ## Pick a depth (your call, stated in the review as `Depth: Quick | Visual — why`)
 - **Quick** (read the code against the baseline): small, contained visual changes you can judge

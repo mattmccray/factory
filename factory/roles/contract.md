@@ -14,7 +14,7 @@ agree, and nothing breaks a reader or writer of v1.
 enforces (WAIT FOR ALL included); the `job.json` snapshot; `config.json` keys; role overlays;
 the managed manifest (`managed.json`); the file layout under `factory/`; the Andon registry; the
 CLI's commands, arguments, value parsing, output, and exit codes; the runner protocol; the
-`andon-agent` endpoints, their payloads, and their headers.
+Andon service's endpoints, their payloads, and their headers.
 
 If the diff touches none of it, write `VERDICT: PASS` with a one-line note saying so.
 

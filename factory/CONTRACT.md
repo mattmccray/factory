@@ -68,13 +68,13 @@ reports each such number as a `note`.
 ```
 
 - `name` — optional. The project's display name: Andon labels the project with it (see "Andon
-  agent"). A string of 1–64 characters, counted in Unicode code points, with no leading or
+  service"). A string of 1–64 characters, counted in Unicode code points, with no leading or
   trailing whitespace and no control characters (any Unicode `Cc` code point: U+0000–U+001F,
   U+007F–U+009F); spaces, punctuation, and non-ASCII characters are allowed. Anything else,
   including an empty string or `null`, is an error. When `name` is absent, the project is labeled
   with its root's basename. It is a label, not an identifier: the project id never depends on it,
   and `factory init` never writes one. *(Added within v1, additively: a new optional key; a CLI or
-  agent from before it rejects a config that sets `name`, so upgrade first.)*
+  Andon service from before it rejects a config that sets `name`, so upgrade first.)*
 - `reviewers` — ordered reviewer keys (`^[a-z][a-z0-9-]*$`, at least one, unique, and none may
   equal a fixed role name: `spec-writer`, `builder`, `approver`). Each key `k` writes
   `round-<N>/review-<k>.md`. The order is the chip order on the board.
@@ -570,10 +570,10 @@ it and is renamed into place. Adding a root that is already listed, or removing 
 changes nothing. `factory init` adds to it (see "`init` and `upgrade`"); a human may also edit it
 by hand. The parse, add, and remove helpers are `packages/contract` (`registry.ts`).
 
-## Andon agent
+## Andon service
 
-The Andon agent is one Bun daemon per machine (`bun run andon`, source
-`packages/andon-agent`). It listens on `127.0.0.1` only, on `$ANDON_PORT` (default 8766), and
+The Andon service is one Bun daemon per machine (`bun run andon:service`, source
+`packages/andon-service`). It listens on `127.0.0.1` only, on `$ANDON_PORT` (default 8766), and
 reads the registry at `$ANDON_HOME/projects.json`. It is a reader: it never writes job state.
 A request whose `Host` header is not `127.0.0.1:<port>` or `localhost:<port>`, or that carries an
 `Origin` other than `http://` plus one of those, is a 403 (a guard against DNS rebinding).
@@ -597,7 +597,7 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
   job directory is skipped. The job id is checked against `^\d{3}-[a-z0-9-]+$` before any path is
   built.
 - `GET /` returns the Andon UI's `index.html`, and `GET /<path>` returns that file of the UI
-  build (`apps/andon/dist`, built by `bun run andon:build`), read-only. The URL path is decoded,
+  build (`apps/andon-ui/dist`, built by `bun run andon:ui:build`), read-only. The URL path is decoded,
   and it must resolve to a regular file inside the build directory both before and after
   symlinks are followed: a path that escapes it (by `..`, by an encoded `..` or `/`, or through a
   symlink), a directory, a malformed escape, or a missing file is a 404. With no build present,
@@ -625,7 +625,7 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
   - `error`: `{ project: <pid>, reason: "config.json: <reason>" }`, sent instead of `board` when
     that project's `config.json` is bad.
 
-The agent finds changes with `fs.watch`, never by polling: one recursive watch on each project's
+The service finds changes with `fs.watch`, never by polling: one recursive watch on each project's
 `factory/jobs/`, one non-recursive watch on its `factory/` (for `config.json`), and one on the
 registry file's directory. It never watches or serves `factory/.worktrees/` or `factory/.lock/`.
 An invalid registry edit keeps the current list.
