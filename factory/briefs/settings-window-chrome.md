@@ -1,6 +1,7 @@
 # The Settings window shows only a close button
 
-- Status: ready
+- Status: done
+- Job: 037-settings-window-chrome (merged ee5509c, 2026-10-28)
 - Sources: Matt's request (2026-10-28); brief `factory/briefs/andon-settings.md` (decision 2: a separate, fixed-size, modeless Settings window); `apps/andon/src/appmenu.ts` (`settingsWindow`), `apps/andon/src/backend.ts` (`openSettings`); `apps/andon/types/tiny.d.ts` (`TinyChromeOptions.windowControls`, `TinyOpenWindowOptions.parent`, `dialog`)
 - Date: 2026-10-28
 
