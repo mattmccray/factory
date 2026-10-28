@@ -4,8 +4,8 @@ Non-normative. The binding rules are the role I/O protocol in
 [`docs/contract/v1.md`](contract/v1.md), "Runners", and the `roles` key in "`config.json`". This
 page sketches how a later job could let a non-Claude CLI (for example, Codex for a cross-model
 reviewer) fill a role while Claude Code still orchestrates. Nothing here is implemented: in v1,
-`"claude"` is the only accepted `runner`, and other harness adapters are deferred (HANDOFF,
-"Deferred").
+`"claude"` is the only accepted `runner`, and other harness adapters are deferred
+(`docs/decisions.md`, "Deferred").
 
 ## Where the runner is chosen
 

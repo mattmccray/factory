@@ -446,5 +446,5 @@ in exploration.
      request through the service, and the `/factory` session or a resumed builder picks it up at
      its next checkpoint.
 
-  Multi-machine follows HANDOFF §10: each machine's service owns its projects, and Andon sends
+  Multi-machine follows decision 10 (`docs/decisions.md`): each machine's service owns its projects, and Andon sends
   each action to the owning service (over Tailscale or an SSH tunnel), with no central server.

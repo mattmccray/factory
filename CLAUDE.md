@@ -3,7 +3,8 @@
 This repo is the factory itself: the `factory/v1` contract, the CLI (the only writer of job
 state), the managed core (the `/factory` skill and role templates), the installer and
 guardrails (`init`, `customize`, `doctor`, `upgrade`), harness adapters, and Andon (the
-dashboard). `HANDOFF.md` records the project's binding decisions and its deferred list.
+dashboard). `docs/decisions.md` records the project's binding decisions, its invariants, and
+its deferred list.
 
 Write in American English (en-US).
 

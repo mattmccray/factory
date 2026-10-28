@@ -9,7 +9,8 @@ changed, write `VERDICT: PASS` with one line under Summary, "Andon not touched."
 else. You don't need to run the gate for that. Don't review anything outside Andon.
 
 ## Also read (when Andon is touched)
-- The board UX decisions in `HANDOFF.md` (decision 5).
+- Andon's UX decision in `docs/decisions.md` (decision 5) and the accepted design it names,
+  `docs/design/andon-overview/design.md`.
 - The current board in `apps/andon-ui/` on `main` as the visual and behavioral baseline.
 
 ## Look for
