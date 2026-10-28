@@ -402,8 +402,11 @@ describe('self-upgrade of a copy of this repo (AC6)', () => {
     for (const f of await readdir(join(REPO, '.claude', 'agents'))) {
       if (f.startsWith('factory-')) await cp(join(REPO, '.claude', 'agents', f), join(copy, '.claude', 'agents', f));
     }
-    for (const f of ['cli.ts', 'serve.ts', 'dashboard.html', 'config.json', 'CONTRACT.md']) await cp(join(REPO, 'factory', f), join(copy, 'factory', f));
-    await cp(join(REPO, 'factory', 'lib'), join(copy, 'factory', 'lib'), { recursive: true });
+    for (const f of ['cli.ts', 'config.json', 'CONTRACT.md']) await cp(join(REPO, 'factory', f), join(copy, 'factory', f));
+    // Stand-ins for the vendored v0 orphans (unmanaged files init and upgrade must leave alone), so
+    // the test never reads them from this checkout.
+    const ORPHANS = ['factory/lib/state.ts', 'factory/serve.ts', 'factory/dashboard.html'];
+    for (const rel of ORPHANS) await writeAt(copy, rel, `// stand-in orphan: ${rel}\n`);
     await writeAt(copy, 'factory/jobs/001-old-job/events.jsonl', '{"ts":"x","type":"job.claimed"}\n');
     await writeAt(copy, 'factory/jobs/001-old-job/job.json', '{}\n');
     await writeFile(join(copy, '.gitignore'), await text(REPO, '.gitignore'));
@@ -414,7 +417,8 @@ describe('self-upgrade of a copy of this repo (AC6)', () => {
         Object.entries(s).filter(([rel]) => ['factory/config.json', 'factory/serve.ts', 'factory/dashboard.html', '.gitignore'].includes(rel) || rel.startsWith('factory/lib') || rel.startsWith('factory/jobs')),
       );
     const before = kept(await snapshot(copy));
-    expect(Object.keys(before).length).toBeGreaterThan(8);
+    for (const rel of [...ORPHANS, 'factory/config.json', '.gitignore', 'factory/jobs/001-old-job/events.jsonl', 'factory/jobs/001-old-job/job.json'])
+      expect(Object.keys(before)).toContain(rel);
 
     // Make the copy stale on purpose, so the refusal never depends on whether this repo's installed
     // copy has been upgraded to the current templates.

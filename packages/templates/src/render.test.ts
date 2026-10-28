@@ -712,6 +712,9 @@ describe('the target branch: no literal main', () => {
     }
     const ui = await readFile(join(OVERLAY_ROLES, 'ui.md'), 'utf8');
     expect(ui).toContain('git -C <worktree> diff <base>...HEAD --stat');
+    expect(ui).not.toContain('dashboard.html');
+    expect(ui).not.toContain('v0 dashboard');
+    expect(flat(ui)).toContain('current Andon UI (`apps/andon-ui/`) on `<base>`');
     const contract = await readFile(join(OVERLAY_ROLES, 'contract.md'), 'utf8');
     expect(contract).toContain('git -C <worktree> show <base>:<path>');
   });
