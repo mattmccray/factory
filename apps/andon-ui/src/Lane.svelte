@@ -5,7 +5,8 @@
   // ghosts of needs-human jobs. An idle lane collapses to one row in All Projects. A token that
   // changes column slides there in 250ms (a crossfade between the cells), then highlights. Under a
   // search, a lane with no match dims to 25% whole; in a lit lane, each token that misses dims.
-  // The gutter carries the project's id for the Mac app's right-click menu (projectmenu.ts).
+  // The gutter carries the project's id for the Mac app's right-click menu (projectmenu.ts), and each
+  // board token its job's ids for the job menu (jobmenu.ts); the ghosts carry neither.
   import { cubicOut } from 'svelte/easing';
   import { crossfade } from 'svelte/transition';
   import type { Find } from './find';
@@ -65,7 +66,7 @@
       <div class="cell c-{cell.column}" role="cell">
         {#each cell.tokens as t (t.key)}
           <div class="slot" in:receive={{ key: t.key }} out:send={{ key: t.key }}>
-            <Token token={t} miss={miss(t.key)} selected={selectedKey === t.key} fresh={fresh.has(t.key)} moved={moved.has(t.key)} {onopen} {onhover} />
+            <Token token={t} project={lane.project.id} miss={miss(t.key)} selected={selectedKey === t.key} fresh={fresh.has(t.key)} moved={moved.has(t.key)} {onopen} {onhover} />
           </div>
         {/each}
         {#if cell.more > 0}

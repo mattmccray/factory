@@ -20,6 +20,7 @@
   import { activity, buildLanes, headerOf, orderLanes } from './lanes';
   import type { LaneOrder } from './lanes';
   import Lines from './Lines.svelte';
+  import { jobMenuCaller } from './jobmenu';
   import { menuArmer, projectMenuCaller, swallowsClick } from './projectmenu';
   import { entryOf, formatHash, historyStep, initialView, jobKey, readEntry, viewKey, viewOf } from './route';
   import type { JobRef, View } from './route';
@@ -85,10 +86,11 @@
       const hidden = statusBarHidden(data);
       if (hidden !== null) statusBarOff = hidden;
     });
-    // The Mac app's right-click menu on a project row or gutter: armed for the project under the
-    // pointer, and a control-click there doesn't click through (projectmenu.ts). A browser: nothing.
+    // The Mac app's right-click menu on a project row or gutter, or on a board job token: armed for
+    // the project or job under the pointer, and a control-click there doesn't click through
+    // (projectmenu.ts, jobmenu.ts). A browser: nothing.
     const ask = projectMenuCaller(mode, Reflect.get(window, 'tiny'));
-    const arm = ask === null ? null : menuArmer(mode, ask);
+    const arm = ask === null ? null : menuArmer(mode, ask, jobMenuCaller(mode, Reflect.get(window, 'tiny')));
     const onpointerover = (e: PointerEvent): void => arm?.point(e.target);
     const onpointerout = (e: PointerEvent): void => {
       if (e.relatedTarget === null) arm?.leave();

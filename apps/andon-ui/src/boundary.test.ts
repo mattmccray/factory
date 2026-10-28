@@ -121,7 +121,7 @@ describe('Andon never writes job state (026 AC5)', () => {
     }
   });
 
-  test("the page calls the Mac app's backend in three places only, each with its own fixed method names (032, 033, 035, 036)", () => {
+  test("the page calls the Mac app's backend in four places only, each with its own fixed method names (032, 033, 035, 036, 040)", () => {
     // Every mention of Tiny's `api.call` (or a `'call'` key) across the page's sources.
     const hits: { file: string; hit: string }[] = [];
     for (const file of sources) {
@@ -129,6 +129,7 @@ describe('Andon never writes job state (026 AC5)', () => {
     }
     expect(hits.sort((a, b) => a.file.localeCompare(b.file))).toEqual([
       { file: 'handoff.ts', hit: 'api.call' },
+      { file: 'jobmenu.ts', hit: 'api.call' },
       { file: 'projectmenu.ts', hit: 'api.call' },
       { file: 'settings.ts', hit: 'api.call' },
     ]);
@@ -152,11 +153,16 @@ describe('Andon never writes job state (026 AC5)', () => {
     const handoff = read(join(import.meta.dir, 'handoff.ts'));
     expect(handoff).toContain("export const HAND_OFF_METHOD = 'handOff';");
     expect([...handoff.matchAll(/Reflect\.apply\(([^;]*?)\);/g)].map((m) => m[1])).toEqual(['call, api, [HAND_OFF_METHOD, req]']);
+    // The job menu caller (040): its one fixed method name, and the one call site passes it and a
+    // `{ project, job }` and nothing else (never a thread id, a link, or a path).
+    const jobmenu = read(join(import.meta.dir, 'jobmenu.ts'));
+    expect(jobmenu).toContain("export const JOB_MENU_METHOD = 'jobMenu';");
+    expect([...jobmenu.matchAll(/Reflect\.apply\(([^;]*)\);/g)].map((m) => m[1])).toEqual(['call, api, [JOB_MENU_METHOD, { project, job }]', 'el.getAttribute, el, [name]']);
     expect(handoff).toContain("export type HandoffRequest = { project: string; job: string; action: 'approve' } | { project: string; job: string; action: 'rework' | 'abandon'; note: string };");
     // No other file reaches Tiny's api object: only sidebar.ts's push subscriber reads `api.on`.
     for (const file of sources) {
       const name = file.slice(import.meta.dir.length + 1);
-      if (name === 'projectmenu.ts' || name === 'sidebar.ts' || name === 'settings.ts' || name === 'handoff.ts') continue;
+      if (name === 'projectmenu.ts' || name === 'jobmenu.ts' || name === 'sidebar.ts' || name === 'settings.ts' || name === 'handoff.ts') continue;
       expect({ file: name, hit: /\bhost\.api\b|\btiny\.api\b|\bapi\.on\b/.exec(read(file))?.[0] ?? null }).toEqual({ file: name, hit: null });
     }
   });
