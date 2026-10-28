@@ -8,9 +8,9 @@ const job = (id: string, stage: string): AppJob => ({ id, title: id, stage, note
 test('AC1: the count is every needs-human job across the listed projects, and nothing else', () => {
   const s: AppState = {
     projects: [
-      { id: 'aaaaaaaaaaaa', name: 'one' },
-      { id: 'bbbbbbbbbbbb', name: 'two' },
-      { id: 'cccccccccccc', name: 'three' }, // listed, no board yet
+      { id: 'aaaaaaaaaaaa', name: 'one', root: null },
+      { id: 'bbbbbbbbbbbb', name: 'two', root: null },
+      { id: 'cccccccccccc', name: 'three', root: null }, // listed, no board yet
     ],
     boards: {
       aaaaaaaaaaaa: { jobs: [job('001-a', 'needs-human'), job('002-b', 'review'), job('003-c', 'needs-human')], error: null, rev: 1 },

@@ -1,7 +1,7 @@
 // The Mac app's boundaries: no contract, service, or UI code runs in it, its logic is runtime-neutral
 // (AC5), only backend.ts names Tiny or txiki (through Tiny's own vendored types, narrowed to
 // `MacApp`), the window loads the service on loopback with the page's Tiny API denied but for its
-// drag regions and the status bar event the Mac app pushes (AC6), the
+// drag regions, the status bar event the Mac app pushes (AC6), and the one project menu method, the
 // Mac app pins the Tiny JS it was tested on, and the backend entry is the Bun bundle of backend.ts.
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { BACKEND_OUT, bundleBackend } from '../build';
 import { STATUS_BAR_EVENT } from './appmenu';
 import { DEFAULT_PORT, pageUrl } from './autostart';
+import { PROJECT_MENU_METHOD } from './projectmenu';
 import { isRecord } from './state';
 
 const appDir = join(import.meta.dir, '..');
@@ -35,7 +36,7 @@ const readJson = (path: string): Record<string, unknown> => {
 describe('AC5: the Mac app runs no contract, service, or UI code', () => {
   test('the scan sees the logic modules and the adapter', () => {
     expect(sources).toContain(ADAPTER);
-    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts', 'appmenu.ts']) expect(sources).toContain(f);
+    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts', 'appmenu.ts', 'projectmenu.ts']) expect(sources).toContain(f);
   });
 
   test('the import matcher flags @factory/*, the UI, and the service, not the Mac app itself', () => {
@@ -126,6 +127,7 @@ describe("backend.ts types the adapter with Tiny's vendored types, narrowed to M
     expect(adapter).toMatch(/\bexport async function onTray\(id: string \| null, app: MacApp\)/);
     expect(adapter).toMatch(/\bexport async function onMenu\(id: string, app: MacApp\)/);
     expect(adapter).toMatch(/\bexport async function onNavigate\(info: MacNavEvent, app: MacApp\)/);
+    expect(adapter).toMatch(/\bexport async function onContextMenu\(id: string, app: MacApp\)/);
     expect(adapter).toMatch(/\bexport function setDock\(app: MacApp,/);
     expect(adapter).toMatch(/\bexport const setTray = \(app: MacApp,/);
     expect(adapter).toMatch(/\boneAtATime\(async \(app: MacApp\)/);
@@ -177,7 +179,7 @@ describe('AC6: tinyjs.json', () => {
       icon: 'assets/icon.png',
       url: 'http://127.0.0.1:8766/?shell=mac',
       chrome: { frame: false, windowControls: true, windowControlsPos: { x: 18, y: 20 }, vibrancy: 'sidebar' },
-      api: { disable: ['*'], enable: ['win.startDrag', 'win.zoom', 'event.statusbar'] },
+      api: { disable: ['*'], enable: ['win.startDrag', 'win.zoom', 'event.statusbar', 'projectMenu'] },
       backend: 'build/backend.js',
     });
   });
@@ -201,14 +203,27 @@ describe('AC6: tinyjs.json', () => {
     expect(cfg.minSize).toBe('1100x700');
   });
 
-  test('the api gate denies every Tiny call for the page except the two its drag regions make and the status bar event', () => {
+  test('the api gate denies every Tiny call for the page except its drag regions, the status bar event, and projectMenu', () => {
     // Tiny's page runtime turns a mousedown on [data-tiny-drag] into `win.startDrag` (a double-click
     // into `win.zoom`), and the backend's gate checks both: they are the narrowest exception. The one
     // event the page may receive is the status bar state the backend pushes (`event.<name>` is how
-    // Tiny gates a pushed event); the page calls nothing new.
-    expect(cfg.api).toEqual({ disable: ['*'], enable: ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`] });
-    expect(cfg.api).toEqual({ disable: ['*'], enable: ['win.startDrag', 'win.zoom', 'event.statusbar'] });
+    // Tiny gates a pushed event). The one backend method the page may call is the project menu's,
+    // by its bare name (Tiny gates the app's own api methods that way): it takes a project id only.
+    // Exactly one entry more than after andon-app-menu (032).
+    expect(cfg.api).toEqual({ disable: ['*'], enable: ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`, PROJECT_MENU_METHOD] });
+    expect(cfg.api).toEqual({ disable: ['*'], enable: ['win.startDrag', 'win.zoom', 'event.statusbar', 'projectMenu'] });
     expect(cfg.inject).toBeUndefined();
+  });
+
+  test('the backend exports exactly that one api method', () => {
+    const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
+    const block = /^export const api = \{\n([\s\S]*?)^\};$/m.exec(adapter)?.[1] ?? '';
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([PROJECT_MENU_METHOD]);
+  });
+
+  test('the page asks for the project menu by the same method name', () => {
+    const ui = readFileSync(join(repoDir, 'apps', 'andon-ui', 'src', 'projectmenu.ts'), 'utf8');
+    expect(ui).toContain(`export const PROJECT_MENU_METHOD = '${PROJECT_MENU_METHOD}';`);
   });
 
   test("the page listens for the same event name the Mac app pushes", () => {
@@ -238,4 +253,6 @@ test('the bundle is one self-contained ESM file with the service location fixed 
   expect(js).toMatch(/export\s*\{[^}]*\bonTray\b/);
   expect(js).toMatch(/export\s*\{[^}]*\bonMenu\b/);
   expect(js).toMatch(/export\s*\{[^}]*\bonNavigate\b/);
+  expect(js).toMatch(/export\s*\{[^}]*\bonContextMenu\b/);
+  expect(js).toMatch(/export\s*\{[^}]*\bapi\b/);
 });

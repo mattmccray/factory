@@ -1,11 +1,14 @@
 // The Tiny JS backend adapter: the only file that touches Tiny or txiki.js. It wires the Mac app's
 // runtime-neutral logic (app.ts, autostart.ts, appmenu.ts) to Tiny's `app.tray`, `app.icon`,
-// `app.badge`, `app.notify`, `app.menu`, `app.store`, `app.push`, `app.shell`, and the `onTray`,
-// `onMenu`, and `onNavigate` hooks, and to txiki's `tjs.spawn` (for the service, and for curl: see curl.ts). `bun run
-// andon:build` bundles it into build/backend.js, the plain-JS entry tinyjs.json names.
+// `app.badge`, `app.notify`, `app.menu`, `app.store`, `app.push`, `app.shell`, `app.clipboard`, the
+// `onTray`, `onMenu`, `onNavigate`, and `onContextMenu` hooks, and the one custom `api` method, and to
+// txiki's `tjs.spawn` and `tjs.stat` (for the service, for curl: see curl.ts, and for a project's
+// right-click menu: see projectmenu.ts). `bun run andon:build` bundles it into build/backend.js, the
+// plain-JS entry tinyjs.json names.
 // The window's page (the service-served UI) gets no Tiny API but the two calls its drag regions make
-// (`win.startDrag`, `win.zoom`) and the status bar event this adapter pushes (`event.statusbar`):
-// tinyjs.json's `api` gate denies the rest.
+// (`win.startDrag`, `win.zoom`), the status bar event this adapter pushes (`event.statusbar`), and
+// `projectMenu`, which takes a project id (or null) and nothing else: tinyjs.json's `api` gate
+// denies the rest.
 /// <reference path="../types/tiny.d.ts" />
 /// <reference path="../types/tjs.d.ts" />
 import { QUIT_ID, SHOW_ID, trayNotice } from './badge';
@@ -19,6 +22,8 @@ import { startApp } from './app';
 import type { App } from './app';
 import { oneAtATime, trayClickAction } from './trayclick';
 import { STATUS_BAR_EVENT, STATUS_BAR_ID, STATUS_BAR_KEY, appMenu, menuAction, statusBarLabel, statusBarPayload, storedHidden } from './appmenu';
+import { GHOSTTY_APP, VSCODE_APP, exitReason, failureText, menuProject, menuRequest, projectMenuItems, resolveAction, t3Candidates } from './projectmenu';
+import type { Availability, MenuProject, ProjectAction } from './projectmenu';
 
 // ---- the Tiny this adapter uses ----
 // Tiny's and txiki's own declarations (vendored unedited from Tiny's template; `tinyjs
@@ -38,9 +43,10 @@ export type MacWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpace
 export type MacApp = Pick<TinyApp, 'icon' | 'badge' | 'notify' | 'setHideOnClose' | 'quit' | 'push'> &
   Partial<Pick<TinyApp, 'done'>> & {
     tray: Pick<TinyApp['tray'], 'set'>;
-    menu: Pick<TinyApp['menu'], 'set' | 'update'>;
+    menu: Pick<TinyApp['menu'], 'set' | 'update' | 'setContext'>;
     store: Pick<TinyApp['store'], 'get' | 'set'>;
-    shell: Pick<TinyApp['shell'], 'open'>;
+    shell: Pick<TinyApp['shell'], 'open' | 'reveal'>;
+    clipboard: Pick<TinyApp['clipboard'], 'write'>;
     window(id: string): MacWindow;
   };
 /** The fields of a navigation event `onNavigate` reads. */
@@ -184,6 +190,7 @@ export function init(app: MacApp): void {
   const http = curlHttp(url);
   const repo = __ANDON_REPO__;
   statusBarRead = readStatusBar(app);
+  void refreshApps(); // warm the menu's app check, so the first right-click has it
   showNotice(app, repo, 'starting the service');
   app.setHideOnClose(true);
   // ⌘Q skips onTray: stop our service before Tiny exits (kill is synchronous).
@@ -285,4 +292,132 @@ export async function onNavigate(info: MacNavEvent, app: MacApp): Promise<void> 
   if (info.window !== 'main' || info.kind !== 'finish' || info.isMainFrame === false) return;
   await statusBarRead;
   pushStatusBar(app);
+}
+
+// ---- a project's right-click menu ----
+// Tiny's context menu is one setting for the window, not a popup at a point, so the page arms it for
+// the project under the pointer (`projectMenu({ project })`) and disarms it elsewhere
+// (`{ project: null }`, WebKit's own menu). The page names a project id and nothing else: the root
+// comes from the backend's own `/projects` feed, and a click looks it up again.
+
+/** The projects the menu can act on: the ones the backend follows. */
+const listedProjects = (): readonly MenuProject[] => andon?.state().projects ?? [];
+
+/** The last app check; null until the first one finishes. */
+let apps: Availability | null = null;
+/** Bumped by every request, so a slower app check can't set an older project's menu. */
+let menuSeq = 0;
+
+export interface RunResult {
+  ok: boolean;
+  reason: string;
+}
+
+/** Runs an argv to its end; ok when it exits 0, else the reason (its last stderr line, or its status). */
+async function run(argv: string[]): Promise<RunResult> {
+  try {
+    const p = tjs.spawn(argv, { env: tjs.env, stdin: 'ignore', stdout: 'ignore', stderr: 'pipe' });
+    const [status, stderr] = await Promise.all([p.wait(), p.stderr === null ? Promise.resolve('') : p.stderr.text().catch(() => '')]);
+    return status.exit_status === 0 && status.term_signal === null ? { ok: true, reason: '' } : { ok: false, reason: exitReason(status.exit_status, stderr) };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** An executable file at this path. */
+async function executable(path: string): Promise<boolean> {
+  try {
+    const s = await tjs.stat(path);
+    return s.isFile && (s.mode & 0o111) !== 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Which apps are there now: `open -Ra` finds VS Code and Ghostty, and `t3` is the first candidate present. */
+export async function checkApps(): Promise<Availability> {
+  const [vscode, ghostty, present] = await Promise.all([
+    run(['open', '-Ra', VSCODE_APP]).then((r) => r.ok),
+    run(['open', '-Ra', GHOSTTY_APP]).then((r) => r.ok),
+    Promise.all(t3Candidates(tjs.env.HOME).map(async (p) => ((await executable(p)) ? p : null))),
+  ]);
+  return { vscode, ghostty, t3: present.find((p) => p !== null) ?? null };
+}
+
+async function refreshApps(): Promise<Availability> {
+  try {
+    apps = await checkApps();
+  } catch (err) {
+    console.log(`andon: could not check the apps for the project menu (${String(err)})`);
+  }
+  return apps ?? { vscode: false, ghostty: false, t3: null };
+}
+
+const sameApps = (a: Availability, b: Availability): boolean => a.vscode === b.vscode && a.ghostty === b.ghostty && a.t3 === b.t3;
+
+/**
+ * The page's one call: arm the window's right-click menu for a listed project with a root, or
+ * restore WebKit's default menu (for null, an unknown id, or a rootless project). A malformed request
+ * does nothing. The menu is set at once from the last app check, then again if a fresh check differs
+ * and no newer request came in.
+ */
+export async function showProjectMenu(params: unknown, app: MacApp, projects: readonly MenuProject[]): Promise<void> {
+  const req = menuRequest(params);
+  if (req === null) return;
+  const seq = ++menuSeq;
+  const p = req.project === null ? null : menuProject(projects, req.project);
+  if (p === null) {
+    app.menu.setContext(null);
+    return;
+  }
+  const known = apps;
+  if (known !== null) app.menu.setContext(projectMenuItems(p.id, known));
+  const fresh = await refreshApps();
+  if (seq !== menuSeq) return;
+  if (known === null || !sameApps(known, fresh)) app.menu.setContext(projectMenuItems(p.id, fresh));
+}
+
+/** The failure reason of an action, or null when it worked. */
+async function perform(app: MacApp, action: ProjectAction, runner: (argv: string[]) => Promise<RunResult>): Promise<string | null> {
+  switch (action.kind) {
+    case 'copy':
+      try {
+        return app.clipboard.write({ text: action.root }) ? null : 'the clipboard refused the write';
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+    case 'reveal':
+      try {
+        await app.shell.reveal(action.root);
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+    case 'spawn': {
+      const r = await runner(action.argv);
+      return r.ok ? null : r.reason;
+    }
+  }
+}
+
+/** A clicked project menu item: its project looked up again, then the action run. A failure shows one
+ *  notification and logs a line; a success shows nothing. An id that resolves to nothing does nothing. */
+export async function runProjectItem(id: unknown, app: MacApp, projects: readonly MenuProject[], t3: string | null, runner: (argv: string[]) => Promise<RunResult> = run): Promise<void> {
+  const action = resolveAction(id, projects, t3);
+  if (action === null) return;
+  const reason = await perform(app, action, runner);
+  if (reason === null) return;
+  const text = failureText(action, reason);
+  console.log(`andon: ${text}`);
+  await app.notify('Andon', text);
+}
+
+/** The page's api: `projectMenu` alone (tinyjs.json's gate enables it by name). */
+export const api = {
+  projectMenu: (params: unknown, app: MacApp): Promise<void> => showProjectMenu(params, app, listedProjects()),
+};
+
+/** A click in the right-click menu. */
+export async function onContextMenu(id: string, app: MacApp): Promise<void> {
+  await runProjectItem(id, app, listedProjects(), apps?.t3 ?? null);
 }

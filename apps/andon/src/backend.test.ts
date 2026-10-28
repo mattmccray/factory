@@ -3,8 +3,10 @@
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { assetPath, dockIcon, init, onMenu, onNavigate, onTray, reloadScript, setDock, setTray, trayIcon } from './backend';
-import type { MacApp, MacNavEvent, MacTraySpec, MacWinState } from './backend';
+import { api, assetPath, checkApps, dockIcon, init, onContextMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setTray, showProjectMenu, trayIcon } from './backend';
+import type { MacApp, MacNavEvent, MacTraySpec, MacWinState, RunResult } from './backend';
+import { itemId, projectMenuItems } from './projectmenu';
+import type { MenuProject } from './projectmenu';
 import { GITHUB_ID, MINIMIZE_ID, SETTINGS_ID, SHOW_MAIN_ID, STATUS_BAR_ID, ZOOM_ID, appMenu } from './appmenu';
 import { trayNotice, traySpec } from './badge';
 
@@ -45,7 +47,7 @@ function fakeApp(state: MacWinState | null, fail: Failures = {}): { app: MacApp;
     setHideOnClose: () => calls.push('setHideOnClose'),
     quit: () => calls.push('quit'),
     push: () => calls.push('push'),
-    menu: { set: () => calls.push('menu.set'), update: () => calls.push('menu.update') },
+    menu: { set: () => calls.push('menu.set'), update: () => calls.push('menu.update'), setContext: () => calls.push('menu.setContext') },
     store: {
       get: async () => {
         calls.push('store.get');
@@ -58,7 +60,12 @@ function fakeApp(state: MacWinState | null, fail: Failures = {}): { app: MacApp;
         calls.push('shell.open');
         return true;
       },
+      reveal: async () => {
+        calls.push('shell.reveal');
+        return true;
+      },
     },
+    clipboard: { write: () => calls.push('clipboard.write') > 0 },
   };
   return { app, calls };
 }
@@ -260,7 +267,11 @@ function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<s
   const log: unknown[][] = [];
   const store = new Map<string, unknown>([['statusBarHidden', stored]]);
   const { app } = fakeApp(st(false));
-  app.menu = { set: (menus) => void log.push(['menu.set', menus]), update: (id, patch) => void log.push(['menu.update', id, patch]) };
+  app.menu = {
+    set: (menus) => void log.push(['menu.set', menus]),
+    update: (id, patch) => void log.push(['menu.update', id, patch]),
+    setContext: (items) => void log.push(['menu.setContext', items]),
+  };
   app.store = {
     get: async (key) => store.get(key) ?? null,
     set: async (key, value) => {
@@ -273,6 +284,10 @@ function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<s
   app.shell = {
     open: async (target) => {
       log.push(['shell.open', target]);
+      return true;
+    },
+    reveal: async (path) => {
+      log.push(['shell.reveal', path]);
       return true;
     },
   };
@@ -404,4 +419,215 @@ test('AC3: a page that finishes loading before the store is read gets the stored
   init(m.app);
   await onNavigate({ window: 'main', kind: 'finish', isMainFrame: true }, m.app);
   expect(m.log.filter((e) => e[0] === 'push')).toEqual([['push', 'statusbar', { hidden: true }]]);
+});
+
+// ---- a project's right-click menu ----
+
+const PID = 'aaaaaaaaaaaa';
+const ROOT = '/Users/me/code/factory';
+const PROJECTS: MenuProject[] = [
+  { id: PID, name: 'factory', root: ROOT },
+  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null },
+];
+
+/** A process that exits with `code`, having written `stderr`. */
+const exited = (code: number, stderr = '') => ({
+  stdout: null,
+  stderr: { text: async () => stderr },
+  kill: () => undefined,
+  wait: async () => ({ exit_status: code, term_signal: null }),
+});
+
+/** Stand in `tjs` for the app check: `installed` apps answer `open -Ra` with 0, and `files` are executables. */
+function fakeMachine(installed: string[], files: string[], home = '/Users/me'): string[][] {
+  const spawned: string[][] = [];
+  Reflect.set(globalThis, 'tjs', {
+    env: { HOME: home },
+    spawn: (argv: string[]) => {
+      spawned.push(argv);
+      const app = argv[2] ?? '';
+      return exited(argv[0] === 'open' && argv[1] === '-Ra' && installed.includes(app) ? 0 : 1);
+    },
+    stat: async (path: string) => {
+      if (!files.includes(path)) throw new Error('ENOENT');
+      return { isFile: true, mode: 0o100755 };
+    },
+  });
+  return spawned;
+}
+
+/** A fake app that records the context menu, the clipboard, reveals, and notifications. */
+function contextApp(opts: { clipboard?: boolean; reveal?: Error } = {}): { app: MacApp; log: unknown[][] } {
+  const m = menuApp(null);
+  m.app.clipboard = {
+    write: (data) => {
+      m.log.push(['clipboard.write', data]);
+      return opts.clipboard ?? true;
+    },
+  };
+  m.app.shell.reveal = async (path) => {
+    m.log.push(['shell.reveal', path]);
+    if (opts.reveal !== undefined) throw opts.reveal;
+    return true;
+  };
+  m.app.notify = async (title, body) => {
+    m.log.push(['notify', title, body]);
+    return true;
+  };
+  return { app: m.app, log: m.log };
+}
+
+const contexts = (log: unknown[][]): unknown[] => log.filter((e) => e[0] === 'menu.setContext').map((e) => e[1]);
+
+test('AC1: the app check finds VS Code and Ghostty with open -Ra, and t3 at ~/.t3/bin/t3 before Homebrew', async () => {
+  const spawned = fakeMachine(['Visual Studio Code'], ['/Users/me/.t3/bin/t3', '/opt/homebrew/bin/t3']);
+  expect(await checkApps()).toEqual({ vscode: true, ghostty: false, t3: '/Users/me/.t3/bin/t3' });
+  expect(spawned).toEqual([
+    ['open', '-Ra', 'Visual Studio Code'],
+    ['open', '-Ra', 'Ghostty'],
+  ]);
+  fakeMachine(['Ghostty'], ['/opt/homebrew/bin/t3']);
+  expect(await checkApps()).toEqual({ vscode: false, ghostty: true, t3: '/opt/homebrew/bin/t3' });
+  fakeMachine([], []);
+  expect(await checkApps()).toEqual({ vscode: false, ghostty: false, t3: null });
+  fakeMachine([], ['/Users/other/.t3/bin/t3'], '/Users/other');
+  expect((await checkApps()).t3).toBe('/Users/other/.t3/bin/t3');
+});
+
+test("AC1: a listed project's request sets its menu, grayed out where the app check says so", async () => {
+  fakeMachine(['Visual Studio Code'], ['/opt/homebrew/bin/t3']);
+  const { app, log } = contextApp();
+  await showProjectMenu({ project: PID }, app, PROJECTS);
+  expect(contexts(log).at(-1)).toEqual(projectMenuItems(PID, { vscode: true, ghostty: false, t3: '/opt/homebrew/bin/t3' }));
+  // the app check runs again on every request: Ghostty installed since
+  fakeMachine(['Visual Studio Code', 'Ghostty'], ['/opt/homebrew/bin/t3']);
+  log.length = 0;
+  await showProjectMenu({ project: PID }, app, PROJECTS);
+  expect(contexts(log)).toEqual([
+    projectMenuItems(PID, { vscode: true, ghostty: false, t3: '/opt/homebrew/bin/t3' }), // at once, from the last check
+    projectMenuItems(PID, { vscode: true, ghostty: true, t3: '/opt/homebrew/bin/t3' }), // then the fresh one
+  ]);
+});
+
+test("AC2: null, an unknown id, or a rootless project restores WebKit's menu; a malformed request does nothing", async () => {
+  fakeMachine([], []);
+  const { app, log } = contextApp();
+  for (const project of [null, 'zzzzzzzzzzzz', 'bbbbbbbbbbbb', ROOT]) await showProjectMenu({ project }, app, PROJECTS);
+  expect(log).toEqual([
+    ['menu.setContext', null],
+    ['menu.setContext', null],
+    ['menu.setContext', null],
+    ['menu.setContext', null],
+  ]);
+  log.length = 0;
+  for (const params of [undefined, null, PID, 42, { project: 42 }, { project: '' }, { root: ROOT }]) await showProjectMenu(params, app, PROJECTS);
+  expect(log).toEqual([]);
+});
+
+test("AC2: a newer request wins over an older one's slower app check", async () => {
+  fakeMachine([], []);
+  const { app, log } = contextApp();
+  await showProjectMenu({ project: PID }, app, PROJECTS); // warm the check
+  fakeMachine(['Ghostty'], []); // the next check differs, so the older request would set the menu again
+  log.length = 0;
+  const first = showProjectMenu({ project: PID }, app, PROJECTS);
+  const second = showProjectMenu({ project: null }, app, PROJECTS);
+  await Promise.all([first, second]);
+  expect(contexts(log).at(-1)).toBeNull();
+});
+
+test('AC2: the api names one method, and with the app not following the service it lists no project', async () => {
+  expect(Object.keys(api)).toEqual(['projectMenu']);
+  fakeMachine([], []);
+  const { app, log } = contextApp();
+  await api.projectMenu({ project: PID }, app);
+  expect(log).toEqual([['menu.setContext', null]]);
+  log.length = 0;
+  await onContextMenu(itemId('copy', PID), app);
+  expect(log).toEqual([]);
+});
+
+const ok = async (): Promise<RunResult> => ({ ok: true, reason: '' });
+
+test('AC2: each item runs its action on the looked-up root, and a success shows nothing', async () => {
+  const { app, log } = contextApp();
+  const ran: string[][] = [];
+  const runner = async (argv: string[]): Promise<RunResult> => {
+    ran.push(argv);
+    return ok();
+  };
+  for (const item of ['copy', 'reveal', 'vscode', 't3', 'ghostty'] satisfies Parameters<typeof itemId>[0][]) await runProjectItem(itemId(item, PID), app, PROJECTS, '/Users/me/.t3/bin/t3', runner);
+  expect(log).toEqual([
+    ['clipboard.write', { text: ROOT }],
+    ['shell.reveal', ROOT],
+  ]);
+  expect(ran).toEqual([
+    ['open', '-a', 'Visual Studio Code', ROOT],
+    ['/Users/me/.t3/bin/t3', 'app', ROOT],
+    ['open', '-a', 'Ghostty', ROOT],
+  ]);
+});
+
+test('AC2: an unknown project, a rootless one, an unknown item, or a non-string id runs nothing', async () => {
+  const { app, log } = contextApp();
+  const ran: string[][] = [];
+  const runner = async (argv: string[]): Promise<RunResult> => {
+    ran.push(argv);
+    return ok();
+  };
+  for (const id of [itemId('copy', 'zzzzzzzzzzzz'), itemId('vscode', 'bbbbbbbbbbbb'), `project-menu:rm:${PID}`, 'statusbar', `project-menu:copy:${ROOT}`, null, 7]) {
+    await runProjectItem(id, app, PROJECTS, '/x/t3', runner);
+  }
+  await runProjectItem(itemId('t3', PID), app, PROJECTS, null, runner);
+  expect(log).toEqual([]);
+  expect(ran).toEqual([]);
+});
+
+test('AC6: a failed action shows one notification naming the project, the app or action, and the reason, and logs it', async () => {
+  const fail = (reason: string) => async (): Promise<RunResult> => ({ ok: false, reason });
+  const cases: { id: string; app: ReturnType<typeof contextApp>; runner: () => Promise<RunResult>; text: string }[] = [
+    { id: itemId('t3', PID), app: contextApp(), runner: fail('T3 Code is not running'), text: "Couldn't open factory in T3 Code: T3 Code is not running" },
+    { id: itemId('vscode', PID), app: contextApp(), runner: fail('exited with status 1'), text: "Couldn't open factory in VS Code: exited with status 1" },
+    { id: itemId('ghostty', PID), app: contextApp(), runner: fail('no Ghostty'), text: "Couldn't open factory in Ghostty: no Ghostty" },
+    { id: itemId('reveal', PID), app: contextApp({ reveal: new Error('no such folder') }), runner: ok, text: "Couldn't reveal factory in Finder: no such folder" },
+    { id: itemId('copy', PID), app: contextApp({ clipboard: false }), runner: ok, text: "Couldn't copy the path of factory: the clipboard refused the write" },
+  ];
+  const logged: string[] = [];
+  const realLog = console.log;
+  console.log = (line: string) => void logged.push(line);
+  try {
+    for (const c of cases) {
+      await runProjectItem(c.id, c.app.app, PROJECTS, '/x/t3', c.runner);
+      expect(c.app.log.filter((e) => e[0] === 'notify')).toEqual([['notify', 'Andon', c.text]]);
+    }
+  } finally {
+    console.log = realLog;
+  }
+  expect(logged).toEqual(cases.map((c) => `andon: ${c.text}`));
+});
+
+test("AC6: a command's non-zero exit is a failure with its stderr as the reason, run under the app's environment", async () => {
+  Reflect.set(globalThis, 'tjs', {
+    env: { HOME: '/Users/me' },
+    spawn: () => exited(1, 'Error: T3 Code is not running\n'),
+    stat: async () => {
+      throw new Error('ENOENT');
+    },
+  });
+  const { app, log } = contextApp();
+  await runProjectItem(itemId('t3', PID), app, PROJECTS, '/x/t3');
+  expect(log).toEqual([['notify', 'Andon', "Couldn't open factory in T3 Code: Error: T3 Code is not running"]]);
+  Reflect.set(globalThis, 'tjs', {
+    env: {},
+    spawn: () => {
+      throw new Error('spawn failed');
+    },
+  });
+  const b = contextApp();
+  await runProjectItem(itemId('ghostty', PID), b.app, PROJECTS, null);
+  expect(b.log).toEqual([['notify', 'Andon', "Couldn't open factory in Ghostty: spawn failed"]]);
+  Reflect.set(globalThis, 'tjs', { env: {}, spawn: () => exited(0) });
+  const c = contextApp();
+  await runProjectItem(itemId('vscode', PID), c.app, PROJECTS, null);
+  expect(c.log).toEqual([]);
 });
