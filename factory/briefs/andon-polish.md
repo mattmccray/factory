@@ -1,6 +1,7 @@
 # Andon polish: legend order and no selection on right-click
 
-- Status: ready
+- Status: done
+- Job: 034-andon-polish (merged e1cd697, 2026-10-28)
 - Sources: Matt's nitpicks (2026-10-28), items 1 and 3; `apps/andon-ui/src/sidebar.ts` (`LEGEND`), `apps/andon-ui/src/lanes.ts` (`COLUMNS`), brief `factory/briefs/project-context-menu.md`
 - Date: 2026-10-28
 
