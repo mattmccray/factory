@@ -1,6 +1,7 @@
 # Record a job's orchestrator thread
 
-- Status: ready
+- Status: done
+- Job: 039-job-session-link (merged 051f6a8, 2026-10-28)
 - Sources: brief `factory/briefs/t3-handoff.md` (job 036, `t3` lookup, prompt links); brief `factory/briefs/project-context-menu.md` (job 033, the native menu; it ruled out menus on job cells); `docs/contract/v1.md` (`job.claimed`); `docs/decisions.md` decision 9 (harnesses); T3 Code (Beta) desktop app, server 0.1.3: its link router (`packages/shared/src/promptLinks.ts` in the app bundle), `t3 thread list|show --json`, and the T3 Code MCP tools (`t3_environment_read`, `t3_thread_search`), checked 2026-10-28
 - Date: 2026-10-28
 
