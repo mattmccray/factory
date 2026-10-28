@@ -131,12 +131,12 @@ export interface LegendEntry {
 /** The state legend, one swatch per state a card can show (the card's left edge). */
 export const LEGEND: readonly LegendEntry[] = [
   { key: 'needs-human', label: 'Needs a human' },
-  { key: 'failed', label: 'Review failed' },
-  { key: 'review', label: 'In review' },
-  { key: 'approve', label: 'At approver' },
-  { key: 'build', label: 'Building' },
-  { key: 'spec', label: 'Spec' },
   { key: 'claimed', label: 'Claimed' },
+  { key: 'spec', label: 'Spec' },
+  { key: 'build', label: 'Building' },
+  { key: 'review', label: 'In review' },
+  { key: 'failed', label: 'Review failed' },
+  { key: 'approve', label: 'At approver' },
   { key: 'merged', label: 'Merged' },
 ];
 
