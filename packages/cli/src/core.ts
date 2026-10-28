@@ -1,5 +1,5 @@
 // The factory CLI's core commands — the only writer of job state (docs/contract/v1.md "CLI").
-//   claim <slug> [brief=…] [issue=…] [maxRound=…]
+//   claim <slug> [brief=…] [issue=…] [maxRound=…] [session=t3code:<environmentId>/<threadId>]
 //   event <id> <type> [field=value …]
 //   rebuild <id> | --all
 //   show <id>
@@ -23,7 +23,7 @@ export interface Io {
 }
 
 export const USAGE = {
-  claim: 'usage: claim <slug> [brief=…] [issue=…] [maxRound=…]',
+  claim: 'usage: claim <slug> [brief=…] [issue=…] [maxRound=…] [session=t3code:<environmentId>/<threadId>]',
   event: 'usage: event <id> <type> [field=value …]',
   rebuild: 'usage: rebuild <id> | --all',
   show: 'usage: show <id>',

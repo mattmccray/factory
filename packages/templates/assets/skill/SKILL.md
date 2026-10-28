@@ -74,7 +74,7 @@ for **your job** only, right when the change happens. It prints the new stage. A
 with **`claim`**, never with `event`:
 
 ```bash
-bun factory/cli.ts claim <slug> [brief=…] [issue=…] [maxRound=…]    # from <R>
+bun factory/cli.ts claim <slug> [brief=…] [issue=…] [maxRound=…] [session=…]    # from <R>
 ```
 
 `<slug>` is a 2–4 word kebab name for the work (lowercase letters and digits joined by single
@@ -103,6 +103,29 @@ Put free-text values (`title`, `note`, `reason`) in **single quotes** — double
 resumed after round N (omit `round` when N is 0). Never pass a verdict: the CLI reads it from
 the reviewer's or approver's file.
 
+## The thread lookup (T3 Code)
+
+A job records which T3 Code thread is orchestrating it, so the dashboard can open that thread.
+Run this **thread lookup** right before `claim` (before taking `factory/.lock`), before
+`job.reworked` (`/factory rework`), and before `job.human-approved` (`/factory approve`), and
+only when T3 Code's tools `t3_environment_read` and `t3_thread_search` are both present in this
+session. Without them, skip it and run the command without `session`.
+
+1. Write a unique phrase in your reply to the user: `factory session <random>`, where
+   `<random>` is 12 random letters and digits you make up now (never reuse one).
+2. Call `t3_environment_read` for the environment id, then `t3_thread_search` for the phrase.
+   If no thread comes back, wait a couple of seconds (`sleep 2`) and search once more.
+3. Only if exactly one thread matches, add `session=t3code:<environmentId>/<threadId>` to the
+   command (`claim`, `job.reworked`, or `job.human-approved`).
+4. Otherwise (no match after the retry, several matches, or a tool error), run the command
+   without `session` and tell the user in one line: "couldn't find this T3 Code thread; the job
+   won't link to it".
+
+It is best effort: never stop the job, wait on the user, or ask them about it. If the CLI
+refuses the `session=` value, run the same command again without it and say that one line.
+Pass `session=` on nothing else (the CLI refuses it on every other event), and never record any
+other id, such as Claude Code's own session id.
+
 ## Running jobs side by side
 
 Any number of sessions can run `/factory` at once, one job each. Each job has its own worktree,
@@ -121,7 +144,7 @@ Release it with `rmdir factory/.lock` as soon as the step is done, and never hol
 wait on the user or an agent. Two steps take the lock:
 - **Claim:** pick the work, run the overlap check, run `bun factory/cli.ts claim <slug> …` (it
   picks the number, creates the job dir, and prints the id), then, with that printed id, write
-  `feature.md` and tick the backlog line.
+  `feature.md` and tick the backlog line. Run **the thread lookup** before taking the lock.
 - **Merge:** everything in **Merge** below, bookkeeping included.
 
 **Live jobs** are the jobs whose `job.json` (read-only to you) has a stage other than
@@ -267,7 +290,8 @@ and say `brief <slug> is done (job <id>)`, with the job from its `- Job:` line. 
 brief means the interview isn't done, so stop before claiming and say so. Otherwise **claim** it
 under the lock (overlap check first): pick a 2–4 word kebab slug for the work and run
 `bun factory/cli.ts claim <slug>` with `brief=factory/briefs/<slug>.md` when it applies (add
-`maxRound=<n>` only to override the config default). The CLI picks the number and prints the
+`maxRound=<n>` only to override the config default, and `session=…` from **the thread lookup**,
+run first). The CLI picks the number and prints the
 job's id, e.g. `004-export-csv-report`; use that id from then on. Write `feature.md` verbatim,
 release the lock, run the loop.
 
@@ -309,12 +333,14 @@ If the approver never ran on this work (no `APPROVE`/`ESCALATE` from it, so job.
 is null: an escalation before or during review, or after a rework before the approver), say so and
 ask before merging work the approver never checked. (A retry after a failed merge already shows
 `APPROVE (human)`; the human answered that the first time.)
-Recreate the worktree if it's gone (step 2, from the job's `<target>`), board: `job.human-approved` (every time, also when
+Recreate the worktree if it's gone (step 2, from the job's `<target>`), run **the thread lookup**,
+board: `job.human-approved [session=…]` (every time, also when
 retrying after a failed merge; leave decision.md alone, it's the approver's), and **Merge**.
 
 **`/factory rework <id> <note>`** — Send a `needs-human` job back with human feedback. Write
 the note verbatim to `rework-<k>.md` (`k` = `reworks` + 1, from job.json), recreate the worktree
-if needed (step 2, from the job's `<target>`), board: `job.reworked k=<k> maxRound=<round + 2>` (a fresh review budget; it clears
+if needed (step 2, from the job's `<target>`), run **the thread lookup**, board:
+`job.reworked k=<k> maxRound=<round + 2> [session=…]` (a fresh review budget; it clears
 the decision). If the job escalated before `spec.md` existed, first spawn `factory-spec-writer`
 with the card plus the rework path (span `role=spec-writer`) and set `job.titled`. Resume
 `builder-<id>` with SendMessage (span `role=builder name=builder-<id> round=<round>`) —

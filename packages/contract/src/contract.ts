@@ -18,10 +18,20 @@ interface AgentIdentity {
   name?: string;
 }
 
+/**
+ * The orchestrator session (harness thread) driving a job: ids only, never a link. Only T3 Code
+ * (`app: "t3code"`) is accepted today; the `app` key leaves room for other harnesses.
+ */
+export interface Session {
+  app: 't3code';
+  environment: string;
+  thread: string;
+}
+
 export type EventInput =
   // `target` is the branch the job is based on and merges into, resolved by the CLI at claim time
-  // (absent on logs claimed before it existed).
-  | { type: 'job.claimed'; schema: 'factory/v1'; id: string; maxRound: number; brief: string | null; issue: string | null; target?: string }
+  // (absent on logs claimed before it existed). `session` is the orchestrator's thread, if found.
+  | { type: 'job.claimed'; schema: 'factory/v1'; id: string; maxRound: number; brief: string | null; issue: string | null; target?: string; session?: Session }
   | { type: 'job.titled'; title: string }
   | { type: 'stage.entered'; stage: EnteredStage }
   | { type: 'round.started'; round: number; reviewers: string[] }
@@ -29,8 +39,8 @@ export type EventInput =
   | ({ type: 'agent.finished'; verdict?: Verdict } & AgentIdentity)
   | { type: 'job.noted'; note: string }
   | { type: 'job.escalated'; reason: string }
-  | { type: 'job.reworked'; k: number; maxRound: number }
-  | { type: 'job.human-approved' }
+  | { type: 'job.reworked'; k: number; maxRound: number; session?: Session }
+  | { type: 'job.human-approved'; session?: Session }
   | { type: 'merge.failed'; reason: string }
   | { type: 'job.merged'; sha: string }
   | { type: 'job.abandoned'; reason: string };
@@ -111,6 +121,44 @@ export function checkSlug(slug: string): void {
   if (slug.length > SLUG_MAX) throw new Error(`slug ${JSON.stringify(slug)} is ${slug.length} characters (at most ${SLUG_MAX})`);
   if (!SLUG_PATTERN.test(slug)) throw new Error(`slug ${JSON.stringify(slug)} must match ${SLUG_PATTERN.source}`);
 }
+
+/** The one session app accepted today. */
+export const SESSION_APP = 't3code';
+/** A session's environment and thread ids: 1–64 letters, digits, and `-`. */
+export const SESSION_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
+
+/**
+ * Parses the CLI string `t3code:<environmentId>/<threadId>` into a `Session`, or throws a one-line
+ * reason. The reason never echoes the value, so it stays one line whatever was passed.
+ */
+export function parseSession(value: unknown): Session {
+  const want = `want ${SESSION_APP}:<environmentId>/<threadId>, each id 1-64 of [A-Za-z0-9-]`;
+  if (typeof value !== 'string') throw new Error(`field 'session' must be a string (${want})`);
+  const colon = value.indexOf(':');
+  if (colon < 0) throw new Error(`field 'session' has no ':' (${want})`);
+  const app = value.slice(0, colon);
+  if (app !== SESSION_APP) throw new Error(`field 'session' app must be "${SESSION_APP}" (${want})`);
+  const ids = value.slice(colon + 1).split('/');
+  if (ids.length !== 2) throw new Error(`field 'session' must have exactly one '/' (${want})`);
+  const [environment = '', thread = ''] = ids;
+  if (!SESSION_ID_PATTERN.test(environment)) throw new Error(`field 'session' environment id is malformed (${want})`);
+  if (!SESSION_ID_PATTERN.test(thread)) throw new Error(`field 'session' thread id is malformed (${want})`);
+  return { app: SESSION_APP, environment, thread };
+}
+
+/** True when `v` is a well-formed stored `Session` (readers are tolerant: anything else is ignored). */
+export function isSession(v: unknown): v is Session {
+  return (
+    isRecord(v) &&
+    Object.keys(v).length === 3 &&
+    v.app === SESSION_APP &&
+    typeof v.environment === 'string' &&
+    SESSION_ID_PATTERN.test(v.environment) &&
+    typeof v.thread === 'string' &&
+    SESSION_ID_PATTERN.test(v.thread)
+  );
+}
+
 const REVIEWER_KEY = /^[a-z][a-z0-9-]*$/;
 const RESERVED_KEYS = ['spec-writer', 'builder', 'approver'];
 const ROLES: readonly Role[] = ['spec-writer', 'builder', 'reviewer', 'approver'];
@@ -266,7 +314,8 @@ function agentIdentity(f: Record<string, unknown>): AgentIdentity {
   return id;
 }
 
-// job.claimed: a caller may pass `brief`, `issue`, and `maxRound` (defaults to config.maxRound).
+// job.claimed: a caller may pass `brief`, `issue`, `maxRound` (defaults to config.maxRound), and
+// `session`. job.reworked and job.human-approved also take an optional `session`.
 // round.started: `reviewers` defaults to config.reviewers.
 // `id`, `schema`, and `target` (the resolved branch) are filled by the CLI via `ctx`, never typed
 // by the caller. `verdict` is never caller-supplied for any event — the CLI reads it from the
@@ -279,12 +328,13 @@ export function parseEventInput(
   const allow = (...keys: string[]) => noExtraKeys(fields, keys, `${type}: extra field`);
   switch (type) {
     case 'job.claimed': {
-      allow('brief', 'issue', 'maxRound');
+      allow('brief', 'issue', 'maxRound', 'session');
       if (!ctx) throw new Error('job.claimed: needs the job id and config from the CLI');
       if (ctx.target !== undefined && !isTargetBranch(ctx.target)) throw new Error(`job.claimed: target ${JSON.stringify(ctx.target)} is not an allowed branch name`);
       const maxRound = fields.maxRound === undefined ? ctx.config.maxRound : posInt(fields, 'maxRound');
       const claimed: Extract<EventInput, { type: 'job.claimed' }> = { type, schema: SCHEMA, id: ctx.id, maxRound, brief: nullableStr(fields, 'brief'), issue: nullableStr(fields, 'issue') };
       if (ctx.target !== undefined) claimed.target = ctx.target;
+      if (fields.session !== undefined) claimed.session = parseSession(fields.session);
       return claimed;
     }
     case 'job.titled':
@@ -315,12 +365,18 @@ export function parseEventInput(
     case 'job.escalated':
       allow('reason');
       return { type, reason: str(fields, 'reason') };
-    case 'job.reworked':
-      allow('k', 'maxRound');
-      return { type, k: posInt(fields, 'k'), maxRound: posInt(fields, 'maxRound') };
-    case 'job.human-approved':
-      allow();
-      return { type };
+    case 'job.reworked': {
+      allow('k', 'maxRound', 'session');
+      const reworked: Extract<EventInput, { type: 'job.reworked' }> = { type, k: posInt(fields, 'k'), maxRound: posInt(fields, 'maxRound') };
+      if (fields.session !== undefined) reworked.session = parseSession(fields.session);
+      return reworked;
+    }
+    case 'job.human-approved': {
+      allow('session');
+      const approved: Extract<EventInput, { type: 'job.human-approved' }> = { type };
+      if (fields.session !== undefined) approved.session = parseSession(fields.session);
+      return approved;
+    }
     case 'merge.failed':
       allow('reason');
       return { type, reason: str(fields, 'reason') };

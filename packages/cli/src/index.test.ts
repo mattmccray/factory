@@ -127,7 +127,7 @@ describe('usage and show (AC3)', () => {
 
   test('usage lines: every command, and both top-level lines list claim (AC7)', () => {
     expect(USAGE).toEqual({
-      claim: 'usage: claim <slug> [brief=…] [issue=…] [maxRound=…]',
+      claim: 'usage: claim <slug> [brief=…] [issue=…] [maxRound=…] [session=t3code:<environmentId>/<threadId>]',
       event: 'usage: event <id> <type> [field=value …]',
       rebuild: 'usage: rebuild <id> | --all',
       show: 'usage: show <id>',
@@ -368,4 +368,121 @@ describe('claim (AC1–AC5)', () => {
     expect((await readdir(join(root, 'jobs'))).sort()).toEqual([...ids].sort());
     for (const id of ids) expect((await lines(id))[0]).toMatchObject({ type: 'job.claimed', id });
   }, 30_000);
+});
+
+describe('session (claim, job.reworked, job.human-approved)', () => {
+  const A = { app: 't3code', environment: 'env-1', thread: 'thread-A' };
+  const B = { app: 't3code', environment: 'env-2', thread: 'thread-B' };
+  const SESSION_A = 'session=t3code:env-1/thread-A';
+  const SESSION_B = 'session=t3code:env-2/thread-B';
+  const MALFORMED = [
+    'session=codex:env-1/thread-A',
+    'session=env-1/thread-A',
+    'session=t3code:env-1',
+    'session=t3code:/thread-A',
+    'session=t3code:env-1/',
+    `session=t3code:${'a'.repeat(65)}/thread-A`,
+    'session=t3code:env-1/thread/A',
+    'session=t3code:env.1/thread-A',
+    'session=t3code:env-1/thread_A',
+    'session=t3code:env 1/thread-A',
+    'session=t3code:env-1/thread-A!',
+    'session=null',
+    'session=',
+  ];
+  const events = async (): Promise<unknown[]> =>
+    (await readFile(join(root, 'jobs', ID, 'events.jsonl'), 'utf8')).trim().split('\n').map((l): unknown => JSON.parse(l));
+  const snap = async (): Promise<unknown> => JSON.parse(await readFile(join(root, 'jobs', ID, 'job.json'), 'utf8'));
+  const sessionOf = async (): Promise<unknown> => {
+    const s = await snap();
+    return typeof s === 'object' && s !== null && 'session' in s ? s.session : undefined;
+  };
+  const refused = async (argv: string[]): Promise<void> => {
+    const before = await snapshotJobs();
+    const r = await cli(...argv);
+    expect(r.code).toBe(1);
+    expect(r.out).toEqual([]);
+    expect(r.err.length).toBe(1);
+    expect(r.err[0]).not.toContain('\n');
+    expect(await snapshotJobs()).toEqual(before);
+  };
+  const toNeedsHuman = async (): Promise<void> => {
+    expect((await cli('event', ID, 'job.escalated', 'reason=stuck')).code).toBe(0);
+  };
+
+  test('AC1: a claim with session= logs it and job.json has it', async () => {
+    expect(await cli('claim', SLUG, SESSION_A)).toEqual({ code: 0, out: [ID], err: [] });
+    expect((await events())[0]).toMatchObject({ type: 'job.claimed', session: A });
+    expect(await sessionOf()).toEqual(A);
+  });
+
+  test('AC1: a claim without session= logs no session key; job.json has session null', async () => {
+    expect((await cli('claim', SLUG)).code).toBe(0);
+    const first = (await events())[0];
+    expect(typeof first === 'object' && first !== null && 'session' in first).toBe(false);
+    expect(await sessionOf()).toBeNull();
+  });
+
+  test('AC2: a malformed session= on claim is refused and creates no job dir', async () => {
+    for (const s of MALFORMED) await refused(['claim', SLUG, s]);
+    expect(await readdir(join(root, 'jobs')).catch(() => [])).toEqual([]);
+  });
+
+  test('AC2: a malformed session= on job.reworked or job.human-approved is refused, nothing written', async () => {
+    await cli('claim', SLUG, SESSION_A);
+    await toNeedsHuman();
+    for (const s of MALFORMED) {
+      await refused(['event', ID, 'job.reworked', 'k=1', 'maxRound=3', s]);
+      await refused(['event', ID, 'job.human-approved', s]);
+    }
+  });
+
+  test('AC3: job.reworked with session B wins; without one it stays; job.abandoned leaves it', async () => {
+    await cli('claim', SLUG, SESSION_A);
+    await toNeedsHuman();
+    expect(await cli('event', ID, 'job.reworked', 'k=1', 'maxRound=3', SESSION_B)).toEqual({ code: 0, out: ['build'], err: [] });
+    expect(await sessionOf()).toEqual(B);
+    await toNeedsHuman();
+    expect((await cli('event', ID, 'job.reworked', 'k=2', 'maxRound=4')).code).toBe(0);
+    expect(await sessionOf()).toEqual(B);
+    await toNeedsHuman();
+    expect((await cli('abandon', ID, 'done')).code).toBe(0);
+    expect(await sessionOf()).toEqual(B);
+  });
+
+  test('AC3: job.human-approved with session B wins (and stays idempotent); without one it stays', async () => {
+    await cli('claim', SLUG, SESSION_A);
+    await toNeedsHuman();
+    expect((await cli('event', ID, 'job.human-approved')).code).toBe(0);
+    expect(await sessionOf()).toEqual(A);
+    expect(await cli('event', ID, 'job.human-approved', SESSION_B)).toEqual({ code: 0, out: ['needs-human'], err: [] });
+    expect(await sessionOf()).toEqual(B);
+    expect((await cli('event', ID, 'job.human-approved', SESSION_B)).code).toBe(0);
+    expect((await cli('event', ID, 'job.human-approved')).code).toBe(0);
+    expect(await sessionOf()).toEqual(B);
+    expect((await cli('rebuild', ID)).code).toBe(0);
+    expect(await sessionOf()).toEqual(B);
+  });
+
+  test('AC4: session= on any other event is refused as an extra field, nothing written', async () => {
+    await cli('claim', SLUG, SESSION_A);
+    await refused(['event', ID, 'job.noted', 'note=x', SESSION_B]);
+    await refused(['event', ID, 'stage.entered', 'stage=spec', SESSION_B]);
+    await refused(['event', ID, 'job.escalated', 'reason=r', SESSION_B]);
+    await toNeedsHuman();
+    await refused(['event', ID, 'job.abandoned', 'reason=r', SESSION_B]);
+    const r = await cli('event', ID, 'job.noted', 'note=x', SESSION_B);
+    expect(r.err[0]).toContain("extra field: unknown key 'session'");
+  });
+
+  test('AC4: a log without any session rebuilds to the same job.json plus session null', async () => {
+    await cli('claim', SLUG);
+    await cli('event', ID, 'stage.entered', 'stage=spec');
+    await toNeedsHuman();
+    await cli('event', ID, 'job.human-approved');
+    const before = await snap();
+    expect((await cli('rebuild', ID)).code).toBe(0);
+    expect(await snap()).toEqual(before);
+    expect(await sessionOf()).toBeNull();
+  });
 });
