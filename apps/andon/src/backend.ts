@@ -1,14 +1,16 @@
 // The Tiny JS backend adapter: the only file that touches Tiny or txiki.js. It wires the Mac app's
 // runtime-neutral logic (app.ts, autostart.ts, appmenu.ts) to Tiny's `app.tray`, `app.icon`,
 // `app.badge`, `app.notify`, `app.menu`, `app.store`, `app.push`, `app.shell`, `app.clipboard`, the
-// `onTray`, `onMenu`, `onNavigate`, and `onContextMenu` hooks, and the one custom `api` method, and to
+// `app.win.open` and `app.windows` (the Settings window), the `onTray`, `onMenu`, `onNavigate`, and
+// `onContextMenu` hooks, and the three custom `api` methods, and to
 // txiki's `tjs.spawn` and `tjs.stat` (for the service, for curl: see curl.ts, and for a project's
 // right-click menu: see projectmenu.ts). `bun run andon:build` bundles it into build/backend.js, the
 // plain-JS entry tinyjs.json names.
-// The window's page (the service-served UI) gets no Tiny API but the two calls its drag regions make
-// (`win.startDrag`, `win.zoom`), the status bar event this adapter pushes (`event.statusbar`), and
-// `projectMenu`, which takes a project id (or null) and nothing else: tinyjs.json's `api` gate
-// denies the rest.
+// The windows' pages (the service-served UI) get no Tiny API but the two calls the drag regions make
+// (`win.startDrag`, `win.zoom`), the status bar event this adapter pushes (`event.statusbar`),
+// `projectMenu`, which takes a project id (or null) and nothing else, and the Settings window's
+// `getSettings` and `setSetting` (see settings.ts), which answer only when Tiny's api meta names the
+// Settings window: tinyjs.json's `api` gate denies the rest.
 /// <reference path="../types/tiny.d.ts" />
 /// <reference path="../types/tjs.d.ts" />
 import { QUIT_ID, SHOW_ID, trayNotice } from './badge';
@@ -21,7 +23,9 @@ import type { DockLook } from './lantern';
 import { startApp } from './app';
 import type { App } from './app';
 import { oneAtATime, trayClickAction } from './trayclick';
-import { STATUS_BAR_EVENT, STATUS_BAR_ID, STATUS_BAR_KEY, appMenu, menuAction, statusBarLabel, statusBarPayload, storedHidden } from './appmenu';
+import { SETTINGS_WINDOW_ID, STATUS_BAR_EVENT, STATUS_BAR_ID, STATUS_BAR_KEY, appMenu, menuAction, settingsWindow, statusBarLabel, statusBarPayload, storedHidden } from './appmenu';
+import { fromSettingsWindow, settingChange, settingsSnapshot } from './settings';
+import type { Settings } from './settings';
 import { GHOSTTY_APP, VSCODE_APP, exitReason, failureText, menuProject, menuRequest, projectMenuItems, resolveAction, t3Candidates } from './projectmenu';
 import type { Availability, MenuProject, ProjectAction } from './projectmenu';
 
@@ -34,19 +38,20 @@ import type { Availability, MenuProject, ProjectAction } from './projectmenu';
 /** The fields of the main window's state the tray click reads. */
 export type MacWinState = Pick<TinyWinState, 'minimized' | 'fullscreen' | 'allSpaces'>;
 /** The window ops the adapter calls. `getState` resolves null when there is no state to give. */
-export type MacWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpaces' | 'eval' | 'minimize' | 'zoom'> & {
+export type MacWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpaces' | 'eval' | 'minimize' | 'zoom' | 'setResizable'> & {
   getState(): Promise<MacWinState | null>;
 };
 /** The backend `app` object Tiny passes to `init` and the hooks, narrowed to what the Mac app uses.
  *  `icon('')` resets the Dock icon to the bundle icon, `badge('')` clears the badge, and `done`
  *  settles when the launcher closes (⌘Q, or the app menu's Quit). */
-export type MacApp = Pick<TinyApp, 'icon' | 'badge' | 'notify' | 'setHideOnClose' | 'quit' | 'push'> &
+export type MacApp = Pick<TinyApp, 'icon' | 'badge' | 'notify' | 'setHideOnClose' | 'quit' | 'push' | 'windows'> &
   Partial<Pick<TinyApp, 'done'>> & {
     tray: Pick<TinyApp['tray'], 'set'>;
     menu: Pick<TinyApp['menu'], 'set' | 'update' | 'setContext'>;
     store: Pick<TinyApp['store'], 'get' | 'set'>;
     shell: Pick<TinyApp['shell'], 'open' | 'reveal'>;
     clipboard: Pick<TinyApp['clipboard'], 'write'>;
+    win: Pick<TinyApp['win'], 'open'>;
     window(id: string): MacWindow;
   };
 /** The fields of a navigation event `onNavigate` reads. */
@@ -145,10 +150,14 @@ export const reloadScript = (port: number): string => `location.replace(${JSON.s
 let andon: App | null = null;
 let service: Service | null = null;
 let quitting = false;
+/** The service's port, as init resolved it: the Settings window loads its page from there. */
+let servicePort = DEFAULT_PORT;
 
 // ---- the status bar choice ----
-// Read from the store once at init; every toggle writes it back. The page hears it through the
-// pushed status bar event, after its main frame loads and after every toggle; it never asks.
+// Read from the store once at init; every change (the View menu toggle, ⌘/, or the Settings window)
+// goes through setStatusBar, which writes it back, relabels the View menu, and pushes the status bar
+// event to every window. The main window's page only listens (after its main frame loads and after
+// every change); the Settings window also asks for it (getSettings).
 
 let statusBarHidden = false;
 /** Settles once init has read the stored choice and set the menu bar. */
@@ -167,12 +176,21 @@ async function readStatusBar(app: MacApp): Promise<void> {
 
 const pushStatusBar = (app: MacApp): void => app.push(STATUS_BAR_EVENT, statusBarPayload(statusBarHidden));
 
+/** The one path for a status bar change: the state, the store, the View menu label, and the push to
+ *  every window. Setting the value it already holds changes nothing. */
+async function setStatusBar(app: MacApp, hidden: boolean): Promise<void> {
+  await statusBarRead;
+  if (hidden === statusBarHidden) return;
+  statusBarHidden = hidden;
+  const saved = app.store.set(STATUS_BAR_KEY, hidden);
+  app.menu.update(STATUS_BAR_ID, { label: statusBarLabel(hidden) });
+  pushStatusBar(app);
+  if (!(await saved)) console.log('andon: could not save the status bar choice');
+}
+
 async function toggleStatusBar(app: MacApp): Promise<void> {
   await statusBarRead;
-  statusBarHidden = !statusBarHidden;
-  app.menu.update(STATUS_BAR_ID, { label: statusBarLabel(statusBarHidden) });
-  pushStatusBar(app);
-  if (!(await app.store.set(STATUS_BAR_KEY, statusBarHidden))) console.log('andon: could not save the status bar choice');
+  return setStatusBar(app, !statusBarHidden);
 }
 
 function stopAll(): void {
@@ -186,6 +204,7 @@ function stopAll(): void {
 export function init(app: MacApp): void {
   quitting = false; // a fresh lifecycle (Tiny calls init once; tests call it after a Quit)
   const port = resolvePort(tjs.env);
+  servicePort = port;
   const url = serviceUrl(port);
   const http = curlHttp(url);
   const repo = __ANDON_REPO__;
@@ -267,11 +286,31 @@ export async function onTray(id: string | null, app: MacApp): Promise<void> {
   }
 }
 
-/** A click in the menu bar. Settings… is a placeholder, so it (like any id that isn't ours) does nothing. */
+/** Settings…: open the Settings window, or, when it is already open, show and focus it. One click at a
+ *  time, so a quick second click can't open a second window while the first is still opening. */
+const openSettings = oneAtATime(async (app: MacApp): Promise<void> => {
+  let open: string[];
+  try {
+    open = await app.windows();
+  } catch (err) {
+    console.log(`andon: could not list the windows (${String(err)})`);
+    open = [];
+  }
+  if (open.includes(SETTINGS_WINDOW_ID)) {
+    app.window(SETTINGS_WINDOW_ID).show(); // brings it to the front and focuses it
+    return;
+  }
+  app.win.open(SETTINGS_WINDOW_ID, settingsWindow(servicePort));
+  app.window(SETTINGS_WINDOW_ID).setResizable(false);
+});
+
+/** A click in the menu bar. An id that isn't ours does nothing. */
 export async function onMenu(id: string, app: MacApp): Promise<void> {
   const action = menuAction(id);
   if (action === null) return;
   switch (action.kind) {
+    case 'open-settings':
+      return openSettings(app);
     case 'toggle-status-bar':
       return toggleStatusBar(app);
     case 'minimize':
@@ -412,9 +451,36 @@ export async function runProjectItem(id: unknown, app: MacApp, projects: readonl
   await app.notify('Andon', text);
 }
 
-/** The page's api: `projectMenu` alone (tinyjs.json's gate enables it by name). */
+// ---- the Settings window's two methods ----
+// Answered only when Tiny's api meta names the Settings window (settings.ts `fromSettingsWindow`):
+// from any other window they return null and change nothing.
+
+/** The settings, from the stored choice (once init has read it); null for any other window. */
+export async function getSettings(app: MacApp, meta: unknown): Promise<Settings | null> {
+  if (!fromSettingsWindow(meta)) return null;
+  await statusBarRead;
+  return settingsSnapshot({ statusBarHidden });
+}
+
+/** One validated change from the Settings window, applied on the shared path; then the settings.
+ *  Null, with nothing changed, for any other window or a malformed change. */
+export async function setSetting(params: unknown, app: MacApp, meta: unknown): Promise<Settings | null> {
+  if (!fromSettingsWindow(meta)) return null;
+  const change = settingChange(params);
+  if (change === null) return null;
+  switch (change.key) {
+    case 'statusBarHidden':
+      await setStatusBar(app, change.value);
+      break;
+  }
+  return settingsSnapshot({ statusBarHidden });
+}
+
+/** The pages' api: `projectMenu`, `getSettings`, and `setSetting` (tinyjs.json's gate enables each by name). */
 export const api = {
   projectMenu: (params: unknown, app: MacApp): Promise<void> => showProjectMenu(params, app, listedProjects()),
+  getSettings: (_params: unknown, app: MacApp, meta: unknown): Promise<Settings | null> => getSettings(app, meta),
+  setSetting: (params: unknown, app: MacApp, meta: unknown): Promise<Settings | null> => setSetting(params, app, meta),
 };
 
 /** A click in the right-click menu. */

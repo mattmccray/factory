@@ -454,3 +454,13 @@ dialog.sheet::backdrop { background: var(--scrim); }
 .keys dd { margin: 0; font-size: 12px; color: var(--label); }
 .keys .then { font-size: 10.5px; color: var(--label2); }
 kbd { display: inline-block; min-width: 18px; padding: 0 5px; text-align: center; font: 600 11px/18px var(--mono); color: var(--label); background: var(--ctl); border-radius: 4px; box-shadow: inset 0 0 0 .5px var(--sep2), 0 .5px 0 var(--sep2); }
+
+/* ── the Mac app's Settings window (035) ──────────────── */
+/* A standard titled window, not the board's frame: a solid --win page, a section heading in --label2,
+   and a --card group holding each setting; the checkbox takes the accent fill. */
+.settings { position: fixed; inset: 0; overflow-y: auto; padding: 20px 24px; background: var(--win); color: var(--label); }
+.settings h2 { margin: 0 0 6px 2px; font-size: 11px; font-weight: 600; color: var(--label2); }
+.settings .set-box { padding: 10px 14px 12px; border-radius: 8px; background: var(--card); border: .5px solid var(--sep2); }
+.settings .set-row { display: flex; align-items: center; gap: 8px; color: var(--label); }
+.settings .set-row input { margin: 0; accent-color: var(--accent-fill); }
+.settings .set-row input:disabled + span { color: var(--label3); }

@@ -3,11 +3,11 @@
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { api, assetPath, checkApps, dockIcon, init, onContextMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setTray, showProjectMenu, trayIcon } from './backend';
+import { api, assetPath, checkApps, dockIcon, getSettings, init, onContextMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, showProjectMenu, trayIcon } from './backend';
 import type { MacApp, MacNavEvent, MacTraySpec, MacWinState, RunResult } from './backend';
 import { itemId, projectMenuItems } from './projectmenu';
 import type { MenuProject } from './projectmenu';
-import { GITHUB_ID, MINIMIZE_ID, SETTINGS_ID, SHOW_MAIN_ID, STATUS_BAR_ID, ZOOM_ID, appMenu } from './appmenu';
+import { GITHUB_ID, MINIMIZE_ID, SETTINGS_ID, SETTINGS_SIZE, SHOW_MAIN_ID, STATUS_BAR_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
 import { trayNotice, traySpec } from './badge';
 
 /** Which window ops fail. Mutable, so a test can heal the window between clicks. Each failing op is
@@ -43,7 +43,10 @@ function fakeApp(state: MacWinState | null, fail: Failures = {}): { app: MacApp;
       eval: () => calls.push(`${id}.eval`),
       minimize: () => calls.push(`${id}.minimize`),
       zoom: () => calls.push(`${id}.zoom`),
+      setResizable: (on) => calls.push(`${id}.resizable(${on})`),
     }),
+    windows: async () => ['main'],
+    win: { open: (id) => calls.push(`win.open(${id})`) },
     setHideOnClose: () => calls.push('setHideOnClose'),
     quit: () => calls.push('quit'),
     push: () => calls.push('push'),
@@ -263,7 +266,7 @@ test('the reload after starting the service (or on another port) keeps ?shell=ma
 
 /** A fake app that records the menu bar, the store, the pushes, and the shell, with `stored` as the
  *  status bar choice in the store. */
-function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<string, unknown> } {
+function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<string, unknown>; open: Set<string> } {
   const log: unknown[][] = [];
   const store = new Map<string, unknown>([['statusBarHidden', stored]]);
   const { app } = fakeApp(st(false));
@@ -299,8 +302,17 @@ function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<s
     eval: () => log.push([`${id}.eval`]),
     minimize: () => log.push([`${id}.minimize`]),
     zoom: () => log.push([`${id}.zoom`]),
+    setResizable: (on) => log.push([`${id}.resizable`, on]),
   });
-  return { app, log, store };
+  const open = new Set<string>(['main']);
+  app.windows = async () => [...open];
+  app.win = {
+    open: (id, opts) => {
+      open.add(id);
+      log.push(['win.open', id, opts]);
+    },
+  };
+  return { app, log, store, open };
 }
 
 /** init, with the service never answering, then let the stored choice be read. */
@@ -347,16 +359,16 @@ test('AC3: the toggle flips the state, relabels the item, pushes the new state, 
   m.log.length = 0;
   await onMenu(STATUS_BAR_ID, m.app);
   expect(m.log).toEqual([
+    ['store.set', 'statusBarHidden', true],
     ['menu.update', STATUS_BAR_ID, { label: 'Show Status Bar' }],
     ['push', 'statusbar', { hidden: true }],
-    ['store.set', 'statusBarHidden', true],
   ]);
   m.log.length = 0;
   await onMenu(STATUS_BAR_ID, m.app);
   expect(m.log).toEqual([
+    ['store.set', 'statusBarHidden', false],
     ['menu.update', STATUS_BAR_ID, { label: 'Hide Status Bar' }],
     ['push', 'statusbar', { hidden: false }],
-    ['store.set', 'statusBarHidden', false],
   ]);
   expect(m.store.get('statusBarHidden')).toBe(false);
 });
@@ -365,7 +377,7 @@ test('AC3: a toggle after a relaunch starts from the stored state', async () => 
   const m = await initMenu(true);
   m.log.length = 0;
   await onMenu(STATUS_BAR_ID, m.app);
-  expect(m.log[0]).toEqual(['menu.update', STATUS_BAR_ID, { label: 'Hide Status Bar' }]);
+  expect(m.log[1]).toEqual(['menu.update', STATUS_BAR_ID, { label: 'Hide Status Bar' }]);
   expect(m.store.get('statusBarHidden')).toBe(false);
 });
 
@@ -383,11 +395,131 @@ test('AC3: Window and Help items minimize, zoom, show the window as the tray cli
   expect(m.log).toEqual([['shell.open', 'https://github.com/mattmccray/factory']]);
 });
 
-test('AC3: Settings… and unknown ids do nothing', async () => {
+test('AC3: unknown ids do nothing', async () => {
   const m = await initMenu(null);
   m.log.length = 0;
-  for (const id of [SETTINGS_ID, 'about', 'nope']) await onMenu(id, m.app);
+  for (const id of ['about', 'nope', 'SETTINGS']) await onMenu(id, m.app);
   expect(m.log).toEqual([]);
+});
+
+// ---- the Settings window (035) ----
+
+test('035 AC1: Settings… opens the settings window on the service port, not resizable; a second click shows and focuses it', async () => {
+  const m = await initMenu(null);
+  m.log.length = 0;
+  await onMenu(SETTINGS_ID, m.app);
+  expect(m.log).toEqual([
+    ['win.open', 'settings', { page: 'http://127.0.0.1:8766/?shell=mac&view=settings', title: 'Settings', size: SETTINGS_SIZE, minSize: SETTINGS_SIZE, chrome: { frame: true } }],
+    ['settings.resizable', false],
+  ]);
+  m.log.length = 0;
+  await onMenu(SETTINGS_ID, m.app);
+  expect(m.log).toEqual([['settings.show']]);
+});
+
+test('035 AC1: the settings window loads from the port init resolved', async () => {
+  const hung: FakeProcess = { stdout: new ReadableStream<Uint8Array>(), kill: () => undefined, wait: never };
+  Reflect.set(globalThis, '__ANDON_REPO__', REPO);
+  Reflect.set(globalThis, '__ANDON_BUN__', '/the/bun');
+  Reflect.set(globalThis, 'tjs', { env: { ANDON_PORT: '9123' }, spawn: () => hung });
+  const m = menuApp(null);
+  init(m.app);
+  m.log.length = 0;
+  await onMenu(SETTINGS_ID, m.app);
+  expect(m.log.filter((e) => e[0] === 'win.open')).toEqual([['win.open', 'settings', settingsWindow(9123)]]);
+});
+
+test('035 AC1: two quick clicks open one window', async () => {
+  const m = await initMenu(null);
+  m.log.length = 0;
+  await Promise.all([onMenu(SETTINGS_ID, m.app), onMenu(SETTINGS_ID, m.app)]);
+  expect(m.log.filter((e) => e[0] === 'win.open')).toHaveLength(1);
+});
+
+test('035 AC1: once the settings window is closed, Settings… opens it again', async () => {
+  const m = await initMenu(null);
+  await onMenu(SETTINGS_ID, m.app);
+  m.open.delete('settings');
+  m.log.length = 0;
+  await onMenu(SETTINGS_ID, m.app);
+  expect(m.log.map((e) => e[0])).toEqual(['win.open', 'settings.resizable']);
+});
+
+const SETTINGS_META = { window: 'settings', origin: 'http://127.0.0.1:8766' };
+
+test('035 AC2: from any window but Settings, getSettings and setSetting answer null and change nothing', async () => {
+  const m = await initMenu(true);
+  m.log.length = 0;
+  for (const meta of [{ window: 'main' }, { window: 'other' }, {}, null, undefined, 'settings']) {
+    expect(await getSettings(m.app, meta)).toBeNull();
+    expect(await setSetting({ key: 'statusBarHidden', value: false }, m.app, meta)).toBeNull();
+    expect(await api.getSettings(null, m.app, meta)).toBeNull();
+    expect(await api.setSetting({ key: 'statusBarHidden', value: false }, m.app, meta)).toBeNull();
+  }
+  expect(m.log).toEqual([]);
+  expect(m.store.get('statusBarHidden')).toBe(true);
+  expect(await getSettings(m.app, SETTINGS_META)).toEqual({ statusBarHidden: true }); // still hidden
+});
+
+test('035 AC3: getSettings returns the stored choice: exactly true is hidden', async () => {
+  for (const [stored, hidden] of [[true, true], [false, false], [null, false], ['yes', false], [1, false]] as const) {
+    const m = await initMenu(stored);
+    expect({ stored, s: await api.getSettings(undefined, m.app, SETTINGS_META) }).toEqual({ stored, s: { statusBarHidden: hidden } });
+  }
+});
+
+test('035 AC3: a malformed setSetting from Settings changes nothing', async () => {
+  const m = await initMenu(null);
+  m.log.length = 0;
+  for (const params of [{ key: 'statusBarHidden', value: 'yes' }, { key: 'nope', value: true }, null, undefined, { key: 'statusBarHidden', value: true, extra: 1 }, [], 'statusBarHidden']) {
+    expect({ params, r: await setSetting(params, m.app, SETTINGS_META) }).toEqual({ params, r: null });
+  }
+  expect(m.log).toEqual([]);
+  expect(m.store.get('statusBarHidden')).toBeNull();
+});
+
+test('035 AC4: a valid setSetting stores the choice, relabels the View menu, pushes statusbar, and returns the settings', async () => {
+  const m = await initMenu(null);
+  m.log.length = 0;
+  expect(await api.setSetting({ key: 'statusBarHidden', value: true }, m.app, SETTINGS_META)).toEqual({ statusBarHidden: true });
+  expect(m.log).toEqual([
+    ['store.set', 'statusBarHidden', true],
+    ['menu.update', STATUS_BAR_ID, { label: 'Show Status Bar' }],
+    ['push', 'statusbar', { hidden: true }],
+  ]);
+  expect(m.store.get('statusBarHidden')).toBe(true);
+  // the value it already holds flips nothing
+  m.log.length = 0;
+  expect(await setSetting({ key: 'statusBarHidden', value: true }, m.app, SETTINGS_META)).toEqual({ statusBarHidden: true });
+  expect(m.log).toEqual([]);
+  // back to shown
+  expect(await setSetting({ key: 'statusBarHidden', value: false }, m.app, SETTINGS_META)).toEqual({ statusBarHidden: false });
+  expect(m.log).toEqual([
+    ['store.set', 'statusBarHidden', false],
+    ['menu.update', STATUS_BAR_ID, { label: 'Hide Status Bar' }],
+    ['push', 'statusbar', { hidden: false }],
+  ]);
+});
+
+test('035 AC4: the View menu toggle after a Settings change starts from it, and Settings reads the toggle', async () => {
+  const m = await initMenu(null);
+  await setSetting({ key: 'statusBarHidden', value: true }, m.app, SETTINGS_META);
+  m.log.length = 0;
+  await onMenu(STATUS_BAR_ID, m.app);
+  expect(m.log).toEqual([
+    ['store.set', 'statusBarHidden', false],
+    ['menu.update', STATUS_BAR_ID, { label: 'Hide Status Bar' }],
+    ['push', 'statusbar', { hidden: false }],
+  ]);
+  expect(await getSettings(m.app, SETTINGS_META)).toEqual({ statusBarHidden: false });
+});
+
+test('035 AC4: the choice survives a relaunch: init reads what setSetting stored', async () => {
+  const m = await initMenu(null);
+  await setSetting({ key: 'statusBarHidden', value: true }, m.app, SETTINGS_META);
+  const again = await initMenu(m.store.get('statusBarHidden'));
+  expect(menuSet(again.log)).toEqual([['menu.set', appMenu(true)]]);
+  expect(await getSettings(again.app, SETTINGS_META)).toEqual({ statusBarHidden: true });
 });
 
 test("AC3: when the main window's main frame finishes loading, the current state is pushed; nothing else pushes", async () => {
@@ -537,7 +669,7 @@ test("AC2: a newer request wins over an older one's slower app check", async () 
 });
 
 test('AC2: the api names one method, and with the app not following the service it lists no project', async () => {
-  expect(Object.keys(api)).toEqual(['projectMenu']);
+  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting']);
   fakeMachine([], []);
   const { app, log } = contextApp();
   await api.projectMenu({ project: PID }, app);

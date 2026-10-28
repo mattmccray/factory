@@ -1,7 +1,9 @@
-// The Mac app's menu bar: Andon (a disabled Settings… placeholder), the stock Edit menu, View (the
-// status bar toggle), Window (Minimize, Zoom, Andon), and Help (the project on GitHub). The menu
-// spec, its ids, the label for a status bar state, what a click does, and how the stored status bar
-// choice reads all live here, runtime-neutral; backend.ts sets the menu and carries out the actions.
+// The Mac app's menu bar: Andon (Settings…, which opens the Settings window), the stock Edit menu,
+// View (the status bar toggle), Window (Minimize, Zoom, Andon), and Help (the project on GitHub).
+// The menu spec, its ids, the label for a status bar state, what a click does, how the stored status
+// bar choice reads, and the Settings window's id, title, size, and page all live here,
+// runtime-neutral; backend.ts sets the menu, opens the window, and carries out the actions.
+import { serviceUrl } from './autostart';
 
 /** The repo page Help → Factory on GitHub opens. One constant, easy to change at publication. */
 export const GITHUB_URL = 'https://github.com/mattmccray/factory';
@@ -43,7 +45,7 @@ export const statusBarLabel = (hidden: boolean): string => (hidden ? 'Show Statu
 /** The whole menu bar, in bar order, for a status bar state. */
 export function appMenu(hidden: boolean): Menu[] {
   return [
-    { role: 'app', items: [{ id: SETTINGS_ID, label: 'Settings…', key: ',', enabled: false }] },
+    { role: 'app', items: [{ id: SETTINGS_ID, label: 'Settings…', key: ',', enabled: true }] },
     { role: 'edit' },
     { title: 'View', items: [{ id: STATUS_BAR_ID, label: statusBarLabel(hidden), key: '/' }] },
     {
@@ -55,11 +57,19 @@ export function appMenu(hidden: boolean): Menu[] {
 }
 
 /** What a menu click does. */
-export type MenuAction = { kind: 'toggle-status-bar' } | { kind: 'minimize' } | { kind: 'zoom' } | { kind: 'show-main' } | { kind: 'open'; url: string };
+export type MenuAction =
+  | { kind: 'open-settings' }
+  | { kind: 'toggle-status-bar' }
+  | { kind: 'minimize' }
+  | { kind: 'zoom' }
+  | { kind: 'show-main' }
+  | { kind: 'open'; url: string };
 
-/** The action for a clicked id; null for Settings… (a placeholder) and any id that isn't ours. */
+/** The action for a clicked id; null for any id that isn't ours. */
 export function menuAction(id: string): MenuAction | null {
   switch (id) {
+    case SETTINGS_ID:
+      return { kind: 'open-settings' };
     case STATUS_BAR_ID:
       return { kind: 'toggle-status-bar' };
     case MINIMIZE_ID:
@@ -80,3 +90,26 @@ export const storedHidden = (value: unknown): boolean => value === true;
 
 /** The payload of the status bar event. */
 export const statusBarPayload = (hidden: boolean): { hidden: boolean } => ({ hidden });
+
+// ---- the Settings window ----
+
+/** The Settings window's id: Tiny's api meta names it, and only calls from it are answered. */
+export const SETTINGS_WINDOW_ID = 'settings';
+export const SETTINGS_TITLE = 'Settings';
+/** Fixed: the window opens at this size and can't be resized. */
+export const SETTINGS_SIZE = '480x260';
+/** The query that tells the page it is the Settings view (in the Mac app). */
+export const SETTINGS_QUERY = '?shell=mac&view=settings';
+
+/** The Settings page: the same index.html the service serves at `/`, in its settings view. */
+export const settingsUrl = (port: number): string => `${serviceUrl(port)}/${SETTINGS_QUERY}`;
+
+/** How the Settings window opens: a standard titled frame (not the main window's frameless chrome),
+ *  the settings page on the service's port, at its fixed size. */
+export const settingsWindow = (port: number): { page: string; title: string; size: string; minSize: string; chrome: { frame: true } } => ({
+  page: settingsUrl(port),
+  title: SETTINGS_TITLE,
+  size: SETTINGS_SIZE,
+  minSize: SETTINGS_SIZE,
+  chrome: { frame: true },
+});
