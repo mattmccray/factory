@@ -237,7 +237,9 @@ It replaces the drawer. From top to bottom:
    - **Abandon…** (a destructive-style plain button, after Rework…) opens a sheet with a required
      reason field and the command `/factory abandon <id> "<reason>"` (Job 0).
    - Copying shows a HUD toast, "Copied /factory …", for 1.6s.
-   - **Andon never runs these.**
+   - **Andon never runs these itself.** In the Mac app, when T3 Code is installed, it can also hand
+     one to T3 Code: as an unsent draft in a new thread (the default), or, if chosen in Settings,
+     sent to a new thread right away. Andon still writes no job state; the factory CLI does.
 4. **Files**, grouped as today's `groupsOf()` does:
    - **Job**: timing, feature.md (and the brief), spec.md, build.md, decision.md, in that order.
    - **Round N**: one row per reviewer ("security review"), with a green or orange verdict dot;

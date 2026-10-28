@@ -464,3 +464,8 @@ kbd { display: inline-block; min-width: 18px; padding: 0 5px; text-align: center
 .settings .set-row { display: flex; align-items: center; gap: 8px; color: var(--label); }
 .settings .set-row input { margin: 0; accent-color: var(--accent-fill); }
 .settings .set-row input:disabled + span { color: var(--label3); }
+.settings .set-group + .set-group { margin-top: 18px; }
+/* The T3 Code section (036): its line, the three radio choices, and the "wasn't found" note. */
+.settings .set-choices { display: grid; gap: 7px; }
+.settings .set-what { margin: 0 0 2px; font-size: 12px; color: var(--label2); }
+.settings .set-note { margin: 10px 0 0; font-size: 12px; color: var(--label2); }

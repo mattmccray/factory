@@ -1,19 +1,38 @@
 import { describe, expect, test } from 'bun:test';
 import { SETTINGS_WINDOW_ID, STATUS_BAR_KEY } from './appmenu';
-import { GET_SETTINGS_METHOD, SETTING_KEYS, SET_SETTING_METHOD, fromSettingsWindow, settingChange, settingsSnapshot } from './settings';
+import { DEFAULT_HANDOFF_MODE, GET_SETTINGS_METHOD, HANDOFF_MODES, SETTING_KEYS, SET_SETTING_METHOD, T3_HANDOFF_KEY, fromSettingsWindow, settingChange, settingsSnapshot, storedMode } from './settings';
 
 describe('035 AC3: the settings keys and the snapshot', () => {
-  test('one key, statusBarHidden, the same name as the status bar store key', () => {
-    expect(SETTING_KEYS).toEqual(['statusBarHidden']);
+  test('two keys: statusBarHidden, the same name as the status bar store key, and t3Handoff (036)', () => {
+    expect(SETTING_KEYS).toEqual(['statusBarHidden', 't3Handoff']);
+    expect(T3_HANDOFF_KEY).toBe('t3Handoff');
     expect(STATUS_BAR_KEY).toBe('statusBarHidden');
     expect(GET_SETTINGS_METHOD).toBe('getSettings');
     expect(SET_SETTING_METHOD).toBe('setSetting');
   });
 
   test('the snapshot: exactly true is hidden; missing or anything else is shown', () => {
-    expect(settingsSnapshot({ statusBarHidden: true })).toEqual({ statusBarHidden: true });
-    for (const v of [false, null, undefined, 'true', 1, {}, []]) expect({ v, s: settingsSnapshot({ statusBarHidden: v }) }).toEqual({ v, s: { statusBarHidden: false } });
-    expect(settingsSnapshot({})).toEqual({ statusBarHidden: false });
+    expect(settingsSnapshot({ statusBarHidden: true }, false)).toEqual({ statusBarHidden: true, t3Handoff: 'draft', t3Found: false });
+    for (const v of [false, null, undefined, 'true', 1, {}, []]) expect({ v, s: settingsSnapshot({ statusBarHidden: v }, false).statusBarHidden }).toEqual({ v, s: false });
+    expect(settingsSnapshot({}, false)).toEqual({ statusBarHidden: false, t3Handoff: 'draft', t3Found: false });
+  });
+});
+
+describe('036 AC5: the T3 Code setting in the snapshot', () => {
+  test('a stored draft, send, or copy is kept; anything else (or nothing) is draft; t3Found is passed through', () => {
+    expect(HANDOFF_MODES).toEqual(['draft', 'send', 'copy']);
+    expect(DEFAULT_HANDOFF_MODE).toBe('draft');
+    for (const m of HANDOFF_MODES) expect(settingsSnapshot({ t3Handoff: m }, true)).toEqual({ statusBarHidden: false, t3Handoff: m, t3Found: true });
+    for (const v of [null, undefined, '', 'Draft', 'SEND', 'auto', 1, true, {}, ['send']]) expect({ v, m: storedMode(v) }).toEqual({ v, m: 'draft' });
+    expect(settingsSnapshot({ statusBarHidden: true, t3Handoff: 'nope' }, true)).toEqual({ statusBarHidden: true, t3Handoff: 'draft', t3Found: true });
+  });
+
+  test('a t3Handoff change is accepted only for draft, send, or copy', () => {
+    for (const value of HANDOFF_MODES) expect(settingChange({ key: 't3Handoff', value })).toEqual({ key: 't3Handoff', value });
+    for (const value of ['', 'Draft', 'auto', 'run', true, 1, null, undefined, ['send'], { mode: 'send' }]) expect({ value, c: settingChange({ key: 't3Handoff', value }) }).toEqual({ value, c: null });
+    expect(settingChange({ key: 't3Handoff', value: 'send', extra: 1 })).toBeNull();
+    expect(settingChange({ key: 't3Found', value: true })).toBeNull();
+    expect(settingChange({ key: 'statusBarHidden', value: 'send' })).toBeNull();
   });
 });
 

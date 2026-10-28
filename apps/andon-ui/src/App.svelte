@@ -13,6 +13,8 @@
   import { INSPECTOR_DEFAULT, TOAST_MS, copiedText, sidebarShown, toggleSidebar } from './inspector';
   import type { SheetKind, SidebarChoice } from './inspector';
   import { find, needsFilter } from './find';
+  import { COPY_FAILED, handOffCaller, handoffToast } from './handoff';
+  import type { HandoffRequest } from './handoff';
   import { initialKeys, reduceKey } from './keys';
   import type { KeyAction } from './keys';
   import { activity, buildLanes, headerOf, orderLanes } from './lanes';
@@ -214,13 +216,27 @@
     toast = { text, ok };
     toastTimer = setTimeout(() => (toast = null), TOAST_MS);
   }
-  function copy(command: string): void {
+  /** Puts the command on the clipboard; whether it worked. */
+  const write = (command: string): Promise<boolean> =>
     Promise.resolve()
       .then(() => navigator.clipboard.writeText(command))
       .then(
-        () => show(copiedText(command), true),
-        () => show("Couldn't copy: select the command and copy it yourself", false),
+        () => true,
+        () => false,
       );
+  // The small copy icon beside the command: copy only, always.
+  function copy(command: string): void {
+    void write(command).then((ok) => show(ok ? copiedText(command) : COPY_FAILED, ok));
+  }
+  // The needs-human box's Approve and the sheets' button: copy first, so the clipboard always holds
+  // the command, then (in the Mac app) ask it to hand the command to T3 Code as its Settings say; the
+  // toast says what happened (handoff.ts). A browser has no caller: copy only, as before.
+  const handOff = handOffCaller(mode, Reflect.get(window, 'tiny'));
+  async function copyAndHandOff(req: HandoffRequest, command: string): Promise<void> {
+    const copied = await write(command);
+    const outcome = handOff === null ? null : await handOff(req);
+    const t = handoffToast(copied, outcome, command);
+    show(t.text, t.ok);
   }
   $effect(() => () => {
     if (toastTimer !== null) clearTimeout(toastTimer);
@@ -386,6 +402,7 @@
     onclose={closeInspector}
     onresize={(w) => (inspectorWidth = w)}
     oncopy={copy}
+    onhandoff={copyAndHandOff}
     onsheet={(k) => (sheet = k)}
   />
 </div>
@@ -397,7 +414,7 @@
   onclose={() => (settledOpen = false)}
   onopen={openJob}
 />
-<CommandSheet kind={sheet} id={openItem?.job.id ?? ''} oncopy={copy} onclose={() => (sheet = null)} />
+<CommandSheet kind={sheet} id={openItem?.job.id ?? ''} project={openItem?.project.id ?? ''} handsOff={handOff !== null} onhandoff={copyAndHandOff} onclose={() => (sheet = null)} />
 <ShortcutSheet open={keysOpen} onclose={() => (keysOpen = false)} />
 <div class="hud" class:on={toast !== null} class:fail={toast !== null && !toast.ok} role="status" aria-live="polite">
   {#if toast !== null}

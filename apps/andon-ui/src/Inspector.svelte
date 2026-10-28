@@ -1,14 +1,16 @@
 <script lang="ts">
   // The inspector (design §8): a push panel at the window's right, resizable from its left edge.
   // Top to bottom: the bar (project / id, close), the header (project · id, a stage pill, the
-  // title, branch → target, the timing summary), the needs-human box with its copy-only commands,
+  // title, branch → target, the timing summary), the needs-human box with its commands,
   // the Files list, and the selected document or the timing view. Docs are re-read when the job's
   // `updated` changes; a failed read keeps what is shown. ↑ and ↓ move between files while focus
-  // is in the inspector. The chosen file is the caller's (`file`, from the URL), reported by `onfile`. Andon never runs a command; the buttons only copy it.
+  // is in the inspector. The chosen file is the caller's (`file`, from the URL), reported by `onfile`. Andon never runs a command itself: Approve copies it and, in the Mac app,
+  // hands it to T3 Code as Settings say (`onhandoff`, see handoff.ts); the copy icon only copies.
   import { tick, untrack } from 'svelte';
   import { fetchDocs } from './api';
   import type { DocFile, Fetcher } from './api';
   import type { BoardJob } from './board';
+  import type { HandoffRequest } from './handoff';
   import { TIMING } from './docs';
   import { INSPECTOR_MAX, INSPECTOR_MIN, approveCommand, clampWidth, fileModel, stepFile } from './inspector';
   import type { SheetKind } from './inspector';
@@ -28,10 +30,11 @@
     onfile: (path: string) => void;
     onclose: () => void;
     onresize: (width: number) => void;
-    oncopy: (command: string) => void;
+    oncopy: (command: string) => void; // the copy icon: copy only
+    onhandoff: (req: HandoffRequest, command: string) => void; // Approve: copy, then hand off
     onsheet: (kind: SheetKind) => void;
   }
-  let { item, open, width, now, fetcher, file, onfile, onclose, onresize, oncopy, onsheet }: Props = $props();
+  let { item, open, width, now, fetcher, file, onfile, onclose, onresize, oncopy, onhandoff, onsheet }: Props = $props();
 
   const key = $derived(item?.key ?? null);
   const updated = $derived(item?.job.updated ?? null);
@@ -190,7 +193,7 @@
             <span>{job.note || 'No note recorded.'}</span>
           </div>
           <div class="acts">
-            <button class="btn primary" type="button" onclick={() => oncopy(approve)}>Approve</button>
+            <button class="btn primary" type="button" onclick={() => onhandoff({ project: item.project.id, job: job.id, action: 'approve' }, approve)}>Approve</button>
             <button class="btn" type="button" aria-haspopup="dialog" onclick={() => onsheet('rework')}>Rework…</button>
             <button class="btn destructive" type="button" aria-haspopup="dialog" onclick={() => onsheet('abandon')}>Abandon…</button>
           </div>

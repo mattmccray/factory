@@ -116,9 +116,9 @@ describe('the design §11 tokens (AC7)', () => {
     });
   }
 
-  test('035 AC7: the settings view takes every color from the tokens, and each text color meets AA on each of its backgrounds, in both appearances', () => {
+  test('035 AC7, 036 AC7: the settings view takes every color from the tokens, and each text color meets AA on each of its backgrounds, in both appearances', () => {
     const rules = [...css.matchAll(/(?<=^|\})\s*(\.settings[^{]*)\{([^}]*)\}/gm)].map((m) => ({ sel: (m[1] ?? '').trim(), body: m[2] ?? '' }));
-    expect(rules.map((r) => r.sel)).toEqual(['.settings', '.settings h2', '.settings .set-box', '.settings .set-row', '.settings .set-row input', '.settings .set-row input:disabled + span']);
+    expect(rules.map((r) => r.sel)).toEqual(['.settings', '.settings h2', '.settings .set-box', '.settings .set-row', '.settings .set-row input', '.settings .set-row input:disabled + span', '.settings .set-group + .set-group', '.settings .set-choices', '.settings .set-what', '.settings .set-note']); // the T3 Code section's rules (036) last
     const texts = new Set<string>();
     const backs = new Set<string>();
     for (const { sel, body } of rules) {

@@ -3,10 +3,11 @@
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { api, assetPath, checkApps, dockIcon, getSettings, init, onContextMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, showProjectMenu, trayIcon } from './backend';
-import type { MacApp, MacNavEvent, MacTraySpec, MacWinState, RunResult } from './backend';
+import { api, assetPath, checkApps, dockIcon, findT3, getSettings, handOff, hostHandoff, init, onContextMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, showProjectMenu, trayIcon } from './backend';
+import type { HandoffHost, MacApp, MacNavEvent, MacTraySpec, MacWinState, RunResult } from './backend';
 import { itemId, projectMenuItems } from './projectmenu';
 import type { MenuProject } from './projectmenu';
+import type { HandoffMode, Settings } from './settings';
 import { GITHUB_ID, MINIMIZE_ID, SETTINGS_ID, SETTINGS_SIZE, SHOW_MAIN_ID, STATUS_BAR_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
 import { trayNotice, traySpec } from './badge';
 
@@ -446,6 +447,8 @@ test('035 AC1: once the settings window is closed, Settings… opens it again', 
 });
 
 const SETTINGS_META = { window: 'settings', origin: 'http://127.0.0.1:8766' };
+/** The settings with the status bar choice, the default T3 Code choice, and no `t3` (the fake `tjs` has no files). */
+const snap = (hidden: boolean, t3Handoff: HandoffMode = 'draft', t3Found = false): Settings => ({ statusBarHidden: hidden, t3Handoff, t3Found });
 
 test('035 AC2: from any window but Settings, getSettings and setSetting answer null and change nothing', async () => {
   const m = await initMenu(true);
@@ -458,13 +461,13 @@ test('035 AC2: from any window but Settings, getSettings and setSetting answer n
   }
   expect(m.log).toEqual([]);
   expect(m.store.get('statusBarHidden')).toBe(true);
-  expect(await getSettings(m.app, SETTINGS_META)).toEqual({ statusBarHidden: true }); // still hidden
+  expect(await getSettings(m.app, SETTINGS_META)).toEqual(snap(true)); // still hidden
 });
 
 test('035 AC3: getSettings returns the stored choice: exactly true is hidden', async () => {
   for (const [stored, hidden] of [[true, true], [false, false], [null, false], ['yes', false], [1, false]] as const) {
     const m = await initMenu(stored);
-    expect({ stored, s: await api.getSettings(undefined, m.app, SETTINGS_META) }).toEqual({ stored, s: { statusBarHidden: hidden } });
+    expect({ stored, s: await api.getSettings(undefined, m.app, SETTINGS_META) }).toEqual({ stored, s: snap(hidden) });
   }
 });
 
@@ -481,7 +484,7 @@ test('035 AC3: a malformed setSetting from Settings changes nothing', async () =
 test('035 AC4: a valid setSetting stores the choice, relabels the View menu, pushes statusbar, and returns the settings', async () => {
   const m = await initMenu(null);
   m.log.length = 0;
-  expect(await api.setSetting({ key: 'statusBarHidden', value: true }, m.app, SETTINGS_META)).toEqual({ statusBarHidden: true });
+  expect(await api.setSetting({ key: 'statusBarHidden', value: true }, m.app, SETTINGS_META)).toEqual(snap(true));
   expect(m.log).toEqual([
     ['store.set', 'statusBarHidden', true],
     ['menu.update', STATUS_BAR_ID, { label: 'Show Status Bar' }],
@@ -490,10 +493,10 @@ test('035 AC4: a valid setSetting stores the choice, relabels the View menu, pus
   expect(m.store.get('statusBarHidden')).toBe(true);
   // the value it already holds flips nothing
   m.log.length = 0;
-  expect(await setSetting({ key: 'statusBarHidden', value: true }, m.app, SETTINGS_META)).toEqual({ statusBarHidden: true });
+  expect(await setSetting({ key: 'statusBarHidden', value: true }, m.app, SETTINGS_META)).toEqual(snap(true));
   expect(m.log).toEqual([]);
   // back to shown
-  expect(await setSetting({ key: 'statusBarHidden', value: false }, m.app, SETTINGS_META)).toEqual({ statusBarHidden: false });
+  expect(await setSetting({ key: 'statusBarHidden', value: false }, m.app, SETTINGS_META)).toEqual(snap(false));
   expect(m.log).toEqual([
     ['store.set', 'statusBarHidden', false],
     ['menu.update', STATUS_BAR_ID, { label: 'Hide Status Bar' }],
@@ -511,7 +514,7 @@ test('035 AC4: the View menu toggle after a Settings change starts from it, and 
     ['menu.update', STATUS_BAR_ID, { label: 'Hide Status Bar' }],
     ['push', 'statusbar', { hidden: false }],
   ]);
-  expect(await getSettings(m.app, SETTINGS_META)).toEqual({ statusBarHidden: false });
+  expect(await getSettings(m.app, SETTINGS_META)).toEqual(snap(false));
 });
 
 test('035 AC4: the choice survives a relaunch: init reads what setSetting stored', async () => {
@@ -519,7 +522,39 @@ test('035 AC4: the choice survives a relaunch: init reads what setSetting stored
   await setSetting({ key: 'statusBarHidden', value: true }, m.app, SETTINGS_META);
   const again = await initMenu(m.store.get('statusBarHidden'));
   expect(menuSet(again.log)).toEqual([['menu.set', appMenu(true)]]);
-  expect(await getSettings(again.app, SETTINGS_META)).toEqual({ statusBarHidden: true });
+  expect(await getSettings(again.app, SETTINGS_META)).toEqual(snap(true));
+});
+
+test('036 AC5: getSettings carries the stored T3 Code choice (draft when nothing valid is stored) and whether t3 is there now', async () => {
+  for (const [stored, mode] of [[null, 'draft'], ['send', 'send'], ['copy', 'copy'], ['draft', 'draft'], ['auto', 'draft'], [true, 'draft']] as const) {
+    const m = await initMenu(null);
+    m.store.set('t3Handoff', stored);
+    expect({ stored, s: await getSettings(m.app, SETTINGS_META) }).toEqual({ stored, s: snap(false, mode) });
+  }
+  const m = await initMenu(true);
+  fakeMachine([], ['/opt/homebrew/bin/t3']);
+  expect(await api.getSettings(null, m.app, SETTINGS_META)).toEqual(snap(true, 'draft', true));
+  fakeMachine([], []);
+  expect(await api.getSettings(null, m.app, SETTINGS_META)).toEqual(snap(true, 'draft', false));
+});
+
+test('036 AC5: setSetting stores a valid T3 Code choice and refuses anything else; the status bar is untouched', async () => {
+  const m = await initMenu(null);
+  m.log.length = 0;
+  for (const value of ['send', 'copy', 'draft'] as const) {
+    expect(await api.setSetting({ key: 't3Handoff', value }, m.app, SETTINGS_META)).toEqual(snap(false, value));
+    expect(m.store.get('t3Handoff')).toBe(value);
+  }
+  expect(m.log).toEqual([
+    ['store.set', 't3Handoff', 'send'],
+    ['store.set', 't3Handoff', 'copy'],
+    ['store.set', 't3Handoff', 'draft'],
+  ]);
+  m.log.length = 0;
+  for (const value of ['auto', 'Send', '', true, null, 1]) expect({ value, r: await setSetting({ key: 't3Handoff', value }, m.app, SETTINGS_META) }).toEqual({ value, r: null });
+  expect(await setSetting({ key: 't3Handoff', value: 'send' }, m.app, { window: 'main' })).toBeNull();
+  expect(m.log).toEqual([]);
+  expect(m.store.get('t3Handoff')).toBe('draft');
 });
 
 test("AC3: when the main window's main frame finishes loading, the current state is pushed; nothing else pushes", async () => {
@@ -668,8 +703,8 @@ test("AC2: a newer request wins over an older one's slower app check", async () 
   expect(contexts(log).at(-1)).toBeNull();
 });
 
-test('AC2: the api names one method, and with the app not following the service it lists no project', async () => {
-  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting']);
+test('AC2: the api names its methods, and with the app not following the service it lists no project', async () => {
+  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff']);
   fakeMachine([], []);
   const { app, log } = contextApp();
   await api.projectMenu({ project: PID }, app);
@@ -762,4 +797,235 @@ test("AC6: a command's non-zero exit is a failure with its stderr as the reason,
   const c = contextApp();
   await runProjectItem(itemId('vscode', PID), c.app, PROJECTS, null);
   expect(c.log).toEqual([]);
+});
+
+// ---- the T3 Code hand-off (036) ----
+
+const MAIN_META = { window: 'main', origin: 'http://127.0.0.1:8766' };
+const JOB = '036-t3-handoff';
+const T3 = '/Users/me/.t3/bin/t3';
+
+/** A fake host: the listed projects, the `t3` found, the `origin` git gives, and a runner that records every argv. */
+function fakeHost(opts: { t3?: string | null; origin?: string | null; run?: RunResult } = {}): { host: HandoffHost; ran: string[][]; origins: string[] } {
+  const ran: string[][] = [];
+  const origins: string[] = [];
+  const host: HandoffHost = {
+    projects: () => PROJECTS,
+    findT3: async () => (opts.t3 === undefined ? T3 : opts.t3),
+    origin: async (root) => {
+      origins.push(root);
+      return opts.origin === undefined ? 'git@github.com:mattmccray/factory.git\n' : opts.origin;
+    },
+    run: async (argv) => {
+      ran.push(argv);
+      return opts.run ?? { ok: true, reason: '' };
+    },
+  };
+  return { host, ran, origins };
+}
+
+/** A context app with the T3 Code choice stored. */
+function handoffApp(mode: unknown): ReturnType<typeof contextApp> {
+  const c = contextApp();
+  c.app.store = {
+    get: async (key) => (key === 't3Handoff' ? mode : null),
+    set: async (key, value) => c.log.push(['store.set', key, value]) > 0,
+  };
+  return c;
+}
+
+const APPROVE = { project: PID, job: JOB, action: 'approve' };
+
+test('036 AC3: draft mode with a GitHub origin opens exactly the prompt link, and answers drafted', async () => {
+  for (const mode of ['draft', null, 'nonsense']) {
+    const { app, log } = handoffApp(mode);
+    const h = fakeHost();
+    expect(await handOff(APPROVE, app, MAIN_META, h.host)).toBe('drafted');
+    expect(h.origins).toEqual([ROOT]);
+    expect(h.ran).toEqual([['open', 't3code://new?prompt=%2Ffactory%20approve%20036-t3-handoff&repo=mattmccray/factory']]);
+    expect(log).toEqual([]);
+  }
+  const { app } = handoffApp('draft');
+  const h = fakeHost({ origin: 'https://github.com/mattmccray/factory' });
+  expect(await handOff({ project: PID, job: JOB, action: 'rework', note: 'add "the" test' }, app, MAIN_META, h.host)).toBe('drafted');
+  expect(h.ran).toEqual([['open', `t3code://new?prompt=${encodeURIComponent('/factory rework 036-t3-handoff "add \\"the\\" test"')}&repo=mattmccray/factory`]]);
+});
+
+test('036 AC3: draft mode with no GitHub origin opens nothing and answers no-github-remote', async () => {
+  for (const origin of [null, '', 'https://gitlab.com/a/b.git\n', '/Users/me/code/factory\n']) {
+    const { app, log } = handoffApp('draft');
+    const h = fakeHost({ origin });
+    expect({ origin, r: await handOff(APPROVE, app, MAIN_META, h.host) }).toEqual({ origin, r: 'no-github-remote' });
+    expect(h.ran).toEqual([]);
+    expect(log).toEqual([]);
+  }
+});
+
+test('036 AC3: a failed open notifies and answers copy-only', async () => {
+  const { app, log } = handoffApp('draft');
+  const h = fakeHost({ run: { ok: false, reason: 'no application knows t3code:' } });
+  const realLog = console.log;
+  console.log = () => undefined;
+  try {
+    expect(await handOff(APPROVE, app, MAIN_META, h.host)).toBe('copy-only');
+  } finally {
+    console.log = realLog;
+  }
+  expect(log).toEqual([['notify', 'Andon', "Couldn't open a draft in T3 Code: no application knows t3code:"]]);
+});
+
+test('036 AC4: send mode runs exactly the t3 thread start argv with the listed root, and answers sent', async () => {
+  const { app, log } = handoffApp('send');
+  const h = fakeHost();
+  expect(await handOff(APPROVE, app, MAIN_META, h.host)).toBe('sent');
+  expect(await handOff({ project: PID, job: JOB, action: 'abandon', note: 'superseded by 040' }, app, MAIN_META, h.host)).toBe('sent');
+  expect(h.ran).toEqual([
+    [T3, 'thread', 'start', '--title', 'approve 036-t3-handoff', ROOT, '/factory approve 036-t3-handoff'],
+    [T3, 'thread', 'start', '--title', 'abandon 036-t3-handoff', ROOT, '/factory abandon 036-t3-handoff "superseded by 040"'],
+  ]);
+  expect(h.origins).toEqual([]);
+  expect(log).toEqual([]);
+});
+
+test('036 AC4: a failed send notifies "Couldn\'t send to T3 Code: <reason>" and answers copy-only', async () => {
+  const { app, log } = handoffApp('send');
+  const h = fakeHost({ run: { ok: false, reason: 'Error: T3 Code is not running' } });
+  const logged: string[] = [];
+  const realLog = console.log;
+  console.log = (line: string) => void logged.push(line);
+  try {
+    expect(await handOff(APPROVE, app, MAIN_META, h.host)).toBe('copy-only');
+  } finally {
+    console.log = realLog;
+  }
+  expect(log).toEqual([['notify', 'Andon', "Couldn't send to T3 Code: Error: T3 Code is not running"]]);
+  expect(logged).toEqual(["andon: Couldn't send to T3 Code: Error: T3 Code is not running"]);
+});
+
+test('036 AC4: with the host runner, a non-zero exit gives its last stderr line, and a spawn error its message', async () => {
+  const spawned: string[][] = [];
+  const machine = (spawn: (argv: string[]) => unknown): void => {
+    Reflect.set(globalThis, 'tjs', {
+      env: { HOME: '/Users/me' },
+      spawn: (argv: string[]) => {
+        spawned.push(argv);
+        return spawn(argv);
+      },
+      stat: async (path: string) => {
+        if (path !== T3) throw new Error('ENOENT');
+        return { isFile: true, mode: 0o100755 };
+      },
+    });
+  };
+  const host: HandoffHost = { ...hostHandoff, projects: () => PROJECTS };
+  const realLog = console.log;
+  console.log = () => undefined;
+  try {
+    machine(() => exited(1, 'starting\nError: unknown project\n'));
+    expect(await findT3()).toBe(T3);
+    const a = handoffApp('send');
+    expect(await handOff(APPROVE, a.app, MAIN_META, host)).toBe('copy-only');
+    expect(a.log).toEqual([['notify', 'Andon', "Couldn't send to T3 Code: Error: unknown project"]]);
+    expect(spawned).toEqual([[T3, 'thread', 'start', '--title', 'approve 036-t3-handoff', ROOT, '/factory approve 036-t3-handoff']]);
+    machine(() => {
+      throw new Error('spawn failed');
+    });
+    const b = handoffApp('send');
+    expect(await handOff(APPROVE, b.app, MAIN_META, host)).toBe('copy-only');
+    expect(b.log).toEqual([['notify', 'Andon', "Couldn't send to T3 Code: spawn failed"]]);
+  } finally {
+    console.log = realLog;
+  }
+});
+
+test('036 AC3: with the host runner, git is asked for the origin as an argv, and its stdout read', async () => {
+  const spawned: string[][] = [];
+  Reflect.set(globalThis, 'tjs', {
+    env: { HOME: '/Users/me' },
+    spawn: (argv: string[]) => {
+      spawned.push(argv);
+      const git = argv[0] === 'git';
+      return { stdout: git ? { text: async () => 'https://github.com/mattmccray/factory.git\n' } : null, stderr: null, kill: () => undefined, wait: async () => ({ exit_status: 0, term_signal: null }) };
+    },
+    stat: async () => ({ isFile: true, mode: 0o100755 }),
+  });
+  const { app, log } = handoffApp('draft');
+  expect(await handOff(APPROVE, app, MAIN_META, { ...hostHandoff, projects: () => PROJECTS })).toBe('drafted');
+  expect(spawned).toEqual([
+    ['git', '-C', ROOT, 'remote', 'get-url', 'origin'],
+    ['open', 't3code://new?prompt=%2Ffactory%20approve%20036-t3-handoff&repo=mattmccray/factory'],
+  ]);
+  expect(log).toEqual([]);
+});
+
+test('036 AC5: copy mode, or no t3, runs and opens nothing and answers copy-only', async () => {
+  for (const [mode, t3] of [['copy', T3], ['draft', null], ['send', null], ['copy', null]] as const) {
+    const { app, log } = handoffApp(mode);
+    const h = fakeHost({ t3 });
+    expect({ mode, t3, r: await handOff(APPROVE, app, MAIN_META, h.host) }).toEqual({ mode, t3, r: 'copy-only' });
+    expect(h.ran).toEqual([]);
+    expect(h.origins).toEqual([]);
+    expect(log).toEqual([]);
+  }
+});
+
+test('036 AC1: a refused request, or a call from any window but main, runs, opens, and notifies nothing', async () => {
+  const requests: unknown[] = [
+    null,
+    { project: 'zzzzzzzzzzzz', job: JOB, action: 'approve' },
+    { project: 'bbbbbbbbbbbb', job: JOB, action: 'approve' },
+    { project: PID, job: '36-x', action: 'approve' },
+    { project: PID, job: JOB, action: 'merge' },
+    { project: PID, job: JOB, action: 'rework', note: '  ' },
+    { project: PID, job: JOB, action: 'abandon', note: 'x'.repeat(8000) },
+    { project: PID, job: JOB, action: 'approve', command: 'rm -rf /' },
+  ];
+  for (const mode of ['draft', 'send']) {
+    for (const params of requests) {
+      const { app, log } = handoffApp(mode);
+      const h = fakeHost();
+      expect({ mode, params, r: await handOff(params, app, MAIN_META, h.host) }).toEqual({ mode, params, r: null });
+      expect(h.ran).toEqual([]);
+      expect(h.origins).toEqual([]);
+      expect(log).toEqual([]);
+    }
+    for (const meta of [{ window: 'settings' }, { window: 'other' }, {}, null, undefined, 'main']) {
+      const { app, log } = handoffApp(mode);
+      const h = fakeHost();
+      expect(await handOff(APPROVE, app, meta, h.host)).toBeNull();
+      expect(await api.handOff(APPROVE, app, meta)).toBeNull();
+      expect(h.ran).toEqual([]);
+      expect(log).toEqual([]);
+    }
+  }
+});
+
+test('036: a second hand-off while one is running is dropped', async () => {
+  const { app } = handoffApp('send');
+  let release: () => void = () => undefined;
+  const ran: string[][] = [];
+  const host: HandoffHost = {
+    ...fakeHost().host,
+    run: (argv) => {
+      ran.push(argv);
+      return new Promise((r) => (release = () => r({ ok: true, reason: '' })));
+    },
+  };
+  const first = handOff(APPROVE, app, MAIN_META, host);
+  await new Promise((r) => setTimeout(r, 1));
+  expect(await handOff(APPROVE, app, MAIN_META, host)).toBeNull();
+  release();
+  expect(await first).toBe('sent');
+  expect(ran).toHaveLength(1);
+  // and the next one runs again
+  const next = handOff(APPROVE, app, MAIN_META, host);
+  await new Promise((r) => setTimeout(r, 1));
+  release();
+  expect(await next).toBe('sent');
+});
+
+test('036: with the app not following the service, the api lists no project, so nothing runs', async () => {
+  const { app, log } = handoffApp('send');
+  expect(await api.handOff(APPROVE, app, MAIN_META)).toBeNull();
+  expect(log).toEqual([]);
 });

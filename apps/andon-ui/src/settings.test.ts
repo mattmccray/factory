@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { GET_SETTINGS_METHOD, SET_SETTING_METHOD, narrowSettings, settingsCaller, showsStatusBar } from './settings';
+import { GET_SETTINGS_METHOD, HANDOFF_CHOICES, SET_SETTING_METHOD, narrowSettings, settingsCaller, showsStatusBar } from './settings';
+
+const S = { statusBarHidden: false, t3Handoff: 'draft', t3Found: true } as const;
 import { appView, pushSubscriber, shellMode } from './sidebar';
 
 describe('035 AC6: which view a URL gets', () => {
@@ -36,17 +38,19 @@ describe('035 AC6: the settings caller', () => {
         call: async (method: string, params: unknown) => {
           calls.push([method, params]);
           if (method === SET_SETTING_METHOD) hidden = true;
-          return { statusBarHidden: hidden };
+          return { ...S, statusBarHidden: hidden };
         },
       },
     };
     const api = settingsCaller('mac', host);
     if (api === null) throw new Error('no caller');
-    expect(await api.get()).toEqual({ statusBarHidden: false });
-    expect(await api.setStatusBarHidden(true)).toEqual({ statusBarHidden: true });
+    expect(await api.get()).toEqual({ ...S, statusBarHidden: false });
+    expect(await api.setStatusBarHidden(true)).toEqual({ ...S, statusBarHidden: true });
+    expect(await api.setT3Handoff('send')).toEqual({ ...S, statusBarHidden: true });
     expect(calls).toEqual([
       ['getSettings', null],
       ['setSetting', { key: 'statusBarHidden', value: true }],
+      ['setSetting', { key: 't3Handoff', value: 'send' }],
     ]);
     expect([GET_SETTINGS_METHOD, SET_SETTING_METHOD]).toEqual(['getSettings', 'setSetting']);
   });
@@ -66,16 +70,27 @@ describe('035 AC6: the settings caller', () => {
       const api = settingsCaller('mac', { api: { call: a } });
       expect(await api?.get()).toBeNull();
       expect(await api?.setStatusBarHidden(false)).toBeNull();
+      expect(await api?.setT3Handoff('copy')).toBeNull();
     }
   });
 });
 
 describe('035: the settings payload', () => {
   test('narrowed to a boolean statusBarHidden; the checkbox is checked when it is false', () => {
-    expect(narrowSettings({ statusBarHidden: true })).toEqual({ statusBarHidden: true });
-    expect(narrowSettings({ statusBarHidden: false, other: 1 })).toEqual({ statusBarHidden: false });
-    for (const d of [null, undefined, 'x', [], { statusBarHidden: 1 }, { hidden: true }]) expect(narrowSettings(d)).toBeNull();
-    expect(showsStatusBar({ statusBarHidden: false })).toBe(true);
-    expect(showsStatusBar({ statusBarHidden: true })).toBe(false);
+    expect(narrowSettings({ ...S, statusBarHidden: true })).toEqual({ ...S, statusBarHidden: true });
+    expect(narrowSettings({ ...S, other: 1 })).toEqual(S);
+    for (const d of [null, undefined, 'x', [], { ...S, statusBarHidden: 1 }, { hidden: true }]) expect(narrowSettings(d)).toBeNull();
+    expect(showsStatusBar({ ...S, statusBarHidden: false })).toBe(true);
+    expect(showsStatusBar({ ...S, statusBarHidden: true })).toBe(false);
+  });
+
+  test('036 AC7: narrowed with the T3 Code choice (one of three) and whether t3 was found', () => {
+    for (const t3Handoff of ['draft', 'send', 'copy'] as const) for (const t3Found of [true, false]) expect(narrowSettings({ statusBarHidden: false, t3Handoff, t3Found })).toEqual({ statusBarHidden: false, t3Handoff, t3Found });
+    for (const d of [{ statusBarHidden: false }, { ...S, t3Handoff: 'auto' }, { ...S, t3Handoff: null }, { ...S, t3Found: 'yes' }, { statusBarHidden: false, t3Handoff: 'draft' }, { statusBarHidden: false, t3Found: true }]) expect({ d, s: narrowSettings(d) }).toEqual({ d, s: null });
+    expect(HANDOFF_CHOICES).toEqual([
+      { mode: 'draft', label: 'Open a draft in T3 Code' },
+      { mode: 'send', label: 'Send in T3 Code right away' },
+      { mode: 'copy', label: 'Copy only' },
+    ]);
   });
 });

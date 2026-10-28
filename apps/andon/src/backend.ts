@@ -2,15 +2,17 @@
 // runtime-neutral logic (app.ts, autostart.ts, appmenu.ts) to Tiny's `app.tray`, `app.icon`,
 // `app.badge`, `app.notify`, `app.menu`, `app.store`, `app.push`, `app.shell`, `app.clipboard`, the
 // `app.win.open` and `app.windows` (the Settings window), the `onTray`, `onMenu`, `onNavigate`, and
-// `onContextMenu` hooks, and the three custom `api` methods, and to
-// txiki's `tjs.spawn` and `tjs.stat` (for the service, for curl: see curl.ts, and for a project's
-// right-click menu: see projectmenu.ts). `bun run andon:build` bundles it into build/backend.js, the
-// plain-JS entry tinyjs.json names.
+// `onContextMenu` hooks, and the four custom `api` methods, and to
+// txiki's `tjs.spawn` and `tjs.stat` (for the service, for curl: see curl.ts, for a project's
+// right-click menu: see projectmenu.ts, and for the T3 Code hand-off: see handoff.ts). `bun run
+// andon:build` bundles it into build/backend.js, the plain-JS entry tinyjs.json names.
 // The windows' pages (the service-served UI) get no Tiny API but the two calls the drag regions make
 // (`win.startDrag`, `win.zoom`), the status bar event this adapter pushes (`event.statusbar`),
-// `projectMenu`, which takes a project id (or null) and nothing else, and the Settings window's
+// `projectMenu`, which takes a project id (or null) and nothing else, the Settings window's
 // `getSettings` and `setSetting` (see settings.ts), which answer only when Tiny's api meta names the
-// Settings window: tinyjs.json's `api` gate denies the rest.
+// Settings window, and `handOff` (see handoff.ts), which takes a project id, a job id, an action, and
+// a note, and answers only when the meta names the main window: tinyjs.json's `api` gate denies the
+// rest.
 /// <reference path="../types/tiny.d.ts" />
 /// <reference path="../types/tjs.d.ts" />
 import { QUIT_ID, SHOW_ID, trayNotice } from './badge';
@@ -24,8 +26,10 @@ import { startApp } from './app';
 import type { App } from './app';
 import { oneAtATime, trayClickAction } from './trayclick';
 import { SETTINGS_WINDOW_ID, STATUS_BAR_EVENT, STATUS_BAR_ID, STATUS_BAR_KEY, appMenu, menuAction, settingsWindow, statusBarLabel, statusBarPayload, storedHidden } from './appmenu';
-import { fromSettingsWindow, settingChange, settingsSnapshot } from './settings';
-import type { Settings } from './settings';
+import { DEFAULT_HANDOFF_MODE, T3_HANDOFF_KEY, fromSettingsWindow, settingChange, settingsSnapshot, storedMode } from './settings';
+import type { HandoffMode, Settings } from './settings';
+import { draftFailureText, draftLink, fromMainWindow, githubRepo, handoffRequest, originArgv, sendArgv, sendFailureText } from './handoff';
+import type { HandoffOutcome } from './handoff';
 import { GHOSTTY_APP, VSCODE_APP, exitReason, failureText, menuProject, menuRequest, projectMenuItems, resolveAction, t3Candidates } from './projectmenu';
 import type { Availability, MenuProject, ProjectAction } from './projectmenu';
 
@@ -373,14 +377,27 @@ async function executable(path: string): Promise<boolean> {
   }
 }
 
+/** Runs an argv to its end and gives its stdout when it exits 0; null when it fails or can't start. */
+async function output(argv: string[]): Promise<string | null> {
+  try {
+    const p = tjs.spawn(argv, { env: tjs.env, stdin: 'ignore', stdout: 'pipe', stderr: 'ignore' });
+    const [status, stdout] = await Promise.all([p.wait(), p.stdout === null ? Promise.resolve(null) : p.stdout.text().catch(() => null)]);
+    return status.exit_status === 0 && status.term_signal === null ? stdout : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The first `t3` candidate that is an executable file now, or null. */
+export async function findT3(): Promise<string | null> {
+  const present = await Promise.all(t3Candidates(tjs.env.HOME).map(async (p) => ((await executable(p)) ? p : null)));
+  return present.find((p) => p !== null) ?? null;
+}
+
 /** Which apps are there now: `open -Ra` finds VS Code and Ghostty, and `t3` is the first candidate present. */
 export async function checkApps(): Promise<Availability> {
-  const [vscode, ghostty, present] = await Promise.all([
-    run(['open', '-Ra', VSCODE_APP]).then((r) => r.ok),
-    run(['open', '-Ra', GHOSTTY_APP]).then((r) => r.ok),
-    Promise.all(t3Candidates(tjs.env.HOME).map(async (p) => ((await executable(p)) ? p : null))),
-  ]);
-  return { vscode, ghostty, t3: present.find((p) => p !== null) ?? null };
+  const [vscode, ghostty, t3] = await Promise.all([run(['open', '-Ra', VSCODE_APP]).then((r) => r.ok), run(['open', '-Ra', GHOSTTY_APP]).then((r) => r.ok), findT3()]);
+  return { vscode, ghostty, t3 };
 }
 
 async function refreshApps(): Promise<Availability> {
@@ -455,11 +472,27 @@ export async function runProjectItem(id: unknown, app: MacApp, projects: readonl
 // Answered only when Tiny's api meta names the Settings window (settings.ts `fromSettingsWindow`):
 // from any other window they return null and change nothing.
 
-/** The settings, from the stored choice (once init has read it); null for any other window. */
+/** The stored T3 Code hand-off mode; the default (draft) when nothing valid is stored or the store fails. */
+async function readHandoffMode(app: MacApp): Promise<HandoffMode> {
+  try {
+    return storedMode(await app.store.get(T3_HANDOFF_KEY));
+  } catch (err) {
+    console.log(`andon: could not read the T3 Code choice (${String(err)}); using ${DEFAULT_HANDOFF_MODE}`);
+    return DEFAULT_HANDOFF_MODE;
+  }
+}
+
+/** The settings: the stored choices (the status bar once init has read it), and whether `t3` is there now. */
+async function snapshot(app: MacApp): Promise<Settings> {
+  await statusBarRead;
+  const [t3Handoff, t3] = await Promise.all([readHandoffMode(app), findT3()]);
+  return settingsSnapshot({ statusBarHidden, t3Handoff }, t3 !== null);
+}
+
+/** The settings, from the stored choices (once init has read them); null for any other window. */
 export async function getSettings(app: MacApp, meta: unknown): Promise<Settings | null> {
   if (!fromSettingsWindow(meta)) return null;
-  await statusBarRead;
-  return settingsSnapshot({ statusBarHidden });
+  return snapshot(app);
 }
 
 /** One validated change from the Settings window, applied on the shared path; then the settings.
@@ -472,15 +505,87 @@ export async function setSetting(params: unknown, app: MacApp, meta: unknown): P
     case 'statusBarHidden':
       await setStatusBar(app, change.value);
       break;
+    case 't3Handoff':
+      if (!(await app.store.set(T3_HANDOFF_KEY, change.value))) console.log('andon: could not save the T3 Code choice');
+      break;
   }
-  return settingsSnapshot({ statusBarHidden });
+  return snapshot(app);
 }
 
-/** The pages' api: `projectMenu`, `getSettings`, and `setSetting` (tinyjs.json's gate enables each by name). */
+// ---- handing a needs-human command to T3 Code (036) ----
+// Answered only when Tiny's api meta names the main window (handoff.ts `fromMainWindow`). The page
+// has already copied its own command; this builds the command again from the checked request, and,
+// as the T3 Code setting says, opens it as a draft (by the project's GitHub origin) or sends it to a
+// new thread (in the project folder), each as an argv with no shell. A request that fails a check
+// does nothing and answers null.
+
+/** What the hand-off needs from the host; tests pass fakes. */
+export interface HandoffHost {
+  projects(): readonly MenuProject[];
+  findT3(): Promise<string | null>;
+  /** A project root's `origin` URL (git's output), or null when git fails. */
+  origin(root: string): Promise<string | null>;
+  run(argv: string[]): Promise<RunResult>;
+}
+
+/** The real host: the listed projects, the `t3` lookup, git, and the runner. */
+export const hostHandoff: HandoffHost = {
+  projects: () => listedProjects(),
+  findT3: () => findT3(),
+  origin: (root) => output(originArgv(root)),
+  run: (argv) => run(argv),
+};
+
+/** One failure: logged, and one notification. */
+async function notifyFailure(app: MacApp, text: string): Promise<void> {
+  console.log(`andon: ${text}`);
+  await app.notify('Andon', text);
+}
+
+/** The hand-off running now, if any: a second click while one runs is dropped (answers null). */
+let handing = false;
+
+/**
+ * The main window's hand-off: the request checked (handoff.ts `handoffRequest`), then, by the T3 Code
+ * setting, a draft opened (`open <prompt link>`, only with a GitHub `repo`) or the command sent
+ * (`<t3> thread start --title "<action> <job>" <root> <command>`). Copy mode or no `t3`: nothing
+ * runs, "copy-only". A failed open or send notifies, and answers "copy-only" (the page copied).
+ * Null, with nothing run, opened, or notified, for any other window, a request that fails a check,
+ * or a hand-off already running.
+ */
+export async function handOff(params: unknown, app: MacApp, meta: unknown, host: HandoffHost = hostHandoff): Promise<HandoffOutcome | null> {
+  if (!fromMainWindow(meta)) return null;
+  const h = handoffRequest(params, host.projects());
+  if (h === null || handing) return null;
+  handing = true;
+  try {
+    const mode = await readHandoffMode(app);
+    if (mode === 'copy') return 'copy-only';
+    const t3 = await host.findT3();
+    if (t3 === null) return 'copy-only';
+    if (mode === 'draft') {
+      const repo = githubRepo(await host.origin(h.project.root));
+      if (repo === null) return 'no-github-remote';
+      const r = await host.run(['open', draftLink(h.command, repo)]);
+      if (r.ok) return 'drafted';
+      await notifyFailure(app, draftFailureText(r.reason));
+      return 'copy-only';
+    }
+    const r = await host.run(sendArgv(t3, h));
+    if (r.ok) return 'sent';
+    await notifyFailure(app, sendFailureText(r.reason));
+    return 'copy-only';
+  } finally {
+    handing = false;
+  }
+}
+
+/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, and `handOff` (tinyjs.json's gate enables each by name). */
 export const api = {
   projectMenu: (params: unknown, app: MacApp): Promise<void> => showProjectMenu(params, app, listedProjects()),
   getSettings: (_params: unknown, app: MacApp, meta: unknown): Promise<Settings | null> => getSettings(app, meta),
   setSetting: (params: unknown, app: MacApp, meta: unknown): Promise<Settings | null> => setSetting(params, app, meta),
+  handOff: (params: unknown, app: MacApp, meta: unknown): Promise<HandoffOutcome | null> => handOff(params, app, meta),
 };
 
 /** A click in the right-click menu. */

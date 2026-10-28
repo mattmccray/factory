@@ -1,8 +1,8 @@
 // The Mac app's boundaries: no contract, service, or UI code runs in it, its logic is runtime-neutral
 // (AC5), only backend.ts names Tiny or txiki (through Tiny's own vendored types, narrowed to
 // `MacApp`), the window loads the service on loopback with the page's Tiny API denied but for its
-// drag regions, the status bar event the Mac app pushes (AC6), the one project menu method, and the
-// Settings window's two settings methods (035), the
+// drag regions, the status bar event the Mac app pushes (AC6), the one project menu method, the
+// Settings window's two settings methods (035), and the main window's hand-off method (036), the
 // Mac app pins the Tiny JS it was tested on, and the backend entry is the Bun bundle of backend.ts.
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
@@ -12,6 +12,7 @@ import { STATUS_BAR_EVENT } from './appmenu';
 import { DEFAULT_PORT, pageUrl } from './autostart';
 import { PROJECT_MENU_METHOD } from './projectmenu';
 import { GET_SETTINGS_METHOD, SET_SETTING_METHOD } from './settings';
+import { HAND_OFF_METHOD } from './handoff';
 import { isRecord } from './state';
 
 const appDir = join(import.meta.dir, '..');
@@ -38,7 +39,7 @@ const readJson = (path: string): Record<string, unknown> => {
 describe('AC5: the Mac app runs no contract, service, or UI code', () => {
   test('the scan sees the logic modules and the adapter', () => {
     expect(sources).toContain(ADAPTER);
-    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts', 'appmenu.ts', 'projectmenu.ts', 'settings.ts']) expect(sources).toContain(f);
+    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts', 'appmenu.ts', 'projectmenu.ts', 'settings.ts', 'handoff.ts']) expect(sources).toContain(f);
   });
 
   test('the import matcher flags @factory/*, the UI, and the service, not the Mac app itself', () => {
@@ -181,7 +182,7 @@ describe('AC6: tinyjs.json', () => {
       icon: 'assets/icon.png',
       url: 'http://127.0.0.1:8766/?shell=mac',
       chrome: { frame: false, windowControls: true, windowControlsPos: { x: 18, y: 20 }, vibrancy: 'sidebar' },
-      api: { disable: ['*'], enable: ['win.startDrag', 'win.zoom', 'event.statusbar', 'projectMenu', 'getSettings', 'setSetting'] },
+      api: { disable: ['*'], enable: ['win.startDrag', 'win.zoom', 'event.statusbar', 'projectMenu', 'getSettings', 'setSetting', 'handOff'] },
       backend: 'build/backend.js',
     });
   });
@@ -205,24 +206,41 @@ describe('AC6: tinyjs.json', () => {
     expect(cfg.minSize).toBe('1100x700');
   });
 
-  test('the api gate denies every Tiny call for the page except its drag regions, the status bar event, projectMenu, and the two settings methods', () => {
+  test('the api gate denies every Tiny call for the page except its drag regions, the status bar event, projectMenu, the two settings methods, and handOff', () => {
     // Tiny's page runtime turns a mousedown on [data-tiny-drag] into `win.startDrag` (a double-click
     // into `win.zoom`), and the backend's gate checks both: they are the narrowest exception. The one
     // event the page may receive is the status bar state the backend pushes (`event.<name>` is how
     // Tiny gates a pushed event). The one backend method the page may call is the project menu's,
     // by its bare name (Tiny gates the app's own api methods that way): it takes a project id only.
     // The Settings window's two methods (035) are named the same way; the backend answers them only
-    // for that window. Exactly two entries more than after andon-project-menu (033).
-    expect(cfg.api).toEqual({ disable: ['*'], enable: ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`, PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD] });
-    expect(cfg.api).toEqual({ disable: ['*'], enable: ['win.startDrag', 'win.zoom', 'event.statusbar', 'projectMenu', 'getSettings', 'setSetting'] });
+    // for that window. Exactly two entries more than after andon-project-menu (033). The main window's
+    // hand-off (036) is the one more after andon-settings (035): the backend answers it only for the
+    // main window, and it takes a project id, a job id, an action, and a note, never a command.
+    const after035 = ['win.startDrag', 'win.zoom', 'event.statusbar', 'projectMenu', 'getSettings', 'setSetting'];
+    expect(cfg.api).toEqual({ disable: ['*'], enable: ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`, PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD] });
+    expect(cfg.api).toEqual({ disable: ['*'], enable: [...after035, 'handOff'] });
+    const enable = isRecord(cfg.api) && Array.isArray(cfg.api.enable) ? cfg.api.enable : [];
+    expect(enable).toHaveLength(after035.length + 1);
     expect(cfg.inject).toBeUndefined();
   });
 
-  test('the backend exports exactly those three api methods', () => {
+  test('the backend exports exactly those four api methods', () => {
     const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
     const block = /^export const api = \{\n([\s\S]*?)^\};$/m.exec(adapter)?.[1] ?? '';
-    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD]);
-    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual(['projectMenu', 'getSettings', 'setSetting']);
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD]);
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff']);
+  });
+
+  test('the hand-off checks the main window first', () => {
+    const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
+    const body = /export async function handOff\([^)]*\)[^{]*\{\n([^\n]*)/.exec(adapter)?.[1]?.trim();
+    expect(body).toBe('if (!fromMainWindow(meta)) return null;');
+    expect(adapter).toContain('  handOff: (params: unknown, app: MacApp, meta: unknown): Promise<HandoffOutcome | null> => handOff(params, app, meta),');
+  });
+
+  test('the page hands off by the same method name', () => {
+    const ui = readFileSync(join(repoDir, 'apps', 'andon-ui', 'src', 'handoff.ts'), 'utf8');
+    expect(ui).toContain(`export const HAND_OFF_METHOD = '${HAND_OFF_METHOD}';`);
   });
 
   test('both settings methods check the window first', () => {

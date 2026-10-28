@@ -1,6 +1,7 @@
 // The UI's boundaries: contract code never runs in the UI (009 AC3), the dev server stays on
 // loopback (AC4), index.html needs nothing a strict CSP would block (AC6), and Andon never writes
-// job state: it only reads, and its actions copy a `/factory` command (026 AC5).
+// job state: it only reads, and its actions copy a `/factory` command (026 AC5) and, in the Mac app,
+// name the job for the Mac app to hand to T3 Code (036).
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -120,13 +121,14 @@ describe('Andon never writes job state (026 AC5)', () => {
     }
   });
 
-  test("the page calls the Mac app's backend in two places only, each with its own fixed method names (032, 033, 035)", () => {
+  test("the page calls the Mac app's backend in three places only, each with its own fixed method names (032, 033, 035, 036)", () => {
     // Every mention of Tiny's `api.call` (or a `'call'` key) across the page's sources.
     const hits: { file: string; hit: string }[] = [];
     for (const file of sources) {
       for (const m of read(file).matchAll(/\bapi\s*\.\s*call\b|['"]call['"]|\[\s*['"`]call/g)) hits.push({ file: file.slice(import.meta.dir.length + 1), hit: m[0] });
     }
     expect(hits.sort((a, b) => a.file.localeCompare(b.file))).toEqual([
+      { file: 'handoff.ts', hit: 'api.call' },
       { file: 'projectmenu.ts', hit: 'api.call' },
       { file: 'settings.ts', hit: 'api.call' },
     ]);
@@ -143,11 +145,18 @@ describe('Andon never writes job state (026 AC5)', () => {
     expect([...settings.matchAll(/Reflect\.apply\(([^;]*?)\)\)/g)].map((m) => m[1])).toEqual([
       'call, api, [GET_SETTINGS_METHOD, null]',
       "call, api, [SET_SETTING_METHOD, { key: 'statusBarHidden', value: hidden }]",
+      "call, api, [SET_SETTING_METHOD, { key: 't3Handoff', value: mode }]",
     ]);
+    // The hand-off caller (036): its one fixed method name, and the one call site passes it and the
+    // request (a project id, a job id, an action, and a note: HandoffRequest), never a command.
+    const handoff = read(join(import.meta.dir, 'handoff.ts'));
+    expect(handoff).toContain("export const HAND_OFF_METHOD = 'handOff';");
+    expect([...handoff.matchAll(/Reflect\.apply\(([^;]*?)\);/g)].map((m) => m[1])).toEqual(['call, api, [HAND_OFF_METHOD, req]']);
+    expect(handoff).toContain("export type HandoffRequest = { project: string; job: string; action: 'approve' } | { project: string; job: string; action: 'rework' | 'abandon'; note: string };");
     // No other file reaches Tiny's api object: only sidebar.ts's push subscriber reads `api.on`.
     for (const file of sources) {
       const name = file.slice(import.meta.dir.length + 1);
-      if (name === 'projectmenu.ts' || name === 'sidebar.ts' || name === 'settings.ts') continue;
+      if (name === 'projectmenu.ts' || name === 'sidebar.ts' || name === 'settings.ts' || name === 'handoff.ts') continue;
       expect({ file: name, hit: /\bhost\.api\b|\btiny\.api\b|\bapi\.on\b/.exec(read(file))?.[0] ?? null }).toEqual({ file: name, hit: null });
     }
   });
