@@ -1,6 +1,7 @@
 # Compact merged tokens
 
-- Status: ready
+- Status: done
+- Job: 038-compact-merged-tokens (merged 036a69e, 2026-10-28)
 - Sources: `apps/andon-ui/src/Token.svelte`, `apps/andon-ui/src/lanes.ts` (`tokenOf`, `sinceText`, `age`), `apps/andon-ui/src/app.css` (`.tok`); Matt's screenshot of 037's merged token (2026-10-28)
 - Date: 2026-10-28
 
