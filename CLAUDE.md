@@ -14,25 +14,25 @@ The factory being built is never the factory doing the building.
 
 - **Source** is `packages/` and `apps/`. Jobs change source, plus `docs/` or root tooling
   config (`package.json`, `tsconfig.json`) or the 'README.md' when the work calls for it.
-- **The installed copy** is `.claude/` (the skill and agents) and `factory/` (the CLI, its
-  `lib/`, the dashboard, `CONTRACT.md`, and the overlay: `config.json`, later
-  `roles/<role>.md`). It runs the jobs. **Jobs never change `.claude/` or `factory/`.**
+- **The installed copy** is `.claude/` (the skill and agents) and `factory/` (the CLI,
+  `CONTRACT.md`, `managed.json`, and the overlay: `config.json` and `roles/<role>.md`). It runs
+  the jobs. **Jobs never change `.claude/` or `factory/`.**
 - **Runtime state** is `factory/jobs/`, `factory/.lock/`, and `factory/.worktrees/`
   (gitignored). Only the factory CLI writes job state.
 
 ## Promotion
 
-Until `factory upgrade` exists (backlog item 4), the installed copy is the vendored v0 from
-Minerva, and it is **frozen**. Promoting new code into it is a deliberate, human-approved step
-outside any job. After item 4 lands, promotion is `factory upgrade` run against this repo,
-after a merge, never mid-job.
+Promoting merged source into the installed copy is a deliberate, human-approved step outside
+any job: `factory upgrade` run against this repo on `main`, after a merge, never mid-job (see
+`docs/upgrade.md`, "Self-upgrade of this repo"). `upgrade` leaves the overlay alone, so
+overlay changes (`factory/config.json`, `factory/roles/`) are hand edits in the same step.
 
 ## The contract
 
-`factory/v1` is specified in `factory/CONTRACT.md` until backlog item 1 promotes it to
-`docs/contract/v1.md`. Contract changes are versioned (additive only within v1) and are
-reviewed by the contract reviewer (`factory-contract`). A change to the contract's surface
-updates the contract doc in the same diff.
+`factory/v1` is specified in `docs/contract/v1.md` (`factory/CONTRACT.md` is its installed
+copy). Contract changes are versioned (additive only within v1) and are reviewed by the
+contract reviewer (`factory-contract`). A change to the contract's surface updates the
+contract doc in the same diff.
 
 ## Gate
 
