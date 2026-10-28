@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { buildBoard } from './board';
 import { HOUR, NOW, before, job, tag } from './fixtures';
 import { kindOf } from './lanes';
+import type { Status } from './live';
 import { ALL, SELECTION_KEY, boardJobs, loadSelection, resolveSelection, saveSelection } from './projects';
 import { LEGEND, MAC_INSET, STATUS_BAR_EVENT, footer, frame, isActive, projectStatus, pushSubscriber, reviewFailed, settleHours, settleText, shellMode, sidebarModel, statusBarHidden, subtitle, subtitleText, title } from './sidebar';
 import { applyEvent, emptyState } from './state';
@@ -149,10 +150,46 @@ describe('the selection (AC2)', () => {
 
 describe('the footer and toolbar texts (AC3)', () => {
   test('the footer: connected with the project count, connecting, or unreachable, each with its dot', () => {
-    expect(footer('live', 12)).toEqual({ text: 'Connected · andon-service · 12 projects', dot: 'green' });
-    expect(footer('live', 1)).toEqual({ text: 'Connected · andon-service · 1 project', dot: 'green' });
+    expect(footer('live', 3)).toEqual({ text: 'Connected · 3 projects', dot: 'green' });
+    expect(footer('live', 1)).toEqual({ text: 'Connected · 1 project', dot: 'green' });
+    expect(footer('live', 12)).toEqual({ text: 'Connected · 12 projects', dot: 'green' });
     expect(footer('connecting', 3)).toEqual({ text: 'Connecting…', dot: 'gray' });
     expect(footer('down', 3)).toEqual({ text: 'Unreachable', dot: 'red' });
+    const statuses: readonly Status[] = ['live', 'connecting', 'down'];
+    for (const status of statuses) for (const n of [0, 1, 3, 12]) expect(footer(status, n).text).not.toContain('andon-service');
+  });
+
+  test('the footer is one centered row whose text truncates instead of wrapping, beside a dot that never shrinks (041 AC3)', () => {
+    const css = readFileSync(join(import.meta.dir, 'app.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rule = (selector: string): string => {
+      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const m = new RegExp(`(?:^|\\n)${escaped}\\s*\\{([^}]*)\\}`).exec(css);
+      return m?.[1] ?? '';
+    };
+    const row = rule('.service');
+    expect(row).toMatch(/display:\s*flex/);
+    expect(row).toMatch(/align-items:\s*center/);
+    const text = rule('.service .txt');
+    for (const want of [/white-space:\s*nowrap/, /overflow:\s*hidden/, /text-overflow:\s*ellipsis/, /min-width:\s*0/]) expect(text).toMatch(want);
+    expect(rule('.service .dot')).toMatch(/flex:\s*none/);
+    const sidebar = readFileSync(join(import.meta.dir, 'Sidebar.svelte'), 'utf8');
+    expect(sidebar).toContain('<span class="txt">{foot.text}</span>');
+  });
+
+  test('the footer\'s tooltip is its screen-reader announcement, from the one ANNOUNCE map (041 AC4)', () => {
+    const sidebar = readFileSync(join(import.meta.dir, 'Sidebar.svelte'), 'utf8');
+    expect(sidebar).toContain('<div class="service" title={ANNOUNCE[status]}>');
+    expect(sidebar).toContain('<span class="sr-only" role="status">{ANNOUNCE[status]}</span>');
+    expect(sidebar.match(/const ANNOUNCE\b/g)?.length).toBe(1);
+  });
+
+  test('the design doc\'s Footer bullet uses the one-line wording and names the service in the tooltip (041 AC6)', () => {
+    const doc = readFileSync(join(import.meta.dir, '..', '..', '..', 'docs', 'design', 'andon-overview', 'design.md'), 'utf8');
+    const bullet = /- \*\*Footer\*\*:[\s\S]*?(?=\n- |\n\n)/.exec(doc)?.[0] ?? '';
+    expect(bullet).toContain('Connected · 12 projects');
+    expect(bullet).not.toContain('andon-service');
+    expect(bullet).toMatch(/tooltip/);
+    expect(bullet).toContain('Connected to the Andon service');
   });
 
   test('the connection is announced, and shown with no projects, as the Andon service (029 AC4)', () => {

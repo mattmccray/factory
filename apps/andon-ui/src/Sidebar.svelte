@@ -20,7 +20,8 @@
 
   // A row's accessible name: the name, then what its dot and badge show ("minerva, needs a human, 1 needs a human").
   const label = (name: string, state: string | null, badge: Badge | null): string => [name, state, badge?.label].filter((x) => x !== null && x !== undefined).join(', ');
-  // Announced to screen readers only when the connection changes, not when the project count does.
+  // Announced to screen readers only when the connection changes, not when the project count does;
+  // also the footer's hover tooltip, so one wording names the service for both.
   const ANNOUNCE: Record<Status, string> = { connecting: 'Connecting to the Andon service', live: 'Connected to the Andon service', down: 'The Andon service is unreachable' };
 </script>
 
@@ -52,8 +53,8 @@
       </ul>
     {/if}
   </nav>
-  <div class="service">
-    <span class="dot {foot.dot}" aria-hidden="true"></span><span>{foot.text}</span>
+  <div class="service" title={ANNOUNCE[status]}>
+    <span class="dot {foot.dot}" aria-hidden="true"></span><span class="txt">{foot.text}</span>
     <span class="sr-only" role="status">{ANNOUNCE[status]}</span>
   </div>
 </aside>
