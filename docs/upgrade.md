@@ -84,9 +84,9 @@ git diff --stat              # review: .claude/**, factory/cli.ts, factory/CONTR
 
 `factory/config.json`, `backlog.md`, `briefs/`, `jobs/`, and the rest of the overlay and runtime
 state are left as they were. The vendored `factory/lib/`, `serve.ts`, and `dashboard.html` were
-never managed, so they stay where they are as orphans. The new `factory/cli.ts` no longer
-imports `factory/lib/`. Remove the orphans by hand once nothing uses them: `bun run factory`
-still serves the old dashboard until Andon replaces it. The root `tsconfig.json` excludes
+never managed, so they stay where they are as orphans. Nothing uses them any more: the new
+`factory/cli.ts` no longer imports `factory/lib/`, and Andon replaces the old dashboard. Remove
+`factory/lib/`, `factory/serve.ts`, and `factory/dashboard.html` by hand. The root `tsconfig.json` excludes
 `factory/cli.ts`, since it is generated, untyped bundle output.
 
 **Later releases.** Before promoting, check that `factory` is linked to this checkout:
