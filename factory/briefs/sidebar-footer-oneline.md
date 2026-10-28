@@ -1,6 +1,7 @@
 # Andon sidebar footer on one line
 
-- Status: ready
+- Status: done
+- Job: 041-sidebar-footer-oneline (merged b9da0ce, 2026-10-28)
 - Sources: Matt's screenshot of the footer wrapping as "Connected · andon-service · 3 / projects" (2026-10-28); `apps/andon-ui/src/sidebar.ts` (`footer`), `apps/andon-ui/src/Sidebar.svelte` (`.service`), `apps/andon-ui/src/app.css` (`.service`, `--sbw` 216px), `docs/design/andon-overview/design.md` (Footer), brief `factory/briefs/andon-rename.md`
 - Date: 2026-10-28
 
