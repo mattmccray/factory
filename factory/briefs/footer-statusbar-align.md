@@ -1,6 +1,7 @@
 # Align the sidebar footer with the status bar, and fade the legend
 
-- Status: ready
+- Status: done
+- Job: 042-footer-statusbar-align (merged f8db653, 2026-10-28)
 - Sources: `apps/andon-ui/src/app.css` (`.service`, `.statusbar`, `.legend`), `apps/andon-ui/src/StatusBar.svelte`, `apps/andon-ui/src/Sidebar.svelte`, `docs/design/andon-overview/design.md` (§3 status bar 28px, Footer), brief `factory/briefs/sidebar-footer-oneline.md`
 - Date: 2026-10-28
 
