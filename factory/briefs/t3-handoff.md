@@ -1,6 +1,7 @@
 # Hand needs-human commands to T3 Code
 
-- Status: ready
+- Status: done
+- Job: 036-t3-handoff (merged 97563fc, 2026-10-28)
 - Sources: Matt's nitpicks (2026-10-28), item 4 and the follow-up on settings and auto-send; briefs `factory/briefs/andon-settings.md` (runs first), `factory/briefs/project-context-menu.md` (finding `t3`); `docs/design/andon-overview/design.md` §8 ("Andon never runs these"); T3 Code (Beta) desktop app's prompt links (`t3code://new?prompt=…&repo=<owner>/<name>[&provider=…&model=…]`, prompt ≤ 8,000 characters) and `t3 thread start <project> <message>` (sends at once)
 - Date: 2026-10-28
 
