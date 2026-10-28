@@ -56,8 +56,9 @@ project, inside a **native-feeling macOS app** (sidebar, toolbar, inspector). On
   still persists under the existing `andon.project` key.
 - **Footer**: the service connection on one line ("Connected · 12 projects", or "Connecting…" or
   "Unreachable"), with a green, gray, or red dot; it never wraps, and truncates with an ellipsis
-  if it can't fit. The hover tooltip names the service ("Connected to the Andon service"), the same
-  text screen readers announce. This replaces the header's status.
+  if it can't fit. It is 28px, aligned with the status bar: the same height, so their top
+  dividers meet on one line. The hover tooltip names the service
+  ("Connected to the Andon service"), the same text screen readers announce. This replaces the header's status.
 - The mock-up's disabled "Reports" section (Weekly and Monthly ledger) is **left out** until the
   Ledger report exists.
 
@@ -78,7 +79,8 @@ column's name, a colored square, a count badge, and its role (Andon: "needs a hu
 hours", using the smallest `settleAfterHours` shown). The gutter header reads "10 active · 2 idle".
 
 **Status bar** (28px):
-- The state legend: a swatch and a label for each state.
+- The state legend: a swatch and a label for each state. The legend is dimmed until the status bar
+  is hovered (about 45% opacity, fading to full in 150ms; instant under reduced motion).
 - "Settle after 24h".
 - A live clock.
 - "? shortcuts".

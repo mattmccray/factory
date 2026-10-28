@@ -22,6 +22,7 @@
   --sys: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   --inset: 0px; --toolbar-inset: 0px;
+  --statusbar-h: 28px; /* the status bar and the sidebar footer: one height, so their top dividers meet (042) */
   color-scheme: dark;
 }
 @media (prefers-color-scheme: light) {
@@ -86,7 +87,7 @@ svg.i { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-widt
 .badge { min-width: 18px; height: 16px; padding: 0 5px; border-radius: 8px; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center;
   background: var(--ctl-h); color: var(--label2); flex: none; }
 .badge.red { background: var(--badge-red); color: #fff; }
-.service { flex: none; padding: 10px 18px 12px; font-size: 11px; color: var(--label2); display: flex; align-items: center; gap: 7px; border-top: .5px solid var(--sep); }
+.service { flex: none; height: var(--statusbar-h); padding: 0 18px; font-size: 11px; color: var(--label2); display: flex; align-items: center; gap: 7px; border-top: .5px solid var(--sep); }
 .service .dot { width: 7px; height: 7px; flex: none; }
 .service .txt { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .service .dot.gray { box-shadow: none; background: var(--gray); }
@@ -118,9 +119,11 @@ svg.i { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-widt
 
 main { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--canvas); }
 
-.statusbar { height: 28px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-top: .5px solid var(--sep); background: var(--win);
+.statusbar { height: var(--statusbar-h); flex: none; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-top: .5px solid var(--sep); background: var(--win);
   font-size: 11px; color: var(--label2); overflow: hidden; white-space: nowrap; }
-.legend { display: flex; gap: 12px; margin: 0; padding: 0; list-style: none; min-width: 0; overflow: hidden; }
+/* the legend is reference: it rests dimmed and comes up while the bar is hovered (042) */
+.legend { display: flex; gap: 12px; margin: 0; padding: 0; list-style: none; min-width: 0; overflow: hidden; opacity: .45; transition: opacity .15s; }
+.statusbar:hover .legend { opacity: 1; }
 .key { display: inline-flex; gap: 5px; align-items: center; }
 .sw { width: 16px; height: 10px; border-radius: 3px; border: .5px solid var(--sep2); background: var(--ctl); position: relative; overflow: hidden; flex: none; }
 .sw::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--kc, transparent); }
