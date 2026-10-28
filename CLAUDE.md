@@ -36,7 +36,7 @@ updates the contract doc in the same diff.
 ## Gate
 
 `bun run test && bun run check` — `bun test` over `packages/` and `apps/`, and strict `tsc`
-(`noUncheckedIndexedAccess`, Bun types). `bun run factory:test` tests the installed copy.
+(`noUncheckedIndexedAccess`, Bun types). `bun factory/cli.ts doctor` checks the installed copy.
 
 ## Conventions
 
