@@ -194,8 +194,9 @@ describe('the footer and toolbar texts (AC3)', () => {
 });
 
 describe('the status bar', () => {
-  test('the legend names each state a card shows', () => {
-    expect(LEGEND.map((l) => l.key)).toEqual(['needs-human', 'failed', 'review', 'approve', 'build', 'spec', 'claimed', 'merged']);
+  test('the legend names each state a card shows, in workflow order (034 AC1)', () => {
+    expect(LEGEND.map((l) => l.key)).toEqual(['needs-human', 'claimed', 'spec', 'build', 'review', 'failed', 'approve', 'merged']);
+    expect(LEGEND.map((l) => l.label)).toEqual(['Needs a human', 'Claimed', 'Spec', 'Building', 'In review', 'Review failed', 'At approver', 'Merged']);
   });
 
   test('"Settle after Nh" from the selection\'s settings', () => {

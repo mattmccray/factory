@@ -46,6 +46,9 @@
 * { box-sizing: border-box; }
 /* No page background: in the Mac app the native sidebar vibrancy shows through where the frame is transparent. */
 html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
+/* Text selection is off app-wide (a right-click or a drag never selects the board's words, as in a Mac app); on only in the rendered document, the command boxes, and text fields. */
+html, body { -webkit-user-select: none; user-select: none; }
+input, textarea { -webkit-user-select: text; user-select: text; }
 body { font: 13px/1.35 var(--sys); color: var(--label); -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
 button, select, input { font: inherit; color: inherit; }
 button { cursor: default; }
@@ -288,7 +291,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; background
 .inspector { --insw: 392px; position: relative; width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; background: var(--win);
   border-left: .5px solid var(--hairline); transition: width .22s cubic-bezier(.2,.8,.2,1); }
 .inspector.open { width: var(--insw); }
-.inspector.dragging { transition: none; user-select: none; }
+.inspector.dragging { transition: none; -webkit-user-select: none; user-select: none; }
 .inspector:not(.open) { visibility: hidden; border-left: 0; }
 .grip { position: absolute; left: 0; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 3; }
 .grip:hover, .inspector.dragging .grip { background: color-mix(in srgb, var(--blue) 35%, transparent); }
@@ -334,7 +337,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; background
 .btn.destructive:hover:not(:disabled) { background: var(--ctl); }
 .btn:disabled { opacity: .45; }
 .cmd { margin-top: 8px; display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 3px 3px 3px 9px; border-radius: 6px; background: var(--canvas); box-shadow: inset 0 0 0 .5px var(--sep2); }
-.cmd code { flex: 1; min-width: 0; font: 11px/1.45 var(--mono); color: var(--label); overflow-wrap: anywhere; user-select: all; }
+.cmd code { flex: 1; min-width: 0; font: 11px/1.45 var(--mono); color: var(--label); overflow-wrap: anywhere; -webkit-user-select: all; user-select: all; }
 .cmd.blank code { color: var(--label3); }
 
 /* the Files list */
@@ -353,7 +356,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; background
 .file.on .vd { box-shadow: 0 0 0 1.5px #fff; }
 
 /* the document */
-.doc { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px 40px; }
+.doc { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px 40px; -webkit-user-select: text; user-select: text; }
 
 /* the timing view, restyled: a rounded stage bar, a legend, and compact tables */
 .md .timing > h1 + p { font-size: 12px; color: var(--label2); margin-bottom: 10px; }
