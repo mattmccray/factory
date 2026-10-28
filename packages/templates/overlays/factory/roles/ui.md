@@ -13,7 +13,8 @@ script that `packages/andon-service` serves. Check `git -C <worktree> diff <base
 (**Andon not touched → PASS**). Don't review anything outside Andon.
 
 ## Read (when Andon is touched)
-- The board UX decisions in `HANDOFF.md` (decision 5), and the current Andon UI
+- The board UX decision, decision 5 of `docs/decisions.md`, and the accepted design it names,
+  `docs/design/andon-overview/design.md`; and the current Andon UI
   (`apps/andon-ui/`) on `<base>` (`git -C <worktree> show <base>:<path>`) as the visual and
   behavioral baseline the change must keep.
 

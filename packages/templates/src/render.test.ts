@@ -68,7 +68,7 @@ describe('renderClaudeCode (AC1)', () => {
 describe('neutrality and placeholders (AC2)', () => {
   const configs = [config(), config({ reviewers: ['q'] }), config({ reviewers: ['zeta', 'eta-1', 'theta'], gate: ['x'] })];
   const BANNED = ['Minerva', 'Andon', 'andon', 'packages/', 'apps/', 'bun run test', 'bun run check', 'here:'];
-  // Andon is the factory's own dashboard name (HANDOFF Decision 7): only the skill may name it.
+  // Andon is the factory's own dashboard name (decision 7 of `docs/decisions.md`): only the skill may name it.
   const ALLOWED_IN: Record<string, string[]> = { Andon: [SKILL], andon: [SKILL] };
   const FIXED = ['spec-writer', 'builder', 'approver'];
 
@@ -717,6 +717,33 @@ describe('the target branch: no literal main', () => {
     expect(flat(ui)).toContain('current Andon UI (`apps/andon-ui/`) on `<base>`');
     const contract = await readFile(join(OVERLAY_ROLES, 'contract.md'), 'utf8');
     expect(contract).toContain('git -C <worktree> show <base>:<path>');
+  });
+
+  // The retired handoff file's name, built so `git grep` over packages/ finds no stale citation.
+  const RETIRED = ['HAND', 'OFF'].join('');
+
+  test('the default overlay role drafts cite docs/decisions.md, never the retired handoff file', async () => {
+    for (const role of ['approver', 'spec-writer', 'contract', 'ui']) {
+      const text = await readFile(join(OVERLAY_ROLES, `${role}.md`), 'utf8');
+      expect({ role, handoff: text.includes(RETIRED) }).toEqual({ role, handoff: false });
+      expect({ role, cites: text.includes('`docs/decisions.md`') }).toEqual({ role, cites: true });
+    }
+    const approver = flat(await readFile(join(OVERLAY_ROLES, 'approver.md'), 'utf8'));
+    expect(approver).toContain('the **Decisions** and **Deferred** sections of `docs/decisions.md`');
+    expect(approver).toContain('contradicts a `docs/decisions.md` decision');
+    expect(approver).toContain("a runtime dependency `docs/decisions.md` doesn't already name (Svelte, Tiny JS)");
+    const specWriter = flat(await readFile(join(OVERLAY_ROLES, 'spec-writer.md'), 'utf8'));
+    expect(specWriter).toContain('its **Decisions** are binding; its **Deferred** list is out of scope');
+    const contract = flat(await readFile(join(OVERLAY_ROLES, 'contract.md'), 'utf8'));
+    expect(contract).toContain('the contract\'s principles and the **Invariants** of `docs/decisions.md`');
+    const ui = flat(await readFile(join(OVERLAY_ROLES, 'ui.md'), 'utf8'));
+    expect(ui).toContain('decision 5 of `docs/decisions.md`');
+    expect(ui).toContain('`docs/design/andon-overview/design.md`');
+    const overlays = join(import.meta.dir, '..', 'overlays');
+    for (const path of await Array.fromAsync(new Bun.Glob('**/*').scan({ cwd: overlays, dot: true }))) {
+      const text = await readFile(join(overlays, path), 'utf8');
+      expect({ path, handoff: text.includes(RETIRED) }).toEqual({ path, handoff: false });
+    }
   });
 
   test('AC6: the agents read <base> from the card', () => {
