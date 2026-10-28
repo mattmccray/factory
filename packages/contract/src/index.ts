@@ -1,6 +1,6 @@
 // Public API of the factory/v1 contract (docs/contract/v1.md).
-export type { Config, EventInput, FactoryEvent, MergePolicy, Role, RoleRunner, Runner, Stage, TransitionOptions, Verdict, WorkingStage } from './contract';
-export { BRANCH_PATTERN, CURRENT_TARGET, DEFAULT_MODEL, JOB_NUMBER_MAX, MODEL_PATTERN, SLUG_MAX, SLUG_PATTERN, WORKING_STAGES, checkSlug, checkTransition, isJobId, isTargetBranch, mergeTarget, parseConfig, parseEventInput, workingStage } from './contract';
+export type { Config, EventInput, FactoryEvent, MergePolicy, Role, RoleRunner, Runner, Session, Stage, TransitionOptions, Verdict, WorkingStage } from './contract';
+export { BRANCH_PATTERN, CURRENT_TARGET, DEFAULT_MODEL, JOB_NUMBER_MAX, MODEL_PATTERN, SESSION_APP, SESSION_ID_PATTERN, SLUG_MAX, SLUG_PATTERN, WORKING_STAGES, checkSlug, checkTransition, isJobId, isSession, isTargetBranch, mergeTarget, parseConfig, parseEventInput, parseSession, workingStage } from './contract';
 export type { AgentSpan, Decision, JobSnapshot, ReviewState, StageSpan, StoppedBy } from './project';
 export { project } from './project';
 export type { ClaimInput } from './store';

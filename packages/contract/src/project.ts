@@ -1,7 +1,7 @@
 // Projection: the append-only event log -> the `job.json` snapshot (docs/contract/v1.md).
 // Pure — no clock reads. Viewers compute live elapsed time from the open timestamps.
-import { workingStage } from './contract';
-import type { FactoryEvent, Role, Stage, Verdict, WorkingStage } from './contract';
+import { isSession, workingStage } from './contract';
+import type { FactoryEvent, Role, Session, Stage, Verdict, WorkingStage } from './contract';
 
 export type ReviewState = 'PASS' | 'CHANGES' | 'pending';
 export type Decision = 'APPROVE' | 'ESCALATE' | 'APPROVE (human)';
@@ -46,6 +46,7 @@ export interface JobSnapshot {
   stoppedFrom: WorkingStage | null; // the working stage the job left for needs-human
   brief: string | null;
   issue: string | null;
+  session: Session | null; // the most recent session on job.claimed/job.reworked/job.human-approved; null: none ever
   startedAt: string;
   stageEnteredAt: string;
   endedAt: string | null;
@@ -81,6 +82,9 @@ function closeOpenAgents(s: JobSnapshot, ts: string): void {
     }
   }
 }
+
+// Readers are tolerant: a stored session that isn't well-formed is ignored, never fatal.
+const storedSession = (v: unknown): Session | null => (isSession(v) ? { app: v.app, environment: v.environment, thread: v.thread } : null);
 
 function apply(s: JobSnapshot, e: FactoryEvent): void {
   s.updated = e.ts;
@@ -162,10 +166,12 @@ function apply(s: JobSnapshot, e: FactoryEvent): void {
       s.maxRound = e.maxRound;
       s.decision = null;
       s.note = ''; // the escalation reason no longer describes the job
+      s.session = storedSession(e.session) ?? s.session; // latest wins; none keeps the earlier one
       enterStage(s, 'build', e.ts);
       return;
     case 'job.human-approved':
       s.decision = 'APPROVE (human)';
+      s.session = storedSession(e.session) ?? s.session;
       return;
     case 'job.merged':
       s.endedAt = e.ts;
@@ -204,6 +210,7 @@ export function project(events: FactoryEvent[]): JobSnapshot {
     stoppedFrom: null,
     brief: first.brief,
     issue: first.issue,
+    session: storedSession(first.session),
     startedAt: first.ts,
     stageEnteredAt: first.ts,
     endedAt: null,

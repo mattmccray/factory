@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { EventInput, FactoryEvent } from './contract';
+import type { EventInput, FactoryEvent, Session } from './contract';
 import { project } from './project';
 
 const BASE = Date.parse('2026-10-23T14:00:00.000Z');
@@ -393,5 +393,40 @@ describe('job.abandoned', () => {
   test('merge.failed and job.abandoned keep stoppedBy merge-failed', () => {
     const s = project(log([...toApprove, { type: 'merge.failed', reason: 'c' }, { type: 'job.abandoned', reason: 'x' }]));
     expect(s).toMatchObject({ stage: 'abandoned', stoppedBy: 'merge-failed', stoppedFrom: 'approve' });
+  });
+});
+
+describe('session (latest wins)', () => {
+  const A: Session = { app: 't3code', environment: 'env-1', thread: 'thread-A' };
+  const B: Session = { app: 't3code', environment: 'env-2', thread: 'thread-B' };
+  const toNeedsHuman: EventInput[] = [{ type: 'stage.entered', stage: 'spec' }, { type: 'job.escalated', reason: 'stuck' }];
+
+  test('a claim with a session projects it; without one, null', () => {
+    expect(project(log([{ ...claimed, session: A }])).session).toEqual(A);
+    expect(project(log([claimed])).session).toBeNull();
+    expect(project(log(twoRound)).session).toBeNull();
+  });
+
+  test('job.reworked with a session replaces it; without one keeps it; job.abandoned leaves it', () => {
+    const base: EventInput[] = [{ ...claimed, session: A }, ...toNeedsHuman];
+    expect(project(log([...base, { type: 'job.reworked', k: 1, maxRound: 3, session: B }])).session).toEqual(B);
+    expect(project(log([...base, { type: 'job.reworked', k: 1, maxRound: 3 }])).session).toEqual(A);
+    const abandoned = project(log([...base, { type: 'job.reworked', k: 1, maxRound: 3, session: B }, { type: 'job.escalated', reason: 'again' }, { type: 'job.abandoned', reason: 'done' }]));
+    expect(abandoned.stage).toBe('abandoned');
+    expect(abandoned.session).toEqual(B);
+  });
+
+  test('job.human-approved with a session replaces it; without one keeps it', () => {
+    const base: EventInput[] = [{ ...claimed, session: A }, ...toNeedsHuman];
+    expect(project(log([...base, { type: 'job.human-approved', session: B }])).session).toEqual(B);
+    expect(project(log([...base, { type: 'job.human-approved' }])).session).toEqual(A);
+    expect(project(log([...base, { type: 'job.human-approved', session: B }, { type: 'job.human-approved' }, { type: 'job.abandoned', reason: 'x' }])).session).toEqual(B);
+    // a session first recorded after a claim without one
+    expect(project(log([claimed, ...toNeedsHuman, { type: 'job.human-approved', session: B }])).session).toEqual(B);
+  });
+
+  test('a stored session that is not well-formed is ignored, not fatal', () => {
+    expect(project(log([{ ...claimed, session: { ...A, environment: '' } }])).session).toBeNull();
+    expect(project([...log([{ ...claimed, session: A }, ...toNeedsHuman]), { type: 'job.human-approved', session: { ...B, thread: '../x' }, ts: tsAt(9) }]).session).toEqual(A);
   });
 });

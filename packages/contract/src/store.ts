@@ -219,7 +219,7 @@ function claimedInput(id: string, input: ClaimInput): EventInput {
 
 /**
  * Checks a claim without touching disk: the slug (`checkSlug`) and the `job.claimed` fields
- * (`brief`, `issue`, `maxRound` only). Throws the one-line reason `claimJob` would.
+ * (`brief`, `issue`, `maxRound`, `session` only). Throws the one-line reason `claimJob` would.
  */
 export function checkClaim(slug: string, input: ClaimInput): void {
   checkSlug(slug);

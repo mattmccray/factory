@@ -1041,3 +1041,42 @@ describe('CLI-owned job ids in SKILL.md (job 024, AC7)', () => {
     expect(skill()).toContain('| `factory/jobs/.claim.lock/` — the CLI\'s mutex for handing out job ids | the factory CLI (never by hand) |');
   });
 });
+
+describe('the thread lookup in SKILL.md (job 039, AC5)', () => {
+  const flat = (s: string): string => s.replace(/\s+/g, ' ');
+  const skill = (c: Config = config()): string => flat(at(renderClaudeCode({ config: c }).files, SKILL));
+  const section = (text: string, heading: string): string => {
+    const start = text.indexOf(`## ${heading}`);
+    if (start < 0) throw new Error(`no section ${heading}`);
+    const end = text.indexOf(' ## ', start + 3);
+    return end < 0 ? text.slice(start) : text.slice(start, end);
+  };
+  const entry = (commands: string, from: string, to: string): string => commands.slice(commands.indexOf(from), commands.indexOf(to));
+
+  test('runs only when both T3 Code tools are present, before claim, job.reworked, and job.human-approved', () => {
+    const lookup = section(skill(), 'The thread lookup (T3 Code)');
+    expect(lookup).toContain('Run this **thread lookup** right before `claim` (before taking `factory/.lock`), before `job.reworked` (`/factory rework`), and before `job.human-approved` (`/factory approve`), and only when T3 Code\'s tools `t3_environment_read` and `t3_thread_search` are both present in this session. Without them, skip it and run the command without `session`.');
+  });
+
+  test('writes a unique phrase, searches, retries once, and passes session only on exactly one match', () => {
+    const lookup = section(skill(), 'The thread lookup (T3 Code)');
+    expect(lookup).toContain('Write a unique phrase in your reply to the user: `factory session <random>`');
+    expect(lookup).toContain('then `t3_thread_search` for the phrase. If no thread comes back, wait a couple of seconds (`sleep 2`) and search once more.');
+    expect(lookup).toContain('Only if exactly one thread matches, add `session=t3code:<environmentId>/<threadId>` to the command');
+    expect(lookup).toContain('Otherwise (no match after the retry, several matches, or a tool error), run the command without `session` and tell the user in one line: "couldn\'t find this T3 Code thread; the job won\'t link to it".');
+    expect(lookup).toContain('It is best effort: never stop the job');
+  });
+
+  test('the board, claim, approve, and rework steps point at it', () => {
+    const text = skill();
+    expect(section(text, 'The board')).toContain('bun factory/cli.ts claim <slug> [brief=…] [issue=…] [maxRound=…] [session=…]');
+    expect(section(text, 'Running jobs side by side')).toContain('Run **the thread lookup** before taking the lock.');
+    const commands = section(text, 'Commands');
+    const feature = entry(commands, '**`/factory <feature>`**', '**`/factory queue <text>`**');
+    expect(feature).toContain('`session=…` from **the thread lookup**, run first');
+    const approve = entry(commands, '**`/factory approve <id>`**', '**`/factory rework <id> <note>`**');
+    expect(approve).toContain('run **the thread lookup**, board: `job.human-approved [session=…]`');
+    const rework = entry(commands, '**`/factory rework <id> <note>`**', '**`/factory abandon <id> <reason>`**');
+    expect(rework).toContain('run **the thread lookup**, board: `job.reworked k=<k> maxRound=<round + 2> [session=…]`');
+  });
+});

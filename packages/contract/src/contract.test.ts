@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { type EventInput, type FactoryEvent, checkTransition, mergeTarget, parseConfig, parseEventInput } from './contract';
+import { type EventInput, type FactoryEvent, type Session, checkTransition, isSession, mergeTarget, parseConfig, parseEventInput, parseSession } from './contract';
 
 const shipped: unknown = await Bun.file(new URL('./fixtures/config.json', import.meta.url)).json();
 const base = { schema: 'factory/v1', reviewers: ['security', 'ux'], maxRound: 2, dashboard: { settleAfterHours: 24 } };
@@ -373,5 +373,102 @@ describe('job.abandoned', () => {
   test('force changes nothing for any other event', () => {
     expect(() => checkTransition(toBuild, { type: 'stage.entered', stage: 'approve' }, { force: true })).toThrow();
     expect(() => checkTransition(human, { type: 'job.merged', sha: 'a' }, { force: true })).toThrow();
+  });
+});
+
+describe('session (parseSession and the three events)', () => {
+  const config = parseConfig(base);
+  const ctx = { id: '001-x', config };
+  const A: Session = { app: 't3code', environment: 'env-1', thread: 'thread-A' };
+  const id64 = 'a'.repeat(64);
+  const MALFORMED = [
+    'codex:env-1/thread-A', // another app
+    'T3CODE:env-1/thread-A',
+    'env-1/thread-A', // no ':'
+    't3code:env-1', // no '/'
+    't3code:/thread-A', // empty environment
+    't3code:env-1/', // empty thread
+    't3code:', // both empty
+    `t3code:${'a'.repeat(65)}/thread-A`, // 65 characters
+    `t3code:env-1/${'b'.repeat(65)}`,
+    't3code:env-1/thread/A', // more than one '/'
+    't3code:env.1/thread-A',
+    't3code:env-1/thread_A',
+    't3code:env 1/thread-A',
+    't3code:env-1/thread-A ',
+    't3code:env-1/thread:A',
+    't3code:env-1/thréad',
+    't3code:env-1/thread-A\nx',
+  ];
+
+  test('parses t3code:<environmentId>/<threadId>, ids up to 64 letters, digits, and -', () => {
+    expect(parseSession('t3code:env-1/thread-A')).toEqual({ app: 't3code', environment: 'env-1', thread: 'thread-A' });
+    expect(parseSession(`t3code:${id64}/${id64}`)).toEqual({ app: 't3code', environment: id64, thread: id64 });
+    expect(parseSession('t3code:A/0')).toEqual({ app: 't3code', environment: 'A', thread: '0' });
+  });
+
+  test('refuses a malformed session with a one-line reason naming session', () => {
+    for (const v of [...MALFORMED, null, 42, { app: 't3code' }]) {
+      let reason = '';
+      try {
+        parseSession(v);
+      } catch (e) {
+        reason = e instanceof Error ? e.message : String(e);
+      }
+      expect(reason).toContain("'session'");
+      expect(reason).not.toContain('\n');
+    }
+  });
+
+  test('job.claimed, job.reworked, and job.human-approved take an optional session', () => {
+    expect(parseEventInput('job.claimed', { session: 't3code:env-1/thread-A' }, ctx)).toMatchObject({ type: 'job.claimed', session: A });
+    expect('session' in parseEventInput('job.claimed', {}, ctx)).toBe(false);
+    expect(parseEventInput('job.reworked', { k: 1, maxRound: 3, session: 't3code:env-1/thread-A' })).toEqual({ type: 'job.reworked', k: 1, maxRound: 3, session: A });
+    expect(parseEventInput('job.reworked', { k: 1, maxRound: 3 })).toEqual({ type: 'job.reworked', k: 1, maxRound: 3 });
+    expect(parseEventInput('job.human-approved', { session: 't3code:env-1/thread-A' })).toEqual({ type: 'job.human-approved', session: A });
+    expect(parseEventInput('job.human-approved', {})).toEqual({ type: 'job.human-approved' });
+  });
+
+  test('the three events refuse a malformed session', () => {
+    for (const session of MALFORMED) {
+      expect(() => parseEventInput('job.claimed', { session }, ctx)).toThrow(/session/);
+      expect(() => parseEventInput('job.reworked', { k: 1, maxRound: 3, session })).toThrow(/session/);
+      expect(() => parseEventInput('job.human-approved', { session })).toThrow(/session/);
+    }
+  });
+
+  test('every other event refuses session as an extra field', () => {
+    const session = 't3code:env-1/thread-A';
+    const others: [string, Record<string, unknown>][] = [
+      ['job.titled', { title: 't' }],
+      ['stage.entered', { stage: 'spec' }],
+      ['round.started', { round: 1, reviewers: ['ux'] }],
+      ['agent.started', { role: 'builder' }],
+      ['agent.finished', { role: 'builder' }],
+      ['job.noted', { note: 'n' }],
+      ['job.escalated', { reason: 'r' }],
+      ['merge.failed', { reason: 'r' }],
+      ['job.merged', { sha: 'abc' }],
+      ['job.abandoned', { reason: 'r' }],
+    ];
+    for (const [type, fields] of others) {
+      expect(() => parseEventInput(type, { ...fields, session }, ctx)).toThrow(/extra field.*'session'/);
+    }
+  });
+
+  test('human-approved with a session stays idempotent while needs-human', () => {
+    const prior: FactoryEvent[] = [
+      { type: 'job.claimed', schema: 'factory/v1', id: '001-x', maxRound: 2, brief: null, issue: null, ts: 't0' },
+      { type: 'job.escalated', reason: 'r', ts: 't1' },
+      { type: 'job.human-approved', session: A, ts: 't2' },
+    ];
+    expect(() => checkTransition(prior, { type: 'job.human-approved', session: { app: 't3code', environment: 'e', thread: 'B' } })).not.toThrow();
+  });
+
+  test('isSession accepts only a well-formed stored session', () => {
+    expect(isSession(A)).toBe(true);
+    for (const v of [null, 'x', { ...A, app: 'codex' }, { ...A, thread: '' }, { ...A, thread: 'a/b' }, { app: 't3code', environment: 'e' }, { ...A, extra: 1 }]) {
+      expect(isSession(v)).toBe(false);
+    }
   });
 });
