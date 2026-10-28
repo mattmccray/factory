@@ -1,6 +1,7 @@
 # A Settings window for Andon
 
-- Status: ready
+- Status: done
+- Job: 035-andon-settings-window (merged 1fe1389, 2026-10-28)
 - Sources: Matt's nitpicks (2026-10-28), item 4 and the follow-up asking for settings; brief `factory/briefs/andon-app-menu.md` (the disabled Settings… placeholder, the stored status bar choice); `apps/andon/src/appmenu.ts`, `apps/andon/src/backend.ts`; `apps/andon/types/tiny.d.ts` (`app.win.open`, `TinyOpenWindowOptions`, `TinyApiMeta.window`)
 - Date: 2026-10-28
 
