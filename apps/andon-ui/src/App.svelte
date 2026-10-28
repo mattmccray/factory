@@ -27,7 +27,7 @@
   import SettledSheet from './SettledSheet.svelte';
   import ShortcutSheet from './ShortcutSheet.svelte';
   import Sidebar from './Sidebar.svelte';
-  import { footer, frame, settleHours, settleText, shellMode, sidebarModel, subtitle, title } from './sidebar';
+  import { STATUS_BAR_EVENT, footer, frame, pushSubscriber, settleHours, settleText, shellMode, sidebarModel, statusBarHidden, subtitle, title } from './sidebar';
   import StatusBar from './StatusBar.svelte';
   import Toolbar from './Toolbar.svelte';
   import { emptyState } from './state';
@@ -66,6 +66,8 @@
   const openKey = $derived(openRef === null ? null : jobKey(openRef));
   let innerWidth = $state(window.innerWidth);
   const mode = shellMode(window.location.search);
+  // The Mac app's View menu hides the status bar and tells the page; a browser always shows it.
+  let statusBarOff = $state(false);
 
   onMount(() => {
     const live = startLive({ connect: () => new EventSource('/events'), fetcher, onState: (s) => (ui = s), onStatus: (s) => (status = s) });
@@ -76,7 +78,12 @@
     };
     document.addEventListener('visibilitychange', visible);
     window.addEventListener('popstate', onpopstate);
+    const offStatusBar = pushSubscriber(mode, Reflect.get(window, 'tiny'))?.(STATUS_BAR_EVENT, (data) => {
+      const hidden = statusBarHidden(data);
+      if (hidden !== null) statusBarOff = hidden;
+    });
     return () => {
+      offStatusBar?.();
       live.stop();
       clearInterval(timer);
       document.removeEventListener('visibilitychange', visible);
@@ -339,7 +346,7 @@
         {/if}
       {/if}
     </main>
-    <StatusBar {settle} {now} />
+    {#if !statusBarOff}<StatusBar {settle} {now} />{/if}
   </div>
   <Inspector
     item={openItem}

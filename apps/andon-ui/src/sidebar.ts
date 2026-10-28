@@ -1,7 +1,9 @@
 // The frame's pure model (design §3, §4): the sidebar's rows (All Projects and every registered
 // project, each with a status dot and a badge), the connection footer, the toolbar's title and
-// subtitle, the status bar's legend and settle text, and the shell mode read from the page URL.
+// subtitle, the status bar's legend and settle text, the shell mode read from the page URL, and the
+// Mac app's status bar event.
 // Nothing here touches the DOM; App.svelte and the frame components only lay it out.
+import { isRecord } from './job';
 import type { Job } from './job';
 import { isReviewFailed } from './lanes';
 import type { Status } from './live';
@@ -159,6 +161,36 @@ export const MAC_INSET = 78;
 /** `?shell=mac` (the Mac app loads the page with it) is the Mac app; anything else is a browser. */
 export function shellMode(search: string): ShellMode {
   return new URLSearchParams(search).get('shell') === 'mac' ? 'mac' : 'browser';
+}
+
+// ---- the Mac app's status bar choice ----
+// The Mac app's View menu hides or shows the status bar and pushes the choice to the page as one
+// event; the page only listens (it never calls the Mac app). In a browser there is no such event.
+
+/** The event the Mac app pushes with the status bar state: `{ hidden: boolean }`. */
+export const STATUS_BAR_EVENT = 'statusbar';
+
+/** Subscribe to one pushed event; returns the unsubscribe. */
+export type Subscribe = (event: string, fn: (data: unknown) => void) => () => void;
+
+/** How the page hears the Mac app's pushed events: Tiny's `api.on`, found by narrowing the page's
+ *  `window.tiny` (passed in as `unknown`). Null in a browser, or when it isn't there. */
+export function pushSubscriber(mode: ShellMode, host: unknown): Subscribe | null {
+  if (mode !== 'mac' || !isRecord(host) || !isRecord(host.api)) return null;
+  const api = host.api;
+  const on = api.on;
+  if (typeof on !== 'function') return null;
+  return (event, fn) => {
+    const off: unknown = Reflect.apply(on, api, [event, fn]);
+    return () => {
+      if (typeof off === 'function') Reflect.apply(off, undefined, []);
+    };
+  };
+}
+
+/** The status bar event's `hidden`, or null for a malformed payload (which changes nothing). */
+export function statusBarHidden(data: unknown): boolean | null {
+  return isRecord(data) && typeof data.hidden === 'boolean' ? data.hidden : null;
 }
 
 export interface Frame {
