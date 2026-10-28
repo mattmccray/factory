@@ -21,7 +21,8 @@ can watch every project's factory at once. This repo owns all of it:
 - the **installer and guardrails**: `factory init`, `/factory customize`, `factory doctor`,
   `factory upgrade`;
 - **harness adapters** (Claude Code first);
-- **Andon**: `andon-agent` (a Bun daemon), a Svelte UI, and a Tiny JS desktop shell.
+- **Andon**: the Andon service (a Bun daemon), the Andon UI (Svelte), and Andon itself (a Tiny JS
+  Mac app).
 
 It is **personal tooling now, built to be publishable later.** Keep the contract and the
 boundary between managed files and overlay clean enough that publishing never needs a
@@ -108,18 +109,22 @@ from).
    - Resuming the same builder between rounds is optional. The fallback is a fresh builder
      working from files (the rework path already does this).
 10. **Andon architecture:**
-    - `andon-agent` is a Bun daemon per machine. It knows the projects registered on that
+    - Names (2026-10-27, job 029): the daemon is the **Andon service** (`packages/andon-service`),
+      the board is the **Andon UI** (`apps/andon-ui`), and the Mac app is **Andon**
+      (`apps/andon`). "Agent" means only the factory's subagents. The daemon was "andon-agent"
+      and the Mac app "the shell" before then.
+    - The Andon service is a Bun daemon per machine. It knows the projects registered on that
       machine, watches their `factory/` trees (no polling), reuses the CLI's contract code,
       and streams changes over server-sent events.
-    - The UI is a Svelte web app that connects to one or more agents. Supporting multiple
-      machines later just means adding more agent URLs.
-    - A thin **Tiny JS** shell (https://tinyjs.app) wraps the UI. It starts the local agent if
-      needed and adds a tray badge with the needs-human count, plus native notifications on
-      escalate and merge.
-    - The shell must stay thin enough to swap out. As of 2026-10-21, Tiny JS is 0.63, has
+    - The Andon UI is a Svelte web app that connects to one or more services. Supporting
+      multiple machines later just means adding more service URLs.
+    - Andon, the Mac app, is a thin **Tiny JS** wrapper (https://tinyjs.app) around the UI. It
+      starts the local service if needed and adds a tray badge with the needs-human count, plus
+      native notifications on escalate and merge.
+    - The Mac app must stay thin enough to swap out. As of 2026-10-21, Tiny JS is 0.63, has
       about 58 releases in 12 weeks, and has had some breaking changes. Its backend is
       txiki.js, not Node, so the contract code must not run there.
-    - Registration: `factory init` registers a project with the local agent, and Andon can add
+    - Registration: `factory init` registers a project with the local service, and Andon can add
       or remove projects too.
 11. **Bootstrap and dogfooding:**
     1. Seed this repo by hand with a **vendored v0** copy of Minerva's upgraded factory, plus
@@ -135,7 +140,7 @@ from).
        under `factory/`" holds unchanged.
 12. **This repo's reviewers:**
     - **code**;
-    - **security** (the agent serves HTTP, and the CLI writes files);
+    - **security** (the Andon service serves HTTP, and the CLI writes files);
     - **contract**, a new reviewer that checks every change against the schema and versioning
       rules;
     - **ui**, for Andon changes; it simply PASSes when Andon isn't touched. Conditional
@@ -245,7 +250,7 @@ until it's done. Read Minerva's files by absolute path; never edit Minerva from 
 ## Deferred (don't build yet)
 
 - Codex, Pi and OpenCode orchestrator adapters, each starting with a research task.
-- Andon across multiple machines (the agent design already allows it).
+- Andon across multiple machines (the service design already allows it).
 - Reviewers that run only when certain files change.
 - Distribution for publishing: name collision checks, a package registry, docs site.
 - Reconstructing timing for legacy jobs (001–018) from git history; they show no timing.
