@@ -5,7 +5,7 @@ vendored `.claude/agents/factory-spec-writer.md`.
 
 ## Read
 - `CLAUDE.md` — source and state, promotion, contract rules.
-- `HANDOFF.md` — its **Decisions** are binding; its **Deferred** list is out of scope.
+- `docs/decisions.md` — its **Decisions** are binding; its **Deferred** list is out of scope.
 - The contract: `docs/contract/v1.md` once it exists, else `factory/CONTRACT.md`.
 - The code the feature will touch (`packages/*`, `apps/*`; the vendored v0 under `factory/`
   and `.claude/` is reference only).

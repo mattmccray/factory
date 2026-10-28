@@ -32,13 +32,13 @@ If the diff touches none of it, write `VERDICT: PASS` with a one-line note sayin
   (for example, how a reader treats an unknown field), the change must state it in the doc.
 - **Unknown keys:** `config.json` rejects unknown keys, so a new key needs the parser, the doc,
   and a test together.
-- **Invariants that must survive** (the contract's principles and HANDOFF.md's lessons): the log
-  is the truth and `job.json` is disposable; the CLI is the only writer; timestamps come from
-  the clock, never a model; verdicts are read from the agents' files; span identity never
-  depends on a harness's agent ids; escalation is allowed from every working stage and
-  closes open spans; `job.merged` is recorded right after `git merge`; `job.human-approved`
-  is idempotent while needs-human; value parsing stays narrow; legacy jobs, torn tails, and
-  bad ids are refused and a rejected event writes nothing.
+- **Invariants that must survive** (the contract's principles and the **Invariants** of
+  `docs/decisions.md`): the log is the truth and `job.json` is disposable; the CLI is the only
+  writer; timestamps come from the clock, never a model; verdicts are read from the agents'
+  files; span identity never depends on a harness's agent ids; escalation is allowed from every
+  working stage and closes open spans; `job.merged` is recorded right after `git merge`;
+  `job.human-approved` is idempotent while needs-human; value parsing stays narrow; legacy
+  jobs, torn tails, and bad ids are refused and a rejected event writes nothing.
 - **Tests:** every surface change is covered by a test that would fail without it.
 - **One source:** contract types, validation, and projection aren't redefined in a second
   package (the frozen v0 under `factory/` excepted).
