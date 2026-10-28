@@ -1,6 +1,7 @@
 # Open a job's orchestrator thread from Andon
 
-- Status: ready
+- Status: done
+- Job: 040-job-context-menu (merged 9adf0d5, 2026-10-28)
 - Sources: brief `factory/briefs/job-session-link.md` (runs first: records `session` on jobs); brief `factory/briefs/project-context-menu.md` (job 033: the native menu, the page-names-backend-decides rule, `t3` lookup; it left job cells without a menu); brief `factory/briefs/t3-handoff.md` (job 036: one main-window-only method, the backend builds what runs); `apps/andon/src/projectmenu.ts`, `apps/andon-ui/src/projectmenu.ts`; T3 Code's `t3code://threads/<environmentId>/<threadId>` link (checked 2026-10-28)
 - Date: 2026-10-28
 
