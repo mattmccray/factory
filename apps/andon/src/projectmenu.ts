@@ -1,9 +1,10 @@
 // A project's right-click menu in the Mac app: Copy Project Path, Reveal in Finder, a separator, and
 // Open in ▸ VS Code, T3 Code, Ghostty. The page asks for a project's menu by its id alone (the one
 // custom backend method, PROJECT_MENU_METHOD); everything else lives here, runtime-neutral: the item
-// list and its ids, which apps are grayed out, where `t3` is looked for, what a clicked item does
-// (built only from the root the backend's own `/projects` feed holds), and the failure text.
-// backend.ts sets the menu, checks the apps, and runs the actions.
+// list and its ids, which apps are grayed out, where `t3` is looked for, each Open in app's bundle id
+// and fallback `.app` locations and which item gets which icon, what a clicked item does (built only
+// from the root the backend's own `/projects` feed holds), and the failure text. backend.ts sets the
+// menu, checks the apps, finds their icons, and runs the actions.
 import { isRecord } from './state';
 
 /** The one custom backend method the page may call (tinyjs.json's `api` gate names it). */
@@ -44,6 +45,64 @@ export interface ContextItem {
   enabled?: boolean;
   separator?: boolean;
   submenu?: ContextItem[];
+  /** A png path drawn beside the label (a menu item's `icon`, from Tiny JS 0.68.0). */
+  icon?: string;
+}
+
+// ---- the Open in apps' own icons ----
+// Each Open in item can carry its app's own icon: the backend finds the app's `.app` (Spotlight by
+// bundle id first, then the fixed locations below), asks Tiny for a thumbnail of it, and hands the
+// png path in here. Nothing here touches the machine.
+
+/** An app of the Open in submenu. */
+export type OpenInApp = 'vscode' | 't3' | 'ghostty';
+export const OPEN_IN_APPS: readonly OpenInApp[] = ['vscode', 't3', 'ghostty'];
+
+/** Each app's bundle id, as Spotlight (`kMDItemCFBundleIdentifier`) and `open -b` know it. */
+export const BUNDLE_IDS: Readonly<Record<OpenInApp, string>> = {
+  vscode: 'com.microsoft.VSCode',
+  t3: 'com.t3tools.t3code',
+  ghostty: 'com.mitchellh.ghostty',
+};
+
+/** Each app's display name, for log lines. */
+export const APP_NAMES: Readonly<Record<OpenInApp, string>> = { vscode: 'VS Code', t3: 'T3 Code', ghostty: 'Ghostty' };
+
+/** The `.app` folder names each app is looked for under, in order. */
+const APP_BUNDLES: Readonly<Record<OpenInApp, readonly string[]>> = {
+  vscode: ['Visual Studio Code.app'],
+  t3: ['T3 Code.app', 'T3 Code (Beta).app'],
+  ghostty: ['Ghostty.app'],
+};
+
+/** The icon png found for each app this session; an app with none has no key. */
+export type AppIcons = Partial<Record<OpenInApp, string>>;
+
+/** The Spotlight query for an app's bundle, as one `mdfind` argument. */
+export const mdfindQuery = (app: OpenInApp): string => `kMDItemCFBundleIdentifier == "${BUNDLE_IDS[app]}"`;
+
+/** Where an app's `.app` is looked for when Spotlight has no hit, in order: under `/Applications`,
+ *  then under `~/Applications` (only when `home` is absolute). */
+export function appFallbacks(app: OpenInApp, home: string | undefined): string[] {
+  const dirs = ['/Applications'];
+  if (typeof home === 'string' && home.startsWith('/')) dirs.push(`${home.replace(/\/+$/, '')}/Applications`);
+  return dirs.flatMap((d) => APP_BUNDLES[app].map((b) => `${d}/${b}`));
+}
+
+/** `mdfind`'s first hit: its first non-blank line that is an absolute path, or null. */
+export function mdfindHit(stdout: string | null): string | null {
+  if (stdout === null) return null;
+  return (
+    stdout
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => l.startsWith('/')) ?? null
+  );
+}
+
+/** The `.app` an app's icon comes from: `mdfind`'s first hit, else the first fallback present, else null. */
+export function pickAppPath(app: OpenInApp, mdfindOut: string | null, home: string | undefined, present: (path: string) => boolean): string | null {
+  return mdfindHit(mdfindOut) ?? appFallbacks(app, home).find(present) ?? null;
 }
 
 export const itemId = (item: ProjectItem, pid: string): string => `${ITEM_PREFIX}:${item}:${pid}`;
@@ -74,8 +133,16 @@ export function pickT3(home: string | undefined, present: (path: string) => bool
   return t3Candidates(home).find(present) ?? null;
 }
 
-/** A project's menu, for the apps that are there. */
-export function projectMenuItems(pid: string, apps: Availability): ContextItem[] {
+/** An Open in item, carrying its app's icon when one was found (enabled or not). */
+function openInItem(pid: string, app: OpenInApp, enabled: boolean, icons: AppIcons): ContextItem {
+  const item: ContextItem = { id: itemId(app, pid), label: APP_NAMES[app], enabled };
+  const icon = icons[app];
+  if (icon !== undefined) item.icon = icon;
+  return item;
+}
+
+/** A project's menu, for the apps that are there, with the Open in icons found so far. */
+export function projectMenuItems(pid: string, apps: Availability, icons: AppIcons = {}): ContextItem[] {
   return [
     { id: itemId('copy', pid), label: 'Copy Project Path' },
     { id: itemId('reveal', pid), label: 'Reveal in Finder' },
@@ -84,9 +151,9 @@ export function projectMenuItems(pid: string, apps: Availability): ContextItem[]
       id: OPEN_IN_ID,
       label: 'Open in',
       submenu: [
-        { id: itemId('vscode', pid), label: 'VS Code', enabled: apps.vscode },
-        { id: itemId('t3', pid), label: 'T3 Code', enabled: apps.t3 !== null },
-        { id: itemId('ghostty', pid), label: 'Ghostty', enabled: apps.ghostty },
+        openInItem(pid, 'vscode', apps.vscode, icons),
+        openInItem(pid, 't3', apps.t3 !== null, icons),
+        openInItem(pid, 'ghostty', apps.ghostty, icons),
       ],
     },
   ];

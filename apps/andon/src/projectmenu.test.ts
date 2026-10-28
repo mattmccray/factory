@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { OPEN_IN_ID, PROJECT_MENU_METHOD, exitReason, failureText, itemId, menuRequest, parseItemId, pickT3, projectMenuItems, resolveAction, t3Candidates } from './projectmenu';
-import type { Availability, MenuProject, ProjectAction, ProjectItem } from './projectmenu';
+import { BUNDLE_IDS, OPEN_IN_APPS, OPEN_IN_ID, PROJECT_MENU_METHOD, appFallbacks, exitReason, failureText, itemId, mdfindHit, mdfindQuery, menuRequest, parseItemId, pickAppPath, pickT3, projectMenuItems, resolveAction, t3Candidates } from './projectmenu';
+import type { AppIcons, Availability, ContextItem, MenuProject, ProjectAction, ProjectItem } from './projectmenu';
 
 const PID = 'aaaaaaaaaaaa';
 const ROOT = '/Users/me/code/factory';
@@ -133,5 +133,67 @@ describe('AC6: the failure text', () => {
   test("a failed command's reason is its last stderr line, or its exit status", () => {
     expect(exitReason(1, 'warn\nUnable to find application named \'Ghostty\'\n\n')).toBe("Unable to find application named 'Ghostty'");
     expect(exitReason(3, '  \n')).toBe('exited with status 3');
+  });
+});
+
+// ---- 043: the Open in apps' own icons ----
+
+describe('043 AC1: an Open in item carries its app icon whenever one was found', () => {
+  const ICONS: AppIcons = { vscode: '/tmp/vscode.png', t3: '/tmp/t3.png', ghostty: '/tmp/ghostty.png' };
+  const openIn = (items: ContextItem[]): ContextItem[] => items[3]?.submenu ?? [];
+
+  test('every item with an icon carries it; ids, labels, and enabled are as without icons', () => {
+    for (const apps of [ALL_THERE, { vscode: false, ghostty: true, t3: null }, { vscode: false, ghostty: false, t3: null }]) {
+      const plain = projectMenuItems(PID, apps);
+      const withIcons = projectMenuItems(PID, apps, ICONS);
+      expect(openIn(withIcons).map((i) => i.icon)).toEqual(['/tmp/vscode.png', '/tmp/t3.png', '/tmp/ghostty.png']);
+      expect(openIn(withIcons).map(({ icon: _icon, ...rest }) => rest)).toEqual(openIn(plain));
+    }
+  });
+
+  test('a grayed-out item keeps its icon (T3 Code with its .app found but no t3)', () => {
+    const t3 = openIn(projectMenuItems(PID, { vscode: true, ghostty: true, t3: null }, { t3: '/tmp/t3.png' }))[1];
+    expect(t3).toEqual({ id: `project-menu:t3:${PID}`, label: 'T3 Code', enabled: false, icon: '/tmp/t3.png' });
+  });
+
+  test('an app with no icon has no icon key', () => {
+    const items = openIn(projectMenuItems(PID, ALL_THERE, { ghostty: '/tmp/ghostty.png' }));
+    expect(items.map((i) => 'icon' in i)).toEqual([false, false, true]);
+    expect(openIn(projectMenuItems(PID, ALL_THERE)).some((i) => 'icon' in i)).toBe(false);
+    expect(openIn(projectMenuItems(PID, ALL_THERE, {})).some((i) => 'icon' in i)).toBe(false);
+  });
+
+  test('Copy Project Path, Reveal in Finder, the separator, and the Open in parent never carry an icon', () => {
+    const items = projectMenuItems(PID, ALL_THERE, ICONS);
+    expect(items.slice(0, 4).map((i) => 'icon' in i)).toEqual([false, false, false, false]);
+  });
+});
+
+describe('043 AC2: where each app is looked for', () => {
+  test('the bundle ids', () => {
+    expect(OPEN_IN_APPS).toEqual(['vscode', 't3', 'ghostty']);
+    expect(BUNDLE_IDS).toEqual({ vscode: 'com.microsoft.VSCode', t3: 'com.t3tools.t3code', ghostty: 'com.mitchellh.ghostty' });
+    expect(mdfindQuery('vscode')).toBe('kMDItemCFBundleIdentifier == "com.microsoft.VSCode"');
+    expect(mdfindQuery('t3')).toBe('kMDItemCFBundleIdentifier == "com.t3tools.t3code"');
+    expect(mdfindQuery('ghostty')).toBe('kMDItemCFBundleIdentifier == "com.mitchellh.ghostty"');
+  });
+
+  test('the fallbacks: under /Applications, then ~/Applications, only for an absolute HOME', () => {
+    expect(appFallbacks('vscode', '/Users/me')).toEqual(['/Applications/Visual Studio Code.app', '/Users/me/Applications/Visual Studio Code.app']);
+    expect(appFallbacks('ghostty', '/Users/me/')).toEqual(['/Applications/Ghostty.app', '/Users/me/Applications/Ghostty.app']);
+    expect(appFallbacks('t3', '/Users/me')).toEqual(['/Applications/T3 Code.app', '/Applications/T3 Code (Beta).app', '/Users/me/Applications/T3 Code.app', '/Users/me/Applications/T3 Code (Beta).app']);
+    for (const home of [undefined, '', 'Users/me', '~']) expect(appFallbacks('vscode', home)).toEqual(['/Applications/Visual Studio Code.app']);
+  });
+
+  test("the found path: mdfind's first hit, then the first fallback present", () => {
+    const hits = '/Users/me/Applications/Visual Studio Code.app\n/Volumes/old/Visual Studio Code.app\n';
+    expect(mdfindHit(hits)).toBe('/Users/me/Applications/Visual Studio Code.app');
+    expect(mdfindHit('\n  \n')).toBeNull();
+    expect(mdfindHit(null)).toBeNull();
+    expect(pickAppPath('vscode', hits, '/Users/me', () => true)).toBe('/Users/me/Applications/Visual Studio Code.app');
+    const present = new Set(['/Users/me/Applications/T3 Code (Beta).app', '/Applications/T3 Code (Beta).app']);
+    expect(pickAppPath('t3', '', '/Users/me', (p) => present.has(p))).toBe('/Applications/T3 Code (Beta).app');
+    expect(pickAppPath('t3', null, '/Users/me', (p) => p === '/Users/me/Applications/T3 Code (Beta).app')).toBe('/Users/me/Applications/T3 Code (Beta).app');
+    expect(pickAppPath('ghostty', null, '/Users/me', () => false)).toBeNull();
   });
 });
