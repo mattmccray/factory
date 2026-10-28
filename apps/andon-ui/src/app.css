@@ -210,6 +210,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; background
 .tok .tag svg.i { width: 11px; height: 11px; }
 .tok .rd { font: 10px var(--mono); color: var(--label3); }
 .tok .age { margin-left: auto; font: 10.5px var(--mono); color: var(--label3); white-space: nowrap; }
+.tok .l1 .age { flex: none; padding-left: 2px; } /* a merged token's time, on line 1: the title gives way, the time never wraps */
 .tok .why { font-size: 10.5px; color: var(--red-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tok .br { display: none; font: 11px var(--mono); color: var(--label3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -235,7 +236,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; background
 .k-claimed .sl { color: var(--label2); font-style: italic; font-weight: 400; }
 .k-claimed .tag { font-style: italic; }
 .k-merged, .k-settled { --kc: var(--green); background: var(--tint-green); border-color: color-mix(in srgb, var(--green) 45%, transparent); box-shadow: none; }
-.k-merged .tag, .k-settled .tag { color: var(--green-ink); font-family: var(--mono); }
 .tok.dim { opacity: .55; }
 
 /* verdict chips: pass solid, CHANGES solid orange, pending an outline */
