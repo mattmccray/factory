@@ -2,16 +2,16 @@
   "schema": "factory/v1",
   "version": "0.1.0",
   "files": {
-    ".claude/agents/factory-approver.md": "4874e89a848fb9434b9379e6f0165d4b3c47d86943c9b9ed82d4293435e7edd3",
-    ".claude/agents/factory-builder.md": "c89ce77e6e090651f57959b4e2a98a034176156c11d19b09a0f6e8106c56740f",
+    ".claude/agents/factory-approver.md": "14d08440888b6d077f6a429def65cfd0cd9d5d964392feca3fea44d5cf2421f9",
+    ".claude/agents/factory-builder.md": "44767f8cd0a0d6893403c8375fb0b4301590df53fea4aa02e6281e612802833f",
     ".claude/agents/factory-code.md": "2f8aaab981cfafde43645b14270f25b7ef72b29e8e2f2e275bf2b3a2b956b30b",
     ".claude/agents/factory-contract.md": "7fc2b479919b272eac37f40897a6e1bfb3a16df568a714e5c8e0799dadab7a91",
     ".claude/agents/factory-security.md": "1c8b733fd478381ce3c72f7863f8c92101415b8f457dac892968abbe5365e8ab",
     ".claude/agents/factory-spec-writer.md": "e8595a8b596b936e369373677acac3c37e233de10fc6b7035b12fb5b5c29a0b1",
     ".claude/agents/factory-ui.md": "fe9a0819b38bfd75b670f2581e3429142c11f76e1f2a0571c13240e53322778a",
-    ".claude/skills/factory/SKILL.md": "8152ca7d2e5af7ff3c69a13e88dca8ba5754ce4ab0cdcaa274586cc2b6c1f77e",
+    ".claude/skills/factory/SKILL.md": "75ece6f9b08b20e24ce43003e77faeb3227f32da682718edc74ecd578534fea7",
     ".claude/skills/factory/explore.md": "2d992ad3faa61e1b5225005e61fd0ce648580491942c468a2f260d9f4afa6625",
-    "factory/CONTRACT.md": "2dd68ff467d7947bb99c0113941c8b32ad892b584eb6fcf6cb00cb17d8598274",
-    "factory/cli.ts": "51abeec2a4bacfc10c3a804d948336404f3fc8b57558ae2ff2865bc2d2716434"
+    "factory/CONTRACT.md": "c978732d84c9b4fac6c8295b892bc084cf0efe232326fed12f27ae3f775590bc",
+    "factory/cli.ts": "df221a27967af42be20fee0648c0ac5bd2a2ba10980e47707ddaa62c500856e9"
   }
 }

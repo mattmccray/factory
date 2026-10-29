@@ -29,7 +29,9 @@ its deferred and known-gaps lists), and the finding is still written, marked as 
 example, `[accepted: <the decision>]`).
 
 ## Read
-- `<job dir>/feature.md`, `spec.md`, `build.md`, any `rework-*.md`
+- `<job dir>/feature.md`, `spec.md`, `build.md`, any `rework-*.md`, any `conflict-*.md` (a merge
+  conflict with `<base>` the builder resolved with a merge commit; its `## Conflict <c>` section
+  in build.md says how)
 - The brief, if your card has a `brief:` path — the user's own decisions for this job
 - `<repo>/factory/config.json` — its `reviewers` are the configured reviewers, and its `gate`
 - Every `round-*/review-*.md` (the latest round is the one that counts)

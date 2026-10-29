@@ -33,6 +33,7 @@ feature → spec-writer → builder ⇄ [configured reviewers] → approver → 
 | `factory/briefs/<slug>.md` — decisions from an `explore` interview (tracked in git) | you, with the human |
 | `factory/jobs/<id>/feature.md` — the request, verbatim | you |
 | `factory/jobs/<id>/rework-<k>.md` — a human's rework note, verbatim | you |
+| `factory/jobs/<id>/conflict-<c>.md` — the facts of a merge conflict with `<target>` | you |
 | `factory/jobs/<id>/spec.md` | `factory-spec-writer` |
 | `factory/jobs/<id>/build.md` | `factory-builder` |
 | `factory/jobs/<id>/round-<N>/review-<key>.md` | the reviewer for each key in `factory/config.json` `reviewers` |
@@ -283,10 +284,46 @@ git merge --no-ff factory/<id> -m '<Merge message: line from decision.md>' \
 The merge message is the approver's text: keep it in single quotes and write any apostrophe in it
 as `'\''` (as for board values), so `$` and backticks in it are never expanded.
 
-- Conflict or refusal → `git merge --abort` (if a merge is in progress), release the lock,
-  board: `merge.failed reason='merge conflict with <target> — /factory rework to rebase'`.
-  Stop. (Refusal because of a stray `.git/index.lock` means something else is mid-commit;
-  wait a few seconds and retry once before giving up.)
+- **Conflict** (after the failed `git merge`, `git diff --name-only --diff-filter=U` lists at
+  least one path) → the job goes back to its own builder, in order:
+  1. Before anything else, list the conflicting paths (`git diff --name-only --diff-filter=U`)
+     and the sha of `<target>` (`git rev-parse --short <target>`), and keep `git merge`'s
+     one-line summary. Then `git merge --abort`.
+  2. Then release the lock (`rmdir factory/.lock`).
+  3. If `conflicts` in job.json is already 2 (a missing key counts as 0), the job has had its
+     two tries: board: `merge.failed reason='merge conflict with <target> after 2 resolved
+     conflicts'` (the job goes to `needs-human`), and stop: tell the user they can
+     `/factory rework <id> "<note>"` or resolve it themselves.
+  4. Otherwise write `jobs/<id>/conflict-<c>.md` (`c` = `conflicts` + 1). The note holds facts
+     only: the target branch and its sha, the conflicting paths, and `git merge`'s one-line
+     summary. No advice on how to resolve it; the builder's definition has that.
+
+     ```
+     # Conflict <c> — <id>
+     Target: <target> @ <sha>
+     Merge: <git merge's one-line summary>
+     Conflicting paths:
+     - <path>
+     ```
+  5. Board: `merge.conflicted reason='merge conflict with <target>: <n> path(s), back to the
+     builder'`. The CLI moves the job to `build` with a fresh budget (`maxRound` = round + 2) and
+     counts the conflict. If the CLI refuses `merge.conflicted`, board: `merge.failed
+     reason='merge conflict with <target>, merge.conflicted refused: <its one-line reason>'` and
+     stop as in 3.
+  6. Resume `builder-<id>` (span `role=builder name=builder-<id> round=<round>`) with
+     `SendMessage` — *"Merge conflict note: <R>/factory/jobs/<id>/conflict-<c>.md. Merge
+     `<target>` into the branch, resolve it, run the gate, add a `## Conflict <c>` section to
+     build.md, commit."* If that builder isn't alive in this session, spawn a fresh
+     `factory-builder` named `builder-<id>` with the card plus the note path (everything it needs
+     is in files).
+  7. Continue at step 4 with round `<round> + 1`, then the approver (step 6), then **Merge**
+     again. The reviewers' diff includes the builder's merge commit.
+- **Refusal** (any other failure: a stray `.git/index.lock`, uncommitted changes in the way, or
+  anything else, with no conflicting paths) → `git merge --abort` (if a merge is in progress),
+  release the lock, board: `merge.failed reason='git merge into <target> refused: <its one-line
+  error>'`, and stop: tell the user what blocked it and that they can retry with
+  `/factory approve <id>`. (A stray `.git/index.lock` means something else is mid-commit; wait
+  a few seconds and retry once before giving up.)
 - Success → board: `job.merged sha=<short sha>` **immediately**, before any cleanup, so git and
   the board never disagree. Then `git worktree remove factory/.worktrees/<id>` and
   `git branch -d factory/<id>`; if cleanup fails, report it and carry on (the merge stands).
@@ -387,6 +424,11 @@ ask before merging work the approver never checked. (A retry after a failed merg
 Recreate the worktree if it's gone (step 2, from the job's `<target>`), run **the thread lookup**,
 board: `job.human-approved [session=…]` (every time, also when
 retrying after a failed merge; leave decision.md alone, it's the approver's), and **Merge**.
+If **Merge** finds a conflict, the job enters the same loop as any conflict: the builder
+resolves it, a review round runs, then the approver, then **Merge** again, and this session
+drives it on. `merge.conflicted` clears the human approval (the human approved the work before
+the resolution existed), so an approver `ESCALATE` there comes back to the human, as any
+escalation does.
 
 **`/factory rework <id> <note>`** — Send a `needs-human` job back with human feedback. Write
 the note verbatim to `rework-<k>.md` (`k` = `reworks` + 1, from job.json), recreate the worktree
@@ -564,7 +606,7 @@ Finish with what changed, doctor's result, the commit (or why there is none), an
   (`abandon` from a working stage needs the user to confirm the driving session is stopped).
   Finding another job in flight is never a reason to stop; it's only a reason for the overlap check.
 - Agents write only their own file (a reviewer also its `round-<N>/<key>/` supporting files);
-  you write only your job's feature.md and rework notes, backlog edits (each committed at once),
+  you write only your job's feature.md, rework notes, and conflict notes, backlog edits (each committed at once),
   briefs' bookkeeping lines (`- Job:`, `- Abandoned:`), and events through the
   factory CLI (and, in `customize`, the overlay). If an agent wrote somewhere else, note it and tell the user.
 - The managed files (this skill and the `factory-*` agents) are never edited by hand. A

@@ -32,11 +32,18 @@ factory/
     events.jsonl              # append-only event log — the truth
     job.json                  # derived snapshot — what the board reads
     feature.md  rework-<k>.md # inputs written by the orchestrator
+    conflict-<c>.md           # input written by the orchestrator: one per merge conflict
     spec.md  build.md  decision.md
     round-<N>/review-<key>.md # one per reviewer key in the round
     round-<N>/<key>/*         # that reviewer's supporting files, e.g. round-<N>/ui/*.png screenshots
   .lock/  .worktrees/<id>/    # runtime (gitignored)
 ```
+
+`conflict-<c>.md` is written by the orchestrator right before it logs `merge.conflicted` (see
+"`events.jsonl`"), with `c` the job's new `conflicts` count (1 or 2). It holds facts only: the
+target branch and its sha at the failed merge, the conflicting paths (`git diff --name-only
+--diff-filter=U`, taken before the merge is aborted), and `git merge`'s one-line summary.
+*(Added within v1, additively: a new input file.)*
 
 When archiving is on, `factory archive` also copies each `merged` or `abandoned` job to the
 orphan branch `factory/archive` in the same repo (see "Job archive"). That branch is history, not
@@ -198,6 +205,10 @@ orchestrator passes these fields, dropping the ones that don't apply:
 | `deliver` | the instruction to create the `write` file, not to reply with its contents | every role |
 
 A rework adds the path of `<job dir>/rework-<k>.md` to the builder's (or spec-writer's) card.
+A merge conflict adds the path of `<job dir>/conflict-<c>.md` to the builder's card (or names it
+in the message resuming the builder); the builder merges `base` into `factory/<id>` in the
+worktree as a merge commit (never a rebase or any history rewrite), resolves it, runs the gate,
+and adds a `## Conflict <c>` section to `build.md`. *(Added within v1, additively.)*
 
 **Per role.** Each role also reads its overlay, `factory/roles/<role>.md`, when it exists, and
 the project's instructions. "Writes" is the role's one file (the card's `write` path):
@@ -205,9 +216,9 @@ the project's instructions. "Writes" is the role's one file (the card's `write` 
 | role | reads | writes | first line |
 |---|---|---|---|
 | `spec-writer` | `feature.md`, any `rework-*.md`, the brief, the code | `<job dir>/spec.md` | `# <title>` (its H1 becomes `job.titled`) |
-| `builder` | `spec.md`, any `rework-*.md`, the round's `review-*.md`, its own `build.md`, `config.json` (`gate`) | `<job dir>/build.md`, plus commits on `factory/<id>` in the worktree | `# Build — <id>` |
+| `builder` | `spec.md`, any `rework-*.md`, any `conflict-*.md`, the round's `review-*.md`, its own `build.md`, `config.json` (`gate`) | `<job dir>/build.md`, plus commits on `factory/<id>` in the worktree | `# Build — <id>` |
 | reviewer `<key>` | `spec.md`, `build.md`, the diff `<base>...factory/<id>`, `config.json` (`gate`), its previous `round-<N-1>/review-<key>.md` | `<job dir>/round-<N>/review-<key>.md` (and supporting files under `round-<N>/<key>/`) | `VERDICT: PASS` or `VERDICT: CHANGES` |
-| `approver` | `feature.md`, `spec.md`, `build.md`, any `rework-*.md`, the brief, every `round-*/review-*.md`, `config.json`, the diff and log | `<job dir>/decision.md` | `APPROVE` or `ESCALATE` |
+| `approver` | `feature.md`, `spec.md`, `build.md`, any `rework-*.md`, any `conflict-*.md`, the brief, every `round-*/review-*.md`, `config.json`, the diff and log | `<job dir>/decision.md` | `APPROVE` or `ESCALATE` |
 
 The builder is the only role that changes code, and only in the job worktree. Reviewers and the
 approver may run commands there (the gate) but never edit or commit.
@@ -296,6 +307,7 @@ Plus the type's own fields:
 | `job.reworked` | `k`, `maxRound`, `session?` | stage `build`; clears `decision`; `reworks = k`; `note = ""`; `stoppedBy` and `stoppedFrom` = `null`; with `session`, sets `session` (without, keeps it) |
 | `job.human-approved` | `session?` | `decision = "APPROVE (human)"`; with `session`, sets `session` (without, keeps it) (idempotent: a repeat while `needs-human` is accepted; it changes nothing but `session`, when it carries one) |
 | `merge.failed` | `reason` | stage `needs-human`; `note = reason`; `stoppedBy = "merge-failed"`; from `approve`, `stoppedFrom = "approve"` (from `needs-human`, after `job.human-approved`, `stoppedFrom` is unchanged) |
+| `merge.conflicted` | `reason` (non-empty; no other field) | stage `build`; `maxRound = round + 2` (the current `round`); `conflicts` + 1; `note = reason`; clears `decision`; clears any human approval (a later merge from `needs-human` needs a new `job.human-approved`); `stoppedBy`, `stoppedFrom`, `reworks`, and `session` unchanged; closes no agent span. *(Added within v1, additively.)* |
 | `job.merged` | `sha` | stage `merged`; `note = "merged <sha>"`; `endedAt = ts`; terminal |
 | `job.abandoned` | `reason` (non-empty) | stage `abandoned`; `note = reason`; `endedAt = ts`; closes every still-open agent span at this `ts` with `verdict: null`; terminal. *(Added within v1, additively.)* |
 
@@ -338,8 +350,8 @@ pair with the same `name`; spans never overlap for one identity.
 | `spec` | `job.titled`, `stage.entered build`, `job.escalated`, `job.abandoned` (force only) |
 | `build` | `round.started` (round = previous + 1), `job.escalated`, `job.abandoned` (force only) |
 | `review` | `stage.entered build` (only if round < maxRound and the round is complete), `stage.entered approve` (round complete), `job.escalated`, `job.abandoned` (force only) |
-| `approve` | `job.escalated`, `job.merged`, `merge.failed`, `job.abandoned` (force only) |
-| `needs-human` | `job.reworked`, `job.abandoned`, `job.human-approved` → then `job.merged` \| `merge.failed` (a failed merge resets the approval, so `job.human-approved` is needed again before the next `job.merged`) |
+| `approve` | `job.escalated`, `job.merged`, `merge.failed`, `merge.conflicted` (at most 2 per job), `job.abandoned` (force only) |
+| `needs-human` | `job.reworked`, `job.abandoned`, `job.human-approved` → then `job.merged` \| `merge.failed` \| `merge.conflicted` (at most 2 per job) (a failed or conflicted merge resets the approval, so `job.human-approved` is needed again before the next `job.merged`) |
 | `merged` | nothing (terminal) |
 | `abandoned` | nothing (terminal) |
 
@@ -350,6 +362,16 @@ job dir (it logs `job.claimed` on a new id), and a rejected event leaves nothing
 needs a `job.human-approved` logged after any `merge.failed` (and after any `job.escalated`).
 `job.human-approved` is idempotent while `needs-human`: logging it again when the job is already
 human-approved is accepted (so a retried `approve` never fails on it) and has no further effect.
+
+`merge.conflicted` is allowed from `approve`, and from `needs-human` once a `job.human-approved`
+has been logged after the last `job.escalated` or `merge.failed` (the condition `job.merged`
+uses); from every other stage it is rejected. A job may log it at most **2** times: when the log
+already has 2 `merge.conflicted` events, the next one is rejected with a one-line reason telling
+the orchestrator to log `merge.failed` instead (which is still accepted), and nothing is written.
+The limit is fixed in the contract, not a config key. The CLI derives the count and the new
+`maxRound` from the log alone; the event carries no number. After it, the job is in `build`:
+`round.started` takes round + 1, and `stage.entered build` from `review` is allowed up to round
++ 2. *(Added within v1, additively: a new event; no existing transition is tightened.)*
 
 `job.abandoned` is allowed from `needs-human` always, and from a working stage only when the
 caller passes **force**, an option of the transition check, not a field of the event: the event
@@ -380,7 +402,7 @@ see a partial file). Field-compatible with the pre-contract `job.json`, plus tim
   "stage": "review", "round": 2, "maxRound": 2,
   "reviews": { "security": "CHANGES", "ux": "PASS", "ui": "pending", "code": "PASS" },
   "history": [ { "round": 1, "reviews": { "security": "CHANGES", "ux": "PASS", "ui": "CHANGES", "code": "PASS" } } ],
-  "reworks": 0, "decision": null, "note": "", "stoppedBy": null, "stoppedFrom": null,
+  "reworks": 0, "conflicts": 0, "decision": null, "note": "", "stoppedBy": null, "stoppedFrom": null,
   "brief": null, "issue": "M80",
   "session": { "app": "t3code", "environment": "env-1", "thread": "thread-A" },
   "startedAt": "2026-10-23T14:02:11.204Z",
@@ -407,14 +429,18 @@ see a partial file). Field-compatible with the pre-contract `job.json`, plus tim
   `job.reworked` or `job.human-approved` without one keeps the earlier one, and no other event
   changes it. `null` when none was ever recorded. Readers treat a missing key as `null` (a
   snapshot written before it, until a `rebuild`). *(Added within v1, additively.)*
+- `conflicts` — the number of `merge.conflicted` events in the log, `0` when there are none
+  (at most 2: see "Transitions the CLI enforces"). Snapshots written by the CLI (`event`,
+  `rebuild`) always carry the key, and `rebuild` derives it from the log; readers treat a missing
+  key as `0` (a snapshot written before it, until a `rebuild`). *(Added within v1, additively.)*
 - `stageEnteredAt` — when the current stage began (drives the card's live timer).
 - `stoppedBy` — why the job is (or last was) in `needs-human`: `"escalated"` (set by
   `job.escalated`) or `"merge-failed"` (set by `merge.failed`, also one logged while already in
   `needs-human`); `null` when it never was, or since its last `job.reworked`.
 - `stoppedFrom` — the working stage (`claimed`, `spec`, `build`, `review`, or `approve`) the job
   was in when it entered `needs-human`, or `null`. A `merge.failed` from `needs-human` leaves it
-  unchanged. `job.reworked` resets both fields to `null`; `job.human-approved`, `job.merged`, and
-  `job.abandoned` keep them. Snapshots written by the CLI always carry both keys; readers treat a
+  unchanged. `job.reworked` resets both fields to `null`; `job.human-approved`,
+  `merge.conflicted`, `job.merged`, and `job.abandoned` keep them. Snapshots written by the CLI always carry both keys; readers treat a
   missing key as `null` (a snapshot written before them, until a `rebuild` derives them from the
   log). *(Added within v1, additively.)*
 - `endedAt` — the `job.merged` or `job.abandoned` time, else `null`. A merged job is settled when
@@ -615,7 +641,7 @@ tree holds one top-level directory per archived job and nothing else:
 ```
 <id>/                       # one per archived job, named by its job id
   events.jsonl              # the log — readers re-project job.json from it
-  feature.md  rework-<k>.md  spec.md  build.md  decision.md
+  feature.md  rework-<k>.md  conflict-<c>.md  spec.md  build.md  decision.md
   round-<N>/review-<key>.md
   round-<N>/<key>/*         # reviewers' supporting files (e.g. screenshots), byte for byte
 ```
@@ -779,7 +805,10 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
   job directory is skipped. The job id is checked against `^\d{3}-[a-z0-9-]+$` before any path is
   built. For a job found only on `factory/archive`, `files` are its archived files, with the same
   paths (`jobs/<id>/…`), reading order, and text as the local copy had, led by the brief when the
-  job names one that exists locally under `factory/briefs/`.
+  job names one that exists locally under `factory/briefs/`. The reading order is `feature.md`,
+  `spec.md`, `build.md`, the `rework-<k>.md` notes and then the `conflict-<c>.md` notes (each in
+  numeric order), `decision.md`, then each `round-<N>/` in numeric order. *(Added within v1,
+  additively: the `conflict-<c>.md` notes; every other file's order is unchanged.)*
 - `GET /` returns the Andon UI's `index.html`, and `GET /<path>` returns that file of the UI
   build (`apps/andon-ui/dist`, built by `bun run andon:ui:build`), read-only. The URL path is decoded,
   and it must resolve to a regular file inside the build directory both before and after
@@ -908,5 +937,14 @@ These rules record how the code behaves today; they change no behavior.
   `factory/archive`, settled, and equal to their archived tree. It reuses the existing settle
   rule (`dashboard.settleAfterHours`, `endedAt`) and the archive's file set. No event, snapshot
   field, config key, or transition changes.
+- **2026-10-29: `merge.conflicted`, `conflicts`, and `conflict-<c>.md`.** Additive within v1
+  (the brief `merge-conflict-rework`'s contract call, approved by Matt on 2026-10-29): the new
+  event `merge.conflicted` (`reason` only), allowed from `approve` and from `needs-human` after
+  `job.human-approved`, moving the job to `build` with `maxRound = round + 2`, `note = reason`,
+  and the human approval cleared, and refused once the job has 2 (log `merge.failed` instead);
+  the new `job.json` field `conflicts` (default 0); and the new orchestrator-written input
+  `jobs/<id>/conflict-<c>.md`, on the builder's card, in the builder's and approver's reads, in
+  the archive's layout, and in Andon's job docs. No existing transition changes; every existing
+  `events.jsonl` stays valid v1 and rebuilds to the same `job.json` plus `conflicts: 0`.
 - **`config.json` is strict, so upgrade first.** A config that uses a newer v1 key needs a CLI that
   knows that key. Upgrade the managed files before adding the key to the overlay.

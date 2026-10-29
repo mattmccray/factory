@@ -296,6 +296,9 @@ function parseEventInput(type, fields, ctx) {
     case "merge.failed":
       allow("reason");
       return { type, reason: str(fields, "reason") };
+    case "merge.conflicted":
+      allow("reason");
+      return { type, reason: str(fields, "reason") };
     case "job.merged":
       allow("sha");
       return { type, sha: str(fields, "sha") };
@@ -306,8 +309,9 @@ function parseEventInput(type, fields, ctx) {
       throw new Error(`unknown event type '${type}'`);
   }
 }
+var CONFLICT_LIMIT = 2;
 function derive(prior) {
-  const s = { stage: null, round: 0, maxRound: 0, reviewers: [], finished: new Set, humanApproved: false };
+  const s = { stage: null, round: 0, maxRound: 0, reviewers: [], finished: new Set, humanApproved: false, conflicts: 0 };
   for (const e of prior) {
     switch (e.type) {
       case "job.claimed":
@@ -342,6 +346,12 @@ function derive(prior) {
       case "merge.failed":
         s.stage = "needs-human";
         s.humanApproved = false;
+        break;
+      case "merge.conflicted":
+        s.stage = "build";
+        s.maxRound = s.round + 2;
+        s.humanApproved = false;
+        s.conflicts += 1;
         break;
       case "job.merged":
         s.stage = "merged";
@@ -414,6 +424,13 @@ function checkTransition(prior, next, opts = {}) {
       if (stage === "needs-human" && s.humanApproved)
         return;
       return bad();
+    case "merge.conflicted":
+      if (stage !== "approve" && !(stage === "needs-human" && s.humanApproved))
+        return bad();
+      if (s.conflicts >= CONFLICT_LIMIT) {
+        fail(`merge.conflicted refused: this job has already conflicted ${s.conflicts} times (the limit is ${CONFLICT_LIMIT}); log merge.failed instead`);
+      }
+      return;
     case "job.merged":
       if (stage === "approve" || stage === "needs-human" && s.humanApproved)
         return;
@@ -539,6 +556,13 @@ function apply(s, e) {
         s.stoppedFrom = workingStage(s.stage);
       enterStage(s, "needs-human", e.ts);
       return;
+    case "merge.conflicted":
+      s.conflicts += 1;
+      s.maxRound = s.round + 2;
+      s.note = e.reason;
+      s.decision = null;
+      enterStage(s, "build", e.ts);
+      return;
     case "job.reworked":
       s.reworks = e.k;
       s.stoppedBy = null;
@@ -583,6 +607,7 @@ function project(events) {
     reviews: {},
     history: [],
     reworks: 0,
+    conflicts: 0,
     decision: null,
     note: "",
     stoppedBy: null,
