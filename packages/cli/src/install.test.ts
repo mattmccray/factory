@@ -331,7 +331,7 @@ describe('upgrade (AC4)', () => {
   });
 
   test('an old manifest listing overlay or runtime state is refused, even with --force', async () => {
-    for (const rel of ['factory/config.json', 'factory/roles/alpha.md', 'factory/./Backlog.md', 'factory/jobs/001-a-b/events.jsonl', '.git/HEAD']) {
+    for (const rel of ['factory/config.json', 'factory/roles/alpha.md', 'factory/./Backlog.md', 'factory/jobs/001-a-b/events.jsonl', 'factory/epics/x.md', 'factory/Epics/x.md', '.git/HEAD']) {
       await writeFile(join(dir, 'factory/managed.json'), JSON.stringify({ ...(await manifestOf(dir)), files: { [rel]: sha('x') } }));
       const before = await snapshot(dir);
       const r = await cli(dir, 'upgrade', '--force');
@@ -443,9 +443,9 @@ describe('self-upgrade of a copy of this repo (AC6)', () => {
 
 describe('protectedReason', () => {
   test('refuses overlay, runtime, and VCS paths in any spelling; allows managed paths', () => {
-    for (const p of ['factory/config.json', 'factory/managed.json', 'factory/roles/x.md', 'factory//jobs/1', 'FACTORY/Briefs/x.md', 'factory/.lock', '.git/config', 'a/../factory/backlog.md'])
+    for (const p of ['factory/config.json', 'factory/managed.json', 'factory/roles/x.md', 'factory//jobs/1', 'FACTORY/Briefs/x.md', 'factory/.lock', '.git/config', 'a/../factory/backlog.md', 'factory/epics', 'factory/epics/x.md', 'factory/./EPICS/x.md'])
       expect({ p, refused: protectedReason(p) !== null }).toEqual({ p, refused: true });
-    for (const p of ['factory/cli.ts', 'factory/CONTRACT.md', '.claude/agents/factory-x.md', 'factory/rolesx.md'])
+    for (const p of ['factory/cli.ts', 'factory/CONTRACT.md', '.claude/agents/factory-x.md', 'factory/rolesx.md', 'factory/epicsx.md'])
       expect({ p, why: protectedReason(p) }).toEqual({ p, why: null });
   });
 });

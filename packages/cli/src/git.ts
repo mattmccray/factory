@@ -97,3 +97,20 @@ export async function deleteBranch(repo: string, branch: string): Promise<string
   const r = await git(repo, ['branch', '-D', branch], 'abandon');
   return r.code === 0 ? null : r.err || `exit ${r.code}`;
 }
+
+/** Whether `refs/heads/<branch>` exists in `repo`. Throws a one-line reason when git fails. */
+export async function branchExists(repo: string, branch: string, what = 'epic'): Promise<boolean> {
+  const r = await git(repo, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], what);
+  if (r.code === 0) return true;
+  if (r.code === 1) return false;
+  throw new Error(`${what}: git failed in ${repo}: ${r.err || `exit ${r.code}`}`);
+}
+
+/**
+ * Creates `branch` from `from` and checks it out in a new worktree at `path` (relative to `repo`),
+ * with `git worktree add -b`. Returns null on success, else git's one-line reason.
+ */
+export async function addWorktree(repo: string, path: string, branch: string, from: string): Promise<string | null> {
+  const r = await git(repo, ['worktree', 'add', '--quiet', '-b', branch, path, from], 'epic start');
+  return r.code === 0 ? null : r.err || `exit ${r.code}`;
+}

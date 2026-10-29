@@ -178,11 +178,13 @@ describe('factory archive (job 045)', () => {
   });
 
   test('AC2: a bad or unknown id is refused before any path or ref is built', async () => {
-    for (const id of ['../x', '01-short', 'abc']) {
+    for (const id of ['../x', '01-Short', 'a_b']) {
       const r = await cli('archive', id);
       expect(r.code).toBe(1);
       expect(r.err[0]).toMatch(/^job id '.*' must match/);
     }
+    // An epic slug (never a job id) names an epic (job 052): an unknown one is refused in one line.
+    for (const slug of ['01-short', 'abc']) expect((await cli('archive', slug)).err).toEqual([`epic ${slug}: no such epic`]);
     expect((await cli('archive', '004-nope')).err).toEqual(['004-nope: no such job']);
     expect(tip()).toBeNull();
   });

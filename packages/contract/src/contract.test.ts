@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { type EventInput, type FactoryEvent, type Session, archiveEnabled, checkTransition, isSession, mergeTarget, parseConfig, parseEventInput, parseSession } from './contract';
+import { type EventInput, type FactoryEvent, type Session, archiveEnabled, checkEpicSlug, checkTransition, epicMaxParallel, isSession, mergeTarget, parseConfig, parseEventInput, parseSession } from './contract';
+import { project } from './project';
 
 const shipped: unknown = await Bun.file(new URL('./fixtures/config.json', import.meta.url)).json();
 const base = { schema: 'factory/v1', reviewers: ['security', 'ux'], maxRound: 2, dashboard: { settleAfterHours: 24 } };
@@ -586,5 +587,65 @@ describe('merge.conflicted (job 051)', () => {
 
   test('a job sent back by a conflict can still escalate from build', () => {
     expect(() => checkTransition([...approve, ...log(conflicted)], { type: 'job.escalated', reason: 'r' })).not.toThrow();
+  });
+});
+
+describe('epics (job 052)', () => {
+  test('AC6: parseConfig accepts epic.maxParallel; no key or {} means 3; anything else is rejected', () => {
+    expect(epicMaxParallel(parseConfig(base))).toBe(3);
+    expect(parseConfig({ ...base, epic: {} }).epic).toEqual({});
+    expect(epicMaxParallel(parseConfig({ ...base, epic: {} }))).toBe(3);
+    expect(epicMaxParallel(parseConfig({ ...base, epic: { maxParallel: 5 } }))).toBe(5);
+    expect(() => parseConfig({ ...base, epic: { maxParallel: 0 } })).toThrow('config: epic.maxParallel must be a positive integer');
+    expect(() => parseConfig({ ...base, epic: { maxParallel: -2 } })).toThrow(/positive integer/);
+    expect(() => parseConfig({ ...base, epic: { maxParallel: 1.5 } })).toThrow(/positive integer/);
+    expect(() => parseConfig({ ...base, epic: { maxParallel: '2' } })).toThrow(/positive integer/);
+    expect(() => parseConfig({ ...base, epic: { maxParallel: 2, conflictLimit: 3 } })).toThrow("config.epic: unknown key 'conflictLimit'");
+    expect(() => parseConfig({ ...base, epic: 3 })).toThrow('config: epic must be an object { maxParallel? }');
+    expect(() => parseConfig({ ...base, epic: null })).toThrow(/epic must be an object/);
+  });
+
+  test('an epic slug is a job slug that does not look like a job id', () => {
+    expect(() => checkEpicSlug('auth-rework')).not.toThrow();
+    expect(() => checkEpicSlug('052-epic')).toThrow(/must not look like a job id/);
+    expect(() => checkEpicSlug('../x')).toThrow(/must match/);
+    expect(() => checkEpicSlug('a'.repeat(41))).toThrow(/41 characters/);
+  });
+
+  const config = parseConfig(base);
+  const claim = (fields: Record<string, unknown>, target?: string) => parseEventInput('job.claimed', fields, { id: '001-x', config, ...(target === undefined ? {} : { target }) });
+
+  test('AC3: job.claimed records epic and kind (member by default)', () => {
+    expect(claim({ epic: 'e', brief: 'factory/briefs/a.md' }, 'factory/epic/e')).toMatchObject({ epic: 'e', kind: 'member', brief: 'factory/briefs/a.md', target: 'factory/epic/e' });
+    expect(claim({ epic: 'e', kind: 'member', brief: 'factory/briefs/a.md' })).toMatchObject({ epic: 'e', kind: 'member' });
+    expect(claim({ epic: 'e', kind: 'sync' })).toMatchObject({ epic: 'e', kind: 'sync', brief: null });
+    expect(claim({ epic: 'e', kind: 'fix' })).toMatchObject({ epic: 'e', kind: 'fix' });
+    const plain = claim({});
+    expect('epic' in plain || 'kind' in plain).toBe(false);
+  });
+
+  test('AC3: kind without epic, a brief on sync/fix, a member without a brief, a bad kind or slug, a foreign target', () => {
+    expect(() => claim({ kind: 'sync' })).toThrow('job.claimed: kind=sync needs epic=<slug>');
+    expect(() => claim({ epic: 'e', kind: 'sync', brief: 'factory/briefs/a.md' })).toThrow('job.claimed: a sync job takes no brief=');
+    expect(() => claim({ epic: 'e', kind: 'fix', brief: 'factory/briefs/a.md' })).toThrow('job.claimed: a fix job takes no brief=');
+    expect(() => claim({ epic: 'e' })).toThrow(/a member claim needs brief=/);
+    expect(() => claim({ epic: 'e', kind: 'other' })).toThrow("field 'kind' must be one of member|sync|fix");
+    expect(() => claim({ epic: '001-e', kind: 'sync' })).toThrow(/must not look like a job id/);
+    expect(() => claim({ epic: 'e', kind: 'sync' }, 'main')).toThrow('job.claimed: a job in epic e targets factory/epic/e, not main');
+    expect(() => claim({ epic: 'e', kind: 'sync', target: 'factory/epic/e' })).toThrow(/extra field/);
+  });
+
+  test('an epic event through the job path names epic event', () => {
+    expect(() => parseEventInput('epic.waiting', { reason: 'r' })).toThrow('epic.waiting is an epic event, not a job event: run epic event <slug> epic.waiting …');
+  });
+
+  test('AC3: job.json has epic and kind; null for a standalone job and for logs written before them', () => {
+    const ts = '2026-10-29T10:00:00.000Z';
+    const old: FactoryEvent[] = [{ ts, type: 'job.claimed', schema: 'factory/v1', id: '001-x', maxRound: 2, brief: null, issue: null }];
+    expect(project(old)).toMatchObject({ epic: null, kind: null });
+    const member: FactoryEvent[] = [{ ts, ...claim({ epic: 'e', brief: 'factory/briefs/a.md' }) }];
+    expect(project(member)).toMatchObject({ epic: 'e', kind: 'member' });
+    const sync: FactoryEvent[] = [{ ts, ...claim({ epic: 'e', kind: 'sync' }) }];
+    expect(project(sync)).toMatchObject({ epic: 'e', kind: 'sync' });
   });
 });

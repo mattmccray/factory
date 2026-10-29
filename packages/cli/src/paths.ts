@@ -57,6 +57,7 @@ const PROTECTED = [
   'factory/roles',
   'factory/backlog.md',
   'factory/briefs',
+  'factory/epics',
   'factory/jobs',
   'factory/.lock',
   'factory/.worktrees',

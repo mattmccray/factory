@@ -1,14 +1,13 @@
 // The factory's only writer of job state (docs/contract/v1.md): reads/appends events.jsonl and
 // rewrites the derived job.json. `root` is the factory/ directory so tests can use a temp dir.
-import { appendFile, mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, rename, rmdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { JOB_NUMBER_MAX, checkSlug, checkTransition, parseEventInput } from './contract';
+import { JOB_NUMBER_MAX, checkSlug, checkTransition, epicMaxParallel, parseEventInput } from './contract';
 import type { Config, EventInput, FactoryEvent, TransitionOptions, Verdict } from './contract';
+import { claimIntoEpic, epicSlugs, rebuildEpic } from './epicstore';
+import { acquire, exists, isNotFound, release } from './lock';
 import { project } from './project';
 import type { JobSnapshot } from './project';
-
-const LOCK_STALE_MS = 30_000;
-const LOCK_RETRY_MS = 25;
 
 const JOB_ID = /^\d{3}-[a-z0-9-]+$/;
 
@@ -19,9 +18,6 @@ function jobDir(root: string, id: string): string {
 }
 const logPath = (root: string, id: string): string => join(jobDir(root, id), 'events.jsonl');
 
-const isNotFound = (e: unknown): boolean => typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT';
-const isExists = (e: unknown): boolean => typeof e === 'object' && e !== null && 'code' in e && e.code === 'EEXIST';
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 // Parses one log line into an event. The log is written only by this module, so a line that is
 // valid JSON object is trusted to be a FactoryEvent (transitions were checked before append).
@@ -99,24 +95,6 @@ async function withVerdict(root: string, id: string, input: EventInput): Promise
   return input;
 }
 
-// Takes the `mkdir` lock at `lock`, waiting on a fresh holder and breaking one older than 30 s.
-async function acquire(lock: string): Promise<void> {
-  for (;;) {
-    try {
-      await mkdir(lock);
-      return;
-    } catch (e) {
-      if (!isExists(e)) throw e;
-      try {
-        if (Date.now() - (await stat(lock)).mtimeMs > LOCK_STALE_MS) await rm(lock, { recursive: true, force: true });
-      } catch (s) {
-        if (!isNotFound(s)) throw s;
-      }
-      await sleep(LOCK_RETRY_MS);
-    }
-  }
-}
-
 // Serializes the whole read -> check -> append -> project -> write sequence per job.
 // Only a creating caller (job.claimed) may make the job dir; anyone else on a missing dir fails.
 async function withLock<T>(dir: string, create: boolean, fn: () => Promise<T>): Promise<T> {
@@ -131,18 +109,8 @@ async function withLock<T>(dir: string, create: boolean, fn: () => Promise<T>): 
     ok = true;
     return out;
   } finally {
-    await rm(lock, { recursive: true, force: true });
+    await release(lock);
     if (created && !ok) await rmdir(dir).catch(() => undefined); // a rejected claim leaves nothing behind
-  }
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch (e) {
-    if (isNotFound(e)) return false;
-    throw e;
   }
 }
 
@@ -162,6 +130,20 @@ export async function appendEvent(
   now: () => Date = () => new Date(),
   opts: TransitionOptions = {},
 ): Promise<JobSnapshot> {
+  const snap = await appendJobEvent(root, id, input, now, opts);
+  if (snap.epic !== null) await refreshEpic(root, snap.epic);
+  return snap;
+}
+
+// After an event on a job in an epic, the epic's epic.json is rewritten under the epic's own lock
+// (taken after the job's lock is released). It is a disposable projection: a failure here (a torn
+// epic log, an epic dir that is gone) never fails the job's event; `epic show` and `rebuild`
+// regenerate it.
+async function refreshEpic(root: string, epic: string): Promise<void> {
+  await rebuildEpic(root, epic).catch(() => undefined);
+}
+
+function appendJobEvent(root: string, id: string, input: EventInput, now: () => Date, opts: TransitionOptions): Promise<JobSnapshot> {
   return withLock(jobDir(root, id), input.type === 'job.claimed', async () => {
     const prior = await readLog(root, id);
     if (prior.length === 0 && (await exists(join(jobDir(root, id), 'job.json')))) {
@@ -180,17 +162,32 @@ export async function appendEvent(
 }
 
 export async function rebuild(root: string, id?: string): Promise<string[]> {
+  return (await rebuildAll(root, id)).jobs;
+}
+
+/**
+ * Regenerates `job.json` for one job (and, when it is in an epic, that epic's `epic.json`), or,
+ * with no id, for every job with a log and then every epic under `jobs/epics/`. Returns what it
+ * rebuilt.
+ */
+export async function rebuildAll(root: string, id?: string): Promise<{ jobs: string[]; epics: string[] }> {
   const ids = id !== undefined ? [id] : await listEventedJobs(root);
   const done: string[] = [];
+  const named = new Set<string>();
   for (const j of ids) {
-    await withLock(jobDir(root, j), false, async () => {
+    const snap = await withLock(jobDir(root, j), false, async () => {
       const log = await readLog(root, j);
       if (log.length === 0) throw new Error(`${j}: no events.jsonl to rebuild from`);
-      await writeSnapshot(root, j, project(log));
+      const s = project(log);
+      await writeSnapshot(root, j, s);
+      return s;
     });
+    if (snap.epic !== null) named.add(snap.epic);
     done.push(j);
   }
-  return done;
+  const epics = id !== undefined ? [...named] : await epicSlugs(root);
+  for (const e of epics) await rebuildEpic(root, e);
+  return { jobs: done, epics };
 }
 
 async function listEventedJobs(root: string): Promise<string[]> {
@@ -228,7 +225,8 @@ function claimedInput(id: string, input: ClaimInput): EventInput {
 
 /**
  * Checks a claim without touching disk: the slug (`checkSlug`) and the `job.claimed` fields
- * (`brief`, `issue`, `maxRound`, `session` only). Throws the one-line reason `claimJob` would.
+ * (`brief`, `issue`, `maxRound`, `session`, `epic`, `kind` only; `kind` needs `epic`, a member
+ * needs `brief`, a sync or fix job takes none). Throws the one-line reason `claimJob` would.
  */
 export function checkClaim(slug: string, input: ClaimInput): void {
   checkSlug(slug);
@@ -271,8 +269,10 @@ export interface ClaimOptions {
  * Creates a new job for `slug` (docs/contract/v1.md "CLI", `claim`): under `jobs/.claim.lock`
  * (an `mkdir`, stale after 30 s) it scans the job dirs, refuses a slug held by a live job, picks
  * the highest number among the job dirs and the archived ids + 1 (gaps are never filled; refused
- * past 999), and appends `job.claimed` through `appendEvent`, which creates the dir under its own
- * `.events.lock`. A refusal writes nothing.
+ * past 999), and appends `job.claimed`, which creates the dir under its own `.events.lock`. A
+ * claim into an epic (`epic` in the fields) also takes the epic's `.events.lock`, nested inside
+ * `.claim.lock`, for the epic's checks, the append, and the `epic.json` rewrite
+ * (`claimIntoEpic`). A refusal writes nothing.
  */
 export async function claimJob(
   root: string,
@@ -295,9 +295,15 @@ export async function claimJob(
     const highest = [...dirs, ...archived].reduce((n, d) => Math.max(n, Number(d.slice(0, 3))), 0);
     if (highest >= JOB_NUMBER_MAX) throw new Error(`job number ${JOB_NUMBER_MAX} is taken: no job numbers are left`);
     const id = `${String(highest + 1).padStart(3, '0')}-${slug}`;
-    const snapshot = await appendEvent(root, id, claimedInput(id, input), now);
+    const claimed = claimedInput(id, input);
+    if (claimed.type !== 'job.claimed' || claimed.epic === undefined) {
+      const snapshot = await appendJobEvent(root, id, claimed, now, {});
+      return { id, snapshot };
+    }
+    // In an epic: its checks and the append run under the epic's lock, nested in .claim.lock.
+    const snapshot = await claimIntoEpic(root, claimed, epicMaxParallel(input.config), input.fields.maxRound !== undefined, (c) => appendJobEvent(root, id, c, now, {}));
     return { id, snapshot };
   } finally {
-    await rm(lock, { recursive: true, force: true });
+    await release(lock);
   }
 }
