@@ -1,6 +1,7 @@
 # Settled jobs on demand in the Andon UI — opt in to the narrow board, fetch history when a view opens
 
-- Status: ready
+- Status: done
+- Job: 050-settled-on-demand-ui (merged e83730b, 2026-10-29)
 - Sources: factory/briefs/settled-on-demand.md (the service side; this brief depends on it
   being merged); `/factory explore settled-on-demand` on 2026-10-29; Matt's review of the focused
   view after the first `factory prune` (2026-10-29); apps/andon-ui/src/live.ts, api.ts, state.ts,

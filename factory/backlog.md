@@ -9,4 +9,3 @@ One feature per line — what "done" looks like, not the history. Add lines with
 
 Lines are in dependency order. Fuzzy ones should go through `/factory explore` first.
 
-- [x] Settled jobs on demand (UI) — after the service job merges: the Andon UI opts in to the narrow board, fetches settled lists only for the Settled sheet, a settled job, or a focused project, and drops the dimmed settled tokens from a focused Merged column (design §7) — brief: factory/briefs/settled-on-demand-ui.md → 050-settled-on-demand-ui
