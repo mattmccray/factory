@@ -1,6 +1,7 @@
 # Andon reads the job archive
 
-- Status: ready
+- Status: done
+- Job: 047-andon-reads-archive (merged 1819d50, 2026-10-29)
 - Sources: `/factory explore job-archive` on 2026-10-28 (split from it);
   factory/briefs/job-archive.md; packages/andon-service/src/index.ts (`board`, `docs`, watchers,
   debounce); docs/contract/v1.md ("Andon service"); docs/decisions.md (decisions 5, 10)
