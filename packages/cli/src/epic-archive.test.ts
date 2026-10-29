@@ -111,6 +111,18 @@ describe('prune: epics and their jobs (AC7)', () => {
     expect(await exists(join(f.root, 'jobs', a))).toBe(true);
   });
 
+  test('an abandoned, archived member of a running epic is kept by the epic guard, stricter than the view rule', async () => {
+    await f.start('auth', ['a', 'b']);
+    const a = await f.claimMember('auth', 'a');
+    await f.ok('abandon', a, 'dropped', '--force');
+    await f.ok('archive', a);
+    const before = await f.state();
+    f.now = later(48);
+    const r = await f.cli('prune');
+    expect(r.out).toEqual([`kept ${a}: its epic auth is not landed or abandoned (running)`, 'kept epic auth: not landed or abandoned (running)', 'prune: removed 0, kept 2, failed 0']);
+    expect(await f.state()).toEqual(before);
+  });
+
   test('once the epic lands, members settle by its endedAt; the epic dir goes once archived, settled, and unchanged', async () => {
     const a = await landed();
     await f.ok('archive', '--all');
