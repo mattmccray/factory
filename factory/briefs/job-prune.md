@@ -1,6 +1,7 @@
 # Prune archived job dirs
 
-- Status: ready
+- Status: done
+- Job: 048-job-prune (merged d9b2f0a, 2026-10-29)
 - Sources: `/factory explore job-archive` on 2026-10-28 (split from it);
   factory/briefs/job-archive.md; factory/briefs/andon-reads-archive.md; docs/contract/v1.md
   (settled rule, CLI)
