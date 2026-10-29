@@ -1,7 +1,7 @@
 // Reads from the Andon service. The fetch function is passed in, so tests can fake the service.
 import type { BoardJob } from './board';
 import { isRecord } from './job';
-import { boardPath, docsPath } from './projects';
+import { boardPath, docsPath, settledPath } from './projects';
 
 export interface FetchResponse {
   ok: boolean;
@@ -20,14 +20,21 @@ export async function getJson(fetcher: Fetcher, path: string): Promise<unknown> 
 
 const reason = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-/** One project's board, or the reason it couldn't be read. */
-export async function fetchBoard(fetcher: Fetcher, pid: string): Promise<{ ok: true; data: unknown } | { ok: false; reason: string }> {
+export type Fetched = { ok: true; data: unknown } | { ok: false; reason: string };
+
+async function fetchJson(fetcher: Fetcher, path: string): Promise<Fetched> {
   try {
-    return { ok: true, data: await getJson(fetcher, boardPath(pid)) };
+    return { ok: true, data: await getJson(fetcher, path) };
   } catch (e) {
     return { ok: false, reason: reason(e) };
   }
 }
+
+/** One project's narrow board (`?settled=summary`), or the reason it couldn't be read. */
+export const fetchBoard = (fetcher: Fetcher, pid: string): Promise<Fetched> => fetchJson(fetcher, boardPath(pid));
+
+/** One project's settled jobs (`{ jobs }`), or the reason they couldn't be read (the first line of the error body). */
+export const fetchSettled = (fetcher: Fetcher, pid: string): Promise<Fetched> => fetchJson(fetcher, settledPath(pid));
 
 export interface DocFile {
   path: string; // relative to the project's factory/

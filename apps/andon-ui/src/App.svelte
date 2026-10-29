@@ -5,6 +5,8 @@
   // Needs Me, the keyboard map, and deep links (§10) come from find.ts, keys.ts, and route.ts. This
   // wires the browser (EventSource, fetch, localStorage, the URL and its history, a 1 s clock) to
   // the plain modules that hold the logic; the components below only lay out what those modules return.
+  // Boards are narrow (unsettled jobs and a settled summary); a project's settled jobs are fetched
+  // only while a view needs them: the Settled sheet, a settled job in the inspector, or a focused project.
   import { onMount, untrack } from 'svelte';
   import type { Fetcher } from './api';
   import { buildBoard, movement } from './board';
@@ -25,8 +27,25 @@
   import { entryOf, formatHash, historyStep, initialView, jobKey, readEntry, viewKey, viewOf } from './route';
   import type { JobRef, View } from './route';
   import { startLive } from './live';
-  import type { Status } from './live';
-  import { ALL, boardJobs, loadSelection, projectErrors, resolveSelection, reviewersFor, saveSelection } from './projects';
+  import type { Live, Status } from './live';
+  import {
+    ALL,
+    boardJobs,
+    fetchedSettled,
+    isHeld,
+    loadSelection,
+    lookupJob,
+    projectErrors,
+    resolveSelection,
+    reviewersFor,
+    saveSelection,
+    settledFor,
+    settledStatus,
+    settledTotal,
+    sheetProjects,
+    withSettled,
+  } from './projects';
+  import type { BoardJob } from './board';
   import type { Selection } from './projects';
   import SettledSheet from './SettledSheet.svelte';
   import ShortcutSheet from './ShortcutSheet.svelte';
@@ -34,8 +53,8 @@
   import { STATUS_BAR_EVENT, footer, frame, pushSubscriber, settleHours, settleText, shellMode, sidebarModel, statusBarHidden, subtitle, title } from './sidebar';
   import StatusBar from './StatusBar.svelte';
   import Toolbar from './Toolbar.svelte';
-  import { emptyState } from './state';
-  import type { UiState } from './state';
+  import { NO_SETTLED, emptyState } from './state';
+  import type { SettledSummary, UiState } from './state';
 
   const storage = (): Storage | null => {
     try {
@@ -73,8 +92,11 @@
   // The Mac app's View menu hides the status bar and tells the page; a browser always shows it.
   let statusBarOff = $state(false);
 
+  let live: Live | null = null;
   onMount(() => {
-    const live = startLive({ connect: () => new EventSource('/events'), fetcher, onState: (s) => (ui = s), onStatus: (s) => (status = s) });
+    const started = startLive({ connect: (path) => new EventSource(path), fetcher, onState: (s) => (ui = s), onStatus: (s) => (status = s) });
+    live = started;
+    started.watch(untrack(() => watched));
     // Timers tick once a second; a hidden tab (where timers are throttled) catches up on return.
     const timer = setInterval(() => (now = Date.now()), 1000);
     const visible = (): void => {
@@ -115,7 +137,8 @@
         window.removeEventListener('click', onclickcapture, true);
       }
       offStatusBar?.();
-      live.stop();
+      started.stop();
+      live = null;
       clearInterval(timer);
       document.removeEventListener('visibilitychange', visible);
       window.removeEventListener('popstate', onpopstate);
@@ -137,14 +160,16 @@
   const focused = $derived(sel !== ALL);
   const shownProjects = $derived((needed?.projects ?? ui.projects).filter((p) => !focused || p.id === sel));
   let laneOrder: LaneOrder | null = null;
-  const lines = $derived(orderLanes(buildLanes(shownProjects, jobs, now, focused), loaded && !focused && !needs ? laneOrder : null));
+  const summaries = $derived(Object.fromEntries(ui.projects.map((p): [string, SettledSummary] => [p.id, ui.boards[p.id]?.settled ?? NO_SETTLED])));
+  const lines = $derived(orderLanes(buildLanes(shownProjects, jobs, now, focused, summaries), loaded && !focused && !needs ? laneOrder : null));
   $effect(() => {
     if (loaded && !focused && !needs) laneOrder = lines.order;
   });
   // Search dims the tokens and lanes that don't match; it hides nothing.
-  const found = $derived(find(shownProjects, jobs, query, now, focused));
+  const found = $derived(find(shownProjects, jobs, query, now));
   const header = $derived(headerOf(lines.lanes, settleHours(ui, sel)));
-  const recent = $derived(focused ? activity(jobs) : []);
+  // Recent activity draws on the focused project's settled jobs too, once its list has loaded.
+  const recent = $derived(focused ? activity(needs ? jobs : withSettled(ui, sel)) : []);
 
   // Tokens new to the board fade in, and tokens that changed stage slide to their new cell and highlight.
   let seen = new Map<string, string>();
@@ -161,25 +186,44 @@
   const sub = $derived(subtitle(ui, sel, board.running, board.waiting));
   const settle = $derived(settleText(settleHours(ui, sel)));
 
-  // The inspector finds its job on every board, so it stays open across a switch and after settling.
-  const openItem = $derived(openRef === null ? null : (boardJobs(ui, ALL).find((b) => b.project.id === openRef?.project && b.job.id === openRef.id) ?? null));
+  // The inspector finds its job on every board and in every cached settled list, so it stays open
+  // across a switch and after settling. While the job's settled list is (re)fetching, it keeps
+  // showing the job as last found.
+  const lookup = $derived(openRef === null ? null : lookupJob(ui, openRef));
+  let lastItem = $state.raw<BoardJob | null>(null);
+  const openItem = $derived(lookup?.state === 'found' ? lookup.item : lookup?.state === 'waiting' && lastItem !== null && lastItem.key === openKey ? lastItem : null);
   // A job that was shown and is gone leaves "Nothing selected"; one a link named that never
-  // existed closes the inspector.
+  // existed closes the inspector. Either holds only once the job's board and its settled list have
+  // both loaded and neither has it.
   let shownKey: string | null = null;
   $effect(() => {
-    if (openItem !== null) shownKey = openItem.key;
-    else if (openRef !== null && loaded) {
+    if (lookup?.state === 'found') {
+      shownKey = lookup.item.key;
+      lastItem = lookup.item;
+    } else if (lookup?.state === 'missing' && openRef !== null) {
       if (shownKey === jobKey(openRef)) {
         openRef = null;
         openFile = null;
       } else closeInspector();
     }
   });
+
+  // Settled lists on demand: the open sheet's projects, an open job that isn't on its board, and a
+  // focused project. Only these are fetched, and refetched when their summaries change (live.ts).
+  const sheetPids = $derived(settledOpen ? sheetProjects(ui, settledProject) : []);
+  const watched = $derived([...new Set([...sheetPids, ...(openRef !== null && !isHeld(ui, openRef) ? [openRef.project] : []), ...(focused ? [sel] : [])])]);
+  $effect(() => {
+    live?.watch(watched);
+  });
+  const settledJobs = $derived(settledOpen ? settledFor(ui, ALL, now) : []);
+  const settledState = $derived(settledStatus(ui, sheetPids));
   $effect(() => {
     if (sheet !== null && loaded && openItem?.job.stage !== 'needs-human') sheet = null; // the job moved on
   });
+  // An empty Settled sheet closes itself, but only once its lists are loaded and current: never
+  // while they load, and never over a failed fetch's reason.
   $effect(() => {
-    if (settledOpen && loaded && !board.settled.some((b) => settledProject === null || b.project.id === settledProject)) settledOpen = false;
+    if (settledOpen && loaded && settledState.current && settledState.failures.length === 0 && !settledJobs.some((b) => settledProject === null || b.project.id === settledProject)) settledOpen = false;
   });
 
   function select(next: Selection): void {
@@ -191,7 +235,7 @@
     settledOpen = true;
   }
   function openJob(key: string): void {
-    const b = boardJobs(ui, ALL).find((x) => x.key === key);
+    const b = boardJobs(ui, ALL).find((x) => x.key === key) ?? fetchedSettled(ui, ALL).find((x) => x.key === key);
     if (b === undefined) return;
     settledOpen = false;
     if (openKey !== key) openFile = null;
@@ -353,7 +397,7 @@
       title={title(ui, sel)}
       {sub}
       {focused}
-      settled={board.settled.length}
+      settled={settledTotal(ui, sel, now)}
       {sidebarOpen}
       {inspectorOpen}
       selected={openItem === null ? null : `${openItem.project.name} / ${openItem.job.id}`}
@@ -409,7 +453,8 @@
   />
 </div>
 <SettledSheet
-  settled={board.settled}
+  settled={settledJobs}
+  status={settledState}
   open={settledOpen}
   project={settledProject === null ? null : (ui.projects.find((p) => p.id === settledProject) ?? null)}
   onclearfilter={() => (settledProject = null)}

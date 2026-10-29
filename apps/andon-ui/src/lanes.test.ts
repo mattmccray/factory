@@ -2,9 +2,11 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BoardJob } from './board';
-import { HOUR, MINUTE, NOW, before, fleetJobs, job, reviewerSpan, stageSpans, stopped, tag } from './fixtures';
+import { HOUR, MINUTE, NOW, before, fleetJobs, job, narrowBoard, reviewerSpan, stageSpans, stopped, tag } from './fixtures';
 import { COLUMNS, activity, age, buildLanes, columnOf, ghostOf, headerOf, isReviewFailed, kindOf, orderLanes, popoverOf, tagOf, tokenOf } from './lanes';
 import type { Kind, Lane } from './lanes';
+import { ALL, withSettled } from './projects';
+import { applyEvent, applySettled, emptyState, startSettled } from './state';
 
 const P1 = { id: 'p1', name: 'one' };
 const at = (fields: Record<string, unknown>, project = P1, reviewers: string[] = []): BoardJob => tag(job(fields), project, 24, reviewers);
@@ -66,6 +68,7 @@ describe('kinds (AC1)', () => {
 
   test('abandoned and settled jobs are never placed in a cell', () => {
     expect(columnOf('abandoned')).toBeNull();
+    expect(columnOf('settled')).toBeNull();
     const jobs = [
       at({ id: '001-a', stage: 'abandoned', endedAt: before(HOUR) }),
       at({ id: '002-b', stage: 'merged', endedAt: before(30 * HOUR) }),
@@ -278,7 +281,7 @@ describe('gutter and crowded cells (AC4)', () => {
     expect(many?.rows).toBe(4);
   });
 
-  test('a focused project is uncapped, and its Merged cell lists its settled merged jobs, dimmed, never abandoned', () => {
+  test('a focused project is uncapped, and its Merged cell shows only unsettled merges, no dimmed tokens (050 AC5)', () => {
     const jobs = [
       ...[1, 2, 3, 4, 5].map((n) => at({ id: `00${n}-a`, stage: 'build' })),
       at({ id: '006-a', stage: 'merged', endedAt: before(HOUR) }),
@@ -290,10 +293,11 @@ describe('gutter and crowded cells (AC4)', () => {
     expect(build?.tokens).toHaveLength(5);
     expect(build?.more).toBe(0);
     expect(lane?.rows).toBe(5);
-    expect(lane?.cells.find((c) => c.column === 'merged')?.tokens.map((t) => [t.num, t.dimmed])).toEqual([
-      ['006', false],
-      ['007', true],
-    ]);
+    expect(lane?.cells.find((c) => c.column === 'merged')?.tokens.map((t) => t.num)).toEqual(['006']);
+    expect(lane?.cells.flatMap((c) => c.tokens.map((t) => t.kind))).not.toContain('settled');
+    // the job that settled on screen joins the lane's count instead
+    expect(lane?.meta.settled).toBe(2);
+    expect(buildLanes([P1], jobs, NOW, true, { p1: { count: 5, lastMergedAt: before(30 * HOUR) } })[0]?.meta.settled).toBe(7);
     // the settled job stays out of the All Projects lane
     expect(buildLanes([P1], jobs, NOW, false)[0]?.cells.find((c) => c.column === 'merged')?.tokens.map((t) => t.num)).toEqual(['006']);
   });
@@ -355,7 +359,7 @@ describe('tokens (AC6)', () => {
   test('chips: the current round, two-letter labels in project reviewer order; pending pulses only while reviewing', () => {
     const reviewers = ['security', 'contract', 'code', 'ui'];
     const b = at({ id: '023-x', stage: 'review', round: 1, maxRound: 2, reviews: { ui: 'PASS', code: 'pending', perf: 'pending', security: 'PASS', contract: 'CHANGES' } }, P1, reviewers);
-    const t = tokenOf(b, NOW, false);
+    const t = tokenOf(b, NOW);
     expect(t.chips.map((c) => [c.label, c.verdict, c.pulse])).toEqual([
       ['se', 'PASS', false],
       ['ct', 'CHANGES', false],
@@ -364,37 +368,38 @@ describe('tokens (AC6)', () => {
       ['pe', 'pending', true],
     ]);
     expect(t.round).toBe('R1/2');
-    const build = tokenOf(at({ id: '023-x', stage: 'build', round: 1, reviews: { code: 'pending' } }, P1, reviewers), NOW, false);
+    const build = tokenOf(at({ id: '023-x', stage: 'build', round: 1, reviews: { code: 'pending' } }, P1, reviewers), NOW);
     expect(build.chips.map((c) => c.pulse)).toEqual([false]);
   });
 
   test('line 1, line 2, and line 3 (working and needs-human kinds)', () => {
-    const human = tokenOf(at({ id: '040-tag-migration', title: 'Migrate tags', stage: 'needs-human', round: 1, stageEnteredAt: before(6 * HOUR + 6 * MINUTE), note: 'approver: drops tags', ...stopped('escalated', 'approve') }), NOW, false);
+    const human = tokenOf(at({ id: '040-tag-migration', title: 'Migrate tags', stage: 'needs-human', round: 1, stageEnteredAt: before(6 * HOUR + 6 * MINUTE), note: 'approver: drops tags', ...stopped('escalated', 'approve') }), NOW);
     expect([human.num, human.title, human.tag, human.time, human.note]).toEqual(['040', 'Migrate tags', 'Escalated', '6h 6m', 'approver: drops tags']);
-    const claimed = tokenOf(at({ id: '017-stage-diff', title: '017-stage-diff', stage: 'claimed' }), NOW, false);
+    const claimed = tokenOf(at({ id: '017-stage-diff', title: '017-stage-diff', stage: 'claimed' }), NOW);
     expect([claimed.num, claimed.title, claimed.time]).toEqual(['017', 'stage-diff', null]); // the title is the id until the spec names it; legacy: no time
-    const build = tokenOf(at({ id: '022-x', stage: 'build', note: 'R1 ui: a note' }), NOW, false);
+    const build = tokenOf(at({ id: '022-x', stage: 'build', note: 'R1 ui: a note' }), NOW);
     expect(build.note).toBeNull(); // only needs-human and merge-failed get a third line
   });
 
   test('a merged token is one line: number, title, and the largest-unit time; no tag, chips, round, or note (038 AC1)', () => {
-    const merged = tokenOf(at({ id: '039-digest', title: 'Digest', stage: 'merged', round: 1, endedAt: before(64 * MINUTE), note: 'merged 3c9e01a' }), NOW, false);
+    const merged = tokenOf(at({ id: '039-digest', title: 'Digest', stage: 'merged', round: 1, endedAt: before(64 * MINUTE), note: 'merged 3c9e01a' }), NOW);
     expect([merged.kind, merged.num, merged.title, merged.time, merged.tag, merged.round, merged.chips, merged.note]).toEqual(['merged', '039', 'Digest', '1h', null, null, [], null]);
-    const times = [42_000, 45 * MINUTE, HOUR + 59 * MINUTE, 71 * HOUR].map((ms) => tokenOf(at({ id: '039-x', stage: 'merged', round: 1, endedAt: before(ms) }), NOW, false).time);
+    const times = [42_000, 45 * MINUTE, HOUR + 59 * MINUTE, 71 * HOUR].map((ms) => tokenOf(at({ id: '039-x', stage: 'merged', round: 1, endedAt: before(ms) }), NOW).time);
     expect(times).toEqual(['42s', '45m', '1h', '2d']);
     for (const t of times) expect(t).not.toContain('ago');
   });
 
-  test('a settled (dimmed) token is the same one line (038 AC1)', () => {
-    const settled = tokenOf(at({ id: '039-old', stage: 'merged', round: 2, reviews: { code: 'PASS' }, endedAt: before(71 * HOUR), note: 'merged 3c9e01a' }, P1, ['code']), NOW, true);
-    expect([settled.kind, settled.shape, settled.label, settled.dimmed, settled.time, settled.tag, settled.round, settled.chips, settled.note]).toEqual(['settled', 'faded', 'Settled', true, '2d', null, null, [], null]);
-    const legacy = tokenOf(at({ id: '039-legacy', stage: 'merged', note: 'merged 0ac41de' }), NOW, false);
+  test('a settled job\'s token model is the same one line (038 AC1); it is never placed in a cell (050 AC5)', () => {
+    const settled = tokenOf(at({ id: '039-old', stage: 'merged', round: 2, reviews: { code: 'PASS' }, endedAt: before(71 * HOUR), note: 'merged 3c9e01a' }, P1, ['code']), NOW);
+    expect([settled.kind, settled.shape, settled.label, settled.time, settled.tag, settled.round, settled.chips, settled.note]).toEqual(['settled', 'faded', 'Settled', '2d', null, null, [], null]);
+    expect('dimmed' in settled).toBe(false);
+    const legacy = tokenOf(at({ id: '039-legacy', stage: 'merged', note: 'merged 0ac41de' }), NOW);
     expect(legacy.time).toBeNull(); // no merge time recorded: no time, as before
   });
 
   test('the other kinds keep their tag, chips, round, time in stage, note, and branch (038 AC5)', () => {
     const reviewers = ['code', 'ui'];
-    const tok = (f: Record<string, unknown>) => tokenOf(at(f, P1, reviewers), NOW, false);
+    const tok = (f: Record<string, unknown>) => tokenOf(at(f, P1, reviewers), NOW);
     const pick = (t: ReturnType<typeof tokenOf>) => [t.kind, t.tag, t.chips.map((c) => `${c.label}:${c.verdict}`), t.round, t.time, t.note, t.branch];
     expect(pick(tok({ id: '040-a', stage: 'needs-human', round: 1, stageEnteredAt: before(6 * HOUR + 6 * MINUTE), note: 'approver: drops tags', ...stopped('escalated', 'approve') }))).toEqual(['needs-human', 'Escalated', [], 'R1/2', '6h 6m', 'approver: drops tags', 'factory/x']);
     expect(pick(tok({ id: '041-a', stage: 'needs-human', round: 1, stageEnteredAt: before(38 * MINUTE), note: 'conflict', ...stopped('merge-failed', 'approve') }))).toEqual(['merge-failed', 'Merge failed', [], 'R1/2', '38m', 'conflict', 'factory/x']);
@@ -440,7 +445,7 @@ describe('tokens (AC6)', () => {
       { id: '001-a', stage: 'spec' },
       { id: '001-a', stage: 'claimed' },
       { id: '001-a', stage: 'merged', endedAt: before(HOUR) },
-    ].map((f) => tokenOf(at(f), NOW, false));
+    ].map((f) => tokenOf(at(f), NOW));
     for (const t of kinds) marks.add(`${t.kind}:${t.tag ?? ''}:${t.shape}`);
     expect(marks.size).toBe(kinds.length);
     expect(new Set(kinds.map((t) => t.shape)).size).toBe(kinds.length);
@@ -499,5 +504,116 @@ describe('the old board components are gone (AC7)', () => {
     expect(files).not.toContain('Card.svelte');
     const sources = [...files.filter((f) => f.endsWith('.ts') || f.endsWith('.svelte')).map((f) => join(import.meta.dir, f)), join(import.meta.dir, '..', 'main.ts')];
     for (const file of sources) expect({ file, imports: /['"]\.\/(Board|Card)\.svelte['"]/.test(readFileSync(file, 'utf8')) }).toEqual({ file, imports: false });
+  });
+});
+
+describe('narrow boards: counts and idle text from the settled summary (050 AC2)', () => {
+  const PN = { id: 'pn', name: 'narrow' };
+  const raw = (fields: Record<string, unknown>): Record<string, unknown> => ({ title: 'A job', branch: 'factory/x', stage: 'spec', round: 0, ...fields });
+  const tagAll = (list: ReadonlyArray<Record<string, unknown>>): BoardJob[] => list.map((f) => tag(job(f), PN));
+  const pick = (l: Lane | undefined) => (l === undefined ? null : { meta: l.meta, idle: l.idle, idleText: l.idleText, lastMergeAt: l.lastMergeAt, rows: l.rows, cells: l.cells.map((c) => [c.column, c.tokens.map((t) => t.key), c.more]) });
+  const same = (full: ReadonlyArray<Record<string, unknown>>, focused: boolean): void => {
+    const n = narrowBoard(full);
+    const before = buildLanes([PN], tagAll(full), NOW, focused);
+    const after = buildLanes([PN], tagAll(n.jobs), NOW, focused, { pn: n.settled });
+    expect(pick(after[0])).toEqual(pick(before[0]));
+  };
+
+  test('an active lane with settled history reads as it did on the full board', () => {
+    const full = [
+      raw({ id: '001-old', stage: 'merged', endedAt: before(84 * HOUR) }),
+      raw({ id: '002-older', stage: 'merged', endedAt: before(120 * HOUR) }),
+      raw({ id: '003-gone', stage: 'abandoned', endedAt: before(HOUR) }),
+      raw({ id: '004-fresh', stage: 'merged', endedAt: before(2 * HOUR) }),
+      raw({ id: '005-build', stage: 'build', startedAt: before(3 * HOUR) }),
+      raw({ id: '006-human', stage: 'needs-human', ...stopped('escalated', 'review') }),
+    ];
+    same(full, false);
+    expect(buildLanes([PN], tagAll(narrowBoard(full).jobs), NOW, false, { pn: narrowBoard(full).settled })[0]?.meta.settled).toBe(3);
+  });
+
+  test('an idle lane: "Idle · last merge …" from the summary\'s lastMergedAt, or the later held merge', () => {
+    // only settled jobs: the summary alone
+    const quiet = [raw({ id: '001-c', stage: 'merged', endedAt: before(84 * HOUR) }), raw({ id: '002-c', stage: 'abandoned', endedAt: before(HOUR) })];
+    same(quiet, false);
+    const [c] = buildLanes([PN], [], NOW, false, { pn: narrowBoard(quiet).settled });
+    expect([c?.idle, c?.idleText, c?.meta.settled, c?.rows]).toEqual([true, 'Idle · last merge 3d 12h ago', 2, 0]);
+    // a held merge newer than the summary's wins
+    const [held] = buildLanes([PN], tagAll([raw({ id: '003-c', stage: 'merged', endedAt: before(30 * HOUR) })]), NOW, false, { pn: { count: 1, lastMergedAt: before(84 * HOUR) } });
+    expect(held?.idleText).toBe('Idle · last merge 1d 6h ago');
+    // the summary's newer than the held one wins
+    const [summ] = buildLanes([PN], tagAll([raw({ id: '003-c', stage: 'merged', endedAt: before(90 * HOUR) })]), NOW, false, { pn: { count: 1, lastMergedAt: before(84 * HOUR) } });
+    expect(summ?.idleText).toBe('Idle · last merge 3d 12h ago');
+    // only abandoned settled jobs, nothing merged: no merges yet
+    const [none] = buildLanes([PN], [], NOW, false, { pn: { count: 2, lastMergedAt: null } });
+    expect([none?.idleText, none?.meta.settled]).toEqual(['Idle · no merges yet', 2]);
+    expect(buildLanes([PN], [], NOW, false)[0]?.idleText).toBe('Idle · no merges yet');
+  });
+
+  test('a held job that crosses on screen leaves Merged and joins the count before the next push', () => {
+    const held = tagAll([raw({ id: '009-x', stage: 'merged', endedAt: before(24 * HOUR - 1000) })]);
+    const summary = { pn: { count: 4, lastMergedAt: before(48 * HOUR) } };
+    const [pre] = buildLanes([PN], held, NOW, true, summary);
+    expect([pre?.cells.find((c) => c.column === 'merged')?.tokens.map((t) => t.num), pre?.meta.settled]).toEqual([['009'], 4]);
+    const [post] = buildLanes([PN], held, NOW + 2000, true, summary);
+    expect([post?.cells.find((c) => c.column === 'merged')?.tokens.map((t) => t.num), post?.meta.settled, post?.idle]).toEqual([[], 5, true]);
+  });
+});
+
+describe('a focused project\'s Recent activity draws on its settled list (050 AC6)', () => {
+  const P = { id: 'aaaaaaaaaaaa', name: 'one', root: '/r/one' };
+  const config = { schema: 'factory/v1', reviewers: ['code'], maxRound: 2, dashboard: { settleAfterHours: 24 } };
+  const timed = (id: string, stage: string, ago: number, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+    id,
+    title: id,
+    stage,
+    round: 1,
+    ...extra,
+    timing: {
+      stages: stageSpans([['claimed', ago + 5 * HOUR], ['spec', ago + 4 * HOUR], ['build', ago + 3 * HOUR], ['review', ago + 2 * HOUR], ['approve', ago + HOUR]]),
+      agents: [reviewerSpan('code', 1, ago + 2 * HOUR, ago + 90 * MINUTE, 'PASS')],
+    },
+  });
+  const full = [
+    timed('040-old', 'merged', 60 * HOUR, { endedAt: before(60 * HOUR), note: 'merged aaa1111' }),
+    timed('041-older', 'merged', 90 * HOUR, { endedAt: before(90 * HOUR), note: 'merged bbb2222' }),
+    timed('042-dropped', 'abandoned', 30 * HOUR, { endedAt: before(30 * HOUR) }),
+    timed('043-live', 'review', 0),
+  ];
+  const n = narrowBoard(full);
+  const board = applyEvent(applyEvent(emptyState(), 'projects', { projects: [P] }), 'board', { project: P.id, jobs: n.jobs, config, settled: n.settled });
+
+  test('with the list loaded it lists the same 14 events as the full board did, and settled jobs are never Merged tokens', () => {
+    const fullState = applyEvent(applyEvent(emptyState(), 'projects', { projects: [P] }), 'board', { project: P.id, jobs: full, config });
+    const expected = activity(withSettled(fullState, P.id));
+    expect(expected).toHaveLength(14);
+    const started = startSettled(board, P.id);
+    const loaded = applySettled(started.state, P.id, started.rev, { ok: true, data: { jobs: n.settledJobs } });
+    expect(activity(withSettled(loaded, P.id))).toEqual(expected);
+    expect(activity(withSettled(loaded, ALL))).toEqual(expected);
+    // the settled jobs feed only the activity: the focused lane holds none of them
+    const [lane] = buildLanes([P], withSettled(board, P.id), NOW, true, { [P.id]: n.settled });
+    expect(lane?.cells.flatMap((c) => c.tokens.map((t) => t.num))).toEqual(['043']);
+  });
+
+  test('before the list loads it is built from the held jobs alone', () => {
+    expect(new Set(activity(withSettled(board, P.id)).map((a) => a.num))).toEqual(new Set(['043']));
+  });
+});
+
+describe('the settled link and the Settled sheet markup (050 AC3, AC5)', () => {
+  test('a lane shows its "N settled" link when focused too, opening the sheet filtered to its project', () => {
+    const lane = readFileSync(join(import.meta.dir, 'Lane.svelte'), 'utf8');
+    const full = lane.split('{:else}')[1] ?? '';
+    expect(full).toMatch(/\{#if lane\.meta\.settled > 0\}<button class="slink" type="button" aria-haspopup="dialog" onclick=\{\(\) => onsettled\(lane\.project\.id\)\}>/);
+    expect(full).not.toMatch(/settled > 0 && !focused/);
+  });
+
+  test('the sheet says it is loading, shows a failed fetch\'s reason, and says "Nothing has settled" only when neither', () => {
+    const sheet = readFileSync(join(import.meta.dir, 'SettledSheet.svelte'), 'utf8');
+    expect(sheet).toMatch(/\{#each status\.failures as f \(f\.id\)\}/);
+    expect(sheet).toMatch(/\{#if status\.loading\}\s*<li class="empty" role="status">Loading settled jobs…<\/li>\s*\{:else if status\.failures\.length === 0\}\s*<li class="empty">Nothing has settled\.<\/li>/);
+    const token = readFileSync(join(import.meta.dir, 'Token.svelte'), 'utf8');
+    expect(token).not.toContain('t.dimmed');
   });
 });

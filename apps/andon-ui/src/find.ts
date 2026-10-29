@@ -24,12 +24,12 @@ export interface Find {
 
 /**
  * The search over the board: which jobs match, and which lanes are dimmed (exactly those with no
- * matching job on them). A lane's jobs are the ones it can show: never abandoned ones, and
- * settled ones only in a focused project. An empty or whitespace query dims nothing.
+ * matching job on them). A lane's jobs are the ones it shows: never settled or abandoned ones,
+ * focused or not. An empty or whitespace query dims nothing.
  */
-export function find(projects: ReadonlyArray<{ id: string }>, jobs: readonly BoardJob[], query: string, now: number, focused: boolean): Find {
+export function find(projects: ReadonlyArray<{ id: string }>, jobs: readonly BoardJob[], query: string, now: number): Find {
   if (normalize(query) === '') return { active: false, keys: new Set(), dimLanes: new Set() };
-  const onLane = (b: BoardJob): boolean => b.job.stage !== 'abandoned' && (focused || !isSettled(b, now));
+  const onLane = (b: BoardJob): boolean => !isSettled(b, now);
   const hits = jobs.filter((b) => onLane(b) && matches(b, query));
   const lit = new Set(hits.map((b) => b.project.id));
   return { active: true, keys: new Set(hits.map((b) => b.key)), dimLanes: new Set(projects.map((p) => p.id).filter((id) => !lit.has(id))) };

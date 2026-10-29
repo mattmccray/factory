@@ -2,9 +2,29 @@ import { describe, expect, test } from 'bun:test';
 import { fetchDocs } from './api';
 import type { Fetcher } from './api';
 import { buildBoard } from './board';
-import { HOUR, NOW, before } from './fixtures';
-import { ALL, SELECTION_KEY, boardJobs, docsPath, loadSelection, needsHuman, projectErrors, resolveSelection, reviewersFor, saveSelection } from './projects';
-import { applyEvent, emptyState } from './state';
+import { HOUR, NOW, before, narrowBoard } from './fixtures';
+import { settledRows, settledTitle } from './inspector';
+import {
+  ALL,
+  SELECTION_KEY,
+  boardJobs,
+  boardPath,
+  docsPath,
+  isHeld,
+  loadSelection,
+  lookupJob,
+  needsHuman,
+  projectErrors,
+  resolveSelection,
+  reviewersFor,
+  saveSelection,
+  settledFor,
+  settledPath,
+  settledStatus,
+  settledTotal,
+  sheetProjects,
+} from './projects';
+import { applyEvent, applySettled, emptyState, startSettled } from './state';
 import type { UiState } from './state';
 
 const P1 = { id: 'aaaaaaaaaaaa', name: 'one', root: '/r/one' };
@@ -105,5 +125,119 @@ describe('the selection persists', () => {
   test('a stored project that is no longer registered shows All projects', () => {
     expect(resolveSelection(state(), P1.id)).toBe(P1.id);
     expect(resolveSelection(state(), 'gone')).toBe(ALL);
+  });
+});
+
+// ---- settled jobs on demand (050) ----
+
+describe('the narrow board and the settled cache', () => {
+  const config = (hours: number) => ({ reviewers: ['code'], dashboard: { settleAfterHours: hours } });
+  const full1 = [
+    { id: '001-live', stage: 'build', updated: before(HOUR) },
+    { id: '002-old', stage: 'merged', endedAt: before(30 * HOUR), startedAt: before(40 * HOUR), round: 2 },
+    { id: '003-older', stage: 'merged', endedAt: before(60 * HOUR) },
+    { id: '004-gone', stage: 'abandoned', endedAt: before(5 * HOUR), note: 'not needed' },
+    { id: '005-fresh', stage: 'merged', endedAt: before(HOUR) },
+  ];
+  const full2 = [{ id: '001-done', stage: 'merged', endedAt: before(10 * HOUR) }, { id: '002-up', stage: 'spec' }];
+  const n1 = narrowBoard(full1, 24);
+  const n2 = narrowBoard(full2, 6);
+  const listed = (): UiState => applyEvent(emptyState(), 'projects', { projects: [P1, P2] });
+  const narrow = (): UiState => {
+    let s = applyEvent(listed(), 'board', { project: P1.id, jobs: n1.jobs, config: config(24), settled: n1.settled });
+    s = applyEvent(s, 'board', { project: P2.id, jobs: n2.jobs, config: config(6), settled: n2.settled });
+    return s;
+  };
+  const loadList = (s: UiState, pid: string, jobs: unknown[]): UiState => {
+    const st = startSettled(s, pid);
+    return applySettled(st.state, pid, st.rev, { ok: true, data: { jobs } });
+  };
+  const loaded = (): UiState => loadList(loadList(narrow(), P1.id, n1.settledJobs), P2.id, n2.settledJobs);
+  const fullState = (): UiState => {
+    let s = applyEvent(listed(), 'board', { project: P1.id, jobs: full1, config: config(24) });
+    s = applyEvent(s, 'board', { project: P2.id, jobs: full2, config: config(6) });
+    return s;
+  };
+
+  test('paths: the narrow board, the settled list (AC1)', () => {
+    expect(boardPath('a b')).toBe('/projects/a%20b/board?settled=summary');
+    expect(settledPath('a b')).toBe('/projects/a%20b/settled');
+  });
+
+  test('the toolbar\'s Settled N is the sum of the selection\'s counts, as on the full board (AC2)', () => {
+    const old = buildBoard(boardJobs(fullState(), ALL), NOW).settled.length;
+    expect(settledTotal(narrow(), ALL, NOW)).toBe(old);
+    expect(settledTotal(narrow(), ALL, NOW)).toBe(4);
+    expect(settledTotal(narrow(), P2.id, NOW)).toBe(1);
+    // a held job that crosses on screen counts at once, and is never counted twice
+    const fresh = n1.jobs.find((j) => j.id === '005-fresh');
+    expect(fresh).toBeDefined();
+    expect(settledTotal(narrow(), P1.id, NOW + 24 * HOUR)).toBe(4); // 3 in the summary + 005 crossed
+    // once the service's push moves it into the summary, it is still counted once
+    const after = narrowBoard(full1, 24, NOW + 24 * HOUR);
+    const pushed = applyEvent(narrow(), 'board', { project: P1.id, jobs: after.jobs, config: config(24), settled: after.settled });
+    expect(settledTotal(pushed, P1.id, NOW + 24 * HOUR)).toBe(4);
+  });
+
+  test('the Settled sheet lists the same rows as the full board did, newest first, once its lists are loaded (AC3)', () => {
+    const before = buildBoard(boardJobs(fullState(), ALL), NOW).settled;
+    const now = settledFor(loaded(), ALL, NOW);
+    expect(settledRows(now, null)).toEqual(settledRows(before, null));
+    expect(settledRows(now, P1.id)).toEqual(settledRows(before, P1.id));
+    expect(settledTitle(now)).toBe(settledTitle(before));
+    expect(settledRows(now, null).map((r) => r.id)).toEqual(['004-gone', '001-done', '002-old', '003-older']);
+  });
+
+  test('a job both held and in a cached list is listed once; a held one not yet settled stays off the sheet', () => {
+    // the list was fetched after 005 crossed on the service, before the push that drops it from the board
+    const raced = loadList(narrow(), P1.id, [...n1.settledJobs, full1[4]]);
+    expect(settledFor(raced, P1.id, NOW + 24 * HOUR).filter((b) => b.job.id === '005-fresh')).toHaveLength(1);
+    expect(settledFor(raced, P1.id, NOW).map((b) => b.job.id)).not.toContain('005-fresh');
+  });
+
+  test('the sheet\'s status: loading until a first list arrives, a failure\'s reason, and current only when every list matches its summary', () => {
+    const s = narrow();
+    expect(sheetProjects(s, null)).toEqual([P1.id, P2.id]);
+    expect(sheetProjects(s, P2.id)).toEqual([P2.id]);
+    expect(sheetProjects(s, 'unknown')).toEqual([]);
+    expect(settledStatus(s, [P1.id])).toEqual({ loading: true, failures: [], current: false });
+    const st = startSettled(s, P1.id);
+    expect(settledStatus(st.state, [P1.id])).toEqual({ loading: true, failures: [], current: false });
+    const failed = applySettled(st.state, P1.id, st.rev, { ok: false, reason: 'config.json: bad' });
+    expect(settledStatus(failed, [P1.id])).toEqual({ loading: false, failures: [{ id: P1.id, name: 'one', reason: 'config.json: bad' }], current: false });
+    const ok = loaded();
+    expect(settledStatus(ok, [P1.id, P2.id])).toEqual({ loading: false, failures: [], current: true });
+    // the summary moved on: still listed (no loading state), but not current until refetched
+    const moved = applyEvent(ok, 'board', { project: P1.id, jobs: [], config: config(24), settled: { count: 9, lastMergedAt: null } });
+    expect(settledStatus(moved, [P1.id])).toEqual({ loading: false, failures: [], current: false });
+    expect(settledStatus(s, [])).toEqual({ loading: false, failures: [], current: true });
+  });
+
+  test('the inspector finds a job on its board or in its cached list; it is missing only once both have loaded without it (AC4)', () => {
+    const live = { project: P1.id, id: '001-live' };
+    const old = { project: P1.id, id: '002-old' };
+    const never = { project: P1.id, id: '999-never' };
+    expect(lookupJob(listed(), old)).toEqual({ state: 'waiting' }); // no board yet
+    expect(lookupJob(emptyState(), old)).toEqual({ state: 'waiting' }); // nothing listed yet
+    const s = narrow();
+    expect(isHeld(s, live)).toBe(true);
+    expect(isHeld(s, old)).toBe(false);
+    const found = lookupJob(s, live);
+    expect(found.state === 'found' ? found.item.key : null).toBe(`${P1.id}/001-live`);
+    expect(lookupJob(s, old)).toEqual({ state: 'waiting' }); // its settled list hasn't loaded
+    expect(lookupJob(s, never)).toEqual({ state: 'waiting' });
+    const st = startSettled(s, P1.id);
+    expect(lookupJob(st.state, never)).toEqual({ state: 'waiting' });
+    const l = loaded();
+    const settled = lookupJob(l, old);
+    expect(settled.state === 'found' ? [settled.item.key, settled.item.settleAfterHours, settled.item.job.timing] : null).toEqual([`${P1.id}/002-old`, 24, null]);
+    expect(lookupJob(l, never)).toEqual({ state: 'missing' });
+    expect(lookupJob(l, { project: 'unregistered', id: '001' })).toEqual({ state: 'missing' });
+    // a failed list never declares the job missing
+    const failed = applySettled(st.state, P1.id, st.rev, { ok: false, reason: 'x' });
+    expect(lookupJob(failed, never)).toEqual({ state: 'waiting' });
+    // a list fetched for an older summary isn't trusted to be complete
+    const moved = applyEvent(l, 'board', { project: P1.id, jobs: n1.jobs, config: config(24), settled: { count: 4, lastMergedAt: n1.settled.lastMergedAt } });
+    expect(lookupJob(moved, never)).toEqual({ state: 'waiting' });
   });
 });

@@ -1,10 +1,14 @@
-// Live updates from the service's `GET /events`, with no polling. Each `projects` event (sent on
-// every connect and reconnect, and when the registry changes) fetches every listed project's
-// board once; after that, `board` and `error` events keep each project current.
+// Live updates from the service's `GET /events?settled=summary`, with no polling. Each `projects`
+// event (sent on every connect and reconnect, and when the registry changes) fetches every listed
+// project's narrow board once; after that, `board` and `error` events keep each project current.
+// Settled jobs are fetched on demand: `watch` names the projects whose settled lists an open view
+// needs, and each is fetched once its board has loaded, then again whenever its settled summary
+// changes, for as long as it is watched. A project no view needs is never fetched.
 import type { Fetcher } from './api';
-import { fetchBoard } from './api';
+import { fetchBoard, fetchSettled } from './api';
 import { isRecord } from './job';
-import { applyEvent, applyFetched, emptyState, revOf } from './state';
+import { EVENTS_PATH } from './projects';
+import { applyEvent, applyFetched, applySettled, emptyState, revOf, startSettled, wantsSettled } from './state';
 import type { UiState } from './state';
 
 /** The slice of `EventSource` used here, so tests can drive it. */
@@ -21,6 +25,8 @@ export type Status = 'connecting' | 'live' | 'down';
 
 export interface Live {
   state(): UiState;
+  /** The projects whose settled lists the open views need; a project newly named retries a failed fetch. */
+  watch(pids: readonly string[]): void;
   stop(): void;
 }
 
@@ -39,7 +45,7 @@ const parse = (e: unknown): { ok: true; data: unknown } | { ok: false } => {
  * is reopened after `RECONNECT_MS`.
  */
 export function startLive(opts: {
-  connect: () => EventSourceLike;
+  connect: (path: string) => EventSourceLike; // opens `path` (`EVENTS_PATH`)
   fetcher: Fetcher;
   onState: (s: UiState) => void;
   onStatus: (s: Status) => void;
@@ -55,20 +61,37 @@ export function startLive(opts: {
     opts.onState(state);
   };
 
+  let watched = new Set<string>();
+  // Fetches every watched project's settled list that is missing or older than its summary.
+  const sync = (retry: ReadonlySet<string>): void => {
+    for (const pid of watched) if (!stopped && wantsSettled(state, pid, retry.has(pid))) void loadSettled(pid);
+  };
+  const update = (next: UiState): void => {
+    set(next);
+    sync(new Set());
+  };
+
+  async function loadSettled(pid: string): Promise<void> {
+    const started = startSettled(state, pid);
+    set(started.state);
+    const result = await fetchSettled(opts.fetcher, pid);
+    set(applySettled(state, pid, started.rev, result));
+  }
+
   async function load(pid: string): Promise<void> {
     const rev = revOf(state, pid);
     const result = await fetchBoard(opts.fetcher, pid);
-    set(applyFetched(state, pid, rev, result));
+    update(applyFetched(state, pid, rev, result));
   }
 
   const on = (event: string) => (e: unknown) => {
     const msg = parse(e);
     if (!msg.ok) return;
-    set(applyEvent(state, event, msg.data));
+    update(applyEvent(state, event, msg.data));
     if (event === 'projects') for (const p of state.projects) void load(p.id);
   };
   function open(): void {
-    const src = opts.connect();
+    const src = opts.connect(EVENTS_PATH);
     source = src;
     src.addEventListener('projects', on('projects'));
     src.addEventListener('board', on('board'));
@@ -94,6 +117,11 @@ export function startLive(opts: {
 
   return {
     state: () => state,
+    watch(pids) {
+      const added = new Set(pids.filter((pid) => !watched.has(pid)));
+      watched = new Set(pids);
+      sync(added);
+    },
     stop() {
       stopped = true;
       if (retry !== null) clearTimeout(retry);

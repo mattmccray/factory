@@ -1,7 +1,7 @@
 <script lang="ts">
   // One project's lane (design §5): the 148px gutter (the name, which focuses the project, its
   // status dot, "N active · <oldest claim>", "N at Andon" or "N sent back", and the "N settled"
-  // link), then six cells of tokens, newest first, with "+N more" past the cap and the dashed
+  // link, shown when focused too), then six cells of tokens, newest first, with "+N more" past the cap and the dashed
   // ghosts of needs-human jobs. An idle lane collapses to one row in All Projects. A token that
   // changes column slides there in 250ms (a crossfade between the cells), then highlights. Under a
   // search, a lane with no match dims to 25% whole; in a lit lane, each token that misses dims.
@@ -54,11 +54,11 @@
         <span class="dot {lane.dot}" aria-hidden="true"></span><span class="pname">{name}</span>
       </button>
       <span class="meta" title="active jobs · oldest claim">{lane.meta.active}</span>
-      {#if lane.meta.trouble !== null || (lane.meta.settled > 0 && !focused)}
+      {#if lane.meta.trouble !== null || lane.meta.settled > 0}
         <span class="meta">
           {#if lane.meta.trouble !== null}<span class="t-{lane.meta.trouble.tone}">{lane.meta.trouble.text}</span>{/if}
-          {#if lane.meta.trouble !== null && lane.meta.settled > 0 && !focused}<span aria-hidden="true"> · </span>{/if}
-          {#if lane.meta.settled > 0 && !focused}<button class="slink" type="button" aria-haspopup="dialog" onclick={() => onsettled(lane.project.id)}>{lane.meta.settled} settled</button>{/if}
+          {#if lane.meta.trouble !== null && lane.meta.settled > 0}<span aria-hidden="true"> · </span>{/if}
+          {#if lane.meta.settled > 0}<button class="slink" type="button" aria-haspopup="dialog" onclick={() => onsettled(lane.project.id)}>{lane.meta.settled} settled</button>{/if}
         </span>
       {/if}
     </div>
