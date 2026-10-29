@@ -7,14 +7,14 @@
 - Date: 2026-10-28
 
 ## Intent
-Once finished jobs are archived on the `factory/jobs` branch, Andon should show them even when
+Once finished jobs are archived on the `factory/archive` branch, Andon should show them even when
 their local dir is gone: after a prune, or on a fresh clone that has fetched the archive. The
 Andon service reads archived jobs straight from the branch, so the Settled sheet and the
 inspector keep every job's history with no checkout and no UI change. Needs `job-archive`
 merged first; `job-prune` comes after this, so a pruned job never drops out of Andon.
 
 ## Decisions
-1. Who changes → **Only the Andon service.** For each job on the `factory/jobs` branch with no
+1. Who changes → **Only the Andon service.** For each job on the `factory/archive` branch with no
    local dir, it reads the archived files, re-projects `job.json` from `events.jsonl` with the
    contract code (a legacy job uses its archived `job.json`), and adds it to the project's
    board payload in the **same shape** as a local job. A local dir always wins over the archived

@@ -8,8 +8,8 @@
 
 ## Intent
 Archiving only copies, so local `factory/jobs/` keeps growing. `factory prune` clears the local
-dir of a job whose record is safely on the `factory/jobs` branch, so the working copy stays small
-while history stays in the repo. Needs `job-archive` and `andon-reads-archive` merged first, so
+dir of a job whose record is safely on the `factory/archive` branch, so the working copy stays small
+while history stays in the repo. Needs `job-archive`, `archive-branch-rename`, and `andon-reads-archive` merged first, so
 a pruned job never drops out of Andon and never frees its id.
 
 ## Decisions
