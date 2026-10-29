@@ -9,4 +9,4 @@ One feature per line — what "done" looks like, not the history. Add lines with
 
 Lines are in dependency order. Fuzzy ones should go through `/factory explore` first.
 
-- [ ] Prune archived job dirs (after Andon reads the archive) — a manual `factory prune` removes only local job dirs that are archived, settled, and byte-identical to their archived tree, reporting what it kept and why; refused with archiving off; ids and Andon unaffected — brief: factory/briefs/job-prune.md
+- [x] Prune archived job dirs (after Andon reads the archive) — a manual `factory prune` removes only local job dirs that are archived, settled, and byte-identical to their archived tree, reporting what it kept and why; refused with archiving off; ids and Andon unaffected — brief: factory/briefs/job-prune.md → 048-job-prune
