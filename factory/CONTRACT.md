@@ -752,6 +752,27 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
   `config.json` is a 500 whose text is `config.json: <reason>`. `jobs` also holds every job found
   only on the project's `factory/archive` branch (see "Archived jobs" below), in the same shape
   and sorted by id together with the local jobs.
+- `GET /projects/<pid>/board?settled=summary` returns the *narrow board* `{ jobs, config,
+  settled }`: `jobs` holds only that project's unsettled jobs, `config` is as on the plain board,
+  and `settled` is the project's *settled summary* `{ count, lastMergedAt }`. Only the exact
+  value `summary` opts in: with no `settled` parameter, or any other value, the response is the
+  plain `{ jobs, config }` above, unchanged. A job is *settled* by the `dashboard.settleAfterHours`
+  rule (see "`config.json`"), applied by the service on the system clock when it builds the
+  board: an `abandoned` job is settled at once; a `merged` job is settled when its `endedAt`
+  parses and is more than `settleAfterHours` before now (a merged job with no readable `endedAt`
+  is not settled); every other stage is unsettled. The narrow `jobs` and the `jobs` of
+  `GET /projects/<pid>/settled` split the plain board's `jobs` between them, entry for entry, each
+  in id order. In the summary, `count` is the number of settled jobs (settled merged plus
+  abandoned), and `lastMergedAt` is the newest `endedAt` among the settled merged jobs, or `null`
+  when there is none (an abandoned job never counts as a merge). Errors are as for the plain
+  board. *(Added within v1, additively: a new query parameter; the plain response is unchanged.)*
+- `GET /projects/<pid>/settled` returns `{ jobs }`: only that project's settled jobs (by the rule
+  above), sorted by id, in the same shape and under the same rules as the plain board's `jobs`
+  (last good snapshot, unknown fields passed through, archived-only jobs included and
+  re-projected as described under "Archived jobs"). A bad `config.json` is a 500 whose text is
+  `config.json: <reason>`, and an unknown `<pid>` is a 404; it sits behind the same guards as
+  every endpoint (the `Host`/`Origin` 403, `GET` only, `cache-control: no-store`). *(Added within
+  v1, additively: a new endpoint.)*
 - `GET /projects/<pid>/jobs/<id>/docs` returns `{ files: [{ path, text }] }`, with the same
   reading order, brief handling, and paths (relative to `factory/`) as the dashboard's
   `GET /jobs/<id>/docs`, except that it reads only regular files: a symlinked brief, file, or
@@ -788,6 +809,25 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
     changes is debounced to one `board` event per project (at most about 100 ms of delay).
   - `error`: `{ project: <pid>, reason: "config.json: <reason>" }`, sent instead of `board` when
     that project's `config.json` is bad.
+
+  `GET /events?settled=summary` is the same stream for a *narrow client*: its `projects` and
+  `error` events are as above, and each of its `board` events is the narrow form
+  `{ project: <pid>, jobs, config, settled }`, with `jobs` and `settled` as in
+  `GET /projects/<pid>/board?settled=summary`. Only the exact value `summary` opts in; with no
+  `settled` parameter, or any other value, the stream is the plain one above, unchanged. Plain and
+  narrow clients may be connected at once: a change sends each client its own form of the same
+  board, and an `error` event goes to both. Because a merged job becomes settled with no file
+  change, while at least one narrow client is connected the service keeps one one-shot *settle
+  timer* per project, armed for the moment that project's next unsettled merged job crosses
+  `settleAfterHours` and re-armed after every build of the project's board (so a
+  `settleAfterHours` edit in `config.json` re-arms it through the normal rebuild). When it fires,
+  narrow clients get a fresh narrow `board` event; plain clients get none. It is a single
+  deadline, not periodic refetching (no polling): with no narrow client connected, no unsettled
+  merged job with a readable `endedAt`, or a bad `config.json`, no timer is armed, and the timer
+  is cleared when the last narrow client disconnects, the project leaves the registry, or the
+  service stops. A delay longer than a timer allows (2^31−1 ms) is clamped; firing early just
+  rebuilds and re-arms. *(Added within v1, additively: a new query parameter and the timer's
+  events, sent to narrow clients only; plain clients' events are unchanged.)*
 
 The service finds changes with `fs.watch`, never by polling: one recursive watch on each project's
 `factory/jobs/`, one non-recursive watch on its `factory/` (for `config.json`), and one on the
