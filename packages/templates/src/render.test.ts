@@ -542,7 +542,8 @@ describe('the customize interview in SKILL.md', () => {
     const raw = section();
     const s = flat(raw);
     expect(raw).toMatch(/\n\d\. `roles` — /);
-    expect(s).toContain('`dashboard` (only `settleAfterHours`), `gate`, `merge` (only `target`), `archive` (only `enabled`), and `roles`');
+    // Job 053 (epics) adds `epic` (only `maxParallel`) to the v1 key list, before `roles`.
+    expect(s).toContain('`dashboard` (only `settleAfterHours`), `gate`, `merge` (only `target`), `archive` (only `enabled`), `epic` (only `maxParallel`), and `roles`');
     expect(s).toContain('`roles`, when present, is an object');
     expect(s).toContain('a fixed role (`spec-writer`, `builder`, `approver`) or a configured reviewer key');
     expect(s).toContain('holds only `runner` and `model`');
@@ -589,9 +590,11 @@ describe('the customize interview in SKILL.md', () => {
     // section gains the outcome rule. Job 044 (backlog holds only open work) updated the EXPLORE
     // hash: Finish takes the lock, resume shows abandoned attempts, the format gains `- Abandoned:`.
     // Job 051 (merge conflicts go back to the builder) updated the builder and approver hashes: the
-    // builder gains "A conflict note", and both read any `conflict-*.md`.
+    // builder gains "A conflict note", and both read any `conflict-*.md`. Job 053 (the skill runs
+    // epics, and explore writes them) updated the EXPLORE hash: the size check proposes an epic,
+    // Start resumes a plan, the plan format, and the member and plan Finish.
     const before: Record<string, string> = {
-      [EXPLORE]: '2d992ad3faa61e1b5225005e61fd0ce648580491942c468a2f260d9f4afa6625',
+      [EXPLORE]: 'a3043f019ee60b10a5f0b1367619533e9631fb5257382825a9ecf2830975001e',
       [agent('spec-writer')]: 'e8595a8b596b936e369373677acac3c37e233de10fc6b7035b12fb5b5c29a0b1',
       [agent('builder')]: '44767f8cd0a0d6893403c8375fb0b4301590df53fea4aa02e6281e612802833f',
       [agent('approver')]: '14d08440888b6d077f6a429def65cfd0cd9d5d964392feca3fea44d5cf2421f9',
@@ -655,8 +658,9 @@ describe('per-role model from config.roles', () => {
     // Job 020 updated every agent hash (the overlay outcome rule in "Project rules (overlay)").
     // Job 044 updated the EXPLORE hash (Finish under the lock, abandoned attempts, `- Abandoned:`).
     // Job 051 updated the builder and approver hashes (a conflict note, and `conflict-*.md` reads).
+    // Job 053 updated the EXPLORE hash (epics: the size check, plan resume, plan format, Finish).
     const before: Record<string, string> = {
-      [EXPLORE]: '2d992ad3faa61e1b5225005e61fd0ce648580491942c468a2f260d9f4afa6625',
+      [EXPLORE]: 'a3043f019ee60b10a5f0b1367619533e9631fb5257382825a9ecf2830975001e',
       [agent('spec-writer')]: 'e8595a8b596b936e369373677acac3c37e233de10fc6b7035b12fb5b5c29a0b1',
       [agent('builder')]: '44767f8cd0a0d6893403c8375fb0b4301590df53fea4aa02e6281e612802833f',
       [agent('approver')]: '14d08440888b6d077f6a429def65cfd0cd9d5d964392feca3fea44d5cf2421f9',
@@ -1347,12 +1351,13 @@ describe('the job archive in SKILL.md (job 045, AC8)', () => {
     const custom = section(skill(), 'Customize');
     const target = custom.indexOf('6. `merge.target` —');
     const archive = custom.indexOf('7. `archive.enabled` —');
-    const roles = custom.indexOf('8. `roles` —');
+    // Job 053 (epics) asks about `epic.maxParallel` as question 8, so `roles` moves to 9.
+    const roles = custom.indexOf('9. `roles` —');
     for (const i of [target, archive, roles]) expect(i).toBeGreaterThanOrEqual(0);
     expect(target).toBeLessThan(archive);
     expect(archive).toBeLessThan(roles);
     expect(custom).toContain('No `archive` key keeps it off.');
-    expect(custom).toContain('`merge` (only `target`), `archive` (only `enabled`), and `roles`');
+    expect(custom).toContain('`merge` (only `target`), `archive` (only `enabled`), `epic` (only `maxParallel`), and `roles`');
     expect(custom).toContain('- `archive`, when present, is an object holding only `enabled`, which is required and is `true` or `false`.');
     expect(custom).toContain('**When `archive` changed.** No re-render is needed');
   });
@@ -1462,5 +1467,356 @@ describe('merge conflicts go back to the builder (job 051)', () => {
     expect(old).not.toBe(TEMPLATES.skill);
     const text = flat(at(renderClaudeCode({ config: config(), templates: { ...TEMPLATES, skill: old } }).files, SKILL));
     expect(section(text, 'Merge')).not.toContain('merge.conflicted');
+  });
+});
+
+describe('the skill runs epics, and explore writes them (job 053)', () => {
+  const flat = (s: string): string => s.replace(/\s+/g, ' ');
+  const configs = [config(), config({ reviewers: ['q'] }), config({ reviewers: ['zeta', 'eta-1', 'theta'], gate: ['x'], merge: { target: 'develop' }, epic: { maxParallel: 5 } })];
+  const files = (c: Config = config(), templates: Readonly<Templates> = TEMPLATES): Record<string, string> =>
+    renderClaudeCode({ config: c, templates }).files;
+  const skill = (c: Config = config()): string => flat(at(files(c), SKILL));
+  const explore = (c: Config = config()): string => flat(at(files(c), EXPLORE));
+  // A `## <heading>` section of flattened text, up to the next `## ` heading (`### ` stays inside).
+  const section = (text: string, heading: string): string => {
+    const start = text.indexOf(`## ${heading}`);
+    if (start < 0) throw new Error(`no section ${heading}`);
+    const end = text.indexOf(' ## ', start + 3);
+    return end < 0 ? text.slice(start) : text.slice(start, end);
+  };
+  // A `### <heading>` subsection of flattened text, up to the next `### ` or `## ` heading.
+  const sub = (text: string, heading: string): string => {
+    const start = text.indexOf(`### ${heading}`);
+    if (start < 0) throw new Error(`no subsection ${heading}`);
+    const ends = [text.indexOf(' ### ', start + 4), text.indexOf(' ## ', start + 4)].filter((i) => i >= 0);
+    return ends.length === 0 ? text.slice(start) : text.slice(start, Math.min(...ends));
+  };
+  const between = (text: string, from: string, to?: string): string => {
+    const start = text.indexOf(from);
+    if (start < 0) throw new Error(`missing: ${from}`);
+    const end = to === undefined ? -1 : text.indexOf(to, start + from.length);
+    return end < 0 ? text.slice(start) : text.slice(start, end);
+  };
+  // Every needle is present, and each one comes after the one before it.
+  const inOrder = (text: string, needles: readonly string[]): void => {
+    let last = -1;
+    for (const needle of needles) {
+      const i = text.indexOf(needle, last + 1);
+      expect({ needle, found: i >= 0 }).toEqual({ needle, found: true });
+      expect({ needle, after: i > last }).toEqual({ needle, after: true });
+      last = i;
+    }
+  };
+  const epics = (c: Config = config()): string => section(skill(c), 'Epics');
+  const commands = (c: Config = config()): string => section(skill(c), 'Commands');
+  const TRAILER = '-m "Co-Authored-By: Claude <noreply@anthropic.com>"';
+
+  test('AC1: the frontmatter names epic <slug> and epic abandon <slug> <reason>', () => {
+    const { frontmatter } = splitFrontmatter(at(files(), SKILL));
+    const hint = /^argument-hint: (.+)$/m.exec(frontmatter)?.[1] ?? '';
+    const description = /^description: (.+)$/m.exec(frontmatter)?.[1] ?? '';
+    for (const word of ['epic <slug>', 'epic abandon <slug> <reason>']) {
+      expect({ word, hint: hint.includes(word) }).toEqual({ word, hint: true });
+      expect({ word, description: description.includes(word) }).toEqual({ word, description: true });
+    }
+  });
+
+  test('AC1: /factory epic <slug> starts an unstarted epic and resumes a running or waiting one', () => {
+    for (const c of configs) {
+      const start = sub(epics(c), 'Start or resume');
+      const notStarted = between(start, '**Not started**', '**`running` or `waiting`:**');
+      inOrder(notStarted, [
+        'Its `Status:` must be `ready`',
+        '**The abandoned-brief question, once.**',
+        '**The overlap question, once.**',
+        'Run **the thread lookup**',
+        'Take `factory/.lock`',
+        '`bun factory/cli.ts epic start <slug> [session=…]`',
+        'tick the line as `- [x] … → epic <slug>`',
+        `git commit -m "chore(factory): start epic <slug>" ${TRAILER} -- factory/backlog.md`,
+        'Release the lock.',
+        'Run **The epic loop**.',
+      ]);
+      expect(notStarted).toContain('Start the epic anyway, or revise them first with `/factory explore`?');
+      expect(notStarted).toContain('with each live job that has no `epic` and each other running epic');
+      expect(notStarted).toContain('Never compare members with each other');
+      const resume = between(start, '**`running` or `waiting`:**', '**`landing`**');
+      expect(resume).toContain('Ask neither start question');
+      inOrder(resume, ['Run **the thread lookup**', '`bun factory/cli.ts epic event <slug> epic.resumed [session=…]`', 'run **The epic loop** from the files']);
+      expect(resume).not.toContain('epic start');
+      expect(commands(c)).toContain('**`/factory epic <slug>`** — Start or resume an epic, idempotently');
+    }
+  });
+
+  test('AC1: the thread lookup runs once at start or resume, and its session= goes on every claim', () => {
+    const text = skill();
+    const lookup = section(text, 'The thread lookup (T3 Code)');
+    expect(lookup).toContain('**In an epic** the lookup runs **once**, when `/factory epic <slug>` starts or resumes the epic, right before `epic start` or `epic event <slug> epic.resumed`.');
+    expect(lookup).toContain('on that command and on every claim this session makes for the epic (members, sync, and fix jobs); never run it again per claim.');
+    expect(lookup).toContain('(`claim`, `job.reworked`, `job.human-approved`, `epic start`, or `epic.resumed`)');
+    const e = epics();
+    for (const claim of [
+      'claim <member> epic=<slug> brief=factory/briefs/<member>.md session=…',
+      'claim sync-<sha> epic=<slug> kind=sync session=…',
+      'claim fix-<sha> epic=<slug> kind=fix session=…',
+    ]) expect({ claim, found: e.includes(claim) }).toEqual({ claim, found: true });
+  });
+
+  test('AC1: /factory next on an epic line starts it the same way and ticks it → epic <slug>', () => {
+    for (const c of configs) {
+      const next = between(commands(c), '**`/factory next [words]`**', '**`/factory approve <id>`**');
+      expect(next).toContain('A picked line ending `— epic: factory/epics/<slug>.md` is an epic: release the lock and start it as `/factory epic <slug>` does');
+      expect(next).toContain('the tick as `- [x] … → epic <slug>`, committed by pathspec under the lock');
+      expect(next).toContain('A ticked `- [x] … → epic <slug>` line is a running epic: never pick it');
+      expect(section(skill(c), 'Running jobs side by side')).toContain('`- [x] … → epic <slug>` while the epic runs, and removed when it lands or is abandoned');
+    }
+  });
+
+  test('AC2: the epic loop claims what epic next prints, in the background, and re-reads state from files', () => {
+    for (const c of configs) {
+      const loop = sub(epics(c), 'The epic loop');
+      expect(loop).toContain('**every agent is spawned in the background**');
+      expect(loop).toContain('as each agent returns (and its file exists), take that job\'s next step');
+      expect(loop).toContain('run `bun factory/cli.ts epic next <slug>` and do exactly what it prints, nothing more');
+      expect(loop).toContain('`claim <member>` → run **Catch-up** first');
+      expect(loop).toContain('`land` → **Landing**');
+      expect(loop).toContain('**State lives in files, never in your memory.** After a compaction, on a resume');
+      expect(loop).toContain('re-read `epic show <slug>`');
+      expect(loop).toContain("each epic job's `job.json`");
+      expect(loop).toContain("When the old builder isn't alive, spawn a fresh `factory-builder` named `builder-<id>`");
+      expect(loop).toContain('(the rework path)');
+      expect(loop).toContain('**Status lines name the epic**: `<epic> · <id> review round <N>: <k>/<n> in`');
+    }
+  });
+
+  test('AC2: an approved member merges into the epic branch in the epic worktree, with no commit on the target', () => {
+    for (const c of configs) {
+      const merge = sub(epics(c), 'Member merge');
+      expect(merge).toContain('`<R>/factory/.worktrees/epic-<slug>`, which is always on `factory/epic/<slug>`; never in the main checkout');
+      expect(merge).toContain('No `factory/.lock`');
+      inOrder(merge, [
+        'board `job.merged sha=<short sha>` right after the merge, before any cleanup',
+        '`git worktree remove factory/.worktrees/<id>`',
+        '`git branch -d factory/<id>`',
+        '`bun factory/cli.ts archive <id>`',
+      ]);
+      expect(merge).toContain('**Nothing is committed on the target**: no backlog edit, no brief line');
+      expect(merge).not.toContain('git commit');
+      // The loop and Merge point epic jobs at Member merge.
+      const text = skill(c);
+      expect(section(text, 'The loop')).toContain('it merges by **Member merge** (under **Epics**) wherever this loop says **Merge**');
+      expect(section(text, 'Merge')).toContain('A job in an epic merges into the epic branch instead, by **Member merge** under **Epics**.');
+    }
+  });
+
+  test('AC3: catch-up merges the target only when it moved, and a conflict claims a sync job', () => {
+    for (const c of configs) {
+      const catchUp = sub(epics(c), 'Catch-up');
+      expect(catchUp).toContain('Before each member claim and before landing');
+      expect(catchUp).toContain('git merge-base --is-ancestor <target> factory/epic/<slug>');
+      expect(catchUp).toContain('Exit 0 → up to date, nothing to do.');
+      expect(catchUp).toContain('as a merge commit, never a rebase');
+      expect(catchUp).toContain("git merge --no-ff <target> -m 'Merge <target> into factory/epic/<slug>'");
+      const conflict = between(catchUp, '- **Conflict**', '- Any other failure');
+      inOrder(conflict, [
+        'record the conflicting paths and the target\'s sha (`git rev-parse --short <target>`)',
+        '`git merge --abort`',
+        'Claim a **sync job**: `bun factory/cli.ts claim sync-<sha> epic=<slug> kind=sync session=…` (no `brief=`',
+        'Write its `feature.md`, generated',
+        'Merge <target> @ <sha> into factory/epic/<slug>',
+        'Conflicting paths: - <path>',
+      ]);
+      expect(conflict).toContain('**While a sync job is live, no member is claimed**');
+      expect(conflict).toContain('running members keep going');
+      expect(conflict).toContain('Claiming resumes once the sync job merges');
+      expect(sub(epics(c), 'The epic loop')).toContain('if it claimed a sync job, claim no member now');
+    }
+  });
+
+  test('AC4: member conflicts, escalations, and an abandoned member others depend on', () => {
+    for (const c of configs) {
+      const e = epics(c);
+      expect(sub(e, 'Member merge')).toContain("A **conflict** follows **Merge**'s conflict path as written (the conflict note, the builder, two tries), against the epic branch");
+      const loop = sub(e, 'The epic loop');
+      const escalates = between(loop, '**A member escalates**', '**A member is abandoned.**');
+      expect(escalates).toContain('it goes to `needs-human` exactly as a standalone job does');
+      expect(escalates).toContain('independent members keep running, and its dependents stay unclaimed');
+      expect(escalates).toContain('Never retry, rework, or approve it on your own');
+      const abandoned = between(loop, '**A member is abandoned.**');
+      expect(abandoned).toContain('Ask the user once');
+      expect(abandoned).toContain('Drop it and its dependents from the plan, or abandon the epic?');
+      inOrder(abandoned, [
+        '**Drop** → take `factory/.lock`',
+        "remove those members' items from the plan's `## Members` (and any `after:` entry naming them)",
+        `git commit -m "chore(factory): drop <members> from epic <slug>" ${TRAILER} -- factory/epics/<slug>.md`,
+        'Release the lock',
+        '**Abandon the epic** → `/factory epic abandon <slug> <reason>`',
+      ]);
+    }
+  });
+
+  test('AC5: land catches up, runs the gate, claims a fix job on red, and lands under the lock on green', () => {
+    for (const c of configs) {
+      const land = sub(epics(c), 'Landing');
+      inOrder(land, [
+        'When `epic next` prints `land`',
+        '**Catch-up.**',
+        '**The gate**, in the epic worktree',
+        '**Red** → claim a **fix job**: `bun factory/cli.ts claim fix-<sha> epic=<slug> kind=fix session=…`',
+        'no `brief=`',
+        'the failing command, and its output',
+        '**Green** → `bun factory/cli.ts epic event <slug> epic.landing`',
+        'Take `factory/.lock`',
+        '`git symbolic-ref --short HEAD`',
+        "epic.waiting reason='checkout is on <x>, epic targets <target>'",
+        'Never run `git checkout` or `git switch`',
+        'git merge --no-ff factory/epic/<slug>',
+        '`bun factory/cli.ts epic event <slug> epic.landed sha=<short sha>` **at once**, before any cleanup',
+        '`git worktree remove factory/.worktrees/epic-<slug>` and `git branch -d factory/epic/<slug>`',
+        '`bun factory/cli.ts archive <slug>`',
+        'First run **the backlog check**',
+        "remove the epic's line (`- [x] … → epic <slug>`) from `factory/backlog.md`",
+        'give each member brief `Status: done` and, right below it, `- Job: <id> (merged <member sha> via epic <slug>, <YYYY-MM-DD>)`',
+        'give the plan `Status: done` and, right below it, `- Landed: <short sha> (<YYYY-MM-DD>)`',
+        `git commit -m "chore(factory): land epic <slug>" ${TRAILER} -- factory/backlog.md factory/epics/<slug>.md factory/briefs/<member>.md`,
+        'Release the lock (`rmdir factory/.lock`)',
+      ]);
+      expect(land).not.toMatch(/rebase/i);
+    }
+  });
+
+  test('AC6: member approve, rework, and abandon run only in the driving session; others refuse in one line', () => {
+    for (const c of configs) {
+      const text = skill(c);
+      const member = sub(section(text, 'Epics'), 'Member commands');
+      expect(member).toContain("`/factory approve`, `rework`, and `abandon <id>` on a job whose `job.json` has an `epic` run only in the session driving that epic");
+      expect(member).toContain('"<id> is in epic <slug>; run it in the epic\'s session, or `/factory epic <slug>` to take it over"');
+      expect(member).toContain('merges by **Member merge**: into the epic branch, never the target');
+      const cmds = section(text, 'Commands');
+      for (const [from, to] of [
+        ['**`/factory approve <id>`**', '**`/factory rework <id> <note>`**'],
+        ['**`/factory rework <id> <note>`**', '**`/factory abandon <id> <reason>`**'],
+        ['**`/factory abandon <id> <reason>`**', 'Read the job\'s `stage`'],
+      ] as const) {
+        expect({ from, points: between(cmds, from, to).includes('**Member commands** under **Epics** first') }).toEqual({ from, points: true });
+      }
+    }
+  });
+
+  test('AC6: /factory epic abandon asks the two questions, runs the CLI, archives, and commits the bookkeeping', () => {
+    for (const c of configs) {
+      const entry = between(commands(c), '**`/factory epic abandon <slug> <reason>`**');
+      inOrder(entry, [
+        '**Confirm.**',
+        'confirm that members are still working',
+        '**The branch.** *"Keep the branch `factory/epic/<slug>`, or delete it?"*',
+        'The default is **keep**',
+        'run **the backlog check**',
+        "bun factory/cli.ts epic abandon <slug> '<reason>'",
+        'adding `--force` only after the user confirmed that members are still working, and `--delete-branch` only when the user chose delete',
+        '`bun factory/cli.ts archive <slug>`',
+        'take `factory/.lock`, run the backlog check again',
+        "remove the epic's line (`- [x] … → epic <slug>`)",
+        'give the plan `Status: abandoned` and, right below it, `- Abandoned: <YYYY-MM-DD>: <reason>`',
+        'for each member brief that had a job, add `- Abandoned: <id> (<YYYY-MM-DD>): epic <slug> abandoned: <reason>`',
+        'Its `Status` stays `ready`',
+        `git commit -m "chore(factory): abandon epic <slug>" ${TRAILER} -- factory/backlog.md factory/epics/<slug>.md factory/briefs/<member>.md`,
+        'release the lock (`rmdir factory/.lock`)',
+      ]);
+    }
+  });
+
+  test('AC7: the size check proposes an epic, and explore writes a draft plan with Members and after: edges', () => {
+    for (const c of configs) {
+      const ex = explore(c);
+      const interview = section(ex, 'Interview');
+      expect(interview).toContain('When the split gives two or more briefs, **propose running them as an epic** by default');
+      expect(interview).toContain("Declining keeps today's way: separate briefs, each with its own backlog line.");
+      expect(interview).toContain('`Status: draft`, an Intent, and a `## Members` list of the brief slugs with the `after:` edges you propose');
+      expect(interview).toContain('the user confirms or changes the edges');
+      const raw = at(files(c), EXPLORE);
+      const open = raw.indexOf('```\n# <Title>', raw.indexOf('## Write the plan'));
+      expect(open).toBeGreaterThan(0);
+      const format = raw.slice(open, raw.indexOf('```', open + 3));
+      expect(format).toContain('- Status: draft | ready | done | abandoned');
+      expect(format).toContain('## Members\n- `<slug>` — ');
+      expect(format).toContain('after: `<slug>`');
+      expect(format).not.toContain('{{');
+    }
+  });
+
+  test('AC7: member Finish has no backlog line; the plan Finish plays back, appends one line, commits, then asks', () => {
+    for (const c of configs) {
+      const finish = section(explore(c), 'Finish');
+      const member = between(finish, '**A member of an epic**', "**The plan's Finish**");
+      expect(member).toContain('with no backlog line of its own');
+      expect(member).toContain("Set the brief's `Status: ready`");
+      expect(member).toContain('`git commit -m "specs(factory): add brief <slug> (epic <epic>)"`');
+      expect(member).not.toContain('factory/backlog.md');
+      const plan = between(finish, "**The plan's Finish**");
+      inOrder(plan, [
+        "Play the plan back: its members, their `after:` edges, and what runs in parallel",
+        'Take `factory/.lock` and run the **backlog check**',
+        "Set the plan's `Status: ready`",
+        '`- [ ] <Title> — <one line on what done looks like> — epic: factory/epics/<slug>.md`',
+        'When the plan groups existing briefs, remove their `- [ ]` lines in the same edit',
+        '`git commit -m "specs(factory): add epic <slug>"`',
+        'Then release the lock (`rmdir factory/.lock`)',
+        'Only after the release, ask whether to run it now',
+        '`/factory epic <slug>`',
+      ]);
+    }
+  });
+
+  test('AC7: grouping, resuming a plan, adding members, never reopening done, and the via-epic Job: form', () => {
+    for (const c of configs) {
+      const ex = explore(c);
+      expect(ex).toContain('**Grouping existing briefs.**');
+      expect(ex).toContain('Each must be `ready`. Refuse a brief that is running');
+      expect(ex).toContain('or `done`, and say why');
+      const start = section(ex, 'Start');
+      expect(start).toContain("**An epic plan's slug** (`factory/epics/<slug>.md` exists) → resume the plan.");
+      expect(start).toContain('`draft` → pick up at its first unfinished member');
+      expect(start).toContain('**add members**');
+      expect(start).toContain("`done` → don't reopen it");
+      const raw = at(files(c), EXPLORE);
+      const open = raw.indexOf('```\n# <Title>');
+      const format = raw.slice(open, raw.indexOf('```', open + 3));
+      expect(format).toContain('- Job: <id> (merged <sha> via epic <slug>, <YYYY-MM-DD>)');
+    }
+  });
+
+  test('AC8: ground rules, the files the orchestrator writes, and customize\'s epic.maxParallel', () => {
+    for (const c of configs) {
+      const text = skill(c);
+      const rules = section(text, 'Ground rules');
+      expect(rules).toContain('One job, or one epic, per session');
+      expect(rules).toContain('including the generated sync and fix `feature.md`');
+      expect(rules).toContain("an epic plan's bookkeeping (`Status:`, `- Landed:`, `- Abandoned:`) and dependent drops");
+      const custom = section(text, 'Customize');
+      expect(custom).toContain('8. `epic.maxParallel` —');
+      expect(custom).toContain('Recommend 3, the default; no `epic` key keeps it.');
+      expect(custom).toContain('`epic` (only `maxParallel`)');
+      expect(custom).toContain('- `epic`, when present, is an object holding only `maxParallel`, a positive integer.');
+    }
+  });
+
+  test('AC8: SKILL.md and explore.md stay neutral and fully filled, and explore never names the dashboard', () => {
+    const BANNED = ['Minerva', 'Andon', 'andon', 'packages/', 'apps/', 'bun run test', 'bun run check', 'here:'];
+    for (const c of configs) {
+      for (const s of [epics(c), commands(c), section(skill(c), 'Customize'), section(skill(c), 'Ground rules'), explore(c)]) {
+        for (const word of BANNED) expect({ word, found: mentions(s, word) }).toEqual({ word, found: false });
+        expect(s).not.toMatch(/\{\{[^}]*\}\}/);
+      }
+    }
+  });
+
+  test('the pins fail on the old text', () => {
+    const old = TEMPLATES.skill.replace(/## Epics\n[\s\S]*?(?=## Commands\n)/, '');
+    expect(old).not.toBe(TEMPLATES.skill);
+    expect(() => section(flat(at(files(config(), { ...TEMPLATES, skill: old }), SKILL)), 'Epics')).toThrow(/no section Epics/);
+    const oldExplore = TEMPLATES.explore.replace(/\n\*\*A member of an epic\*\*[\s\S]*$/, '\n');
+    expect(oldExplore).not.toBe(TEMPLATES.explore);
+    expect(section(flat(at(files(config(), { ...TEMPLATES, explore: oldExplore }), EXPLORE)), 'Finish')).not.toContain("**The plan's Finish**");
   });
 });

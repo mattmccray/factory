@@ -16,6 +16,19 @@ questions on decisions, not on facts.
   doesn't repeat what went wrong. If its `Status:` is `done`, don't reopen it,
   since a job already carried it out: name the job that carried it out (its `- Job:` line),
   and offer a new brief that lists the old one under `Sources:`.
+- **An epic plan's slug** (`factory/epics/<slug>.md` exists) → resume the plan. Re-read it and
+  its member briefs, and summarize where it stands in a few lines. By its state:
+  - `draft` → pick up at its first unfinished member, in plan order (the first whose brief is
+    missing or not `ready`). When every member is ready, go to **The plan's Finish**.
+  - started and not over (`bun factory/cli.ts epic show <slug>` reads `running`, `waiting`, or
+    `landing`), or `ready` and not yet started → **add members**: interview each new brief as a
+    member (**Finish**, "A member of an epic"), and agree its `after:` edges with the user. Its
+    item goes into `## Members` in its own Finish commit, never before, since the epic may claim
+    it at its next scheduling step. Never remove, reorder, or rewrite the members already there.
+  - `done` → don't reopen it: an epic already landed it. Name its `- Landed:` line, and offer a
+    new plan that lists the old one under `Sources:`.
+  - `abandoned` → don't reopen it either: a plan has one run. Offer a new plan; its member
+    briefs stay `ready` and can be grouped again.
 
 Do your homework before the first question. Read the project's instructions (`CLAUDE.md` or
 its equivalent) and any decision records or contracts they name as binding, and the project's
@@ -45,19 +58,35 @@ chooses becomes a **contract call** in the brief.
 bigger than that, propose splitting it into several briefs, in dependency order. Agree the
 split with the user, then interview them one at a time.
 
+When the split gives two or more briefs, **propose running them as an epic** by default: one
+plan, one backlog line, driven to done by `/factory epic <slug>`, with members that don't depend
+on each other running in parallel. Declining keeps today's way: separate briefs, each with its
+own backlog line. On agreement, write the plan (**Write the plan**) before the first member's
+interview: `Status: draft`, an Intent, and a `## Members` list of the brief slugs with the
+`after:` edges you propose from what each one touches; the user confirms or changes the edges.
+Then interview the members one at a time, in plan order.
+
+**Grouping existing briefs.** When the idea names existing briefs to run together, the plan can
+group them. Each must be `ready`. Refuse a brief that is running (a live job carries it, or its
+backlog line is ticked) or `done`, and say why; it stays out of the plan. The grouped briefs'
+backlog lines are replaced by the epic's one line in **The plan's Finish** commit.
+
 ## Write the brief as you go
 
 Create `factory/briefs/<slug>.md` after the first answer, and update it after every decision.
 That way an interrupted session can resume. While questions remain it says `Status: draft`.
 Only the factory's Merge step writes the `- Job:` line, and sets `Status: done`, when the job
-that carried the brief out merges. Only `/factory abandon` writes an `- Abandoned:` line, one
-per abandoned attempt, and the status stays `ready`. Never write any of them here.
+that carried the brief out merges (for an epic's member, the epic's landing does, in the
+`via epic` form). Only `/factory abandon` writes an `- Abandoned:` line (and
+`/factory epic abandon`, for an epic's members), one per abandoned attempt, and the status stays
+`ready`. Never write any of them here.
 
 ```
 # <Title>
 
 - Status: draft | ready | done
 - Job: <id> (merged <short sha>, <YYYY-MM-DD>)   (written only at merge)
+- Job: <id> (merged <sha> via epic <slug>, <YYYY-MM-DD>)   (an epic member's form, written only at landing)
 - Abandoned: <id> (<YYYY-MM-DD>): <reason>   (optional; written only by /factory abandon, one per attempt)
 - Sources: <earlier thinking you read, e.g. a plan doc's path> | —
 - Date: <YYYY-MM-DD>
@@ -84,6 +113,37 @@ update the doc that records it (the brief names it) to match.
 None. A ready brief has none.
 ```
 
+## Write the plan
+
+An epic's plan is `factory/epics/<slug>.md` (its own slug, 2–4 kebab words, not a brief's).
+Create it when the user agrees to an epic, and update it as members and edges are settled. It
+says `Status: draft` until **The plan's Finish**. Only the epic's landing writes `- Landed:` and
+sets `Status: done`, and only `/factory epic abandon` writes its `- Abandoned:` line and sets
+`Status: abandoned`. Never write any of them here, and never write a member's live state
+(running, blocked, waiting) into the plan.
+
+```
+# <Title>
+
+- Status: draft | ready | done | abandoned
+- Landed: <short sha> (<YYYY-MM-DD>)   (written only at landing)
+- Abandoned: <YYYY-MM-DD>: <reason>   (written only by /factory epic abandon)
+- Sources: <the idea, and briefs or plan docs it grew from> | —
+- Date: <YYYY-MM-DD>
+
+## Intent
+Two or three sentences in the user's terms: what the whole set changes, and why together.
+
+## Members
+- `<slug>` — <one line on what this brief delivers>
+- `<slug>` — <one line> after: `<slug>`
+- `<slug>` — <one line> after: `<slug>`, `<slug>` maxRound: 3
+```
+
+Each member item starts with its brief's slug in backticks. `after:` lists the members it waits
+on (members with no path between them run in parallel), and `maxRound:` optionally gives its job
+a larger review budget; each at most once per item, and neither word anywhere else in the item.
+
 ## Finish
 
 1. Play the brief back to the user in a few lines and ask whether you've got it right. Don't
@@ -102,3 +162,29 @@ None. A ready brief has none.
    (`rmdir factory/.lock`).
 5. Only after the release, ask whether to run it now. If yes, continue as
    `/factory next <the brief's title>`, which picks that line even if it isn't first.
+
+**A member of an epic** finishes differently, with no backlog line of its own:
+1. Play the brief back as in step 1, and wait for the user to confirm.
+2. Take `factory/.lock`. Set the brief's `Status: ready`, and make sure the plan lists it in
+   `## Members` with its agreed `after:` edges.
+3. Commit the brief and the plan together by pathspec, still under the lock:
+   `git add -- factory/briefs/<slug>.md factory/epics/<epic>.md`, then
+   `git commit -m "specs(factory): add brief <slug> (epic <epic>)"` (+ the Co-Authored-By
+   trailer) `-- factory/briefs/<slug>.md factory/epics/<epic>.md`. Release the lock, and go on
+   to the next unfinished member. For a started epic, that is the end:
+   it picks new members up at its next scheduling step.
+
+**The plan's Finish**, once every member brief is `ready`:
+1. Play the plan back: its members, their `after:` edges, and what runs in parallel. Don't mark
+   it ready until the user confirms.
+2. Take `factory/.lock` and run the **backlog check**, as in step 2 (if it stops you, the plan
+   stays as it is, a draft).
+3. Set the plan's `Status: ready`. Append one backlog line:
+   `- [ ] <Title> — <one line on what done looks like> — epic: factory/epics/<slug>.md`
+   When the plan groups existing briefs, remove their `- [ ]` lines in the same edit.
+4. Commit by pathspec, still under the lock: `git add -- factory/backlog.md
+   factory/epics/<slug>.md`, then `git commit -m "specs(factory): add epic <slug>"` (+ the
+   Co-Authored-By trailer) `-- factory/backlog.md factory/epics/<slug>.md`. Then release the
+   lock (`rmdir factory/.lock`).
+5. Only after the release, ask whether to run it now. If yes, continue as
+   `/factory epic <slug>`.
