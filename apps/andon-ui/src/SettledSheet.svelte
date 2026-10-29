@@ -2,21 +2,24 @@
   // The Settled sheet (design §9): merged jobs older than their project's settleAfterHours, and
   // every abandoned job, newest end first. A lane's "N settled" link opens it filtered to one
   // project, shown as a removable chip. Settled is only a view; a row opens the job in the
-  // inspector and closes the sheet.
+  // inspector and closes the sheet. Its lists are fetched when it opens (App.svelte): until the
+  // first ones arrive it says it is loading, and a failed fetch shows its reason.
   import type { BoardJob } from './board';
   import { settledRows, settledTitle } from './inspector';
+  import type { SettledStatus } from './projects';
   import Sheet from './Sheet.svelte';
   import { when } from './time';
 
   interface Props {
     settled: BoardJob[];
+    status: SettledStatus; // the fetches behind the listed projects
     open: boolean;
     project: { id: string; name: string } | null; // the filter chip
     onclearfilter: () => void;
     onclose: () => void;
     onopen: (key: string) => void;
   }
-  let { settled, open, project, onclearfilter, onclose, onopen }: Props = $props();
+  let { settled, status, open, project, onclearfilter, onclose, onopen }: Props = $props();
 
   const rows = $derived(settledRows(settled, project?.id ?? null));
   const heading = $derived(settledTitle(project === null ? settled : settled.filter((b) => b.project.id === project.id)));
@@ -36,7 +39,10 @@
       </p>
     {/if}
   </header>
-  <ul class="slist">
+  <ul class="slist" aria-busy={status.loading}>
+    {#each status.failures as f (f.id)}
+      <li class="empty fail" role="alert">{status.failures.length > 1 || project === null ? `${f.name}: ` : ''}{f.reason}</li>
+    {/each}
     {#each rows as r (r.key)}
       <li>
         <button class="srow" type="button" onclick={() => onopen(r.key)}>
@@ -48,11 +54,15 @@
         </button>
       </li>
     {:else}
-      <li class="empty">Nothing has settled.</li>
+      {#if status.loading}
+        <li class="empty" role="status">Loading settled jobs…</li>
+      {:else if status.failures.length === 0}
+        <li class="empty">Nothing has settled.</li>
+      {/if}
     {/each}
   </ul>
   <footer>
-    <span class="l">{rows.length} {rows.length === 1 ? 'job' : 'jobs'}</span>
+    <span class="l">{status.loading && rows.length === 0 ? '' : `${rows.length} ${rows.length === 1 ? 'job' : 'jobs'}`}</span>
     <button class="btn primary" type="button" onclick={onclose}>Done</button>
   </footer>
 </Sheet>

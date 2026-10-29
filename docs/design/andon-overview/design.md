@@ -68,7 +68,7 @@ project, inside a **native-feeling macOS app** (sidebar, toolbar, inspector). On
   3 waiting on you". Running excludes needs-human; the waiting part is red and omitted at zero.
 - A segmented control, **All Work | Needs Me** (with a red count badge on Needs Me).
 - A search field (200px, `/` hint).
-- **Settled** with a count badge.
+- **Settled** with a count badge: the sum of the projects' settled counts (§9).
 - The inspector toggle.
 - The mock-up's **Replay** button was a demo, so it's **left out**.
 
@@ -162,12 +162,15 @@ job finishing a stage never reshuffles lanes.
 - the project name with its status dot;
 - "2 active · 11h 40m", the oldest claim among active jobs;
 - "1 at Andon" in red, or "1 sent back" in orange, plus "· 1 settled" as an underlined link that
-  opens Settled filtered to that project.
+  opens Settled filtered to that project (shown in focus too). The count is the board's settled
+  summary `count` plus any job that settled on screen since the last push.
 
 The name is a button that focuses the project.
 
 **Idle lanes** (no job that isn't settled) collapse to one 28px row: the gray name, "Idle · last
-merge 3d 12h ago" across the columns, and a "Settled 2" button on the right.
+merge 3d 12h ago" across the columns, and a "Settled 2" button on the right. The last merge is the
+later of the settled summary's `lastMergedAt` and any merge still on the board ("Idle · no merges
+yet" when there is neither).
 
 **Crowded cells and lane height.** Tokens stack vertically in a cell, newest first, with 4px
 between them. A lane is as tall as its **fullest cell**, not its job count: four jobs in four
@@ -196,7 +199,7 @@ bar on its left edge.
 | build | indigo bar | "Building" (or "Rework → R2") | an indeterminate 2px progress line on the bottom edge |
 | spec | teal bar, faint diagonal hatch | "Drafting spec", teal | |
 | claimed | dashed gray border, no fill | "Claimed", italic | the title is the id until the spec names it |
-| merged | green border, green-tinted fill | none: **one line** | line 1 only: the number, the title (ellipsized), and the time since the merge in its largest unit (`42s`, `45m`, `1h`, `2d`; no "ago"), right-aligned, never wrapping. No sha, ✓, chips, round, or branch: the sha, the round, and the full "1h 4m ago" are in the hover and the inspector. Settled tokens (dimmed) are the same |
+| merged | green border, green-tinted fill | none: **one line** | line 1 only: the number, the title (ellipsized), and the time since the merge in its largest unit (`42s`, `45m`, `1h`, `2d`; no "ago"), right-aligned, never wrapping. No sha, ✓, chips, round, or branch: the sha, the round, and the full "1h 4m ago" are in the hover and the inspector |
 
 **Verdict chips** are 14px mono, with two-letter abbreviations in the project's reviewer order
 (`security` se, `contract` ct, `code` cd, `ui` ui, `ux` ux; otherwise the first two letters).
@@ -216,12 +219,16 @@ motion is disabled under `prefers-reduced-motion`.
 Selecting a project (in the sidebar, by clicking its gutter name, or with `#project=`) shows only
 that lane, taller, with **no cap**: every active job is shown, and the lane grows to fit its
 fullest cell.
-- tokens show full titles (wrapping to 2 lines) and the branch, except merged and settled
-  tokens: they stay one line (the title may wrap to 2 lines, the time beside it) with no branch;
-- Merged also lists that project's settled jobs, dimmed;
+- tokens show full titles (wrapping to 2 lines) and the branch, except merged tokens: they stay
+  one line (the title may wrap to 2 lines, the time beside it) with no branch;
+- Merged shows only recent (unsettled) merges, as in All Projects. Settled jobs leave a focused
+  project's Merged column: they are reached through the Settled sheet and the inspector. The
+  gutter's "· N settled" link shows in focus too and opens Settled filtered to the project;
 - below the lane is a **Recent activity** list of the last 14 events: time, job number, what
   happened ("R2 ui: PASS", "entered review", "merged 3c9e01a"), and how long ago. Each one opens
-  its job.
+  its job. It still draws on the project's settled jobs as well as its unsettled ones: focusing a
+  project fetches its settled list (§9), and the list fills in once it arrives;
+- search in focus matches only the jobs on the lane, never settled ones.
 
 The toolbar title becomes the project name, and a "‹" back button returns to All Projects.
 "N waiting elsewhere" shows in the subtitle when other projects need you.
@@ -268,6 +275,19 @@ more than 24h ago". It holds:
 
 A row opens the job in the inspector and closes the sheet. This replaces `SettledDialog`.
 
+**Loaded on demand.** The board carries only unsettled jobs plus each project's settled summary
+(`count`, `lastMergedAt`): Andon connects with `GET /events?settled=summary` and reads
+`GET /projects/<pid>/board?settled=summary`. Settled jobs come from `GET /projects/<pid>/settled`,
+fetched only when a view needs them: one project's list for a filtered sheet, a settled job in the
+inspector (including a cold `#job=` link), or a focused project; every project's list for the
+global sheet. Lists are cached per project, and while such a view is open a list is refetched
+whenever its project's summary changes; a closed view fetches nothing. Until a sheet's lists first
+arrive it says it is loading (it never closes itself meanwhile), and a failed fetch shows its
+reason instead of "Nothing has settled". The toolbar's "Settled N" is the sum of the projects'
+counts. A settled job opened in the inspector keeps its timing (stage bar, Stages, Agents); a
+link naming a job closes the inspector as never existing only once the job's board and its
+project's settled list have both loaded without it.
+
 ## 10. Search, Needs Me, keyboard, deep links (Job D)
 
 **Search** matches id, title, and project name, case-insensitively. Non-matching tokens and
@@ -297,7 +317,7 @@ Closing a layer returns focus to what opened it.
 **Deep links.** The URL hash holds the view, so a reload or a shared link restores it:
 - `#project=<id>`
 - `#job=<project>/<job id>&file=<path|timing>`
-- `#settled` or `#settled=<project>`
+- `#settled` or `#settled=<project>` (the sheet fetches its lists as it opens, §9)
 - `#needs`
 - combinations, joined with `&`
 

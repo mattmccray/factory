@@ -17,8 +17,8 @@ describe('search (AC3)', () => {
     at({ id: '005-gone', title: 'Gone CSV', stage: 'abandoned', endedAt: before(HOUR) }, P2),
   ];
   const projects = [P1, P2, P3];
-  const keysOf = (q: string, focused = false): string[] => [...find(projects, jobs, q, NOW, focused).keys].sort();
-  const dimOf = (q: string, focused = false): string[] => [...find(projects, jobs, q, NOW, focused).dimLanes].sort();
+  const keysOf = (q: string): string[] => [...find(projects, jobs, q, NOW).keys].sort();
+  const dimOf = (q: string): string[] => [...find(projects, jobs, q, NOW).dimLanes].sort();
 
   test('matches the id, the title, or the project name, case-insensitively', () => {
     expect(matches(jobs[0] ?? at({ id: 'x' }), 'NOTES')).toBe(true);
@@ -36,16 +36,20 @@ describe('search (AC3)', () => {
     expect(dimOf('quiet')).toEqual(['p1', 'p2', 'p3']); // an idle lane has no job to match
   });
 
-  test('abandoned jobs never light a lane; settled ones only in a focused project', () => {
+  test('abandoned and settled jobs never light a lane, focused or not: search matches only the jobs on the lane (050 AC6)', () => {
     expect(dimOf('gone')).toEqual(['p1', 'p2', 'p3']);
     expect(keysOf('currency')).toEqual([]);
-    expect(keysOf('currency', true)).toEqual(['p2/006-currency']);
-    expect(dimOf('currency', true)).toEqual(['p1', 'p3']);
+    expect(dimOf('currency')).toEqual(['p1', 'p2', 'p3']);
+    // a focused project's search runs over its own lane's jobs only: the settled one never matches
+    const focus = find([P2], jobs.filter((b) => b.project.id === 'p2'), 'currency', NOW);
+    expect([...focus.keys]).toEqual([]);
+    expect([...focus.dimLanes]).toEqual(['p2']);
+    expect([...find([P2], jobs.filter((b) => b.project.id === 'p2'), 'csv', NOW).keys]).toEqual(['p2/008-csv-import']);
   });
 
   test('an empty or whitespace query dims nothing', () => {
     for (const q of ['', '   ', '\t']) {
-      const f = find(projects, jobs, q, NOW, false);
+      const f = find(projects, jobs, q, NOW);
       expect(f.active).toBe(false);
       expect(f.dimLanes.size).toBe(0);
     }

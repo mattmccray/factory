@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildBoard, chipRounds, isSettled, mergedAt, movement, roundKeys } from './board';
+import { buildBoard, chipRounds, isSettled, mergedAt, movement, roundKeys, settledCount, settledJobs } from './board';
 import { HOUR, NOW, before, job, tag } from './fixtures';
 import { toConfig } from './job';
 
@@ -109,5 +109,31 @@ describe('cards', () => {
     const m = movement(new Map([['p1/001-a', 'spec'], ['p1/002-b', 'review']]), [a, b, tag(job({ id: '003-c' }))]);
     expect([...m.fresh]).toEqual(['p1/003-c']);
     expect([...m.moved]).toEqual(['p1/001-a']);
+  });
+});
+
+describe('settled counts and lists over a narrow board (050 AC2)', () => {
+  const held = [
+    tag(job({ id: '001-build', stage: 'build' })),
+    tag(job({ id: '002-crossing', stage: 'merged', endedAt: before(24 * HOUR - 1000) })),
+    tag(job({ id: '003-fresh', stage: 'merged', endedAt: before(HOUR) })),
+  ];
+  const fetched = [tag(job({ id: '010-old', stage: 'merged', endedAt: before(30 * HOUR) })), tag(job({ id: '011-gone', stage: 'abandoned', endedAt: before(2 * HOUR) }))];
+
+  test('the count is the summary\'s plus the held jobs that settled on screen', () => {
+    expect(settledCount(2, held, NOW)).toBe(2);
+    expect(settledCount(2, held, NOW + 2000)).toBe(3);
+    expect(settledCount(0, [], NOW)).toBe(0);
+  });
+
+  test('the list: held jobs that settled, then each fetched one not held, newest end first, each once', () => {
+    expect(settledJobs(held, fetched, NOW).map((b) => b.job.id)).toEqual(['011-gone', '010-old']);
+    expect(settledJobs(held, fetched, NOW + 2000).map((b) => b.job.id)).toEqual(['011-gone', '002-crossing', '010-old']);
+    // fetched just after the service settled it, before the push that drops it from the board: listed once, from the board
+    const raced = [...fetched, tag(job({ id: '002-crossing', stage: 'merged', endedAt: before(24 * HOUR - 1000), title: 'stale copy' }))];
+    const once = settledJobs(held, raced, NOW + 2000).filter((b) => b.job.id === '002-crossing');
+    expect(once.map((b) => b.job.title)).toEqual(['A job']);
+    // a held job the UI doesn't yet see as settled stays on the board only
+    expect(settledJobs(held, raced, NOW).map((b) => b.job.id)).toEqual(['011-gone', '010-old']);
   });
 });

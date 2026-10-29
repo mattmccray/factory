@@ -1,5 +1,7 @@
 // The board model, ported from the vendored dashboard's `render`: the andon (needs-human) row,
-// the five station columns, and the Settled list. Pure: `now` drives settling.
+// the five station columns, and the held jobs that have settled. Pure: `now` drives settling.
+// A narrow board holds only unsettled jobs; the rest of a project's settled jobs are its summary's
+// count and, once a view fetched them, its cached settled list (`settledCount`, `settledJobs`).
 import type { Job } from './job';
 import { time } from './time';
 
@@ -33,7 +35,7 @@ export interface Column extends Station {
 export interface BoardModel {
   andon: BoardJob[];
   columns: Column[];
-  settled: BoardJob[]; // newest end (merge or abandon) first
+  settled: BoardJob[]; // held jobs that settled on screen, newest end (merge or abandon) first
   running: number; // jobs on the line, not merged or waiting
   waiting: number; // needs-human jobs
   shown: number; // every job not settled
@@ -69,6 +71,24 @@ export function buildBoard(jobs: readonly BoardJob[], now: number, reviewers: re
     waiting: andon.length,
     shown: live.length,
   };
+}
+
+/**
+ * A project's settled count: its summary's `count`, plus the held jobs the UI already sees as
+ * settled. The service never counts a job it still sends on the board, so a held job is never
+ * counted twice; it joins the count the moment it crosses, before the service's next push.
+ */
+export const settledCount = (summaryCount: number, held: readonly BoardJob[], now: number): number => summaryCount + held.filter((b) => isSettled(b, now)).length;
+
+/**
+ * The settled jobs to list, newest end first: the held jobs the UI sees as settled, and every
+ * fetched settled job that isn't held. A job both held and fetched (a list fetched just before the
+ * push that drops it) is listed once, from the board, which is never older; one held and not yet
+ * settled stays on the board only.
+ */
+export function settledJobs(held: readonly BoardJob[], fetched: readonly BoardJob[], now: number): BoardJob[] {
+  const heldKeys = new Set(held.map((b) => b.key));
+  return [...held.filter((b) => isSettled(b, now)), ...fetched.filter((b) => !heldKeys.has(b.key))].sort((a, b) => mergedAt(b.job) - mergedAt(a.job) || a.key.localeCompare(b.key));
 }
 
 /** A round's chips: its own reviewers, in config order, unknown keys last. */

@@ -3,10 +3,13 @@
 // needs-human job leaves where it stopped, lane tiers and order ("move only on a tier change"),
 // the gutter's meta, idle lanes, crowded cells (cap 3 plus "+N more", uncapped when focused), lane
 // height in token rows, the tokens and their popover, and a focused project's recent activity.
-// Pure: it takes board jobs and `now`; Lines.svelte, Lane.svelte, and Token.svelte only lay it out.
+// Pure: it takes board jobs, each project's settled summary, and `now`; Lines.svelte, Lane.svelte,
+// and Token.svelte only lay it out. Settled jobs are never on a lane: a lane counts them (its
+// summary plus held jobs that settled on screen) and links to the Settled sheet.
 import { chipRounds, isSettled, mergedAt, roundKeys } from './board';
 import type { BoardJob } from './board';
 import type { Job, WorkingStage } from './job';
+import type { SettledSummary } from './state';
 import { chipLabel, time } from './time';
 
 // ---- kinds ----
@@ -130,7 +133,7 @@ export const COLUMNS: readonly ColumnInfo[] = [
   { key: 'merged', name: 'Merged', who: 'last 24 hours' },
 ];
 
-/** The column a kind sits in; abandoned jobs are never on the board. Settled jobs show only in a focused Merged cell. */
+/** The column a kind sits in; settled and abandoned jobs are never on the board. */
 export function columnOf(kind: Kind): Column | null {
   switch (kind) {
     case 'needs-human':
@@ -146,7 +149,6 @@ export function columnOf(kind: Kind): Column | null {
     case 'approve':
       return kind;
     case 'merged':
-    case 'settled':
       return 'merged';
     default:
       return null;
@@ -239,7 +241,6 @@ export interface TokenModel {
   time: string | null; // time in stage, or the largest-unit time since the merge ("1h") for a merged or settled job; null for a legacy job
   note: string | null; // line 3: needs-human and merge-failed only
   branch: string;
-  dimmed: boolean; // a settled job in a focused Merged cell
 }
 
 /** Kinds whose line 2 shows the current round's chips (the others are full with their tag, note, or sha). */
@@ -265,7 +266,7 @@ const tokenTime = (j: Job, kind: Kind, now: number): string | null => {
 };
 
 /** One job's token. A merged or settled token is one line (number, title, time): no tag, chips, round, or note. */
-export function tokenOf(b: BoardJob, now: number, dimmed = false): TokenModel {
+export function tokenOf(b: BoardJob, now: number): TokenModel {
   const j = b.job;
   const kind = kindOf(b, now);
   const merged = kind === 'merged' || kind === 'settled';
@@ -282,7 +283,6 @@ export function tokenOf(b: BoardJob, now: number, dimmed = false): TokenModel {
     time: tokenTime(j, kind, now),
     note: isHuman(kind) && j.note !== '' ? j.note : null,
     branch: j.branch || `factory/${j.id}`,
-    dimmed,
   };
 }
 
@@ -331,7 +331,7 @@ export interface Cell {
 export interface GutterMeta {
   active: string; // "2 active · 11h 40m" (the oldest claim among active jobs)
   trouble: { tone: 'red' | 'orange'; text: string } | null; // "1 at Andon", else "1 sent back"
-  settled: number; // the "N settled" link
+  settled: number; // the "N settled" link: the summary's count plus held jobs that settled on screen
 }
 
 export interface Lane {
@@ -345,7 +345,7 @@ export interface Lane {
   meta: GutterMeta;
   cells: Cell[]; // one per column, in COLUMNS order
   rows: number; // the lane's height in token rows; 0 for a collapsed idle lane
-  lastMergeAt: number | null;
+  lastMergeAt: number | null; // the later of the summary's lastMergedAt and any merge held on the board
   idleText: string; // "Idle · last merge 3d 12h ago"
 }
 
@@ -360,14 +360,14 @@ const newest = (a: BoardJob, b: BoardJob): number => {
   return t(b) - t(a) || a.key.localeCompare(b.key);
 };
 
-function laneOf(project: { id: string; name: string }, index: number, jobs: readonly BoardJob[], now: number, focused: boolean): Lane {
+function laneOf(project: { id: string; name: string }, index: number, jobs: readonly BoardJob[], now: number, focused: boolean, summary: SettledSummary): Lane {
   const kinds = new Map(jobs.map((b) => [b.key, kindOf(b, now)]));
   const k = (b: BoardJob): Kind => kinds.get(b.key) ?? 'claimed';
   const live = jobs.filter((b) => k(b) !== 'settled' && k(b) !== 'abandoned');
   const active = live.filter((b) => k(b) !== 'merged');
   const human = active.filter((b) => isHuman(k(b))).length;
   const failed = active.filter((b) => k(b) === 'review-failed').length;
-  const settled = jobs.filter((b) => k(b) === 'settled' || k(b) === 'abandoned').length;
+  const settled = summary.count + jobs.filter((b) => k(b) === 'settled' || k(b) === 'abandoned').length;
   const idle = live.length === 0;
   const working = active.length - human;
   const state: LaneState = human > 0 ? 'needs-human' : failed > 0 ? 'review-failed' : working > 0 ? 'active' : 'idle';
@@ -380,19 +380,16 @@ function laneOf(project: { id: string; name: string }, index: number, jobs: read
     settled,
   };
 
-  const merges = jobs.filter((b) => b.job.stage === 'merged').map((b) => mergedAt(b.job)).filter((t) => t > 0);
+  const merges = [...jobs.filter((b) => b.job.stage === 'merged').map((b) => mergedAt(b.job)), summary.lastMergedAt === null ? 0 : time(summary.lastMergedAt)].filter((t) => t > 0);
   const lastMergeAt = merges.length > 0 ? Math.max(...merges) : null;
 
-  const shownHere = (b: BoardJob): boolean => k(b) !== 'abandoned' && (focused || k(b) !== 'settled');
   const ghosts = active.map(ghostOf).filter((g): g is Ghost => g !== null);
   const cells = COLUMNS.map((c): Cell => {
-    const here = jobs.filter((b) => shownHere(b) && columnOf(k(b)) === c.key);
-    // settled jobs (focused Merged only) go after the live ones
-    const sorted = [...here.filter((b) => k(b) !== 'settled').sort(newest), ...here.filter((b) => k(b) === 'settled').sort(newest)];
+    const sorted = live.filter((b) => columnOf(k(b)) === c.key).sort(newest);
     const shown = focused ? sorted : sorted.slice(0, CELL_CAP);
     return {
       column: c.key,
-      tokens: shown.map((b) => tokenOf(b, now, k(b) === 'settled')),
+      tokens: shown.map((b) => tokenOf(b, now)),
       more: sorted.length - shown.length,
       ghosts: ghosts.filter((g) => g.column === c.key),
     };
@@ -419,10 +416,17 @@ function laneOf(project: { id: string; name: string }, index: number, jobs: read
 
 /**
  * One lane per project, in registration order (`orderLanes` sorts them). `focused` is a single
- * focused project: its cells are uncapped and its Merged cell lists its settled merged jobs, dimmed.
+ * focused project: its cells are uncapped. `summaries` are the projects' settled summaries (a
+ * missing one is none); settled jobs never sit in a cell, focused or not.
  */
-export function buildLanes(projects: ReadonlyArray<{ id: string; name: string }>, jobs: readonly BoardJob[], now: number, focused: boolean): Lane[] {
-  return projects.map((p, i) => laneOf({ id: p.id, name: p.name }, i, jobs.filter((b) => b.project.id === p.id), now, focused));
+export function buildLanes(
+  projects: ReadonlyArray<{ id: string; name: string }>,
+  jobs: readonly BoardJob[],
+  now: number,
+  focused: boolean,
+  summaries: Readonly<Record<string, SettledSummary>> = {},
+): Lane[] {
+  return projects.map((p, i) => laneOf({ id: p.id, name: p.name }, i, jobs.filter((b) => b.project.id === p.id), now, focused, summaries[p.id] ?? { count: 0, lastMergedAt: null }));
 }
 
 /** §5 lane order: non-idle first, then more needs-human, more review-failed, more active, then registration order. */
@@ -474,7 +478,7 @@ export function headerOf(lanes: readonly Lane[], settleHours: readonly number[])
       who: c.key === 'merged' ? (hours === 1 ? 'last hour' : `last ${hours} hours`) : c.who,
       count: lanes.reduce((n, l) => {
         const cell = l.cells[i];
-        return n + (cell === undefined ? 0 : cell.tokens.filter((t) => !t.dimmed).length + cell.more);
+        return n + (cell === undefined ? 0 : cell.tokens.length + cell.more);
       }, 0),
     })),
   };
@@ -493,7 +497,8 @@ export interface ActivityItem {
 export const ACTIVITY_LIMIT = 14;
 
 /**
- * A project's recent activity, derived from the snapshots: stage entries from `timing.stages`,
+ * A project's recent activity, derived from the snapshots of its unsettled and settled jobs
+ * together (a focused project's held jobs plus its fetched settled list): stage entries from `timing.stages`,
  * reviewer verdicts from `timing.agents`, and each merge (`endedAt` and the sha from `note`).
  * A job with no `timing` (legacy) adds only its merge. Newest first, the last `limit` items.
  */

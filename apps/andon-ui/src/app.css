@@ -114,7 +114,7 @@ svg.i { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-widt
 .tb.needs[aria-pressed="true"] { background: var(--tint-red); color: var(--red-ink); }
 
 /* search dimming: what doesn't match drops to 25% */
-.lane.miss, .tok.miss, .tok.dim.miss, .ghost.miss { opacity: .25; }
+.lane.miss, .tok.miss, .ghost.miss { opacity: .25; }
 .lane, .tok, .ghost { transition: opacity .15s; }
 
 main { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--canvas); }
@@ -240,7 +240,6 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; background
 .k-claimed .sl { color: var(--label2); font-style: italic; font-weight: 400; }
 .k-claimed .tag { font-style: italic; }
 .k-merged, .k-settled { --kc: var(--green); background: var(--tint-green); border-color: color-mix(in srgb, var(--green) 45%, transparent); box-shadow: none; }
-.tok.dim { opacity: .55; }
 
 /* verdict chips: pass solid, CHANGES solid orange, pending an outline */
 .chips { display: inline-flex; gap: 2px; }
@@ -425,6 +424,7 @@ dialog.sheet::backdrop { background: var(--scrim); }
 .field .cmd { margin-top: 10px; }
 .slist { flex: 1; min-height: 0; overflow-y: auto; list-style: none; margin: 0 12px; padding: 0; border-radius: 8px; box-shadow: inset 0 0 0 .5px var(--sep2); }
 .slist .empty { padding: 12px; }
+.slist .empty.fail { color: var(--red-ink); overflow-wrap: anywhere; }
 .srow { display: grid; grid-template-columns: 1fr auto; gap: 1px 12px; width: 100%; text-align: left; background: none; border: 0; border-bottom: .5px solid var(--sep); padding: 7px 12px; }
 .slist li:last-child .srow { border-bottom: 0; }
 .srow > span { display: block; min-width: 0; }

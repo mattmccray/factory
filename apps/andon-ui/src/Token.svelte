@@ -32,7 +32,6 @@
   bind:this={el}
   class="tok k-{t.kind} s-{t.shape}"
   class:sel={selected}
-  class:dim={t.dimmed}
   class:miss
   class:new={fresh}
   class:moved

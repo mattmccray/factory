@@ -236,3 +236,30 @@ export function writeFleet(home: string, now: number = Date.now()): void {
   }
   writeFileSync(join(home, 'projects.json'), `${JSON.stringify({ schema: 'factory/v1', projects: roots.map((root) => ({ root })) }, null, 2)}\n`);
 }
+
+// ---- narrow boards (`?settled=summary`) ----
+
+/**
+ * Splits job.json values the way the service's narrow board does (packages/andon-service
+ * settled.ts): an abandoned job is settled, and a merged one once its `endedAt` is more than
+ * `hours` before `now`. Returns the narrow board's `jobs` and `settled` summary, and the
+ * `GET /projects/<pid>/settled` list.
+ */
+export function narrowBoard(
+  jobs: ReadonlyArray<Record<string, unknown>>,
+  hours = 24,
+  now: number = NOW,
+): { jobs: Array<Record<string, unknown>>; settled: { count: number; lastMergedAt: string | null }; settledJobs: Array<Record<string, unknown>> } {
+  const ended = (j: Record<string, unknown>): number | null => (j.stage === 'merged' && typeof j.endedAt === 'string' && !Number.isNaN(Date.parse(j.endedAt)) ? Date.parse(j.endedAt) : null);
+  const isSettled = (j: Record<string, unknown>): boolean => {
+    const at = ended(j);
+    return j.stage === 'abandoned' || (at !== null && now - at > hours * HOUR);
+  };
+  const settledJobs = jobs.filter(isSettled);
+  let last: { at: number; text: string } | null = null;
+  for (const j of settledJobs) {
+    const at = ended(j);
+    if (at !== null && typeof j.endedAt === 'string' && (last === null || at > last.at)) last = { at, text: j.endedAt };
+  }
+  return { jobs: jobs.filter((j) => !isSettled(j)), settled: { count: settledJobs.length, lastMergedAt: last?.text ?? null }, settledJobs };
+}

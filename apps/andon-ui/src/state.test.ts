@@ -3,7 +3,7 @@ import { find } from './find';
 import { buildLanes } from './lanes';
 import { ALL, boardJobs } from './projects';
 import { sidebarModel, subtitle, title } from './sidebar';
-import { applyEvent, applyFetched, emptyState, revOf } from './state';
+import { applyEvent, applyFetched, applySettled, emptyState, revOf, settledCurrent, startSettled, toSummary, wantsSettled } from './state';
 import type { UiState } from './state';
 
 const P1 = { id: 'aaaaaaaaaaaa', name: 'one', root: '/r/one' };
@@ -98,7 +98,68 @@ describe('a renamed project (AC5)', () => {
     expect(lanes.map((l) => l.project)).toEqual([{ id: P1.id, name: 'Minerva Admin' }, { id: P2.id, name: 'two' }]);
     expect(lanes[0]?.cells.flatMap((c) => c.tokens).length).toBe(1);
 
-    expect([...find(s.projects, jobs, 'minerva admin', Date.now(), false).keys]).toEqual([`${P1.id}/001-a`]);
-    expect([...find(s.projects, jobs, 'one', Date.now(), false).keys]).toEqual([]);
+    expect([...find(s.projects, jobs, 'minerva admin', Date.now()).keys]).toEqual([`${P1.id}/001-a`]);
+    expect([...find(s.projects, jobs, 'one', Date.now()).keys]).toEqual([]);
+  });
+});
+
+describe('the settled summary and the settled cache (050 AC1)', () => {
+  const narrowBoard = (settled: unknown) => ({ project: P1.id, jobs: [{ id: '001-a', stage: 'spec' }], config: config(['code']), settled });
+
+  test('a board stores its jobs, config, and settled summary; a malformed or missing summary stores none', () => {
+    const s = applyEvent(twoProjects(), 'board', narrowBoard({ count: 3, lastMergedAt: '2026-10-20T00:00:00.000Z' }));
+    expect(s.boards[P1.id]?.settled).toEqual({ count: 3, lastMergedAt: '2026-10-20T00:00:00.000Z' });
+    expect(s.boards[P1.id]?.jobs.map((j) => j.id)).toEqual(['001-a']);
+    expect(s.boards[P1.id]?.config).toEqual({ reviewers: ['code'], settleAfterHours: 24 });
+    expect(applyEvent(s, 'board', narrowBoard({ count: 2, lastMergedAt: null })).boards[P1.id]?.settled).toEqual({ count: 2, lastMergedAt: null });
+    for (const bad of [undefined, null, 7, [], {}, { count: -1, lastMergedAt: null }, { count: 1.5, lastMergedAt: null }, { count: '3', lastMergedAt: null }, { count: 3, lastMergedAt: 5 }, { count: 3 }]) {
+      expect(applyEvent(s, 'board', narrowBoard(bad)).boards[P1.id]?.settled).toEqual({ count: 0, lastMergedAt: null });
+      expect(toSummary(bad)).toEqual({ count: 0, lastMergedAt: null });
+    }
+    // a fetched board too, and an older service's board (no summary)
+    const rev = revOf(s, P1.id);
+    expect(applyFetched(s, P1.id, rev, { ok: true, data: { jobs: [], config: config([]), settled: { count: 5, lastMergedAt: null } } }).boards[P1.id]?.settled).toEqual({ count: 5, lastMergedAt: null });
+    expect(applyFetched(s, P1.id, rev, { ok: true, data: { jobs: [], config: config([]) } }).boards[P1.id]?.settled).toEqual({ count: 0, lastMergedAt: null });
+    // a config error keeps the last summary
+    expect(applyEvent(s, 'error', { project: P1.id, reason: 'config.json: bad' }).boards[P1.id]?.settled).toEqual({ count: 3, lastMergedAt: '2026-10-20T00:00:00.000Z' });
+  });
+
+  test('a list is wanted once its board loads, again when the summary changes, and a failed one only on retry', () => {
+    const listed = applyEvent(emptyState(), 'projects', { projects: [P1, P2] });
+    expect(wantsSettled(listed, P1.id)).toBe(false); // no board yet
+    expect(wantsSettled(listed, 'ffffffffffff')).toBe(false);
+    let s = applyEvent(listed, 'board', narrowBoard({ count: 1, lastMergedAt: null }));
+    expect(wantsSettled(s, P1.id)).toBe(true);
+    const st = startSettled(s, P1.id);
+    expect(wantsSettled(st.state, P1.id)).toBe(false); // already loading for this summary
+    s = applySettled(st.state, P1.id, st.rev, { ok: true, data: { jobs: [{ id: '000-old', stage: 'merged' }, 'junk'] } });
+    expect(s.settled[P1.id]).toMatchObject({ status: 'loaded', reason: null, summary: { count: 1, lastMergedAt: null } });
+    expect(s.settled[P1.id]?.jobs?.map((j) => j.id)).toEqual(['000-old']);
+    expect(settledCurrent(s, P1.id)).toBe(true);
+    expect(wantsSettled(s, P1.id, true)).toBe(false);
+    const moved = applyEvent(s, 'board', narrowBoard({ count: 1, lastMergedAt: '2026-10-21T00:00:00.000Z' }));
+    expect(settledCurrent(moved, P1.id)).toBe(false);
+    expect(wantsSettled(moved, P1.id)).toBe(true);
+    // a refetch keeps the last list while it loads
+    const again = startSettled(moved, P1.id);
+    expect(again.state.settled[P1.id]).toMatchObject({ status: 'loading', summary: { count: 1, lastMergedAt: '2026-10-21T00:00:00.000Z' } });
+    expect(again.state.settled[P1.id]?.jobs?.map((j) => j.id)).toEqual(['000-old']);
+    const failed = applySettled(again.state, P1.id, again.rev, { ok: false, reason: 'config.json: bad' });
+    expect(failed.settled[P1.id]).toMatchObject({ status: 'failed', reason: 'config.json: bad' });
+    expect(wantsSettled(failed, P1.id)).toBe(false);
+    expect(wantsSettled(failed, P1.id, true)).toBe(true);
+  });
+
+  test('an older fetch\'s answer is ignored, and a dropped project\'s list goes with it', () => {
+    let s = applyEvent(applyEvent(emptyState(), 'projects', { projects: [P1, P2] }), 'board', narrowBoard({ count: 1, lastMergedAt: null }));
+    const first = startSettled(s, P1.id);
+    const second = startSettled(first.state, P1.id);
+    expect(applySettled(second.state, P1.id, first.rev, { ok: true, data: { jobs: [{ id: '001-stale' }] } })).toBe(second.state);
+    s = applySettled(second.state, P1.id, second.rev, { ok: true, data: { jobs: [] } });
+    expect(Object.keys(s.settled)).toEqual([P1.id]);
+    const dropped = applyEvent(s, 'projects', { projects: [P2] });
+    expect(dropped.settled).toEqual({});
+    expect(applyEvent(s, 'projects', { projects: [P1] }).settled[P1.id]).toBe(s.settled[P1.id]);
+    expect(applySettled(dropped, P1.id, second.rev, { ok: true, data: { jobs: [] } })).toBe(dropped);
   });
 });
