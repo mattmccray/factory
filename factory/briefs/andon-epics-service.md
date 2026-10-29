@@ -1,6 +1,7 @@
 # The Andon service serves epics
 
-- Status: ready
+- Status: done
+- Job: 054-andon-epics-service (merged 70d82d2, 2026-10-29)
 - Sources: docs/design/epics/design.md (decision 9; brief 4 of 5); factory/briefs/epic-cli.md
   (`epic.json`, the plan file, `factory/jobs/epics/<slug>/`, epics on `factory/archive`);
   `/factory explore` on 2026-10-29; docs/contract/v1.md ("Andon service", "Job archive",
