@@ -10,3 +10,4 @@ One feature per line — what "done" looks like, not the history. Add lines with
 Lines are in dependency order. Fuzzy ones should go through `/factory explore` first.
 
 - [ ] Merge conflicts go back to the builder instead of to a human — a conflicting merge logs `merge.conflicted` (CLI-derived budget, `conflicts` count, refused after 2), the builder merges the target in and resolves, then a normal review round and approver; non-conflict failures unchanged — brief: factory/briefs/merge-conflict-rework.md
+- [ ] Epics in the contract and the CLI — plan files, the epic log and derived `epic.json` under `factory/jobs/epics/<slug>/`, `epic start|event|next|show|abandon`, `claim … epic= kind=` with dependencies and `epic.maxParallel` enforced, `doctor`/`archive`/`prune` support; standalone jobs unchanged — brief: factory/briefs/epic-cli.md
