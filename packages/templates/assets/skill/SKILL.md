@@ -295,10 +295,10 @@ as `'\''` (as for board values), so `$` and backticks in it are never expanded.
   exits 0. If `config.json` has no `gate`, no gate is configured: tell the user so instead of
   running anything, and never invent a command.
 - Then **archive** the job, before bookkeeping: run `bun factory/cli.ts archive <id>` from `<R>`.
-  It copies the job's record to the `factory/jobs` branch with git plumbing and never touches
+  It copies the job's record to the `factory/archive` branch with git plumbing and never touches
   the checkout. If it fails, or says archiving is disabled, report its line to the user in one
   line and carry on: a failed or disabled archive never fails or undoes the merge (the local
-  job dir stays, and `archive --all` catches it up later). Never push `factory/jobs`.
+  job dir stays, and `archive --all` catches it up later). Never push `factory/archive`.
 - Then **bookkeeping**, so every job leaves `<target>` clean. First run **the backlog check**.
   If `factory/backlog.md` already has uncommitted changes, the merge stands (`job.merged` is
   logged) and only the bookkeeping waits: release the lock and tell the user "commit or discard
@@ -428,9 +428,9 @@ Before running the CLI (after both answers), run **the backlog check**: if
 `factory/backlog.md` already has uncommitted changes, stop with "commit or discard your backlog
 edits first"; nothing is abandoned and nothing changes. Once the job is abandoned (the CLI
 printed `abandoned`, or named what it left behind), run `bun factory/cli.ts archive <id>` from
-`<R>` to copy its record to the `factory/jobs` branch. If it fails, or says archiving is
+`<R>` to copy its record to the `factory/archive` branch. If it fails, or says archiving is
 disabled, report its line in one line and carry on: a failed or disabled archive never fails the
-abandon. Never push `factory/jobs`. Then take `factory/.lock`, run the backlog check
+abandon. Never push `factory/archive`. Then take `factory/.lock`, run the backlog check
 again (if it stops you now, the job stays abandoned and only this bookkeeping waits: name it to
 the user), and then:
 - Remove the job's line (`- [x] … → <id>`) from `factory/backlog.md`, so a later
@@ -474,7 +474,7 @@ are facts; which of them gate a merge is a decision). Cover only the v1 overlay,
    branch the main checkout is on when a job is claimed) or a branch name such as `develop`.
    No `merge` key keeps `current`.
 7. `archive.enabled` — whether a finished job (`merged` or `abandoned`) is copied to the
-   `factory/jobs` branch by `factory archive`, so its record travels with `git clone` and
+   `factory/archive` branch by `factory archive`, so its record travels with `git clone` and
    `git fetch`. Recommend off unless the user wants the history kept in the repo: job files can
    hold paths, notes, and pasted material, and pushing the branch publishes them (archiving never
    pushes). No `archive` key keeps it off.

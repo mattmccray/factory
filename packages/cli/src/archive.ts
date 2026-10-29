@@ -1,5 +1,5 @@
 // The job archive (docs/contract/v1.md "Job archive"): `factory archive` copies a terminal job's
-// files to the orphan branch `factory/jobs`, one top-level `<id>/` dir per job, with git plumbing
+// files to the orphan branch `factory/archive`, one top-level `<id>/` dir per job, with git plumbing
 // only. It never touches the main checkout's working tree, index, or HEAD, never fetches, and
 // never pushes. `archivedIds` lists the branch's job ids for `claim`.
 import { lstat, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
@@ -10,8 +10,8 @@ import { runGit } from './git';
 import type { GitOptions, GitResult } from './git';
 import { isNotFound } from './paths';
 
-/** The archive branch. `refs/heads/factory/jobs` sits beside job branches without a conflict: ids start with digits. */
-export const ARCHIVE_BRANCH = 'factory/jobs';
+/** The archive branch. `refs/heads/factory/archive` sits beside job branches without a conflict: ids start with digits. */
+export const ARCHIVE_BRANCH = 'factory/archive';
 const ARCHIVE_REF = `refs/heads/${ARCHIVE_BRANCH}`;
 const WHAT = 'archive';
 // A lost compare-and-swap race is retried from the new tip, this many times in all.
@@ -63,7 +63,7 @@ async function mkTree(repo: string, entries: readonly TreeEntry[], env?: Record<
 }
 
 /**
- * The job ids archived on `factory/jobs`: its top-level directories named like a job id, sorted.
+ * The job ids archived on `factory/archive`: its top-level directories named like a job id, sorted.
  * None when the branch is missing. Reads the local branch only; never fetches.
  */
 export async function archivedIds(repo: string): Promise<string[]> {
@@ -222,7 +222,7 @@ function commitMessage(job: LocalJob): string[] {
 export type ArchiveOutcome = { kind: 'archived'; commit: string } | { kind: 'unchanged' };
 
 /**
- * Archives one local job (which must be `merged` or `abandoned`) on `factory/jobs` in `repo`.
+ * Archives one local job (which must be `merged` or `abandoned`) on `factory/archive` in `repo`.
  * Unchanged on the branch: a no-op. Changed: refused unless `force`, which adds a new commit.
  * A different job at the same id: always refused. Every refusal moves no ref and writes no object.
  * The ref moves only by a compare-and-swap `update-ref`; a lost race is retried from the new tip.

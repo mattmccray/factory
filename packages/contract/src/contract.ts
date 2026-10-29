@@ -59,7 +59,7 @@ export interface Config {
   archive?: ArchivePolicy; // absent: archiving is off
 }
 
-/** Whether `factory archive` copies terminal jobs to the `factory/jobs` branch. Off unless `enabled`. */
+/** Whether `factory archive` copies terminal jobs to the `factory/archive` branch. Off unless `enabled`. */
 export interface ArchivePolicy {
   enabled: boolean;
 }

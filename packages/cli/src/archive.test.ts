@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { archivedIds } from './archive';
@@ -8,7 +8,8 @@ import { run } from './index';
 
 const BASE = { schema: 'factory/v1', reviewers: ['code'], maxRound: 2, dashboard: { settleAfterHours: 24 } };
 const ON = { ...BASE, archive: { enabled: true } };
-const REF = 'refs/heads/factory/jobs';
+const REF = 'refs/heads/factory/archive';
+const OLD_REF = 'refs/heads/factory/jobs';
 const SHA = '3e45678';
 
 // `repo` is the main checkout (a git repo); `root` its factory/.
@@ -86,6 +87,14 @@ const checkoutState = (): { status: string; index: string; head: string } => ({
 });
 const JOB_FILES = ['build.md', 'events.jsonl', 'feature.md', 'round-1/code/shot.png', 'round-1/review-code.md', 'spec.md'];
 
+async function isDirOnDisk(path: string): Promise<boolean> {
+  try {
+    return (await lstat(path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 describe('factory archive (job 045)', () => {
   test('AC1: a merged job makes the orphan branch with one parentless commit and leaves the checkout alone', async () => {
     // Give the checkout a tracked, a staged, and an untracked change, so a touch would show.
@@ -116,6 +125,23 @@ describe('factory archive (job 045)', () => {
     const png = Bun.spawnSync(['git', '-C', repo, 'cat-file', 'blob', `${REF}:${id}/round-1/code/shot.png`]).stdout;
     expect([...png]).toEqual([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 255]);
     expect(checkoutState()).toEqual(before);
+  });
+
+  test('job 046 AC1/AC3: the archive is refs/heads/factory/archive, never factory/jobs, and bare git log names it', async () => {
+    const id = '001-renamed';
+    await seedJob(id, 'merged');
+    expect((await cli('archive', id)).code).toBe(0);
+    const head = tip();
+    if (head === null) throw new Error('no archive branch');
+    expect(gitIn(repo, 'ls-tree', '--name-only', REF)).toBe(id);
+    expect(gitIn(repo, 'log', '-1', '--format=%B', REF)).toBe(`chore(factory): archive job ${id}\n\nFactory-Job: ${id}\nMerged-As: ${SHA}`);
+    expect(gitIn(repo, 'for-each-ref', '--format=%(refname)', OLD_REF)).toBe('');
+    // factory/jobs/ is on disk, and bare `git log factory/archive` is still unambiguous.
+    expect(await isDirOnDisk(join(repo, 'factory', 'jobs', id))).toBe(true);
+    const log = Bun.spawnSync(['git', '-C', repo, 'log', '--format=%H %s', 'factory/archive'], { stdout: 'pipe', stderr: 'pipe' });
+    expect(log.stderr.toString()).not.toContain('ambiguous argument');
+    expect(log.exitCode).toBe(0);
+    expect(log.stdout.toString().trim()).toBe(`${head} chore(factory): archive job ${id}`);
   });
 
   test('AC1: an abandoned job has no Merged-As; a legacy job keeps its job.json', async () => {
@@ -176,7 +202,7 @@ describe('factory archive (job 045)', () => {
     await writeFile(join(dir, 'decision.md'), 'APPROVE\n');
     const refused = await cli('archive', id);
     expect(refused.code).toBe(1);
-    expect(refused.err).toEqual([`${id}: changed since it was archived on factory/jobs; run archive ${id} --force to add a new commit`]);
+    expect(refused.err).toEqual([`${id}: changed since it was archived on factory/archive; run archive ${id} --force to add a new commit`]);
     expect(tip()).toBe(first);
 
     const forced = await cli('archive', id, '--force');
@@ -199,7 +225,7 @@ describe('factory archive (job 045)', () => {
       const r = await cli('archive', id, ...flags);
       expect(r.code).toBe(1);
       expect(r.err).toEqual([
-        `${id}: factory/jobs already holds a different job at ${id}/ (archived: job.claimed id=${id} ts=2026-10-01T00:00:00.000Z; local: job.claimed id=${id} ts=2026-10-05T00:00:00.000Z); nothing written`,
+        `${id}: factory/archive already holds a different job at ${id}/ (archived: job.claimed id=${id} ts=2026-10-01T00:00:00.000Z; local: job.claimed id=${id} ts=2026-10-05T00:00:00.000Z); nothing written`,
       ]);
       expect(tip()).toBe(first);
     }
@@ -216,7 +242,7 @@ describe('factory archive (job 045)', () => {
     for (const flags of [[], ['--force']]) {
       const r = await cli('archive', '002-old', ...flags);
       expect(r.code).toBe(1);
-      expect(r.err[0]).toMatch(/^002-old: factory\/jobs already holds a different job at 002-old\/ \(archived: tree [0-9a-f]{7}; local legacy job: tree [0-9a-f]{7}\); nothing written$/);
+      expect(r.err[0]).toMatch(/^002-old: factory\/archive already holds a different job at 002-old\/ \(archived: tree [0-9a-f]{7}; local legacy job: tree [0-9a-f]{7}\); nothing written$/);
       expect(tip()).toBe(first);
     }
   });
@@ -273,7 +299,7 @@ describe('factory archive (job 045)', () => {
     await seedJob('002-next', 'abandoned');
     const r = await cli('archive', '--all');
     expect(r.code).toBe(1);
-    expect(r.err).toEqual(['001-changed: changed since it was archived on factory/jobs; run archive 001-changed --force to add a new commit']);
+    expect(r.err).toEqual(['001-changed: changed since it was archived on factory/archive; run archive 001-changed --force to add a new commit']);
     expect(gitIn(repo, 'ls-tree', '--name-only', REF).split('\n')).toEqual(['001-changed', '002-next']);
     expect(r.out.at(-1)).toBe('archive --all: archived 1, unchanged 0, skipped 0 (not merged or abandoned), failed 1');
   });
@@ -325,8 +351,24 @@ describe('factory archive (job 045)', () => {
     const commit = gitIn(repo, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit-tree', tree, '-m', 'x');
     gitIn(repo, 'update-ref', REF, commit);
     await seedJob('006-file', 'merged');
-    expect((await cli('archive', '006-file')).err).toEqual(['006-file: factory/jobs has 006-file as a blob, not a directory; nothing written']);
+    expect((await cli('archive', '006-file')).err).toEqual(['006-file: factory/archive has 006-file as a blob, not a directory; nothing written']);
     expect(tip()).toBe(commit);
+  });
+
+  test('job 046 AC4: a ref that never stops moving gives up naming factory/archive', async () => {
+    await seedJob('001-stuck', 'merged');
+    // A held ref lock makes every compare-and-swap update-ref fail, as a lost race does; no lock
+    // wait, so the 50 tries stay fast.
+    gitIn(repo, 'config', 'core.filesRefLockTimeout', '0');
+    const lock = join(gitIn(repo, 'rev-parse', '--path-format=absolute', '--git-dir'), 'refs', 'heads', 'factory', 'archive.lock');
+    await mkdir(join(lock, '..'), { recursive: true });
+    await writeFile(lock, '');
+    const r = await cli('archive', '001-stuck');
+    expect(r.code).toBe(1);
+    expect(r.err).toHaveLength(1);
+    expect(r.err[0]).toStartWith('001-stuck: factory/archive kept moving; gave up after 50 tries (');
+    await rm(lock);
+    expect(tip()).toBeNull();
   });
 
   test('a symlink inside a job dir is not followed or copied', async () => {
@@ -377,6 +419,22 @@ describe('claim counts the archive branch (job 045, AC7)', () => {
     await writeConfig({ ...BASE, archive: { enabled: false } });
     await rm(join(root, 'jobs', '008-next-off'), { recursive: true });
     expect((await cli('claim', 'next-false')).out).toEqual(['008-next-false']);
+  });
+
+  test('job 046 AC2: ids only on the old refs/heads/factory/jobs ref are ignored', async () => {
+    await seedJob('007-old', 'merged');
+    expect((await cli('archive', '007-old')).code).toBe(0);
+    const archived = tip();
+    if (archived === null) throw new Error('no archive branch');
+    // Move the archive to the old name only.
+    gitIn(repo, 'update-ref', OLD_REF, archived);
+    gitIn(repo, 'update-ref', '-d', REF);
+    await rm(join(root, 'jobs', '007-old'), { recursive: true });
+    await mkdir(join(root, 'jobs', '002-local'));
+    expect(await archivedIds(repo)).toEqual([]);
+    expect((await cli('claim', 'after-old')).out).toEqual(['003-after-old']);
+    expect(gitIn(repo, 'rev-parse', OLD_REF)).toBe(archived);
+    expect(tip()).toBeNull();
   });
 
   test('with no branch, claim picks the same id as before', async () => {
