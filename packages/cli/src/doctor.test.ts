@@ -83,6 +83,30 @@ describe('doctor: config (AC5)', () => {
     }
   });
 
+  test('a config with archive { enabled: true|false } is ok (job 045, AC6)', async () => {
+    for (const archive of [{ enabled: true }, { enabled: false }]) {
+      await writeConfig({ ...CONFIG, archive });
+      const r = await doctor();
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('ok    config.json');
+    }
+  });
+
+  test('a config with a bad archive fails with a one-line reason naming archive (job 045, AC6)', async () => {
+    const cases: Array<[unknown, string]> = [
+      [true, 'FAIL  config.json: config: archive must be an object { enabled }'],
+      [{}, 'FAIL  config.json: config: archive.enabled must be true or false'],
+      [{ enabled: 'yes' }, 'FAIL  config.json: config: archive.enabled must be true or false'],
+      [{ enabled: true, push: false }, "FAIL  config.json: config.archive: unknown key 'push'"],
+    ];
+    for (const [archive, want] of cases) {
+      await writeConfig({ ...CONFIG, archive });
+      const r = await doctor();
+      expect(r.code).toBe(1);
+      expect(r.out).toContain(want);
+    }
+  });
+
   test('a config with a valid name is ok', async () => {
     for (const name of ['Minerva Admin', 'Café — Ops (v2)!', 'x'.repeat(64)]) {
       await writeConfig({ ...CONFIG, name });

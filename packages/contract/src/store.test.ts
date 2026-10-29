@@ -337,3 +337,35 @@ describe('claimJob (AC1–AC4)', () => {
     expect((await readdir(join(root, 'jobs'))).sort()).toEqual(['003-export-csv', '999-z']);
   });
 });
+
+describe('claimJob counts the archive (job 045, AC7)', () => {
+  const cfg = async () => parseConfig(JSON.parse(await readFile(join(root, 'config.json'), 'utf8')));
+  const claimWith = async (slug: string, archived?: readonly string[]) =>
+    (await claimJob(root, slug, { fields: {}, config: await cfg(), target: 'main' }, undefined, archived === undefined ? {} : { archived: async () => archived })).id;
+
+  test('the next number is above the highest archived id when the archive is ahead of the job dirs', async () => {
+    await mkdir(jobDir('002-local'), { recursive: true });
+    expect(await claimWith('a', ['001-old', '007-gone', 'not-an-id'])).toBe('008-a');
+  });
+
+  test('job dirs ahead of the archive still win; an empty archive changes nothing', async () => {
+    await mkdir(jobDir('010-local'), { recursive: true });
+    expect(await claimWith('b', ['003-x'])).toBe('011-b');
+    expect(await claimWith('c', [])).toBe('012-c');
+    expect(await claimWith('d')).toBe('013-d');
+  });
+
+  test('an archived 999 refuses the claim and writes nothing', async () => {
+    await expect(claimWith('e', ['999-last'])).rejects.toThrow(/999/);
+    expect(await readdir(join(root, 'jobs'))).toEqual([]);
+  });
+
+  test('a failing archive read refuses the claim, writes nothing, and releases the lock', async () => {
+    const config = await cfg();
+    const archived = async (): Promise<readonly string[]> => {
+      throw new Error('archive: git failed');
+    };
+    await expect(claimJob(root, 'f', { fields: {}, config, target: 'main' }, undefined, { archived })).rejects.toThrow('archive: git failed');
+    expect(await readdir(join(root, 'jobs'))).toEqual([]);
+  });
+});

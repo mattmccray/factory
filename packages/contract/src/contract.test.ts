@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { type EventInput, type FactoryEvent, type Session, checkTransition, isSession, mergeTarget, parseConfig, parseEventInput, parseSession } from './contract';
+import { type EventInput, type FactoryEvent, type Session, archiveEnabled, checkTransition, isSession, mergeTarget, parseConfig, parseEventInput, parseSession } from './contract';
 
 const shipped: unknown = await Bun.file(new URL('./fixtures/config.json', import.meta.url)).json();
 const base = { schema: 'factory/v1', reviewers: ['security', 'ux'], maxRound: 2, dashboard: { settleAfterHours: 24 } };
@@ -173,6 +173,41 @@ describe('parseConfig: merge (target branch)', () => {
       let message = '';
       try {
         parseConfig({ ...base, merge });
+      } catch (e) {
+        message = e instanceof Error ? e.message : String(e);
+      }
+      expect(message).toMatch(want);
+      expect(message).not.toContain('\n');
+    }
+  });
+});
+
+describe('parseConfig: archive (job 045, AC6)', () => {
+  test('accepts enabled true and false; no archive key means off', () => {
+    expect(parseConfig({ ...base, archive: { enabled: true } }).archive).toEqual({ enabled: true });
+    expect(parseConfig({ ...base, archive: { enabled: false } }).archive).toEqual({ enabled: false });
+    expect('archive' in parseConfig(base)).toBe(false);
+    expect(archiveEnabled(parseConfig(base))).toBe(false);
+    expect(archiveEnabled(parseConfig({ ...base, archive: { enabled: false } }))).toBe(false);
+    expect(archiveEnabled(parseConfig({ ...base, archive: { enabled: true } }))).toBe(true);
+  });
+
+  test('rejects a non-object, a missing or non-boolean enabled, and an extra key, in one line', () => {
+    const cases: Array<[unknown, RegExp]> = [
+      [true, /^config: archive must be an object/],
+      ['on', /^config: archive must be an object/],
+      [[], /^config: archive must be an object/],
+      [null, /^config: archive must be an object/],
+      [{}, /^config: archive\.enabled must be true or false/],
+      [{ enabled: 'true' }, /^config: archive\.enabled must be true or false/],
+      [{ enabled: 1 }, /^config: archive\.enabled must be true or false/],
+      [{ enabled: null }, /^config: archive\.enabled must be true or false/],
+      [{ enabled: true, push: true }, /^config\.archive: unknown key 'push'/],
+    ];
+    for (const [archive, want] of cases) {
+      let message = '';
+      try {
+        parseConfig({ ...base, archive });
       } catch (e) {
         message = e instanceof Error ? e.message : String(e);
       }
