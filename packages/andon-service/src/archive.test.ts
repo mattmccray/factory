@@ -35,8 +35,8 @@ describe('ls-tree parsing (AC6)', () => {
   });
 
   test('wanted: the log, a legacy job.json, the top-level docs, and round markdown', () => {
-    for (const rel of ['events.jsonl', 'job.json', 'feature.md', 'spec.md', 'build.md', 'decision.md', 'rework-12.md', 'round-3/review-ui.md', 'round-1/notes.md']) expect({ rel, w: wanted(rel) }).toEqual({ rel, w: true });
-    for (const rel of ['job.json.tmp', 'other.md', 'round-1/x/y.md', 'round-x/review-ui.md', 'round-1/shot.png', '.events.lock/owner']) expect({ rel, w: wanted(rel) }).toEqual({ rel, w: false });
+    for (const rel of ['events.jsonl', 'job.json', 'feature.md', 'spec.md', 'build.md', 'decision.md', 'rework-12.md', 'conflict-1.md', 'conflict-12.md', 'round-3/review-ui.md', 'round-1/notes.md']) expect({ rel, w: wanted(rel) }).toEqual({ rel, w: true });
+    for (const rel of ['job.json.tmp', 'other.md', 'conflict-x.md', 'conflict-.md', 'round-1/x/y.md', 'round-x/review-ui.md', 'round-1/shot.png', '.events.lock/owner']) expect({ rel, w: wanted(rel) }).toEqual({ rel, w: false });
   });
 });
 
