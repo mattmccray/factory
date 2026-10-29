@@ -1,6 +1,7 @@
 # The skill runs epics, and explore writes them
 
-- Status: ready
+- Status: done
+- Job: 053-epic-skill (merged a2619ac, 2026-10-29)
 - Sources: docs/design/epics/design.md (decisions 2–8, 10; brief 3 of 5); factory/briefs/epic-cli.md
   (the CLI this drives) and merge-conflict-rework.md (the conflict path it reuses); `/factory
   explore` on 2026-10-29; packages/templates/assets/skill/SKILL.md (Running jobs side by side,

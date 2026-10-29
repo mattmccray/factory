@@ -2,9 +2,11 @@
 // record is already on `factory/archive`, and only those. A dir is removed when it is archived,
 // settled, and its tree (the file set `archive` copies) equals the archived `<id>/` tree. It reads
 // only the local branch, writes no git object, moves no ref, and never fetches or pushes. Settling
-// is the contract's epic-aware rule (`isSettled` in `@factory/contract`): a job in an epic is never
-// pruned while its epic isn't landed or abandoned. Then terminal epic dirs (`jobs/epics/<slug>/`)
-// are swept the same way against `epics/<slug>/` on the branch.
+// is the contract's epic-aware rule (`isSettled` in `@factory/contract`). Before it, prune's own
+// guard in `check()` keeps every job in an epic while its epic is unknown or isn't landed or
+// abandoned, abandoned members included: stricter than `isSettled`, which settles an abandoned job
+// at once. Then terminal epic dirs (`jobs/epics/<slug>/`) are swept the same way against
+// `epics/<slug>/` on the branch.
 import { lstat, mkdir, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { epicSlugs, isEpicSettled, isEpicSlug, isSettled, loggedEpicState } from '@factory/contract';
