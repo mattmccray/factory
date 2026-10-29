@@ -1,6 +1,7 @@
 # Job archive — copy finished jobs to an orphan branch in the repo
 
-- Status: ready
+- Status: done
+- Job: 045-job-archive (merged e038d35, 2026-10-29)
 - Sources: 2026-10-23 design conversation; `/factory explore job-archive` on 2026-10-28;
   docs/contract/v1.md (layout, `config.json`, job ids, `claim`, `job.abandoned`, CLI);
   packages/contract/src/store.ts (`claimJob`); packages/templates/assets/skill/SKILL.md (Merge,
