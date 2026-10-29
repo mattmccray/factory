@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { getJson } from './api';
+import { fetchEpicDocs, getJson } from './api';
 import { TIMING, groupsOf, pickFile, verdictOf } from './docs';
 import { markdown } from './markdown';
 
@@ -62,5 +62,23 @@ describe('getJson', () => {
     await expect(getJson(fail, '/x')).rejects.toThrow('config.json: bad thing');
     const empty = async () => ({ ok: false, status: 404, text: async () => '' });
     await expect(getJson(empty, '/x')).rejects.toThrow('HTTP 404');
+  });
+});
+
+describe('an epic\'s documents (056 AC6)', () => {
+  test("are fetched from its own project's epic docs endpoint, plan first, and a malformed entry is skipped", async () => {
+    const asked: string[] = [];
+    const files = [{ path: 'epics/auth.md', text: '# Auth' }, { path: 'briefs/a.md', text: 'a' }, { path: 7, text: 'x' }, 'junk'];
+    const fetcher = async (path: string) => {
+      asked.push(path);
+      return { ok: true, status: 200, text: async () => JSON.stringify({ files }) };
+    };
+    expect(await fetchEpicDocs(fetcher, 'p 1', 'auth')).toEqual([
+      { path: 'epics/auth.md', text: '# Auth' },
+      { path: 'briefs/a.md', text: 'a' },
+    ]);
+    expect(asked).toEqual(['/projects/p%201/epics/auth/docs']);
+    const missing = async () => ({ ok: false, status: 404, text: async () => 'not found' });
+    await expect(fetchEpicDocs(missing, 'p1', 'gone')).rejects.toThrow('not found');
   });
 });

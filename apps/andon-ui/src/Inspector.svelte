@@ -6,13 +6,19 @@
   // `updated` changes; a failed read keeps what is shown. ↑ and ↓ move between files while focus
   // is in the inspector. The chosen file is the caller's (`file`, from the URL), reported by `onfile`. Andon never runs a command itself: Approve copies it and, in the Mac app,
   // hands it to T3 Code as Settings say (`onhandoff`, see handoff.ts); the copy icon only copies.
+  // A job in an epic links back to its epic. The epic page (docs/design/epics/design.md decision 9;
+  // `epic` instead of `item`) shows its state pill, `factory/epic/<slug> → <target>`, timing, a
+  // progress bar by member state, the Members in plan order and the Generated sync and fix jobs
+  // (each linking to its job), the red box with `/factory epic <slug>` to copy when it waits on you,
+  // an Abandon… sheet, and the plan and member briefs as documents (the epic docs endpoint).
   import { tick, untrack } from 'svelte';
-  import { fetchDocs } from './api';
+  import { fetchDocs, fetchEpicDocs } from './api';
   import type { DocFile, Fetcher } from './api';
-  import type { BoardJob } from './board';
+  import { isEpicTerminal } from './board';
+  import type { BoardEpic, BoardJob } from './board';
   import type { HandoffRequest } from './handoff';
   import { TIMING } from './docs';
-  import { INSPECTOR_MAX, INSPECTOR_MIN, approveCommand, clampWidth, fileModel, stepFile } from './inspector';
+  import { INSPECTOR_MAX, INSPECTOR_MIN, approveCommand, clampWidth, epicFileModel, epicLinkOf, epicPage, fileModel, stepFile } from './inspector';
   import type { SheetKind } from './inspector';
   import { landing } from './job';
   import { KIND_LABELS, kindOf } from './lanes';
@@ -21,7 +27,9 @@
   import { summary, timingView } from './timing';
 
   interface Props {
-    item: BoardJob | null; // the open job; null: "Nothing selected"
+    item: BoardJob | null; // the open job; null: an epic, or "Nothing selected"
+    epic: BoardEpic | null; // the open epic (when `item` is null)
+    epicJobs: BoardJob[]; // the open epic's jobs, for its Members and Generated rows
     open: boolean;
     width: number;
     now: number;
@@ -33,11 +41,13 @@
     oncopy: (command: string) => void; // the copy icon: copy only
     onhandoff: (req: HandoffRequest, command: string) => void; // Approve: copy, then hand off
     onsheet: (kind: SheetKind) => void;
+    onopenjob: (key: string) => void; // a member's job link
+    onopenepic: (key: string) => void; // a job's link to its epic
   }
-  let { item, open, width, now, fetcher, file, onfile, onclose, onresize, oncopy, onhandoff, onsheet }: Props = $props();
+  let { item, epic, epicJobs, open, width, now, fetcher, file, onfile, onclose, onresize, oncopy, onhandoff, onsheet, onopenjob, onopenepic }: Props = $props();
 
-  const key = $derived(item?.key ?? null);
-  const updated = $derived(item?.job.updated ?? null);
+  const key = $derived(item !== null ? item.key : epic !== null ? `epic:${epic.key}` : null);
+  const updated = $derived(item !== null ? item.job.updated : (epic?.epic.updated ?? null));
 
   let files = $state<DocFile[]>([]);
   let aside = $state<HTMLElement>();
@@ -47,16 +57,18 @@
 
   $effect(() => {
     if (key === null) return;
-    void updated; // re-read the docs when the job changes
-    const target = untrack(() => item);
-    if (target === null) return;
+    void updated; // re-read the docs when the job or epic changes
+    const job = untrack(() => item);
+    const ep = untrack(() => epic);
+    if (job === null && ep === null) return;
     if (key !== loadedKey) {
       loadedKey = key;
       files = [];
       if (docPane !== undefined) docPane.scrollTop = 0;
     }
     let live = true;
-    fetchDocs(fetcher, target).then(
+    const read = job !== null ? fetchDocs(fetcher, job) : ep !== null ? fetchEpicDocs(fetcher, ep.project.id, ep.epic.slug) : Promise.resolve([]);
+    read.then(
       (f) => {
         if (live) files = f;
       },
@@ -69,8 +81,8 @@
     };
   });
 
-  // Opening a job moves focus into the inspector (so ↑ and ↓ work at once); closing it returns
-  // focus to where it was.
+  // Opening a job or an epic moves focus into the inspector (so ↑ and ↓ work at once); closing it
+  // returns focus to where it was.
   let returnTo: HTMLElement | null = null;
   $effect(() => {
     const k = key;
@@ -90,10 +102,12 @@
   const job = $derived(item?.job ?? null);
   const kind = $derived(item === null ? null : kindOf(item, now));
   const hasTiming = $derived(job !== null && job.timing !== null && job.startedAt !== null);
-  const model = $derived(fileModel(files, hasTiming, file));
+  const page = $derived(item === null && epic !== null ? epicPage(epic, epicJobs, now) : null);
+  const model = $derived(page !== null ? epicFileModel(files, file) : fileModel(files, hasTiming, file));
   const current = $derived(model.selected);
   const sum = $derived(job === null ? null : summary(job, now));
   const lands = $derived(job === null ? null : landing(job));
+  const link = $derived(item === null ? null : epicLinkOf(item));
   const view = $derived(job !== null && current === TIMING ? timingView(job, now) : null);
   const html = $derived.by(() => {
     if (current === null || current === TIMING) return null;
@@ -102,11 +116,12 @@
   });
   const human = $derived(job !== null && job.stage === 'needs-human');
   const approve = $derived(job === null ? '' : approveCommand(job.id));
+  const abandonable = $derived(epic !== null && !isEpicTerminal(epic.epic));
 
   async function choose(path: string | null, focus: boolean): Promise<void> {
     if (path === null) return;
     onfile(path);
-    if (docPane !== undefined) docPane.scrollTop = 0;
+    if (docPane !== undefined && page === null) docPane.scrollTop = 0;
     if (!focus) return;
     await tick();
     const row = aside?.querySelector<HTMLButtonElement>('.file.on');
@@ -117,7 +132,7 @@
   // ↑ and ↓ move between files while focus is in the inspector (not in a field or the grip).
   function onkeydown(e: KeyboardEvent): void {
     if ((e.key !== 'ArrowUp' && e.key !== 'ArrowDown') || e.defaultPrevented || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
-    if (!open || item === null || aside === undefined) return;
+    if (!open || key === null || aside === undefined) return;
     const at = document.activeElement;
     if (!(at instanceof HTMLElement) || !aside.contains(at) || at.matches('input, textarea, select, [role="separator"]')) return;
     e.preventDefault();
@@ -172,9 +187,88 @@
     onkeydown={nudge}
   ></div>
   <div class="ins-body">
-    {#if item === null || job === null}
+    {#if page !== null && epic !== null}
+      <div class="ins-bar">
+        <span class="lbl">{page.project} / epic / {page.slug}</span>
+        <button class="xbtn" type="button" bind:this={closeBtn} onclick={onclose} aria-label="Close the inspector" title="Close (esc)"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg></button>
+      </div>
+      <div class="ins-scroll" bind:this={docPane}>
+        <div class="ins-head">
+          <div class="crumbs"><span>{page.project}</span><span aria-hidden="true">·</span><span class="stage-pill sp-epic">Epic</span><span class="stage-pill sp-e-{page.state}">{page.stateLabel}</span></div>
+          <h2 id="ins-title">{page.name}</h2>
+          <div class="branch" title="epic branch → target">{page.lands}</div>
+          <div class="tsum">{page.timing} · {page.merged}</div>
+          <div class="eprog" role="img" aria-label="Members by state: {page.progress.map((s) => s.title).join(', ')}">
+            {#each page.progress as seg, i (i)}<i class={seg.cls} title={seg.title}></i>{/each}
+          </div>
+          {#if page.planError !== null}<div class="tsum na">Plan: {page.planError}</div>{/if}
+          {#if abandonable && page.waiting === null}
+            <div class="acts eacts"><button class="btn destructive" type="button" aria-haspopup="dialog" onclick={() => onsheet('epic-abandon')}>Abandon…</button></div>
+          {/if}
+        </div>
+        {#if page.waiting !== null}
+          <section class="callout" aria-label="Waiting on you">
+            <div class="why">
+              <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 14V2.5M4 3h7.5l-1.5 3 1.5 3H4" /></svg>
+              <span><b>Waiting on you:</b> {page.waiting.note || 'no reason recorded.'}</span>
+            </div>
+            <div class="sub">Fix what it waits on, then resume the epic in its session.</div>
+            <div class="acts">
+              <button class="btn primary" type="button" onclick={() => oncopy(page.waiting?.command ?? '')}>Copy Resume</button>
+              <button class="btn destructive" type="button" aria-haspopup="dialog" onclick={() => onsheet('epic-abandon')}>Abandon…</button>
+            </div>
+            <div class="cmd">
+              <code>{page.waiting.command}</code>
+              <button class="copy" type="button" onclick={() => oncopy(page.waiting?.command ?? '')} aria-label="Copy {page.waiting.command}" title="Copy">
+                <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" /><path d="M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" /></svg>
+              </button>
+            </div>
+          </section>
+        {:else if page.abandoned !== null}
+          <section class="callout gray" aria-label="Abandoned"><div class="why"><span>Abandoned: {page.abandoned || 'no reason recorded.'}</span></div></section>
+        {/if}
+        <section class="members" aria-label="Members">
+          <h3><span>Members</span><span>plan order</span></h3>
+          <ul>
+            {#each page.members as m (m.slug)}
+              <li class="mem">
+                <span class="mi">{m.n}</span>
+                <span class="mt" title={m.title}>{m.title}</span>
+                <span class="mr"><span class="mst {m.tone}">{#if m.tone === 'running'}<i class="mk-{m.kind ?? 'build'}" aria-hidden="true"></i>{/if}{m.text}</span></span>
+                <span></span>
+                <span class="ms"><b>{m.slug}</b> · {m.after}</span>
+                <span class="mr">
+                  {#if m.job !== null}
+                    <button class="jid" type="button" title="Open {m.job.id}" onclick={() => onopenjob(m.job?.key ?? '')}>job <b>{m.job.num}</b></button>
+                  {:else}
+                    <span class="jid none">not claimed</span>
+                  {/if}
+                </span>
+              </li>
+            {/each}
+          </ul>
+          {#if page.generated.length > 0}
+            <h3><span>Generated</span><span>sync · fix</span></h3>
+            <ul>
+              {#each page.generated as g (g.job.id)}
+                <li class="mem">
+                  <span class="mi"></span>
+                  <span class="mt" title={g.title}><span class="htag">{g.kind}</span> {g.title}</span>
+                  <span class="mr"><span class="mst {g.tone}">{g.text}</span></span>
+                  <span></span>
+                  <span class="ms">{g.job.id}</span>
+                  <span class="mr"><button class="jid" type="button" title="Open {g.job.id}" onclick={() => onopenjob(g.job.key)}>job <b>{g.job.num}</b></button></span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
+        {@render fileList('Epic documents')}
+        <div class="doc">{@render documentView()}</div>
+      </div>
+    {:else if item === null || job === null}
       <div class="ins-bar"><span class="lbl">Inspector</span><button class="xbtn" type="button" onclick={onclose} aria-label="Close the inspector" title="Close (esc)"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg></button></div>
-      <div class="nosel">Nothing selected<small>Click a job to see its files and timing.</small></div>
+      <div class="nosel">Nothing selected<small>Click a job, or an epic's name, to see its files.</small></div>
     {:else}
       <div class="ins-bar">
         <span class="lbl">{item.project.name} / {job.id}</span>
@@ -185,6 +279,12 @@
         <h2 id="ins-title">{job.title}</h2>
         {#if lands !== null}<div class="branch" title="branch → target">{lands}</div>{/if}
         {#if sum !== null}<div class="tsum" class:na={!sum.recorded}>{sum.text}</div>{/if}
+        {#if link !== null}
+          <button class="elink" type="button" aria-haspopup="dialog" onclick={() => onopenepic(link.key)}>
+            <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="3" r="1.5" /><circle cx="4" cy="13" r="1.5" /><circle cx="12" cy="8" r="1.5" /><path d="M4 4.5v7M5.3 3.8C8.5 5 10.6 5.6 11 6.6M5.3 12.2C8.5 11 10.6 10.4 11 9.4" /></svg>
+            <span>{link.text}</span><b>{link.name}</b>
+          </button>
+        {/if}
       </div>
       {#if human}
         <section class="callout" aria-label="Needs a human">
@@ -207,38 +307,46 @@
       {:else if job.stage === 'abandoned'}
         <section class="callout gray" aria-label="Abandoned"><div class="why"><span>Abandoned: {job.note || 'no reason recorded.'}</span></div></section>
       {/if}
-      <nav class="files" aria-label="Job files">
-        {#if model.groups.length === 0}<div class="empty">No files yet.</div>{/if}
-        {#each model.groups as g (g.name)}
-          <h3><span>{g.name}</span>{#if g.current}<span>current</span>{/if}</h3>
-          <ul>
-            {#each g.rows as f (f.path)}
-              <li>
-                <button class="file" class:on={current === f.path} aria-current={current === f.path} type="button" onclick={() => choose(f.path, false)}>
-                  {#if f.path === TIMING}
-                    <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" /><path d="M8 5v3l2 1.5" /></svg>
-                  {:else}
-                    <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h5l3 3v8H4z" /><path d="M9 2.5v3h3" /></svg>
-                  {/if}
-                  <span class="fl">{f.label}</span>
-                  {#if f.verdict !== null}<span class="vd {f.tone ?? ''}" title={f.verdict}></span><span class="sr-only">{f.verdict}</span>{/if}
-                </button>
-              </li>
-            {/each}
-          </ul>
-        {/each}
-      </nav>
+      {@render fileList('Job files')}
       <div class="doc" bind:this={docPane}>
-        <div class="md">
-          {#if view !== null}
-            <div class="timing"><TimingView {view} /></div>
-          {:else if html !== null}
-            {@html html}
-          {:else}
-            <p class="empty">Nothing written yet.</p>
-          {/if}
-        </div>
+        {@render documentView()}
       </div>
     {/if}
   </div>
 </aside>
+
+{#snippet fileList(label: string)}
+  <nav class="files" aria-label={label}>
+    {#if model.groups.length === 0}<div class="empty">No files yet.</div>{/if}
+    {#each model.groups as g (g.name)}
+      <h3><span>{g.name}</span>{#if g.current}<span>current</span>{/if}</h3>
+      <ul>
+        {#each g.rows as f (f.path)}
+          <li>
+            <button class="file" class:on={current === f.path} aria-current={current === f.path} type="button" title={f.path === TIMING ? undefined : f.path} onclick={() => choose(f.path, false)}>
+              {#if f.path === TIMING}
+                <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" /><path d="M8 5v3l2 1.5" /></svg>
+              {:else}
+                <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h5l3 3v8H4z" /><path d="M9 2.5v3h3" /></svg>
+              {/if}
+              <span class="fl">{f.label}</span>
+              {#if f.verdict !== null}<span class="vd {f.tone ?? ''}" title={f.verdict}></span><span class="sr-only">{f.verdict}</span>{/if}
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/each}
+  </nav>
+{/snippet}
+
+{#snippet documentView()}
+  <div class="md">
+    {#if view !== null}
+      <div class="timing"><TimingView {view} /></div>
+    {:else if html !== null}
+      {@html html}
+    {:else}
+      <p class="empty">Nothing written yet.</p>
+    {/if}
+  </div>
+{/snippet}

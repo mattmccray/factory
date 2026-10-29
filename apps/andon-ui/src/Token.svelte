@@ -6,6 +6,9 @@
   // branch (the sha, round, and full time are in the popover and the drawer). The model comes
   // from lanes.ts (`tokenOf`); each kind's shape class draws its non-color mark. A board token
   // carries its job id and project id for the Mac app's right-click job menu (jobmenu.ts).
+  // In an epic: a generated job carries its `sync` or `fix` tag, and a member merged into its running
+  // epic's branch has a dashed green edge and a branch-merge icon before its time, whose tooltip and
+  // label say where the merge is and where it lands.
   import { tokenJobId } from './jobmenu';
   import type { TokenModel } from './lanes';
 
@@ -31,6 +34,7 @@
 <button
   bind:this={el}
   class="tok k-{t.kind} s-{t.shape}"
+  class:ie={t.inEpic !== null}
   class:sel={selected}
   class:miss
   class:new={fresh}
@@ -48,9 +52,10 @@
   onblur={hide}
 >
   <span class="sr-only">{t.label}: </span>
-  <span class="l1"><span class="num">{t.num}</span><span class="sl">{t.title}</span>{#if oneLine && t.time !== null}<span class="age">{t.time}</span>{/if}</span>
+  <span class="l1"><span class="num">{t.num}</span>{#if oneLine && t.helper !== null}<span class="htag" title="Generated {t.helper} job">{t.helper}</span>{/if}<span class="sl">{t.title}</span>{#if oneLine && t.inEpic !== null}<span class="iem" role="img" title={t.inEpic} aria-label={t.inEpic}><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.5" /><circle cx="4.5" cy="12.5" r="1.5" /><circle cx="11.5" cy="8" r="1.5" /><path d="M4.5 5v6M4.5 6c0 2 2 2 5.5 2" /></svg></span>{/if}{#if oneLine && t.time !== null}<span class="age">{t.time}</span>{/if}</span>
   {#if !oneLine}
     <span class="l2">
+      {#if t.helper !== null}<span class="htag" title="Generated {t.helper} job">{t.helper}</span>{/if}
       {#if t.tag !== null}
         <span class="tag">
           {#if t.shape === 'flag'}<svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 14V2.5M3.5 3h8l-1.8 3 1.8 3h-8" /></svg>

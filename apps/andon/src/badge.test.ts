@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test';
 import { needsHumanCount, TRAY_MENU, trayNotice, traySpec } from './badge';
 import type { TrayMenuItem } from './badge';
+import { dockLook } from './lantern';
 import type { AppJob, AppState } from './state';
 
 const job = (id: string, stage: string): AppJob => ({ id, title: id, stage, note: '' });
@@ -39,4 +40,24 @@ test('AC3: every tray spec is a toggle (primaryAction) and keeps the unchanged m
     expect(spec.primaryAction).toBe(true);
     expect(spec.menu).toEqual(menu);
   }
+});
+
+test('056 AC8: the tray badge counts needs-human jobs plus epics waiting on you, as the sidebar does', () => {
+  const epic = (slug: string, waitingOn: string | null) => ({ slug, name: slug, state: waitingOn === null ? 'running' : 'waiting', waitingOn, note: '', members: 1 });
+  const s: AppState = {
+    projects: [
+      { id: 'aaaaaaaaaaaa', name: 'one', root: null },
+      { id: 'bbbbbbbbbbbb', name: 'two', root: null },
+    ],
+    boards: {
+      aaaaaaaaaaaa: { jobs: [job('001-a', 'needs-human'), job('002-b', 'build')], epics: [epic('auth', 'you'), epic('calm', null), epic('stuck', 'members')], error: null, rev: 1 },
+      bbbbbbbbbbbb: { jobs: [], epics: [epic('billing', 'you')], error: null, rev: 1 },
+      cccccccccccc: { jobs: [], epics: [epic('unlisted', 'you')], error: null, rev: 1 },
+    },
+  };
+  expect(needsHumanCount(s)).toBe(3);
+  expect(traySpec(needsHumanCount(s)).tooltip).toBe('Andon: 3 need a human');
+  // the Dock lantern agrees: an epic waiting on you alone is escalated
+  const only: AppState = { projects: [{ id: 'bbbbbbbbbbbb', name: 'two', root: null }], boards: { bbbbbbbbbbbb: { jobs: [], epics: [epic('billing', 'you')], error: null, rev: 1 } } };
+  expect([needsHumanCount(only), dockLook(only)]).toEqual([1, 'escalated']);
 });

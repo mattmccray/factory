@@ -195,7 +195,7 @@ describe('Andon never writes job state (026 AC5)', () => {
         command.lastIndex = 0;
       }
     }
-    expect(built).toBe(3); // approve, rework, abandon
+    expect(built).toBe(5); // approve, rework, abandon, and an epic's resume and abandon
   });
 
   test('the drawer and the Settled dialog are gone', () => {

@@ -4,9 +4,9 @@
 // home (a registry and 12 project roots) that a real service can serve, for screenshots.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { BoardJob } from './board';
-import { toJob } from './job';
-import type { Job } from './job';
+import type { BoardEpic, BoardJob } from './board';
+import { toEpic, toJob } from './job';
+import type { Epic, Job } from './job';
 
 export const NOW = Date.parse('2026-10-22T12:00:00.000Z');
 export const HOUR = 3_600_000;
@@ -23,6 +23,42 @@ export function job(fields: Record<string, unknown>): Job {
 
 export function tag(j: Job, project = { id: 'p1', name: 'one' }, settleAfterHours = 24, reviewers: string[] = []): BoardJob {
   return { key: `${project.id}/${j.id}`, project, settleAfterHours, reviewers, job: j };
+}
+
+/** An epic.json value (unknown fields allowed), narrowed: a running epic `auth` on main, started 11h 40m ago, by default. */
+export function epic(fields: Record<string, unknown>): Epic {
+  const slug = typeof fields.slug === 'string' ? fields.slug : 'auth';
+  const e = toEpic({
+    schema: 'factory/v1',
+    slug,
+    branch: `factory/epic/${slug}`,
+    target: 'main',
+    plan: `factory/epics/${slug}.md`,
+    planError: null,
+    state: 'running',
+    waitingOn: null,
+    note: '',
+    session: null,
+    sha: null,
+    members: [],
+    generated: [],
+    counts: {},
+    startedAt: before(11 * HOUR + 40 * MINUTE),
+    endedAt: null,
+    updated: before(MINUTE),
+    ...fields,
+  });
+  if (e === null) throw new Error('fixture has no slug');
+  return e;
+}
+
+/** An epic tagged with its project, as `boardEpics` tags one. */
+export const tagEpic = (e: Epic, project = { id: 'p1', name: 'one' }, settleAfterHours = 24): BoardEpic => ({ key: `${project.id}/${e.slug}`, project, settleAfterHours, epic: e });
+
+/** A job in an epic, tagged with its project and its epic (as `boardJobs` tags one). */
+export function inEpic(fields: Record<string, unknown>, e: Epic, project = { id: 'p1', name: 'one' }, settleAfterHours = 24): BoardJob {
+  const j = job({ epic: e.slug, kind: 'member', target: `factory/epic/${e.slug}`, ...fields });
+  return { ...tag(j, project, settleAfterHours), epic: e };
 }
 
 /** Why a job stopped, as job 022's snapshot fields: `stopped('merge-failed', 'approve')`. */

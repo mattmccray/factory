@@ -6,9 +6,13 @@
 // Pure: it takes board jobs, each project's settled summary, and `now`; Lines.svelte, Lane.svelte,
 // and Token.svelte only lay it out. Settled jobs are never on a lane: a lane counts them (its
 // summary plus held jobs that settled on screen) and links to the Settled sheet.
-import { chipRounds, isSettled, mergedAt, roundKeys } from './board';
-import type { BoardJob } from './board';
-import type { Job, WorkingStage } from './job';
+// Epics (docs/design/epics/design.md decision 9): each unsettled epic gets a sub-lane under its
+// project's lane, in the same six columns, holding only its jobs; its gutter says how the epic is
+// doing and what it waits on. A project's tier counts its epics' jobs and each epic waiting on you.
+import { chipRounds, isEpicSettled, isEpicTerminal, isSettled, mergedAt, roundKeys } from './board';
+import type { BoardEpic, BoardJob } from './board';
+import { epicName } from './job';
+import type { Epic, EpicJobKind, Job, WorkingStage } from './job';
 import type { SettledSummary } from './state';
 import { chipLabel, time } from './time';
 
@@ -230,6 +234,8 @@ function chipsOf(reviews: Record<string, string>, reviewers: readonly string[], 
 
 export interface TokenModel {
   key: string;
+  helper: Exclude<EpicJobKind, 'member'> | null; // a generated job's tag: `sync` or `fix`
+  inEpic: string | null; // a member merged into its running epic's branch: the mark's tooltip and label
   kind: Kind;
   shape: Shape;
   label: string; // the kind's name, for screen readers
@@ -265,6 +271,19 @@ const tokenTime = (j: Job, kind: Kind, now: number): string | null => {
   return t > 0 ? shortAge(now - t) : null;
 };
 
+/** A generated job's tag (`sync` or `fix`), or null for a plan member or a standalone job. */
+export const helperOf = (j: Job): Exclude<EpicJobKind, 'member'> | null => (j.kind === 'sync' || j.kind === 'fix' ? j.kind : null);
+
+/**
+ * "Merged into factory/epic/<slug> · lands on <target> with the epic": a job in `merged` whose epic
+ * is known and isn't terminal (its merge is on the epic branch only). Null otherwise.
+ */
+export function inEpicOf(b: BoardJob): string | null {
+  const e = b.epic;
+  if (b.job.stage !== 'merged' || b.job.epic === null || e === undefined || isEpicTerminal(e)) return null;
+  return `Merged into ${b.job.target ?? e.branch} · lands on ${e.target} with the epic`;
+}
+
 /** One job's token. A merged or settled token is one line (number, title, time): no tag, chips, round, or note. */
 export function tokenOf(b: BoardJob, now: number): TokenModel {
   const j = b.job;
@@ -272,6 +291,8 @@ export function tokenOf(b: BoardJob, now: number): TokenModel {
   const merged = kind === 'merged' || kind === 'settled';
   return {
     key: b.key,
+    helper: helperOf(j),
+    inEpic: inEpicOf(b),
     kind,
     shape: SHAPES[kind],
     label: KIND_LABELS[kind],
@@ -289,6 +310,7 @@ export function tokenOf(b: BoardJob, now: number): TokenModel {
 export interface Popover {
   title: string;
   where: string; // "<project> · <id>"
+  epic?: string; // the job's epic, when it has one: its name, and "· sync job" or "· fix job" for a generated one
   stage: string;
   timeLabel: 'In stage' | 'Merged';
   time: string | null;
@@ -303,15 +325,18 @@ export function popoverOf(b: BoardJob, now: number): Popover {
   const kind = kindOf(b, now);
   const merged = kind === 'merged' || kind === 'settled';
   const max = j.maxRound ?? 2;
+  const helper = helperOf(j);
+  const inEpic = inEpicOf(b);
   return {
+    ...(b.epic === undefined ? {} : { epic: `${epicName(b.epic)}${helper !== null ? ` · ${helper} job` : ''}` }),
     title: j.title,
     where: `${b.project.name} · ${j.id}`,
-    stage: KIND_LABELS[kind],
+    stage: inEpic !== null ? 'Merged into the epic' : KIND_LABELS[kind],
     timeLabel: merged ? 'Merged' : 'In stage',
     time: sinceText(j, kind, now),
     round: `${j.round > 0 ? j.round : '—'} of ${max}`,
     rounds: chipRounds(j).map((r) => ({ round: r.round, chips: chipsOf(r.reviews, b.reviewers, kind === 'reviewing' && !r.past) })),
-    note: j.note !== '' ? j.note : null,
+    note: inEpic !== null ? [j.note, inEpic].filter((x) => x !== '').join(' · ') : j.note !== '' ? j.note : null,
   };
 }
 
@@ -334,17 +359,41 @@ export interface GutterMeta {
   settled: number; // the "N settled" link: the summary's count plus held jobs that settled on screen
 }
 
+/** An epic's dot: the project dots, plus green while it lands or after it landed. */
+export type EpicDot = LaneDot | 'green';
+
+/** The sub-lane gutter's three lines (design decision 9): the name and dot, the progress, and what the epic waits on. */
+export interface EpicGutter {
+  name: string;
+  dot: EpicDot;
+  state: string; // the state's label, for the dot's tooltip and screen readers
+  progress: string; // "3/6 merged · 2 running · 11h 40m"
+  waiting: { tone: 'red' | 'green' | null; text: string } | null; // "1 blocked on 052 · 1 queued", "Landing…", or red "Waiting on you: <note>"
+}
+
+/** An epic's sub-lane, directly under its project's lane. */
+export interface SubLane {
+  key: string; // `<pid>/<slug>`, the epic it opens
+  slug: string;
+  hot: boolean; // waiting on you: the gutter turns red
+  gutter: EpicGutter;
+  cells: Cell[]; // one per column, in COLUMNS order: only the epic's jobs
+  rows: number;
+}
+
 export interface Lane {
   project: { id: string; name: string };
   index: number; // registration order
-  idle: boolean; // no job that isn't settled
+  idle: boolean; // no job that isn't settled, and no epic on the board
+  header: boolean; // Needs Me shows the lane only for its sub-lanes: a collapsed one-line header
   tier: string; // the lane moves only when this changes
-  counts: { human: number; failed: number; active: number };
+  counts: { human: number; failed: number; active: number }; // every job of the project, its epics' included, plus each epic waiting on you
   dot: LaneDot; // the project's worst state, as the sidebar's dot
   state: LaneState;
   meta: GutterMeta;
-  cells: Cell[]; // one per column, in COLUMNS order
-  rows: number; // the lane's height in token rows; 0 for a collapsed idle lane
+  cells: Cell[]; // one per column, in COLUMNS order: the project's jobs that are in no shown epic
+  rows: number; // the lane's height in token rows; 0 for a collapsed idle lane or header
+  subs: SubLane[]; // its epics' sub-lanes, oldest start first
   lastMergeAt: number | null; // the later of the summary's lastMergedAt and any merge held on the board
   idleText: string; // "Idle · last merge 3d 12h ago"
 }
@@ -360,31 +409,13 @@ const newest = (a: BoardJob, b: BoardJob): number => {
   return t(b) - t(a) || a.key.localeCompare(b.key);
 };
 
-function laneOf(project: { id: string; name: string }, index: number, jobs: readonly BoardJob[], now: number, focused: boolean, summary: SettledSummary): Lane {
-  const kinds = new Map(jobs.map((b) => [b.key, kindOf(b, now)]));
-  const k = (b: BoardJob): Kind => kinds.get(b.key) ?? 'claimed';
-  const live = jobs.filter((b) => k(b) !== 'settled' && k(b) !== 'abandoned');
-  const active = live.filter((b) => k(b) !== 'merged');
-  const human = active.filter((b) => isHuman(k(b))).length;
-  const failed = active.filter((b) => k(b) === 'review-failed').length;
-  const settled = summary.count + jobs.filter((b) => k(b) === 'settled' || k(b) === 'abandoned').length;
-  const idle = live.length === 0;
-  const working = active.length - human;
-  const state: LaneState = human > 0 ? 'needs-human' : failed > 0 ? 'review-failed' : working > 0 ? 'active' : 'idle';
-
-  const claims = active.map((b) => b.job.startedAt).filter((s): s is string => s !== null).map(time);
-  const oldest = claims.length > 0 ? Math.min(...claims) : null;
-  const meta: GutterMeta = {
-    active: `${active.length} active${oldest !== null ? ` · ${age(now - oldest)}` : ''}`,
-    trouble: human > 0 ? { tone: 'red', text: `${human} at Andon` } : failed > 0 ? { tone: 'orange', text: `${failed} sent back` } : null,
-    settled,
-  };
-
-  const merges = [...jobs.filter((b) => b.job.stage === 'merged').map((b) => mergedAt(b.job)), summary.lastMergedAt === null ? 0 : time(summary.lastMergedAt)].filter((t) => t > 0);
-  const lastMergeAt = merges.length > 0 ? Math.max(...merges) : null;
-
-  const ghosts = active.map(ghostOf).filter((g): g is Ghost => g !== null);
-  const cells = COLUMNS.map((c): Cell => {
+/** The cells for a set of jobs: each column's tokens (newest first, capped unless focused) and the ghosts of needs-human jobs. */
+function cellsOf(live: readonly BoardJob[], k: (b: BoardJob) => Kind, now: number, focused: boolean): Cell[] {
+  const ghosts = live
+    .filter((b) => k(b) !== 'merged')
+    .map(ghostOf)
+    .filter((g): g is Ghost => g !== null);
+  return COLUMNS.map((c): Cell => {
     const sorted = live.filter((b) => columnOf(k(b)) === c.key).sort(newest);
     const shown = focused ? sorted : sorted.slice(0, CELL_CAP);
     return {
@@ -394,14 +425,131 @@ function laneOf(project: { id: string; name: string }, index: number, jobs: read
       ghosts: ghosts.filter((g) => g.column === c.key),
     };
   });
+}
+
+/** A lane's height in token rows: its fullest cell, plus one for a "+N more". */
+function rowsOf(cells: readonly Cell[]): number {
   const fullest = Math.max(0, ...cells.map((c) => c.tokens.length));
-  const overflow = cells.some((c) => c.more > 0);
-  const rows = idle && !focused ? 0 : Math.max(1, fullest + (overflow ? 1 : 0));
+  return Math.max(1, fullest + (cells.some((c) => c.more > 0) ? 1 : 0));
+}
+
+const EPIC_STATES: Record<string, string> = { running: 'Running', waiting: 'Waiting', landing: 'Landing', landed: 'Landed', abandoned: 'Abandoned' };
+
+/** An epic state's label: "Waiting on you" for an epic-level wait, "Waiting on members" for a derived one. */
+export function epicStateLabel(e: Pick<Epic, 'state' | 'waitingOn'>): string {
+  if (e.state === 'waiting') return e.waitingOn === 'you' ? 'Waiting on you' : 'Waiting on members';
+  return EPIC_STATES[e.state] ?? e.state;
+}
+
+/** An epic waiting on Matt for an epic-level reason. */
+const hotEpic = (e: Pick<Epic, 'waitingOn'>): boolean => e.waitingOn === 'you';
+
+/**
+ * The sub-lane gutter (AC3): the epic's name and dot; "N/M merged · K running · <elapsed since it
+ * started>"; and what it waits on: red "Waiting on you: <note>" when `waitingOn` is "you" (the dot
+ * turns red too), "Landing…" while it lands, else its blocked members by the job they wait on and
+ * its queued count. `jobs` are the epic's jobs on the board, which color the dot as a lane's jobs do.
+ */
+export function epicGutter(e: Epic, jobs: readonly BoardJob[], now: number): EpicGutter {
+  const kinds = jobs.map((b) => kindOf(b, now));
+  const merged = e.members.filter((m) => m.state === 'merged').length;
+  const running = e.members.filter((m) => m.state === 'running').length;
+  const started = e.startedAt === null ? 0 : time(e.startedAt);
+  const ended = e.endedAt === null ? now : time(e.endedAt);
+  const progress = [`${merged}/${e.members.length} merged`, `${running} running`, ...(started > 0 ? [age(ended - started)] : [])].join(' · ');
+
+  let waiting: EpicGutter['waiting'] = null;
+  if (hotEpic(e)) waiting = { tone: 'red', text: e.note !== '' ? `Waiting on you: ${e.note}` : 'Waiting on you' };
+  else if (e.state === 'landing') waiting = { tone: 'green', text: 'Landing…' };
+  else if (e.state === 'landed') waiting = { tone: 'green', text: e.sha !== null ? `Landed ${e.sha}` : 'Landed' };
+  else {
+    const on = new Map<string, number>();
+    for (const m of e.members) {
+      if (m.state !== 'blocked') continue;
+      const first = m.blockedOn[0];
+      const label = first === undefined ? '' : first.job !== null ? numOf(first.job) : first.member;
+      if (label !== '') on.set(label, (on.get(label) ?? 0) + 1);
+    }
+    const queued = e.members.filter((m) => m.state === 'queued').length;
+    const parts = [...[...on].map(([label, n]) => `${n} blocked on ${label}`), ...(queued > 0 ? [`${queued} queued`] : [])];
+    if (parts.length > 0) waiting = { tone: null, text: parts.join(' · ') };
+  }
+
+  const dot: EpicDot =
+    hotEpic(e) || kinds.some(isHuman)
+      ? 'red'
+      : e.state === 'landing' || e.state === 'landed'
+        ? 'green'
+        : kinds.includes('review-failed')
+          ? 'orange'
+          : e.state === 'running' || e.state === 'waiting'
+            ? 'blue'
+            : 'gray';
+  return { name: epicName(e), dot, state: epicStateLabel(e), progress, waiting };
+}
+
+/** Oldest start first, then by slug. */
+const byStart = (a: BoardEpic, b: BoardEpic): number => time(a.epic.startedAt) - time(b.epic.startedAt) || a.epic.slug.localeCompare(b.epic.slug);
+
+function laneOf(
+  project: { id: string; name: string },
+  index: number,
+  jobs: readonly BoardJob[],
+  now: number,
+  focused: boolean,
+  summary: SettledSummary,
+  epics: readonly BoardEpic[],
+  needs: boolean,
+): Lane {
+  const kinds = new Map(jobs.map((b) => [b.key, kindOf(b, now)]));
+  const k = (b: BoardJob): Kind => kinds.get(b.key) ?? 'claimed';
+  const isLive = (b: BoardJob): boolean => k(b) !== 'settled' && k(b) !== 'abandoned';
+  // Its epics on the board and not settled on screen, each with a sub-lane; their jobs leave the project's cells.
+  const shownEpics = epics.filter((e) => !isEpicSettled(e.epic, e.settleAfterHours, now)).sort(byStart);
+  const slugs = new Set(shownEpics.map((e) => e.epic.slug));
+  const inSub = (b: BoardJob): boolean => b.job.epic !== null && slugs.has(b.job.epic);
+
+  // The tier counts every job of the project, its epics' too, and each epic waiting on you.
+  const live = jobs.filter(isLive);
+  const active = live.filter((b) => k(b) !== 'merged');
+  const humanJobs = active.filter((b) => isHuman(k(b))).length;
+  const human = humanJobs + shownEpics.filter((e) => hotEpic(e.epic)).length;
+  const failed = active.filter((b) => k(b) === 'review-failed').length;
+  const idle = live.length === 0 && shownEpics.length === 0;
+  const working = active.length - humanJobs;
+  const state: LaneState = human > 0 ? 'needs-human' : failed > 0 ? 'review-failed' : working > 0 ? 'active' : 'idle';
+
+  // The gutter and the cells are the project's own jobs: those in no shown epic.
+  const ownLive = live.filter((b) => !inSub(b));
+  const ownActive = ownLive.filter((b) => k(b) !== 'merged');
+  const ownHuman = ownActive.filter((b) => isHuman(k(b))).length;
+  const ownFailed = ownActive.filter((b) => k(b) === 'review-failed').length;
+  const settled = summary.count + jobs.filter((b) => k(b) === 'settled' || k(b) === 'abandoned').length;
+  const claims = ownActive.map((b) => b.job.startedAt).filter((s): s is string => s !== null).map(time);
+  const oldest = claims.length > 0 ? Math.min(...claims) : null;
+  const meta: GutterMeta = {
+    active: `${ownActive.length} active${oldest !== null ? ` · ${age(now - oldest)}` : ''}`,
+    trouble: ownHuman > 0 ? { tone: 'red', text: `${ownHuman} at Andon` } : ownFailed > 0 ? { tone: 'orange', text: `${ownFailed} sent back` } : null,
+    settled,
+  };
+
+  const merges = [...jobs.filter((b) => b.job.stage === 'merged').map((b) => mergedAt(b.job)), summary.lastMergedAt === null ? 0 : time(summary.lastMergedAt)].filter((t) => t > 0);
+  const lastMergeAt = merges.length > 0 ? Math.max(...merges) : null;
+
+  const cells = cellsOf(ownLive, k, now, focused);
+  const subs = shownEpics.map((e): SubLane => {
+    const mine = jobs.filter((b) => b.job.epic === e.epic.slug);
+    const subCells = cellsOf(mine.filter(isLive), k, now, focused);
+    return { key: e.key, slug: e.epic.slug, hot: hotEpic(e.epic), gutter: epicGutter(e.epic, mine, now), cells: subCells, rows: rowsOf(subCells) };
+  });
+  const header = needs && ownLive.length === 0 && subs.length > 0;
+  const rows = (idle && !focused) || header ? 0 : rowsOf(cells);
 
   return {
     project,
     index,
     idle,
+    header,
     tier: `${idle ? 'idle' : 'live'}|${human}|${failed}`,
     counts: { human, failed, active: active.length },
     dot: LANE_DOTS[state],
@@ -409,6 +557,7 @@ function laneOf(project: { id: string; name: string }, index: number, jobs: read
     meta,
     cells,
     rows,
+    subs,
     lastMergeAt,
     idleText: lastMergeAt !== null ? `Idle · last merge ${age(now - lastMergeAt)} ago` : 'Idle · no merges yet',
   };
@@ -416,8 +565,11 @@ function laneOf(project: { id: string; name: string }, index: number, jobs: read
 
 /**
  * One lane per project, in registration order (`orderLanes` sorts them). `focused` is a single
- * focused project: its cells are uncapped. `summaries` are the projects' settled summaries (a
- * missing one is none); settled jobs never sit in a cell, focused or not.
+ * focused project: its cells, its sub-lanes' too, are uncapped. `summaries` are the projects'
+ * settled summaries (a missing one is none); settled jobs never sit in a cell, focused or not.
+ * `epics` are the board's epics: each unsettled one gets a sub-lane under its project's lane, oldest
+ * start first, holding its jobs (a job whose epic isn't among them stays in the project's cells).
+ * `needs` is Needs Me: a lane shown only for its sub-lanes collapses to a one-line header.
  */
 export function buildLanes(
   projects: ReadonlyArray<{ id: string; name: string }>,
@@ -425,8 +577,21 @@ export function buildLanes(
   now: number,
   focused: boolean,
   summaries: Readonly<Record<string, SettledSummary>> = {},
+  epics: readonly BoardEpic[] = [],
+  needs = false,
 ): Lane[] {
-  return projects.map((p, i) => laneOf({ id: p.id, name: p.name }, i, jobs.filter((b) => b.project.id === p.id), now, focused, summaries[p.id] ?? { count: 0, lastMergedAt: null }));
+  return projects.map((p, i) =>
+    laneOf(
+      { id: p.id, name: p.name },
+      i,
+      jobs.filter((b) => b.project.id === p.id),
+      now,
+      focused,
+      summaries[p.id] ?? { count: 0, lastMergedAt: null },
+      epics.filter((e) => e.project.id === p.id),
+      needs,
+    ),
+  );
 }
 
 /** §5 lane order: non-idle first, then more needs-human, more review-failed, more active, then registration order. */
@@ -467,19 +632,23 @@ export interface Header {
   columns: Array<ColumnInfo & { count: number }>;
 }
 
-/** The sticky header: the gutter's "N active · M idle", and each column's job count and role. Merged's role uses the smallest settleAfterHours shown. */
+/**
+ * The sticky header: the gutter's "N active · M idle", and each column's job count and role, sub-lanes
+ * included; the Andon count adds each epic waiting on you. Merged's role uses the smallest settleAfterHours shown.
+ */
 export function headerOf(lanes: readonly Lane[], settleHours: readonly number[]): Header {
   const idle = lanes.filter((l) => l.idle).length;
   const hours = settleHours.length > 0 ? Math.min(...settleHours) : 24;
+  const size = (cell: Cell | undefined): number => (cell === undefined ? 0 : cell.tokens.length + cell.more);
   return {
     corner: `${lanes.length - idle} active · ${idle} idle`,
     columns: COLUMNS.map((c, i) => ({
       ...c,
       who: c.key === 'merged' ? (hours === 1 ? 'last hour' : `last ${hours} hours`) : c.who,
-      count: lanes.reduce((n, l) => {
-        const cell = l.cells[i];
-        return n + (cell === undefined ? 0 : cell.tokens.length + cell.more);
-      }, 0),
+      count: lanes.reduce(
+        (n, l) => n + size(l.cells[i]) + l.subs.reduce((m, sub) => m + size(sub.cells[i]) + (c.key === 'andon' && sub.hot ? 1 : 0), 0),
+        0,
+      ),
     })),
   };
 }

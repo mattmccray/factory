@@ -1,13 +1,27 @@
 // The Mac app's view of the service: the registered projects and each one's last board, narrowed from
 // the service's JSON (docs/contract/v1.md "Andon service"). A tolerant reader: it keeps only the job
 // fields the tray and notifications use and ignores everything else. Every update returns a new
-// state. Runtime-neutral, and independent of the contract package and the UI.
+// state. Runtime-neutral, and independent of the contract package and the UI. Epics: each job's
+// `epic`, and each board's `epics` (their slug, state, waitingOn, note, member count, and `title` when
+// the payload carries one), read here without the contract code.
 
 export interface AppJob {
   id: string;
   title: string;
   stage: string;
   note: string;
+  /** The slug of the epic the job runs in; absent for a standalone job. */
+  epic?: string;
+}
+
+/** An epic, as the tray and notifications read it. */
+export interface AppEpic {
+  slug: string;
+  name: string; // its `title` when the payload carries a non-empty one, else its slug
+  state: string; // running, waiting, landing, landed, abandoned, or a state a later v1 adds
+  waitingOn: string | null; // 'you' when it waits on a human for an epic-level reason
+  note: string;
+  members: number; // how many plan members it has
 }
 
 export interface AppProject {
@@ -19,6 +33,8 @@ export interface AppProject {
 
 export interface AppBoard {
   jobs: AppJob[];
+  /** The board's epics; absent or empty: none. */
+  epics?: AppEpic[];
   error: string | null; // `config.json: <reason>` while the project's config is bad
   rev: number; // bumped by every board or error, so a slower fetch can't overwrite a newer event
 }
@@ -40,10 +56,37 @@ export function toJobs(v: unknown): AppJob[] {
   if (!Array.isArray(v)) return out;
   for (const j of v) {
     if (!isRecord(j) || typeof j.id !== 'string' || typeof j.stage !== 'string') continue;
-    out.push({ id: j.id, title: str(j.title), stage: j.stage, note: str(j.note) });
+    const job: AppJob = { id: j.id, title: str(j.title), stage: j.stage, note: str(j.note) };
+    if (typeof j.epic === 'string' && j.epic !== '') job.epic = j.epic;
+    out.push(job);
   }
   return out;
 }
+
+/** The epics of a board's `epics` array. A missing array is none; an entry without a non-empty string `slug` is skipped. */
+export function toEpics(v: unknown): AppEpic[] {
+  const out: AppEpic[] = [];
+  if (!Array.isArray(v)) return out;
+  for (const e of v) {
+    if (!isRecord(e) || typeof e.slug !== 'string' || e.slug === '') continue;
+    const title = str(e.title).trim();
+    out.push({
+      slug: e.slug,
+      name: title !== '' ? title : e.slug,
+      state: str(e.state),
+      waitingOn: typeof e.waitingOn === 'string' ? e.waitingOn : null,
+      note: str(e.note),
+      members: Array.isArray(e.members) ? e.members.length : 0,
+    });
+  }
+  return out;
+}
+
+/** The epics on a board (none when it has none). */
+export const epicsOf = (b: AppBoard | undefined): AppEpic[] => b?.epics ?? [];
+
+/** An epic waiting on a human for an epic-level reason. */
+export const waitsOnYou = (e: AppEpic): boolean => e.waitingOn === 'you';
 
 /** The project list of a `projects` payload, or null when it isn't one. A project without a
  *  non-empty string `root` is kept, with `root: null` (it gets no right-click menu). */
@@ -71,8 +114,8 @@ function withBoard(s: AppState, pid: string, next: (b: AppBoard) => AppBoard): A
   return { ...s, boards: { ...s.boards, [pid]: next(s.boards[pid] ?? emptyBoard()) } };
 }
 
-/** A project's new jobs; any config error clears. */
-export const setBoard = (s: AppState, pid: string, jobs: AppJob[]): AppState => withBoard(s, pid, (b) => ({ jobs, error: null, rev: b.rev + 1 }));
+/** A project's new jobs and epics; any config error clears. */
+export const setBoard = (s: AppState, pid: string, jobs: AppJob[], epics: AppEpic[] = []): AppState => withBoard(s, pid, (b) => ({ jobs, epics, error: null, rev: b.rev + 1 }));
 
 /** A project's config went bad: it keeps its last jobs and records the reason. */
 export const setError = (s: AppState, pid: string, reason: string): AppState => withBoard(s, pid, (b) => ({ ...b, error: reason, rev: b.rev + 1 }));

@@ -8,8 +8,8 @@ import { getJson, reason } from './http';
 import type { Http } from './http';
 import { createSseParser } from './sse';
 import type { SseEvent } from './sse';
-import { emptyState, isListed, isRecord, revOf, setBoard, setError, setProjects, toJobs, toProjects } from './state';
-import type { AppJob, AppProject, AppState } from './state';
+import { emptyState, isListed, isRecord, revOf, setBoard, setError, setProjects, toEpics, toJobs, toProjects } from './state';
+import type { AppEpic, AppJob, AppProject, AppState } from './state';
 
 export const RECONNECT_MS = 3000;
 
@@ -22,8 +22,8 @@ export interface FollowHandlers {
   onDown?(why: string): void;
   /** A `projects` event replaced the list. */
   onProjects?(projects: AppProject[]): void;
-  /** A project's board was applied (from a `board` event or its fetch). */
-  onBoard?(pid: string, jobs: AppJob[]): void;
+  /** A project's board was applied (from a `board` event or its fetch): its jobs and its epics. */
+  onBoard?(pid: string, jobs: AppJob[], epics: AppEpic[]): void;
   /** The state changed. */
   onState?(s: AppState): void;
 }
@@ -53,22 +53,22 @@ export function startFollow(opts: FollowHandlers & { http: Http; retryMs?: numbe
     opts.onState?.(state);
     return true;
   };
-  const board = (pid: string, jobs: AppJob[]): void => {
-    if (set(setBoard(state, pid, jobs))) opts.onBoard?.(pid, jobs);
+  const board = (pid: string, jobs: AppJob[], epics: AppEpic[]): void => {
+    if (set(setBoard(state, pid, jobs, epics))) opts.onBoard?.(pid, jobs, epics);
   };
 
   async function load(pid: string): Promise<void> {
     const rev = revOf(state, pid);
-    let result: { ok: true; jobs: AppJob[] } | { ok: false; reason: string };
+    let result: { ok: true; jobs: AppJob[]; epics: AppEpic[] } | { ok: false; reason: string };
     try {
       const data = await getJson(opts.http, boardPath(pid));
-      result = { ok: true, jobs: toJobs(isRecord(data) ? data.jobs : null) };
+      result = { ok: true, jobs: toJobs(isRecord(data) ? data.jobs : null), epics: toEpics(isRecord(data) ? data.epics : null) };
     } catch (e) {
       result = { ok: false, reason: reason(e) };
     }
     // An event for this project since the request was sent is newer than this answer.
     if (stopped || !isListed(state, pid) || revOf(state, pid) !== rev) return;
-    if (result.ok) board(pid, result.jobs);
+    if (result.ok) board(pid, result.jobs, result.epics);
     else set(setError(state, pid, result.reason));
   }
 
@@ -86,7 +86,7 @@ export function startFollow(opts: FollowHandlers & { http: Http; retryMs?: numbe
       return;
     }
     if (!isRecord(data) || typeof data.project !== 'string' || !isListed(state, data.project)) return;
-    if (e.event === 'board') board(data.project, toJobs(data.jobs));
+    if (e.event === 'board') board(data.project, toJobs(data.jobs), toEpics(data.epics));
     else if (e.event === 'error') set(setError(state, data.project, typeof data.reason === 'string' ? data.reason : 'config.json: unreadable'));
     // any other event type is ignored (docs/contract/v1.md "Versioning": readers are tolerant)
   }
