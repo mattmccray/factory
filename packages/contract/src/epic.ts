@@ -550,18 +550,17 @@ export function isEpicSettled(epic: SettleEpic, hours: number, now: Date | numbe
 }
 
 /**
- * The epic-aware settle rule. A job with no epic: `abandoned` at once, `merged` once its `endedAt`
- * is more than `hours` old (the contract's settle rule). A job with an epic is never settled while
- * the epic isn't terminal (`epic` is its epic's facts; null or absent: unknown, so not settled);
- * once it is, an `abandoned` job is settled at once and a `merged` one when the epic is (by the
- * epic's `endedAt`). Every other stage is unsettled.
+ * The epic-aware settle rule. An `abandoned` job is settled at once, with or without an epic,
+ * whatever its epic's state. A `merged` job with no epic settles once its `endedAt` is more than
+ * `hours` old (the contract's settle rule). A `merged` job with an epic is never settled while the
+ * epic isn't terminal (`epic` is its epic's facts; null or absent: unknown, so not terminal); once
+ * it is, the job settles when the epic does (by the epic's `endedAt`). Every other stage is
+ * unsettled.
  */
 export function isSettled(job: SettleJob, hours: number, now: Date | number, epic?: SettleEpic | null): boolean {
-  if (job.epic === undefined || job.epic === null) {
-    if (job.stage === 'abandoned') return true;
-    return job.stage === 'merged' && endedBefore(job.endedAt, hours, now);
-  }
-  if (epic === undefined || epic === null || (epic.state !== 'landed' && epic.state !== 'abandoned')) return false;
   if (job.stage === 'abandoned') return true;
-  return job.stage === 'merged' && isEpicSettled(epic, hours, now);
+  if (job.stage !== 'merged') return false;
+  if (job.epic === undefined || job.epic === null) return endedBefore(job.endedAt, hours, now);
+  if (epic === undefined || epic === null || (epic.state !== 'landed' && epic.state !== 'abandoned')) return false;
+  return isEpicSettled(epic, hours, now);
 }

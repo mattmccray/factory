@@ -245,17 +245,27 @@ describe('the epic-aware settle rule (AC7)', () => {
   });
   test('a standalone job: the contract rule, unchanged', () => {
     expect(isSettled({ stage: 'abandoned', endedAt: fresh }, H, now)).toBe(true);
+    expect(isSettled({ stage: 'abandoned', endedAt: null, epic: null }, H, now)).toBe(true);
+    expect(isSettled({ stage: 'merged', endedAt: null }, H, now)).toBe(false);
     expect(isSettled({ stage: 'merged', endedAt: old, epic: null }, H, now)).toBe(true);
     expect(isSettled({ stage: 'merged', endedAt: fresh }, H, now)).toBe(false);
     expect(isSettled({ stage: 'merged', endedAt: 'garbage' }, H, now)).toBe(false);
     expect(isSettled({ stage: 'needs-human', endedAt: null }, H, now)).toBe(false);
   });
-  test('a member of a running epic is never settled; once it lands, members settle by the epic endedAt', () => {
+  test('an abandoned member settles at once, whatever its epic state', () => {
+    const gone = { stage: 'abandoned', endedAt: fresh, epic: 'e' };
+    expect(isSettled(gone, H, now, { state: 'running', endedAt: null })).toBe(true);
+    expect(isSettled(gone, H, now, { state: 'waiting', endedAt: null })).toBe(true);
+    expect(isSettled(gone, H, now, null)).toBe(true);
+    expect(isSettled(gone, H, now)).toBe(true);
+    expect(isSettled(gone, H, now, { state: 'landed', endedAt: fresh })).toBe(true);
+    expect(isSettled(gone, H, now, { state: 'abandoned', endedAt: fresh })).toBe(true);
+  });
+  test('a merged member of a running epic is never settled; once it lands, members settle by the epic endedAt', () => {
     const member = { stage: 'merged', endedAt: old, epic: 'e' };
     expect(isSettled(member, H, now, { state: 'running', endedAt: null })).toBe(false);
     expect(isSettled(member, H, now, { state: 'waiting', endedAt: null })).toBe(false);
     expect(isSettled(member, H, now, null)).toBe(false);
-    expect(isSettled({ ...member, stage: 'abandoned' }, H, now, { state: 'running', endedAt: null })).toBe(false);
     expect(isSettled(member, H, now, { state: 'landed', endedAt: fresh })).toBe(false);
     expect(isSettled({ ...member, endedAt: fresh }, H, now, { state: 'landed', endedAt: old })).toBe(true);
     expect(isSettled(member, H, now, { state: 'abandoned', endedAt: fresh })).toBe(true);
