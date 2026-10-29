@@ -963,3 +963,52 @@ describe('archived jobs (job 047)', () => {
     client.close();
   });
 });
+
+// --- Jobs removed by `factory prune` (job 048) ---
+
+// The source CLI's process entry; it finds the factory at `<cwd>/factory`.
+const CLI_MAIN = join(import.meta.dir, '..', '..', 'cli', 'src', 'main.ts');
+
+async function factoryCli(root: string, args: string[]): Promise<{ code: number; out: string; err: string }> {
+  const env = testEnv({ ANDON_HOME: join(tmp, 'andon-home') });
+  const p = Bun.spawn([process.execPath, CLI_MAIN, ...args], { cwd: root, env, stdout: 'pipe', stderr: 'pipe' });
+  const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+  return { code, out, err };
+}
+
+describe('pruned jobs (job 048)', () => {
+  test('AC5: a job removed by prune is still on the board, projected from its archived events.jsonl, and its id is not reused', async () => {
+    const root = await makeRepoProject('alpha', ['001-live-job', '002-pruned-job']);
+    gitFx(root, ['config', 'user.name', 'andon-test']);
+    gitFx(root, ['config', 'user.email', 'test@example.invalid']);
+    gitFx(root, ['config', 'commit.gpgsign', 'false']);
+    const factory = join(root, 'factory');
+    await writeFile(join(factory, 'config.json'), JSON.stringify({ ...CONFIG, archive: { enabled: true } }));
+    await fleshOut(root, '002-pruned-job');
+    await appendEvent(factory, '002-pruned-job', parseEventInput('job.abandoned', { reason: 'not needed' }), undefined, { force: true });
+    const local = await readJson(join(factory, 'jobs', '002-pruned-job', 'job.json'));
+    expect(field(local, 'stage')).toBe('abandoned');
+
+    expect((await factoryCli(root, ['archive', '--all'])).code).toBe(0);
+    const pruned = await factoryCli(root, ['prune']);
+    expect(pruned).toEqual({
+      code: 0,
+      out: 'kept 001-live-job: not merged or abandoned (claimed)\npruned 002-pruned-job\nprune: removed 1, kept 1, failed 0\n',
+      err: '',
+    });
+    expect(await Bun.file(join(factory, 'jobs', '002-pruned-job', 'events.jsonl')).exists()).toBe(false);
+
+    await addRoot(registry, root);
+    const { url } = await start();
+    const pid = projectId(root);
+    const board = await getJson(`${url}/projects/${pid}/board`);
+    expect(idsOf(board.body)).toEqual(['001-live-job', '002-pruned-job']);
+    // Served from the archive (the dir is gone), as the CLI projected it before the prune.
+    expect(jobOf(board.body, '002-pruned-job')).toEqual(local);
+    const docs = field((await getJson(`${url}/projects/${pid}/jobs/002-pruned-job/docs`)).body, 'files');
+    expect(Array.isArray(docs) ? docs.map((f) => field(f, 'path')) : null).toContain('jobs/002-pruned-job/spec.md');
+
+    // The next claim's number is above the pruned id.
+    expect(await factoryCli(root, ['claim', 'after-prune'])).toEqual({ code: 0, out: '003-after-prune\n', err: '' });
+  });
+});

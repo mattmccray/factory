@@ -80,6 +80,7 @@ export interface LocalJob {
   stage: string | null; // null: unreadable
   claimed: { id: string; ts: string } | null; // the log's job.claimed, when it has one
   mergedSha: string | null; // the last job.merged sha, when there is one
+  endedAt: string | null; // the job.merged or job.abandoned time (a legacy job: its job.json's), else null
 }
 
 // `lstat`, so a symlinked job dir is never followed.
@@ -102,7 +103,8 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-async function legacyStage(dir: string): Promise<string | null> {
+// A legacy job's stage and `endedAt`, from its job.json; null when it has no readable stage.
+async function legacySnapshot(dir: string): Promise<{ stage: string; endedAt: string | null } | null> {
   let raw: unknown;
   try {
     raw = JSON.parse(await readFile(join(dir, 'job.json'), 'utf8'));
@@ -110,7 +112,8 @@ async function legacyStage(dir: string): Promise<string | null> {
     return null;
   }
   if (typeof raw !== 'object' || raw === null || !('stage' in raw) || typeof raw.stage !== 'string') return null;
-  return raw.stage;
+  const endedAt = 'endedAt' in raw && typeof raw.endedAt === 'string' ? raw.endedAt : null;
+  return { stage: raw.stage, endedAt };
 }
 
 /** Reads `jobs/<id>/` under `root` (the factory/ directory). The id is checked before any path is built. */
@@ -125,9 +128,9 @@ export async function readLocalJob(root: string, id: string): Promise<LocalJob> 
   // Legacy means no events.jsonl at all; an empty one is a broken log, not a legacy job.
   if (log.length === 0 && (await exists(join(dir, 'events.jsonl')))) throw new Error(`${id}: events.jsonl is empty; not archived`);
   if (log.length === 0) {
-    const stage = await legacyStage(dir);
-    if (stage === null) throw new Error(`${id}: no events.jsonl and no readable job.json; not archived`);
-    return { id, dir, legacy: true, stage, claimed: null, mergedSha: null };
+    const snap = await legacySnapshot(dir);
+    if (snap === null) throw new Error(`${id}: no events.jsonl and no readable job.json; not archived`);
+    return { id, dir, legacy: true, stage: snap.stage, claimed: null, mergedSha: null, endedAt: snap.endedAt };
   }
   const [first] = log;
   if (first === undefined || first.type !== 'job.claimed') throw new Error(`${id}: events.jsonl does not start with job.claimed; not archived`);
@@ -135,7 +138,8 @@ export async function readLocalJob(root: string, id: string): Promise<LocalJob> 
   let mergedSha: string | null = null;
   for (const e of log) if (e.type === 'job.merged') mergedSha = e.sha;
   // The stage comes from the log (the truth), never from job.json.
-  return { id, dir, legacy: false, stage: project(log).stage, claimed, mergedSha };
+  const snap = project(log);
+  return { id, dir, legacy: false, stage: snap.stage, claimed, mergedSha, endedAt: snap.endedAt };
 }
 
 export const isTerminal = (job: LocalJob): boolean => job.stage === 'merged' || job.stage === 'abandoned';
@@ -183,15 +187,42 @@ function alternate(path: string): string {
 }
 
 // Builds the job's tree in a scratch object directory (the repo's objects are read through it as
-// an alternate), so comparing it with the archive writes nothing to the repo.
-async function trialTree(repo: string, job: LocalJob): Promise<string> {
+// an alternate), so comparing it with the archive writes nothing to the repo. Null: no files.
+async function scratchTree(repo: string, job: LocalJob): Promise<string | null> {
   const objects = (await git(repo, ['rev-parse', '--path-format=absolute', '--git-path', 'objects'])).out;
   const scratch = await mkdtemp(join(tmpdir(), 'factory-archive-'));
   try {
-    return await jobTree(repo, job, { GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternate(objects) });
+    return await buildTree(repo, job.dir, true, job.legacy, { GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternate(objects) });
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
+}
+
+async function trialTree(repo: string, job: LocalJob): Promise<string> {
+  const sha = await scratchTree(repo, job);
+  if (sha === null) throw new Error(`${job.id}: nothing to archive (no files)`);
+  return sha;
+}
+
+/**
+ * The tree ids of the job dirs on the `factory/archive` tip, by job id: its top-level directories
+ * named like a job id. Empty when the branch is missing. Reads the local branch only; never fetches.
+ */
+export async function archivedTrees(repo: string): Promise<Map<string, string>> {
+  const tip = await archiveTip(repo);
+  const out = new Map<string, string>();
+  if (tip === null) return out;
+  for (const e of await lsTree(repo, tip)) if (e.type === 'tree' && isJobId(e.name)) out.set(e.name, e.sha);
+  return out;
+}
+
+/**
+ * Whether the tree built from the local job dir, with the file set `archive` copies, equals the
+ * archived tree `archived`, byte for byte. Writes no git object (the tree is built in a scratch
+ * object directory). A dir with no files to copy never matches.
+ */
+export async function matchesArchived(repo: string, job: LocalJob, archived: string): Promise<boolean> {
+  return (await scratchTree(repo, job)) === archived;
 }
 
 // The archived job's `job.claimed` id and ts, read from `<id>/events.jsonl` on the branch.
