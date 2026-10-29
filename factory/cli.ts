@@ -1053,7 +1053,7 @@ async function locate(repo, rel) {
 }
 
 // packages/cli/src/archive.ts
-var ARCHIVE_BRANCH = "factory/jobs";
+var ARCHIVE_BRANCH = "factory/archive";
 var ARCHIVE_REF = `refs/heads/${ARCHIVE_BRANCH}`;
 var WHAT = "archive";
 var MAX_ATTEMPTS = 50;

@@ -39,7 +39,7 @@ factory/
 ```
 
 When archiving is on, `factory archive` also copies each `merged` or `abandoned` job to the
-orphan branch `factory/jobs` in the same repo (see "Job archive"). That branch is history, not
+orphan branch `factory/archive` in the same repo (see "Job archive"). That branch is history, not
 state: the job dirs under `jobs/` stay the live, local, gitignored copy.
 
 Job id: `^\d{3}-[a-z0-9-]+$` (three-digit sequence + kebab slug). The CLI checks it before
@@ -49,12 +49,12 @@ Job ids are handed out by the CLI only, by `claim <slug>` (see "CLI"); an orches
 computes one. A **slug** (a job's dir name with the `NNN-` prefix removed) must match
 `^[a-z0-9]+(-[a-z0-9]+)*$` and be at most 40 characters ("2–4 words" is the skill's guidance, not
 a CLI rule). The number is the highest number among the job dirs **and the job ids archived on
-the `factory/jobs` branch** + 1 (`001` when there are none);
+the `factory/archive` branch** + 1 (`001` when there are none);
 gaps are never filled, and once `999` is taken `claim` refuses. Only `jobs/` entries that are
 directories named like a job id count; `.claim.lock` and other stray entries are ignored. On the
 branch, only its tip's top-level directories named like a job id count. The branch is read
 whenever it exists, whatever `archive` says in `config.json`, so turning archiving off never
-reuses a number; with no `factory/jobs` branch the number is exactly the job-dir rule's.
+reuses a number; with no `factory/archive` branch the number is exactly the job-dir rule's.
 *(Added within v1, additively: with no archive branch nothing changes.)*
 **Uniqueness:** every claim takes its number under `jobs/.claim.lock` (see the "Concurrency" paragraph in
 "CLI"), so no two claims, from any number of sessions or processes, get the same number. Job dirs
@@ -106,7 +106,7 @@ reports each such number as a `note`.
   that use it; anything else is an error. The CLI resolves it once per job, at `claim`, and records it on `job.claimed` (see
   "`events.jsonl`"), so changing `merge.target` affects only jobs claimed afterward. A branch
   literally named `current` can't be targeted: the value always means the checkout's branch.
-- `archive` — optional. Whether `factory archive` copies terminal jobs to the `factory/jobs`
+- `archive` — optional. Whether `factory archive` copies terminal jobs to the `factory/archive`
   branch (see "Job archive"): an object holding only `enabled`, which is required and is `true`
   or `false`. Any other shape (not an object, `enabled` missing or not a boolean) or any other key
   inside `archive` is an error. No `archive` key, or `"enabled": false`, means off: `factory
@@ -433,7 +433,7 @@ bun factory/cli.ts event <id> <type> [field=value …]   # validate, append, reb
 bun factory/cli.ts rebuild <id> | --all                # regenerate job.json from the log
 bun factory/cli.ts show <id>                           # human-readable timing summary
 bun factory/cli.ts abandon <id> "<reason>" [--force] [--delete-branch]  # close a job for good
-bun factory/cli.ts archive <id> | --all [--force]      # copy terminal jobs to the factory/jobs branch
+bun factory/cli.ts archive <id> | --all [--force]      # copy terminal jobs to the factory/archive branch
 bun factory/cli.ts doctor                              # validate config.json, verify managed hashes, note duplicate job numbers
 factory init [--force]                                 # (source only) install the managed core
 factory upgrade [--force]                              # (source only) replace the managed core
@@ -452,7 +452,7 @@ fields (`brief`, `issue`, `maxRound`, `session` only, `session` checked as "Sess
 "`events.jsonl`" says; a caller-supplied `target`, `id`, or anything else is
 an extra field); resolves `target` from `merge.target` with git (see "`events.jsonl`"); then,
 holding `jobs/.claim.lock`, scans the job dirs, refuses the slug when a **live** job already has
-it, reads the `factory/jobs` branch's job ids when the branch exists (one `git ls-tree`, under the
+it, reads the `factory/archive` branch's job ids when the branch exists (one `git ls-tree`, under the
 same lock; a git failure here refuses the claim), picks the next number (the highest among both
 + 1; refused once `999` is taken), and appends `job.claimed`
 for `<NNN>-<slug>` through the per-job path (so `jobs/<id>/.events.lock` nests inside
@@ -489,7 +489,7 @@ with `usage: abandon <id> "<reason>" [--force] [--delete-branch]`, and nothing i
 `abandon` never stops a running agent session; the skill asks the user to confirm the session
 is stopped before it passes `--force`. *(Added within v1, additively: a new command.)*
 
-`archive <id> | --all [--force]` copies a finished job's record to the `factory/jobs` branch (see
+`archive <id> | --all [--force]` copies a finished job's record to the `factory/archive` branch (see
 "Job archive"). In order, it: checks the arguments (`<id>` or `--all`, and `--force` at most
 once, in any order; anything else exits 1 with `usage: archive <id> | --all [--force]`); refuses
 when archiving is off (no `archive` key, or `"enabled": false`), with one line saying archiving
@@ -525,7 +525,7 @@ and exits 1 when any job failed. Every refusal exits 1, moves no ref, and writes
 started (a lost compare-and-swap race, giving up after 50 tries, or any other `update-ref`
 failure) is not a refusal: it moves no ref, but it may leave unreachable objects, which `git gc`
 removes. `archive` reads only the local
-`factory/jobs` branch: it never fetches, never pushes, and never touches the main checkout's
+`factory/archive` branch: it never fetches, never pushes, and never touches the main checkout's
 working tree, index, or `HEAD`. The CLI never archives on its own: `event` and `abandon` have
 no archive side effects; the skill runs `archive` after `job.merged` and after `abandon`.
 *(Added within v1, additively: a new command.)*
@@ -563,9 +563,9 @@ The same source always bundles to the same bytes. It does not offer `init` or `u
 run from the factory's source against a project, as the linked `factory init` with the project
 root as the cwd.
 
-### Job archive — the `factory/jobs` branch
+### Job archive — the `factory/archive` branch
 
-The archive is the orphan branch `factory/jobs` (`refs/heads/factory/jobs`) in the project's own
+The archive is the orphan branch `factory/archive` (`refs/heads/factory/archive`) in the project's own
 repo. It shares no history with any target branch, and it sits beside job branches
 `refs/heads/factory/<id>` without a ref conflict, since job ids start with three digits. Its tip's
 tree holds one top-level directory per archived job and nothing else:
@@ -593,7 +593,7 @@ merged legacy job has no log, so no `Merged-As`). The ref
 moves only by `git update-ref <ref> <new> <old>` with the tip it built on as the old value (a
 compare-and-swap; the empty value when creating the branch); on a lost race it rereads the tip
 and starts over, so concurrent archivers never lose each other's jobs. Writing the archive
-never uses an index or a checkout. Pushing `factory/jobs` is always a human decision.
+never uses an index or a checkout. Pushing `factory/archive` is always a human decision.
 
 ### `init` and `upgrade`
 
@@ -779,9 +779,19 @@ These rules record how the code behaves today; they change no behavior.
   `session: null`.
 - **2026-10-28: the job archive.** Additive within v1 (the brief `job-archive`'s contract calls,
   approved 2026-10-28): the optional `config.json` key `archive: { enabled: boolean }` (absent
-  means off); the `factory/jobs` branch, its tree layout, and the new `archive` command; and job
-  numbers that count the branch's top-level job ids as well as the job dirs. With no archive
+  means off); the archive branch (named `factory/jobs` until the 2026-10-29 rename below), its
+  tree layout, and the new `archive` command; and job numbers that count the branch's top-level job ids as well as the job dirs. With no archive
   branch, `claim` picks the same number as before; no event, snapshot field, or transition
   changes.
+- **2026-10-29: the job archive branch is renamed `factory/archive`.** The brief
+  `archive-branch-rename`'s contract call, approved by Matt on 2026-10-29: the archive branch
+  added on 2026-10-28 moves from `factory/jobs` (`refs/heads/factory/jobs`) to `factory/archive`
+  (`refs/heads/factory/archive`), because a bare `git log factory/jobs` is ambiguous beside every
+  project's `factory/jobs/` directory. It is not additive: it renames a v1 addition that was never
+  released or used outside this repo, and it sets no general pre-1.0 policy. Nothing reads or
+  writes a `factory/jobs` branch anymore, and there is no fallback or migration (an existing one
+  is ignored; rename it by hand with `git branch -m factory/jobs factory/archive`). The
+  `factory/jobs/` directory, the tree layout, the commit message and trailers, and the `archive`
+  key are unchanged.
 - **`config.json` is strict, so upgrade first.** A config that uses a newer v1 key needs a CLI that
   knows that key. Upgrade the managed files before adding the key to the overlay.
