@@ -127,13 +127,19 @@ describe('usage and show (AC3)', () => {
 
   test('usage lines: every command, and both top-level lines list claim (AC7)', () => {
     expect(USAGE).toEqual({
-      claim: 'usage: claim <slug> [brief=…] [issue=…] [maxRound=…] [session=t3code:<environmentId>/<threadId>]',
+      claim: 'usage: claim <slug> [brief=…] [issue=…] [maxRound=…] [session=t3code:<environmentId>/<threadId>] [epic=<slug> [kind=member|sync|fix]]',
       event: 'usage: event <id> <type> [field=value …]',
       rebuild: 'usage: rebuild <id> | --all',
       show: 'usage: show <id>',
       abandon: 'usage: abandon <id> "<reason>" [--force] [--delete-branch]',
       archive: 'usage: archive <id> | --all [--force]',
       prune: 'usage: prune',
+      epic: 'usage: epic start|event|next|show|abandon <slug> …',
+      epicStart: 'usage: epic start <slug> [session=t3code:<environmentId>/<threadId>]',
+      epicEvent: 'usage: epic event <slug> <type> [field=value …]',
+      epicNext: 'usage: epic next <slug>',
+      epicShow: 'usage: epic show <slug>',
+      epicAbandon: 'usage: epic abandon <slug> "<reason>" [--force] [--delete-branch]',
       all: 'usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id>',
       init: 'usage: init [--force]',
       upgrade: 'usage: upgrade [--force]',

@@ -1,11 +1,13 @@
 // The job archive (docs/contract/v1.md "Job archive"): `factory archive` copies a terminal job's
 // files to the orphan branch `factory/archive`, one top-level `<id>/` dir per job, with git plumbing
 // only. It never touches the main checkout's working tree, index, or HEAD, never fetches, and
-// never pushes. `archivedIds` lists the branch's job ids for `claim`.
+// never pushes. `archivedIds` lists the branch's job ids for `claim`. A terminal epic is archived
+// under `epics/<slug>/` on the same branch, which no job id can collide with.
 import { lstat, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isJobId, project, readLog } from '@factory/contract';
+import { checkEpicSlug, isEpicSlug, isJobId, loggedEpicState, parseEpicLog, project, readEpicLog, readLog } from '@factory/contract';
+import type { EpicEvent, LoggedEpicState } from '@factory/contract';
 import { runGit } from './git';
 import type { GitOptions, GitResult } from './git';
 import { isNotFound } from './paths';
@@ -81,6 +83,7 @@ export interface LocalJob {
   claimed: { id: string; ts: string } | null; // the log's job.claimed, when it has one
   mergedSha: string | null; // the last job.merged sha, when there is one
   endedAt: string | null; // the job.merged or job.abandoned time (a legacy job: its job.json's), else null
+  epic: string | null; // the epic the job was claimed into (job.claimed's `epic`); null: standalone or legacy
 }
 
 // `lstat`, so a symlinked job dir is never followed.
@@ -130,7 +133,7 @@ export async function readLocalJob(root: string, id: string): Promise<LocalJob> 
   if (log.length === 0) {
     const snap = await legacySnapshot(dir);
     if (snap === null) throw new Error(`${id}: no events.jsonl and no readable job.json; not archived`);
-    return { id, dir, legacy: true, stage: snap.stage, claimed: null, mergedSha: null, endedAt: snap.endedAt };
+    return { id, dir, legacy: true, stage: snap.stage, claimed: null, mergedSha: null, endedAt: snap.endedAt, epic: null };
   }
   const [first] = log;
   if (first === undefined || first.type !== 'job.claimed') throw new Error(`${id}: events.jsonl does not start with job.claimed; not archived`);
@@ -139,7 +142,7 @@ export async function readLocalJob(root: string, id: string): Promise<LocalJob> 
   for (const e of log) if (e.type === 'job.merged') mergedSha = e.sha;
   // The stage comes from the log (the truth), never from job.json.
   const snap = project(log);
-  return { id, dir, legacy: false, stage: snap.stage, claimed, mergedSha, endedAt: snap.endedAt };
+  return { id, dir, legacy: false, stage: snap.stage, claimed, mergedSha, endedAt: snap.endedAt, epic: snap.epic };
 }
 
 export const isTerminal = (job: LocalJob): boolean => job.stage === 'merged' || job.stage === 'abandoned';
@@ -302,4 +305,183 @@ export async function localJobIds(root: string): Promise<string[]> {
     if (isNotFound(e)) return [];
     throw e;
   }
+}
+
+// ---- epics: `epics/<slug>/` on the same branch ----
+
+/** The archive branch's top-level dir holding archived epics (no job id starts with a letter). */
+export const EPICS_DIR = 'epics';
+
+/** A local epic dir, read for archiving. */
+export interface LocalEpic {
+  slug: string;
+  dir: string;
+  state: LoggedEpicState | null; // the logged state; landed and abandoned are terminal
+  started: { slug: string; ts: string };
+  landedSha: string | null; // the last epic.landed sha, when there is one
+  endedAt: string | null; // the epic.landed or epic.abandoned time
+  files: { name: string; path: string }[]; // what is archived: events.jsonl, and the plan as plan.md
+}
+
+/**
+ * Reads `jobs/epics/<slug>/` under `root` (the factory/ directory), and finds the plan copy at
+ * `epics/<slug>.md`. The slug is checked before any path is built. A missing plan is reported by
+ * `epicFiles`, so `prune` can still read the epic's state.
+ */
+export async function readLocalEpic(root: string, slug: string): Promise<LocalEpic> {
+  checkEpicSlug(slug);
+  const dir = join(root, 'jobs', 'epics', slug);
+  if (!(await isDir(dir))) {
+    if (await exists(dir)) throw new Error(`epic ${slug}: not a directory (a symlinked epic dir is never followed); not archived`);
+    throw new Error(`epic ${slug}: no such epic`);
+  }
+  const log = await readEpicLog(root, slug);
+  const [first] = log;
+  if (first === undefined) throw new Error(`epic ${slug}: no events.jsonl, or an empty one; not archived`);
+  if (first.type !== 'epic.started') throw new Error(`epic ${slug}: events.jsonl does not start with epic.started; not archived`);
+  let landedSha: string | null = null;
+  let endedAt: string | null = null;
+  for (const e of log) {
+    if (e.type === 'epic.landed') {
+      landedSha = e.sha;
+      endedAt = e.ts;
+    } else if (e.type === 'epic.abandoned') endedAt = e.ts;
+  }
+  return {
+    slug,
+    dir,
+    state: loggedEpicState(log),
+    started: { slug: first.slug, ts: first.ts },
+    landedSha,
+    endedAt,
+    files: [
+      { name: 'events.jsonl', path: join(dir, 'events.jsonl') },
+      { name: 'plan.md', path: join(root, 'epics', `${slug}.md`) },
+    ],
+  };
+}
+
+export const isEpicTerminal = (epic: { state: LoggedEpicState | null }): boolean => epic.state === 'landed' || epic.state === 'abandoned';
+
+// Every archived file must be a regular file (never a symlink); a missing plan refuses the archive.
+async function checkEpicFiles(epic: LocalEpic): Promise<void> {
+  for (const f of epic.files) {
+    let st;
+    try {
+      st = await lstat(f.path);
+    } catch (e) {
+      if (!isNotFound(e)) throw e;
+      if (f.name === 'plan.md') throw new Error(`epic ${epic.slug}: plan factory/epics/${epic.slug}.md is missing; not archived`);
+      throw new Error(`epic ${epic.slug}: ${f.name} is missing; not archived`);
+    }
+    if (!st.isFile()) throw new Error(`epic ${epic.slug}: ${f.name === 'plan.md' ? `plan factory/epics/${epic.slug}.md` : f.name} is not a regular file; not archived`);
+  }
+}
+
+async function filesTree(repo: string, files: readonly { name: string; path: string }[], env?: Record<string, string>): Promise<string> {
+  const shas = (await git(repo, ['hash-object', '-w', '--no-filters', '--', ...files.map((f) => f.path)], { env })).out.split('\n');
+  if (shas.length !== files.length) throw new Error(`${WHAT}: git hash-object returned ${shas.length} ids for ${files.length} files`);
+  return mkTree(repo, files.map((f, i) => ({ mode: '100644', type: 'blob', sha: shas[i] ?? '', name: f.name })), env);
+}
+
+// The epic's tree, built in a scratch object directory: comparing writes nothing to the repo.
+async function scratchEpicTree(repo: string, epic: LocalEpic): Promise<string> {
+  const objects = (await git(repo, ['rev-parse', '--path-format=absolute', '--git-path', 'objects'])).out;
+  const scratch = await mkdtemp(join(tmpdir(), 'factory-archive-'));
+  try {
+    return await filesTree(repo, epic.files, { GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternate(objects) });
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+/** The tree ids of the epics on the `factory/archive` tip, by slug (`epics/<slug>/`). Empty when none. */
+export async function archivedEpicTrees(repo: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const tip = await archiveTip(repo);
+  if (tip === null) return out;
+  const epics = (await lsTree(repo, tip)).find((e) => e.name === EPICS_DIR && e.type === 'tree');
+  if (epics === undefined) return out;
+  for (const e of await lsTree(repo, epics.sha)) if (e.type === 'tree' && isEpicSlug(e.name)) out.set(e.name, e.sha);
+  return out;
+}
+
+/** Whether the local epic (its events.jsonl and plan) equals the archived tree, byte for byte. Writes no git object. */
+export async function matchesArchivedEpic(repo: string, epic: LocalEpic, archived: string): Promise<boolean> {
+  await checkEpicFiles(epic);
+  return (await scratchEpicTree(repo, epic)) === archived;
+}
+
+/**
+ * The archived epic's log, read from `epics/<slug>/events.jsonl` on the `factory/archive` tip;
+ * null when it isn't there. Reads the local branch only.
+ */
+export async function archivedEpicLog(repo: string, slug: string): Promise<EpicEvent[] | null> {
+  checkEpicSlug(slug);
+  const tree = (await archivedEpicTrees(repo)).get(slug);
+  if (tree === undefined) return null;
+  const log = (await lsTree(repo, tree)).find((e) => e.name === 'events.jsonl' && e.type === 'blob');
+  if (log === undefined) return null;
+  return parseEpicLog((await git(repo, ['cat-file', 'blob', log.sha])).raw);
+}
+
+// The archived epic's `epic.started` slug and ts.
+async function archivedStart(repo: string, tree: string): Promise<{ slug: string; ts: string } | null> {
+  const log = (await lsTree(repo, tree)).find((e) => e.name === 'events.jsonl' && e.type === 'blob');
+  if (log === undefined) return null;
+  const first = (await git(repo, ['cat-file', 'blob', log.sha])).raw.split('\n')[0] ?? '';
+  let raw: unknown;
+  try {
+    raw = JSON.parse(first);
+  } catch {
+    return null;
+  }
+  if (typeof raw !== 'object' || raw === null || !('type' in raw) || raw.type !== 'epic.started') return null;
+  if (!('slug' in raw) || typeof raw.slug !== 'string' || !('ts' in raw) || typeof raw.ts !== 'string') return null;
+  return { slug: raw.slug, ts: raw.ts };
+}
+
+const describeStart = (s: { slug: string; ts: string } | null): string => (s === null ? 'no epic.started' : `epic.started slug=${s.slug} ts=${s.ts}`);
+
+/**
+ * Archives one local epic (which must be `landed` or `abandoned`) on `factory/archive` under
+ * `epics/<slug>/` (its `events.jsonl` and its plan as `plan.md`), with the jobs' rules: unchanged
+ * is a no-op, changed needs `force`, a different epic at the same slug is always refused, every
+ * refusal writes nothing, and the ref moves only by compare-and-swap.
+ */
+export async function archiveEpic(repo: string, epic: LocalEpic, force: boolean): Promise<ArchiveOutcome> {
+  const name = `epic ${epic.slug}`;
+  if (!isEpicTerminal(epic)) throw new Error(`${name} is ${epic.state ?? 'unreadable'}: only landed or abandoned epics are archived`);
+  if (epic.landedSha !== null && !HEX_SHA.test(epic.landedSha)) throw new Error(`${name}: epic.landed sha is not a hex commit id (${HEX_SHA.source}); not archived`);
+  await checkEpicFiles(epic);
+  let lastErr = '';
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const tip = await archiveTip(repo);
+    const top = tip === null ? [] : await lsTree(repo, tip);
+    const dir = top.find((e) => e.name === EPICS_DIR);
+    if (dir !== undefined && dir.type !== 'tree') throw new Error(`${name}: ${ARCHIVE_BRANCH} has ${EPICS_DIR} as a ${dir.type}, not a directory; nothing written`);
+    const sub = dir === undefined ? [] : await lsTree(repo, dir.sha);
+    const existing = sub.find((e) => e.name === epic.slug);
+    if (existing !== undefined && existing.type !== 'tree') throw new Error(`${name}: ${ARCHIVE_BRANCH} has ${EPICS_DIR}/${epic.slug} as a ${existing.type}, not a directory; nothing written`);
+    if (existing !== undefined) {
+      const there = await archivedStart(repo, existing.sha);
+      if (there === null || there.slug !== epic.started.slug || there.ts !== epic.started.ts) {
+        throw new Error(`${name}: ${ARCHIVE_BRANCH} already holds a different epic at ${EPICS_DIR}/${epic.slug}/ (archived: ${describeStart(there)}; local: ${describeStart(epic.started)}); nothing written`);
+      }
+      if ((await scratchEpicTree(repo, epic)) === existing.sha) return { kind: 'unchanged' };
+      if (!force) throw new Error(`${name}: changed since it was archived on ${ARCHIVE_BRANCH}; run archive ${epic.slug} --force to add a new commit`);
+    }
+    const tree = await filesTree(repo, epic.files);
+    const epics = await mkTree(repo, [...sub.filter((e) => e.name !== epic.slug), { mode: '040000', type: 'tree', sha: tree, name: epic.slug }]);
+    const root = await mkTree(repo, [...top.filter((e) => e.name !== EPICS_DIR), { mode: '040000', type: 'tree', sha: epics, name: EPICS_DIR }]);
+    const trailers = [`Factory-Epic: ${epic.slug}`];
+    if (epic.state === 'landed' && epic.landedSha !== null) trailers.push(`Landed-As: ${epic.landedSha}`);
+    const message = ['-m', `chore(factory): archive epic ${epic.slug}`, '-m', trailers.join('\n')];
+    const commit = (await git(repo, ['commit-tree', root, ...(tip === null ? [] : ['-p', tip]), ...message])).out;
+    const r = await runGit(repo, ['update-ref', '-m', `archive epic ${epic.slug}`, ARCHIVE_REF, commit, tip ?? ''], { what: WHAT });
+    if (r.code === 0) return { kind: 'archived', commit };
+    lastErr = r.err || `exit ${r.code}`;
+    await sleep(5 + Math.floor(Math.random() * 25));
+  }
+  throw new Error(`${name}: ${ARCHIVE_BRANCH} kept moving; gave up after ${MAX_ATTEMPTS} tries (${lastErr})`);
 }

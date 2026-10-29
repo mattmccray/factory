@@ -1,7 +1,7 @@
 // Projection: the append-only event log -> the `job.json` snapshot (docs/contract/v1.md).
 // Pure — no clock reads. Viewers compute live elapsed time from the open timestamps.
-import { isSession, workingStage } from './contract';
-import type { FactoryEvent, Role, Session, Stage, Verdict, WorkingStage } from './contract';
+import { JOB_KINDS, isSession, workingStage } from './contract';
+import type { FactoryEvent, JobKind, Role, Session, Stage, Verdict, WorkingStage } from './contract';
 
 export type ReviewState = 'PASS' | 'CHANGES' | 'pending';
 export type Decision = 'APPROVE' | 'ESCALATE' | 'APPROVE (human)';
@@ -48,6 +48,8 @@ export interface JobSnapshot {
   brief: string | null;
   issue: string | null;
   session: Session | null; // the most recent session on job.claimed/job.reworked/job.human-approved; null: none ever
+  epic: string | null; // the epic the job was claimed into; null: a standalone job
+  kind: JobKind | null; // what the job is to its epic; null: a standalone job
   startedAt: string;
   stageEnteredAt: string;
   endedAt: string | null;
@@ -223,6 +225,8 @@ export function project(events: FactoryEvent[]): JobSnapshot {
     brief: first.brief,
     issue: first.issue,
     session: storedSession(first.session),
+    epic: typeof first.epic === 'string' ? first.epic : null,
+    kind: typeof first.epic === 'string' ? (JOB_KINDS.find((k) => k === first.kind) ?? 'member') : null,
     startedAt: first.ts,
     stageEnteredAt: first.ts,
     endedAt: null,

@@ -301,3 +301,74 @@ describe('doctor: duplicate job numbers (AC6)', () => {
     expect(r.out).toEqual(['ok    config.json', 'note  unstamped install: no managed.json, hash checks skipped']);
   });
 });
+
+describe('doctor: epic plans (job 052, AC6)', () => {
+  const planText = (status: string, members: string[]): string => ['# Epic', '', `- Status: ${status}`, '', '## Members', ...members, ''].join('\n');
+  const brief = (status: string): string => `# B\n\n- Status: ${status}\n`;
+  const writePlan = async (name: string, text: string): Promise<void> => {
+    await mkdir(join(root, 'epics'), { recursive: true });
+    await writeFile(join(root, 'epics', name), text);
+  };
+  beforeEach(async () => {
+    await mkdir(join(root, 'briefs'), { recursive: true });
+    await writeFile(join(root, 'briefs', 'a.md'), brief('ready'));
+    await writeFile(join(root, 'briefs', 'b.md'), brief('draft'));
+  });
+  const planLines = (out: string[]): string[] => out.filter((l) => l.includes('factory/epics/'));
+
+  test('a ready plan epic start would refuse is a FAIL with the same reason; a good one is ok', async () => {
+    await writePlan('good.md', planText('ready', ['- `a`']));
+    await writePlan('cycle.md', planText('ready', ['- `a` after: `a`']));
+    await writePlan('draftbrief.md', planText('ready', ['- `a`', '- `b`']));
+    await writePlan('nobrief.md', planText('ready', ['- `zz`']));
+    await writePlan('nonmember.md', planText('ready', ['- `a` after: `zz`']));
+    await writePlan('malformed.md', planText('ready', ['- a']));
+    await writePlan('nostatus.md', '# Epic\n\n## Members\n- `a`\n');
+    const r = await doctor();
+    expect(r.code).toBe(1);
+    expect(planLines(r.out)).toEqual([
+      'FAIL  factory/epics/cycle.md: plan factory/epics/cycle.md: the after: edges form a cycle: a -> a',
+      'FAIL  factory/epics/draftbrief.md: plan factory/epics/draftbrief.md: member brief factory/briefs/b.md is "draft", not ready',
+      'ok    factory/epics/good.md',
+      expect.stringMatching(/^FAIL {2}factory\/epics\/malformed\.md: plan factory\/epics\/malformed\.md ## Members line \d+ is malformed/),
+      'FAIL  factory/epics/nobrief.md: plan factory/epics/nobrief.md: member brief factory/briefs/zz.md is missing',
+      'FAIL  factory/epics/nonmember.md: plan factory/epics/nonmember.md: member a is after zz, which is not a member',
+      'FAIL  factory/epics/nostatus.md: plan factory/epics/nostatus.md has no "- Status:" line',
+    ]);
+  });
+
+  test('the FAIL reason is the one epic start prints', async () => {
+    await writePlan('cycle.md', planText('ready', ['- `a` after: `a`']));
+    const out: string[] = [];
+    const err: string[] = [];
+    await run(['epic', 'start', 'cycle'], { root, stdout: (l) => out.push(l), stderr: (l) => err.push(l) });
+    const [fail] = planLines((await doctor()).out);
+    expect(fail?.replace(/^FAIL {2}factory\/epics\/cycle\.md: /, '')).toBe(err[0]?.replace(/^epic start cycle: /, ''));
+  });
+
+  test('a draft plan: parse errors are notes, never failures; done and abandoned plans are skipped', async () => {
+    await writePlan('wip.md', planText('draft', ['- a', '- `a`', '- `a`']));
+    await writePlan('clean.md', planText('draft', ['- `zz` after: `nope`']));
+    await writePlan('old.md', planText('done', ['- broken']));
+    await writePlan('gone.md', planText('abandoned', ['- broken']));
+    await writePlan('notes.txt', 'ignored');
+    const r = await doctor();
+    expect(r.code).toBe(0);
+    expect(planLines(r.out)).toEqual([
+      'ok    factory/epics/clean.md (draft)',
+      expect.stringMatching(/^note {2}factory\/epics\/wip\.md: ## Members line \d+ is malformed/),
+      expect.stringMatching(/^note {2}factory\/epics\/wip\.md: ## Members line \d+: member a is listed twice$/),
+    ]);
+  });
+
+  test('a ready plan with a job-id name fails; a symlinked plan is never read', async () => {
+    await writePlan('001-x.md', planText('ready', ['- `a`']));
+    await mkdir(join(root, 'epics'), { recursive: true });
+    await symlink(join(tmp, 'outside.txt'), join(root, 'epics', 'link.md'));
+    const r = await doctor();
+    expect(planLines(r.out)).toEqual([
+      expect.stringMatching(/^FAIL {2}factory\/epics\/001-x\.md: epic slug "001-x" must not look like a job id/),
+      'FAIL  factory/epics/link.md: not a regular file (a symlink is never followed)',
+    ]);
+  });
+});

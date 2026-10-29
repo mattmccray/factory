@@ -31,7 +31,8 @@ export interface Session {
 export type EventInput =
   // `target` is the branch the job is based on and merges into, resolved by the CLI at claim time
   // (absent on logs claimed before it existed). `session` is the orchestrator's thread, if found.
-  | { type: 'job.claimed'; schema: 'factory/v1'; id: string; maxRound: number; brief: string | null; issue: string | null; target?: string; session?: Session }
+  // `epic` and `kind` are set only on a job claimed into an epic (`claim … epic=<slug>`).
+  | { type: 'job.claimed'; schema: 'factory/v1'; id: string; maxRound: number; brief: string | null; issue: string | null; target?: string; session?: Session; epic?: string; kind?: JobKind }
   | { type: 'job.titled'; title: string }
   | { type: 'stage.entered'; stage: EnteredStage }
   | { type: 'round.started'; round: number; reviewers: string[] }
@@ -49,6 +50,10 @@ export type EventInput =
 
 export type FactoryEvent = EventInput & { ts: string };
 
+/** What a job is to its epic: a plan member, or a generated sync or fix job. */
+export type JobKind = 'member' | 'sync' | 'fix';
+export const JOB_KINDS: readonly JobKind[] = ['member', 'sync', 'fix'];
+
 export interface Config {
   schema: 'factory/v1';
   name?: string; // the project's display name (Andon); absent means the root's basename
@@ -59,6 +64,20 @@ export interface Config {
   roles?: Record<string, RoleRunner>; // keyed by a fixed role or a configured reviewer key
   merge?: MergePolicy;
   archive?: ArchivePolicy; // absent: archiving is off
+  epic?: EpicPolicy; // absent: maxParallel 3
+}
+
+/** How an epic schedules its members. `maxParallel` absent means `DEFAULT_MAX_PARALLEL`. */
+export interface EpicPolicy {
+  maxParallel?: number;
+}
+
+/** How many members an epic runs at once when `config.epic.maxParallel` is absent. */
+export const DEFAULT_MAX_PARALLEL = 3;
+
+/** The effective `epic.maxParallel`: 3 when `epic` or `epic.maxParallel` is absent. */
+export function epicMaxParallel(config: Config): number {
+  return config.epic?.maxParallel ?? DEFAULT_MAX_PARALLEL;
 }
 
 /** Whether `factory archive` copies terminal jobs to the `factory/archive` branch. Off unless `enabled`. */
@@ -135,6 +154,30 @@ export function checkSlug(slug: string): void {
   if (!SLUG_PATTERN.test(slug)) throw new Error(`slug ${JSON.stringify(slug)} must match ${SLUG_PATTERN.source}`);
 }
 
+/**
+ * Throws a one-line reason unless `slug` is an epic slug: a job slug (`checkSlug`) that doesn't
+ * look like a job id, so `archive` and `prune` can tell an epic from a job. Checked before any
+ * path or ref is built from it.
+ */
+export function checkEpicSlug(slug: string): void {
+  if (slug.length > SLUG_MAX) throw new Error(`epic slug ${JSON.stringify(slug)} is ${slug.length} characters (at most ${SLUG_MAX})`);
+  if (!SLUG_PATTERN.test(slug)) throw new Error(`epic slug ${JSON.stringify(slug)} must match ${SLUG_PATTERN.source}`);
+  if (JOB_ID.test(slug)) throw new Error(`epic slug ${JSON.stringify(slug)} must not look like a job id (^\\d{3}-[a-z0-9-]+$)`);
+}
+
+/** True when `slug` is a well-formed epic slug (see `checkEpicSlug`). */
+export function isEpicSlug(slug: string): boolean {
+  try {
+    checkEpicSlug(slug);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** An epic's integration branch: `factory/epic/<slug>`. */
+export const epicBranch = (slug: string): string => `factory/epic/${slug}`;
+
 /** The one session app accepted today. */
 export const SESSION_APP = 't3code';
 /** A session's environment and thread ids: 1–64 letters, digits, and `-`. */
@@ -177,10 +220,10 @@ const RESERVED_KEYS = ['spec-writer', 'builder', 'approver'];
 const ROLES: readonly Role[] = ['spec-writer', 'builder', 'reviewer', 'approver'];
 const ENTERED: readonly EnteredStage[] = ['spec', 'build', 'approve'];
 
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-const isPosInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v > 0;
+export const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+export const isPosInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v > 0;
 
-function noExtraKeys(obj: Record<string, unknown>, allowed: readonly string[], what: string): void {
+export function noExtraKeys(obj: Record<string, unknown>, allowed: readonly string[], what: string): void {
   const extra = Object.keys(obj).filter((k) => !allowed.includes(k));
   if (extra.length) throw new Error(`${what}: unknown key ${extra.map((k) => `'${k}'`).join(', ')}`);
 }
@@ -189,7 +232,7 @@ function noExtraKeys(obj: Record<string, unknown>, allowed: readonly string[], w
 
 export function parseConfig(raw: unknown): Config {
   if (!isRecord(raw)) throw new Error('config: must be a JSON object');
-  noExtraKeys(raw, ['schema', 'name', 'reviewers', 'maxRound', 'dashboard', 'gate', 'roles', 'merge', 'archive'], 'config');
+  noExtraKeys(raw, ['schema', 'name', 'reviewers', 'maxRound', 'dashboard', 'gate', 'roles', 'merge', 'archive', 'epic'], 'config');
   if (raw.schema !== SCHEMA) throw new Error(`config: schema must be "${SCHEMA}"`);
   const { reviewers, maxRound, dashboard } = raw;
   if (!Array.isArray(reviewers) || reviewers.length === 0) throw new Error('config: reviewers must be a non-empty array');
@@ -211,7 +254,17 @@ export function parseConfig(raw: unknown): Config {
   if (raw.roles !== undefined) config.roles = parseRoles(raw.roles, keys);
   if (raw.merge !== undefined) config.merge = parseMerge(raw.merge);
   if (raw.archive !== undefined) config.archive = parseArchive(raw.archive);
+  if (raw.epic !== undefined) config.epic = parseEpic(raw.epic);
   return config;
+}
+
+// Optional `epic`: only `maxParallel`, a positive integer (absent: 3).
+function parseEpic(epic: unknown): EpicPolicy {
+  if (!isRecord(epic)) throw new Error('config: epic must be an object { maxParallel? }');
+  noExtraKeys(epic, ['maxParallel'], 'config.epic');
+  if (epic.maxParallel === undefined) return {};
+  if (!isPosInt(epic.maxParallel)) throw new Error('config: epic.maxParallel must be a positive integer');
+  return { maxParallel: epic.maxParallel };
 }
 
 // Optional `archive`: only `enabled`, a required boolean.
@@ -295,7 +348,7 @@ function parseGate(gate: unknown): string[] {
 
 // ---- event input ----
 
-function str(f: Record<string, unknown>, k: string): string {
+export function str(f: Record<string, unknown>, k: string): string {
   const v = f[k];
   if (typeof v !== 'string' || v === '') throw new Error(`missing or non-string field '${k}'`);
   return v;
@@ -350,13 +403,25 @@ export function parseEventInput(
   const allow = (...keys: string[]) => noExtraKeys(fields, keys, `${type}: extra field`);
   switch (type) {
     case 'job.claimed': {
-      allow('brief', 'issue', 'maxRound', 'session');
+      allow('brief', 'issue', 'maxRound', 'session', 'epic', 'kind');
       if (!ctx) throw new Error('job.claimed: needs the job id and config from the CLI');
       if (ctx.target !== undefined && !isTargetBranch(ctx.target)) throw new Error(`job.claimed: target ${JSON.stringify(ctx.target)} is not an allowed branch name`);
       const maxRound = fields.maxRound === undefined ? ctx.config.maxRound : posInt(fields, 'maxRound');
       const claimed: Extract<EventInput, { type: 'job.claimed' }> = { type, schema: SCHEMA, id: ctx.id, maxRound, brief: nullableStr(fields, 'brief'), issue: nullableStr(fields, 'issue') };
       if (ctx.target !== undefined) claimed.target = ctx.target;
       if (fields.session !== undefined) claimed.session = parseSession(fields.session);
+      const kind = fields.kind === undefined ? undefined : oneOf(fields, 'kind', JOB_KINDS);
+      if (fields.epic === undefined) {
+        if (kind !== undefined) throw new Error(`job.claimed: kind=${kind} needs epic=<slug>`);
+        return claimed;
+      }
+      const epic = str(fields, 'epic');
+      checkEpicSlug(epic);
+      claimed.epic = epic;
+      claimed.kind = kind ?? 'member';
+      if (claimed.kind === 'member' && claimed.brief === null) throw new Error(`job.claimed: a member claim needs brief=factory/briefs/<member>.md`);
+      if (claimed.kind !== 'member' && claimed.brief !== null) throw new Error(`job.claimed: a ${claimed.kind} job takes no brief=`);
+      if (ctx.target !== undefined && ctx.target !== epicBranch(epic)) throw new Error(`job.claimed: a job in epic ${epic} targets ${epicBranch(epic)}, not ${ctx.target}`);
       return claimed;
     }
     case 'job.titled':
@@ -412,6 +477,7 @@ export function parseEventInput(
       allow('reason');
       return { type, reason: str(fields, 'reason') };
     default:
+      if (type.startsWith('epic.')) throw new Error(`${type} is an epic event, not a job event: run epic event <slug> ${type} …`);
       throw new Error(`unknown event type '${type}'`);
   }
 }
