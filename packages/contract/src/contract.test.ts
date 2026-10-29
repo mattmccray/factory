@@ -507,3 +507,84 @@ describe('session (parseSession and the three events)', () => {
     }
   });
 });
+
+describe('merge.conflicted (job 051)', () => {
+  const conflicted: EventInput = { type: 'merge.conflicted', reason: 'conflict in a.ts' };
+  const spec = log(claimed, { type: 'stage.entered', stage: 'spec' });
+  const review = [...toBuild, ...log(round1)];
+  const approve = [...toBuild, ...log(round1, fin('security', 'PASS'), fin('ux', 'PASS'), { type: 'stage.entered', stage: 'approve' })];
+  const human = [...approve, ...log({ type: 'job.escalated', reason: 'r' })];
+  const approved = [...human, ...log({ type: 'job.human-approved' })];
+  const merged = [...approved, ...log({ type: 'job.merged', sha: 'a' })];
+  const abandoned = [...human, ...log({ type: 'job.abandoned', reason: 'x' })];
+  // From approve at round r: conflict, rounds r+1 and r+2, approve again.
+  const resolved = (prior: FactoryEvent[], r: number): FactoryEvent[] => [
+    ...prior, ...log(conflicted, { ...round1, round: r + 1 }, fin('security', 'PASS', r + 1), fin('ux', 'PASS', r + 1),
+      { type: 'stage.entered', stage: 'approve' }),
+  ];
+
+  test('parses a non-empty reason only, like merge.failed', () => {
+    expect(parseEventInput('merge.conflicted', { reason: 'conflict in a.ts' })).toEqual(conflicted);
+    expect(() => parseEventInput('merge.conflicted', {})).toThrow(/reason/);
+    expect(() => parseEventInput('merge.conflicted', { reason: '' })).toThrow(/reason/);
+    for (const extra of ['maxRound', 'round', 'k', 'conflicts', 'session', 'target']) {
+      expect(() => parseEventInput('merge.conflicted', { reason: 'x', [extra]: 1 })).toThrow(new RegExp(`extra field.*'${extra}'`));
+    }
+  });
+
+  test('is accepted from approve, and from needs-human after job.human-approved', () => {
+    expect(() => checkTransition(approve, conflicted)).not.toThrow();
+    expect(() => checkTransition(approved, conflicted)).not.toThrow();
+    const failedThenApproved = [...approve, ...log({ type: 'merge.failed', reason: 'refused' }, { type: 'job.human-approved' })];
+    expect(() => checkTransition(failedThenApproved, conflicted)).not.toThrow();
+  });
+
+  test('is rejected from every other stage, and from needs-human without that approval', () => {
+    for (const l of [log(claimed), spec, toBuild, review, human]) expect(() => checkTransition(l, conflicted)).toThrow(/not allowed from stage/);
+    const failedAfterApproval = [...approved, ...log({ type: 'merge.failed', reason: 'refused' })];
+    expect(() => checkTransition(failedAfterApproval, conflicted)).toThrow(/not allowed from stage 'needs-human'/);
+    for (const l of [merged, abandoned]) expect(() => checkTransition(l, conflicted)).toThrow(/terminal/);
+  });
+
+  test('a third merge.conflicted is refused with one line naming merge.failed; merge.failed is still accepted', () => {
+    const twice = resolved(resolved(approve, 1), 2);
+    expect(() => checkTransition(twice, conflicted)).toThrow(/merge\.failed/);
+    let reason = '';
+    try {
+      checkTransition(twice, conflicted);
+    } catch (e) {
+      reason = e instanceof Error ? e.message : String(e);
+    }
+    expect(reason).not.toContain('\n');
+    expect(() => checkTransition(twice, { type: 'merge.failed', reason: 'third conflict' })).not.toThrow();
+    // The limit holds from needs-human after a human approval too.
+    const twiceHuman = [...twice, ...log({ type: 'job.escalated', reason: 'r' }, { type: 'job.human-approved' })];
+    expect(() => checkTransition(twiceHuman, conflicted)).toThrow(/merge\.failed/);
+    expect(() => checkTransition(twiceHuman, { type: 'merge.failed', reason: 'third conflict' })).not.toThrow();
+    // One conflict leaves room for a second.
+    expect(() => checkTransition(resolved(approve, 1), conflicted)).not.toThrow();
+  });
+
+  test('moves the job to build: the next round is r + 1, and build again is allowed up to round r + 2', () => {
+    const back = [...approve, ...log(conflicted)]; // round 1, maxRound 2 -> maxRound 3
+    expect(() => checkTransition(back, { ...round1, round: 3 })).toThrow(/previous \+ 1 \(2\)/);
+    expect(() => checkTransition(back, { ...round1, round: 2 })).not.toThrow();
+    const r2 = [...back, ...log({ ...round1, round: 2 }, fin('security', 'CHANGES', 2), fin('ux', 'PASS', 2))];
+    expect(() => checkTransition(r2, { type: 'stage.entered', stage: 'build' })).not.toThrow();
+    const r3 = [...r2, ...log({ type: 'stage.entered', stage: 'build' }, { ...round1, round: 3 }, fin('security', 'PASS', 3), fin('ux', 'PASS', 3))];
+    expect(() => checkTransition(r3, { type: 'stage.entered', stage: 'build' })).toThrow(/maxRound 3/);
+    expect(() => checkTransition(r3, { type: 'stage.entered', stage: 'approve' })).not.toThrow();
+  });
+
+  test('clears the human approval: a later needs-human merge needs a new job.human-approved', () => {
+    const back = [...approved, ...log(conflicted, { ...round1, round: 2 }, { type: 'job.escalated', reason: 'approver escalated' })];
+    expect(() => checkTransition(back, { type: 'job.merged', sha: 'a' })).toThrow(/human-approved/);
+    expect(() => checkTransition(back, conflicted)).toThrow(/not allowed from stage 'needs-human'/);
+    const again = [...back, ...log({ type: 'job.human-approved' })];
+    expect(() => checkTransition(again, { type: 'job.merged', sha: 'a' })).not.toThrow();
+  });
+
+  test('a job sent back by a conflict can still escalate from build', () => {
+    expect(() => checkTransition([...approve, ...log(conflicted)], { type: 'job.escalated', reason: 'r' })).not.toThrow();
+  });
+});

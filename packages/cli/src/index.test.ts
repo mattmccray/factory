@@ -488,3 +488,96 @@ describe('session (claim, job.reworked, job.human-approved)', () => {
     expect(await sessionOf()).toBeNull();
   });
 });
+
+describe('merge.conflicted (job 051)', () => {
+  const snap = async (): Promise<Record<string, unknown>> => {
+    const v: unknown = JSON.parse(await readFile(join(root, 'jobs', ID, 'job.json'), 'utf8'));
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error('job.json is not an object');
+    return Object.fromEntries(Object.entries(v));
+  };
+  const refused = async (argv: string[]): Promise<string> => {
+    const before = await snapshotJobs();
+    const r = await cli(...argv);
+    expect(r.code).toBe(1);
+    expect(r.out).toEqual([]);
+    expect(r.err.length).toBe(1);
+    expect(r.err[0]).not.toContain('\n');
+    expect(await snapshotJobs()).toEqual(before);
+    return r.err[0] ?? '';
+  };
+  const ok = async (...argv: string[]): Promise<void> => {
+    const r = await cli(...argv);
+    expect(r.err).toEqual([]);
+    expect(r.code).toBe(0);
+  };
+  // Runs round `n` to completion with every configured reviewer passing.
+  const passRound = async (n: number): Promise<void> => {
+    await ok('event', ID, 'round.started', `round=${n}`);
+    for (const key of CONFIG.reviewers) {
+      const dir = join(root, 'jobs', ID, `round-${n}`);
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, `review-${key}.md`), 'VERDICT: PASS\n\n# Review\n');
+      await ok('event', ID, 'agent.finished', 'role=reviewer', `key=${key}`, `round=${n}`);
+    }
+  };
+  const toApprove = async (): Promise<void> => {
+    await ok('claim', SLUG);
+    await ok('event', ID, 'stage.entered', 'stage=spec');
+    await ok('event', ID, 'stage.entered', 'stage=build');
+    await passRound(1);
+    await ok('event', ID, 'stage.entered', 'stage=approve');
+  };
+
+  test('AC1/AC2: from approve it prints build; job.json has conflicts 1, maxRound round + 2, the note', async () => {
+    await toApprove();
+    await writeFile(join(root, 'jobs', ID, 'decision.md'), 'APPROVE\n');
+    await ok('event', ID, 'agent.finished', 'role=approver');
+    expect(await snap()).toMatchObject({ decision: 'APPROVE' });
+    expect(await cli('event', ID, 'merge.conflicted', 'reason=conflict in a.ts')).toEqual({ code: 0, out: ['build'], err: [] });
+    expect(await snap()).toMatchObject({ stage: 'build', round: 1, maxRound: 3, conflicts: 1, note: 'conflict in a.ts', decision: null });
+  });
+
+  test('AC1: a rejected merge.conflicted (wrong stage, or a third one) exits 1 and writes nothing', async () => {
+    await ok('claim', SLUG);
+    await ok('event', ID, 'stage.entered', 'stage=spec');
+    await refused(['event', ID, 'merge.conflicted', 'reason=x']);
+    await ok('event', ID, 'stage.entered', 'stage=build');
+    await passRound(1);
+    await ok('event', ID, 'stage.entered', 'stage=approve');
+    await ok('event', ID, 'merge.conflicted', 'reason=one');
+    await passRound(2);
+    await ok('event', ID, 'stage.entered', 'stage=approve');
+    await ok('event', ID, 'merge.conflicted', 'reason=two');
+    await passRound(3);
+    await ok('event', ID, 'stage.entered', 'stage=approve');
+    expect(await refused(['event', ID, 'merge.conflicted', 'reason=three'])).toContain('merge.failed');
+    expect(await cli('event', ID, 'merge.failed', 'reason=three')).toEqual({ code: 0, out: ['needs-human'], err: [] });
+    expect(await snap()).toMatchObject({ stage: 'needs-human', conflicts: 2, stoppedBy: 'merge-failed' });
+  });
+
+  test('AC3: any field but reason is an extra field, and nothing is written; parsing stays narrow', async () => {
+    await toApprove();
+    for (const extra of ['maxRound=5', 'round=2', 'k=1', 'conflicts=1', 'session=t3code:env-1/thread-A', 'target=main']) {
+      const name = extra.split('=')[0] ?? '';
+      expect(await refused(['event', ID, 'merge.conflicted', 'reason=x', extra])).toContain(`extra field: unknown key '${name}'`);
+    }
+    await refused(['event', ID, 'merge.conflicted']);
+    await refused(['event', ID, 'merge.conflicted', 'reason=']);
+    // A numeric-looking reason stays a string.
+    await ok('event', ID, 'merge.conflicted', 'reason=42');
+    expect(await snap()).toMatchObject({ note: '42' });
+  });
+
+  test('AC4: job.json always has conflicts; rebuild derives it and changes nothing else', async () => {
+    await toApprove();
+    expect(await snap()).toMatchObject({ conflicts: 0 });
+    await ok('event', ID, 'merge.conflicted', 'reason=one');
+    const written = await snap();
+    expect(written.conflicts).toBe(1);
+    // A job.json from before the field: rebuild adds it back from the log.
+    const { conflicts: _dropped, ...legacy } = written;
+    await writeFile(join(root, 'jobs', ID, 'job.json'), JSON.stringify(legacy));
+    await ok('rebuild', ID);
+    expect(await snap()).toEqual(written);
+  });
+});

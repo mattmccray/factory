@@ -40,6 +40,7 @@ export interface JobSnapshot {
   reviews: Record<string, ReviewState>;
   history: { round: number; reviews: Record<string, ReviewState> }[];
   reworks: number;
+  conflicts: number; // merge.conflicted events in the log; 0 when none (readers treat a missing key as 0)
   decision: Decision | null;
   note: string;
   stoppedBy: StoppedBy | null; // set by job.escalated / merge.failed; reset by job.reworked
@@ -159,6 +160,16 @@ function apply(s: JobSnapshot, e: FactoryEvent): void {
       if (s.stage !== 'needs-human') s.stoppedFrom = workingStage(s.stage);
       enterStage(s, 'needs-human', e.ts);
       return;
+    case 'merge.conflicted':
+      // Back to the builder with a two-round budget past the current round. stoppedBy/stoppedFrom,
+      // reworks, and session stay; no agent runs during a merge, so no span closes. The decision
+      // approved work the resolution has since changed: the next approver run sets it again.
+      s.conflicts += 1;
+      s.maxRound = s.round + 2;
+      s.note = e.reason;
+      s.decision = null;
+      enterStage(s, 'build', e.ts);
+      return;
     case 'job.reworked':
       s.reworks = e.k;
       s.stoppedBy = null;
@@ -204,6 +215,7 @@ export function project(events: FactoryEvent[]): JobSnapshot {
     reviews: {},
     history: [],
     reworks: 0,
+    conflicts: 0,
     decision: null,
     note: '',
     stoppedBy: null,
