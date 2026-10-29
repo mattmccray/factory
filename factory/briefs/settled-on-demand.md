@@ -1,6 +1,7 @@
 # Settled jobs on demand — the Andon service sends settled jobs only when asked
 
-- Status: ready
+- Status: done
+- Job: 049-settled-on-demand (merged a24b88d, 2026-10-29)
 - Sources: `/factory explore job-archive` on 2026-10-28 (performance discussion);
   packages/andon-service/src/index.ts (`board`, `emitBoard`, SSE `board` events);
   docs/contract/v1.md ("Dashboard endpoints", "Andon service", "Archived jobs");
