@@ -34,7 +34,9 @@ the bookkeeping (`doctor`, `archive`, `prune`) that keeps epics as safe as jobs.
    `landing`; `epic.landed` (`sha`) → terminal, `endedAt`; `epic.abandoned` (`reason`) →
    terminal, `endedAt`. No member events: a member's `job.claimed` names its epic and its own log
    records the rest. `epic.json` carries the state (`running`, `waiting`, `landing`, `landed`,
-   `abandoned`; `waiting` also derived when nothing can run and some member is `needs-human`),
+   `abandoned`; `waiting` also derived when nothing can run and some member is `needs-human`;
+   a `waitingOn` field says which: `"you"` when `epic.waiting` was logged, `"members"` when
+   derived, `null` otherwise, amended 2026-10-29 from factory/briefs/andon-epics-service.md),
    each member's state (`queued`, `blocked` on a job, `running` at a stage, `merged`,
    `needs-human`), the generated sync and fix jobs, counts, and timing. The CLI rebuilds it after
    every epic event and after every event on a member job; `rebuild` and `epic show` regenerate
@@ -101,7 +103,13 @@ the bookkeeping (`doctor`, `archive`, `prune`) that keeps epics as safe as jobs.
    landing or abandon is brief 3's skill step). **`prune` removes a terminal epic's local dir once
    it is archived and settled (landed more than `settleAfterHours` ago, or abandoned), and never
    prunes a member or generated job whose epic isn't terminal**, even when that job is merged,
-   archived, and past the settle window. Why: an epic's record outlives the machine as a job's
+   archived, and past the settle window. **That guard is one epic-aware settle rule, defined once
+   in `packages/contract` and documented with the contract's settle rule: an epic settles like a
+   job (landed: `settleAfterHours` after it landed; abandoned: at once); a job with an `epic` is
+   never settled while its epic isn't terminal, and once it is, settles when the epic does (by the
+   epic's `endedAt`); an abandoned job settles at once as always.** `prune` uses it here, and the
+   Andon service switches to it in brief 4 (amended 2026-10-29 from
+   factory/briefs/andon-epics-service.md decision 2). Why: an epic's record outlives the machine as a job's
    does; the settle rule is reused; and a running epic's view is built from its members'
    `job.json`s, so pruning one would make a merged member read as missing.
 
@@ -138,7 +146,8 @@ the bookkeeping (`doctor`, `archive`, `prune`) that keeps epics as safe as jobs.
   `epic show <slug>` prints the epic's state, each member's state, and why it waits.
 - `epic.json` is rebuilt after every epic event and every event on a member job, and by `rebuild`;
   it reports `running`, `waiting` (logged, or derived when nothing can run and some member is in
-  `needs-human`), `landing`, `landed`, or `abandoned`, and each member as `queued`, `blocked` (on
+  `needs-human`, with `waitingOn` `"you"` or `"members"` saying which; `null` when not waiting),
+  `landing`, `landed`, or `abandoned`, and each member as `queued`, `blocked` (on
   which job), `running` (at which stage), `merged`, `needs-human`, or `abandoned`, plus the
   generated jobs, counts, and timing. Members added to the plan mid-run appear.
 - `epic abandon <slug> '<reason>'` logs `epic.abandoned` and removes the epic worktree (and the
@@ -151,7 +160,9 @@ the bookkeeping (`doctor`, `archive`, `prune`) that keeps epics as safe as jobs.
   `ready`, `done`, and `abandoned`, and `epic start` refuses any plan that isn't `ready`.
 - `archive` copies terminal epics under `epics/<slug>/` on `factory/archive` (with
   `Factory-Epic` and, when landed, `Landed-As`), and `archive --all` includes them; `prune`
-  removes archived, settled epic dirs and never prunes a job whose epic isn't terminal.
+  removes archived, settled epic dirs and never prunes a job whose epic isn't terminal, using the
+  epic-aware settle rule exported from `packages/contract` (with tests: a member of a running epic
+  is never settled; once the epic lands, members settle by the epic's `endedAt`).
 - Standalone jobs, logs without any epic fields, and configs without `epic` behave exactly as
   before.
 
