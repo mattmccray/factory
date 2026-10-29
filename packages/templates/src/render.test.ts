@@ -1685,6 +1685,29 @@ describe('the skill runs epics, and explore writes them (job 053)', () => {
     }
   });
 
+  test('AC5 (round 1): a landing epic never waits on epic next; resume and merged generated jobs go back to Landing', () => {
+    for (const c of configs) {
+      const e = epics(c);
+      const start = sub(e, 'Start or resume');
+      const resume = between(start, '**`running` or `waiting`:**', '**`landing`**');
+      expect(resume).toContain('If it prints `landing` (a `waiting` logged during landing');
+      expect(resume.indexOf('If it prints `landing`')).toBeLessThan(resume.indexOf('Otherwise run **The epic loop**'));
+      expect(start).toContain('or an `epic.resumed` that printed `landing`');
+      const loop = sub(e, 'The epic loop');
+      inOrder(loop, [
+        'first read the epic\'s state (`epic show <slug>`)',
+        '**While it is `landing`**, `epic next` prints nothing, so don\'t run it',
+        'once none is live, go back to **Landing** from step 1, skipping `epic.landing`',
+        'Otherwise run `bun factory/cli.ts epic next <slug>`',
+      ]);
+      expect(sub(e, 'Member merge')).toContain('Then **Schedule** (which, while the epic is `landing`, leads back to **Landing**).');
+      const land = sub(e, 'Landing');
+      expect(land).not.toContain('**Schedule** (`epic next` prints `land` again)');
+      const resuming = between(land, '**Resuming a landing.**');
+      inOrder(resuming, ['First re-read state from the files', 'drive any live sync or fix job until it merges', 'never claim a second sync job while one is live', 'Once no epic job is live', 'git merge-base --is-ancestor factory/epic/<slug> <target>']);
+    }
+  });
+
   test('AC6: member approve, rework, and abandon run only in the driving session; others refuse in one line', () => {
     for (const c of configs) {
       const text = skill(c);
