@@ -6,8 +6,9 @@
   packages/andon-service/src/index.ts (`board`, `emitBoard`, SSE `board` events);
   docs/contract/v1.md ("Dashboard endpoints", "Andon service"); apps/andon-ui/src/SettledSheet.svelte,
   board.ts, lanes.ts; docs/design/andon-overview/design.md (§6 lanes, §9 Settled);
-  factory/briefs/job-archive.md (decision 10)
-- Date: 2026-10-28
+  factory/briefs/job-archive.md (decision 10); Matt's review of the focused view after the
+  first `factory prune` (2026-10-29): design §7, apps/andon-ui/src/lanes.ts (focused Merged cell)
+- Date: 2026-10-28 (updated 2026-10-29)
 
 ## Intent
 Every `board` event the Andon service pushes carries the project's whole job list, settled jobs
@@ -25,6 +26,10 @@ project reaches hundreds of jobs.
 - The UI uses settled jobs for more than the sheet: a lane's "· N settled" link and "Settled N"
   button, an idle lane's "last merge 3d 12h ago", the `#settled[=pid]` deep link, and the
   inspector opening a settled job (`#job=…`), including its timing.
+- A **focused project** also shows settled jobs: design §7 says "Merged also lists that project's
+  settled jobs, dimmed", built by job 025 (`apps/andon-ui/src/lanes.ts`, `laneOf`: settled tokens
+  after live ones, `dimmed`). In this repo that's 31+ faded tokens under the recent merges, which
+  reads as "these are merged" rather than "these are settled".
 - "Settled" is time-based for merged jobs (`endedAt` older than `settleAfterHours`): a merged job
   becomes settled with no event at all, so a server-side split has to handle a job crossing the
   line between pushes.
@@ -39,6 +44,14 @@ project reaches hundreds of jobs.
 2. Who decides "settled" → **The service, by the contract's rule at build time, plus a timer for
    the next merged job to cross `settleAfterHours`** so the board drops it without waiting for an
    unrelated event.
+3. A focused project's Merged column → **Shows only unsettled (recent) merges; settled jobs leave
+   it and are reached only through the Settled sheet** (the lane's "· N settled" link) and the
+   inspector. *Direction confirmed by Matt on 2026-10-29;* details to settle in the interview.
+   Amends design §7 ("Merged also lists that project's settled jobs, dimmed"): the job updates
+   docs/design/andon-overview/design.md §7 and drops the dimmed settled tokens from `lanes.ts`.
+   Why: once settled jobs no longer come with every `board` push (decision 1), the focused view
+   can't list them without fetching them anyway, and a long faded tail under recent merges reads
+   as more merged work rather than history.
 
 ## Scope
 - In: (to settle in the interview)
@@ -49,7 +62,9 @@ project reaches hundreds of jobs.
 (to write in the interview)
 
 ## Contract calls
-To decide in the interview: the shape of `board` events and `GET /projects/<pid>/board`, and
+- Design §7 amendment (decision 3): settled jobs leave a focused project's Merged column;
+  direction approved by Matt on 2026-10-29. The job updates docs/design/andon-overview/design.md.
+- To decide in the interview: the shape of `board` events and `GET /projects/<pid>/board`, and
 the new settled endpoint (docs/contract/v1.md "Andon service").
 
 ## Open
