@@ -187,7 +187,7 @@ describe('the plain board is unchanged (AC1)', () => {
     const board = `${url}/projects/${projectId(root)}/board`;
     const plain = await get(board);
     expect(plain.status).toBe(200);
-    expect(Object.keys(isRec(plain.body) ? plain.body : {}).sort()).toEqual(['config', 'jobs']);
+    expect(Object.keys(isRec(plain.body) ? plain.body : {}).sort()).toEqual(['config', 'epics', 'jobs']);
     expect(idsOf(plain.body)).toEqual(['001-old-merged', '002-archived-old', '003-recent-merged', '004-no-end', '005-abandoned', '006-working', '007-needs-human']);
     for (const q of ['?settled=', '?settled=Summary', '?settled=summary%20', '?settled=all', '?other=summary']) {
       const r = await get(`${board}${q}`);
@@ -210,7 +210,7 @@ describe('the plain board is unchanged (AC1)', () => {
     const isReview = (e: Sse): boolean => e.event === 'board' && jobsOf(e.data).some((j) => field(j, 'stage') === 'review');
     for (const [c, from] of [[a, fromA], [b, fromB]] as const) {
       const ev = await c.next(isReview, from);
-      expect(Object.keys(isRec(ev.data) ? ev.data : {})).toEqual(['project', 'jobs', 'config']);
+      expect(Object.keys(isRec(ev.data) ? ev.data : {})).toEqual(['project', 'jobs', 'config', 'epics']);
       expect(idsOf(ev.data)).toHaveLength(7);
     }
     a.close();
@@ -228,27 +228,27 @@ describe('the narrow board (AC2)', () => {
     const narrow = await get(`${url}/projects/${pid}/board?settled=summary`);
     expect(narrow.status).toBe(200);
     expect(narrow.cache).toBe('no-store');
-    expect(Object.keys(isRec(narrow.body) ? narrow.body : {})).toEqual(['jobs', 'config', 'settled']);
+    expect(Object.keys(isRec(narrow.body) ? narrow.body : {})).toEqual(['jobs', 'config', 'settled', 'epics']);
     expect(idsOf(narrow.body)).toEqual(['003-recent-merged', '004-no-end', '006-working', '007-needs-human']);
     expect(field(narrow.body, 'config')).toEqual(field(plain.body, 'config'));
     // Same entries as on the plain board, unknown fields included.
     for (const j of jobsOf(narrow.body)) expect(jobsOf(plain.body)).toContainEqual(j);
-    expect(field(narrow.body, 'settled')).toEqual({ count: 3, lastMergedAt: archived.endedAt });
+    expect(field(narrow.body, 'settled')).toEqual({ count: 3, lastMergedAt: archived.endedAt, epics: 0 });
   });
 
-  test('no settled jobs is { count: 0, lastMergedAt: null }; only abandoned ones leave lastMergedAt null', async () => {
+  test('no settled jobs is { count: 0, lastMergedAt: null, epics: 0 }; only abandoned ones leave lastMergedAt null', async () => {
     const root = await makeProject('alpha');
     await writeJob(root, job('001-working', 'build', null));
     await writeJob(root, job('002-recent', 'merged', iso(Date.now() - H)));
     await addRoot(registry, root);
     const { url } = await start();
     const board = `${url}/projects/${projectId(root)}/board?settled=summary`;
-    expect(field((await get(board)).body, 'settled')).toEqual({ count: 0, lastMergedAt: null });
+    expect(field((await get(board)).body, 'settled')).toEqual({ count: 0, lastMergedAt: null, epics: 0 });
     await writeJob(root, job('003-gone', 'abandoned', iso(Date.now())));
     await writeJob(root, job('004-gone-too', 'abandoned', iso(Date.now())));
     const r = await get(board);
     expect(idsOf(r.body)).toEqual(['001-working', '002-recent']);
-    expect(field(r.body, 'settled')).toEqual({ count: 2, lastMergedAt: null });
+    expect(field(r.body, 'settled')).toEqual({ count: 2, lastMergedAt: null, epics: 0 });
   });
 
   test('a bad config.json is a 500 config.json: <reason> on the narrow board too', async () => {
@@ -278,13 +278,13 @@ describe('narrow and plain clients at once (AC3)', () => {
     await writeJob(root, job('006-working', 'review', null));
     const isReview = (e: Sse): boolean => e.event === 'board' && jobsOf(e.data).some((j) => field(j, 'stage') === 'review');
     const n = await narrow.next(isReview, fromN);
-    expect(Object.keys(isRec(n.data) ? n.data : {})).toEqual(['project', 'jobs', 'config', 'settled']);
+    expect(Object.keys(isRec(n.data) ? n.data : {})).toEqual(['project', 'jobs', 'config', 'settled', 'epics']);
     expect(field(n.data, 'project')).toBe(pid);
     expect(idsOf(n.data)).toEqual(['003-recent-merged', '004-no-end', '006-working', '007-needs-human']);
     expect(field(n.data, 'config')).toEqual(parseConfig(CONFIG));
-    expect(field(n.data, 'settled')).toEqual({ count: 3, lastMergedAt: archived.endedAt });
+    expect(field(n.data, 'settled')).toEqual({ count: 3, lastMergedAt: archived.endedAt, epics: 0 });
     const p = await plain.next(isReview, fromP);
-    expect(Object.keys(isRec(p.data) ? p.data : {})).toEqual(['project', 'jobs', 'config']);
+    expect(Object.keys(isRec(p.data) ? p.data : {})).toEqual(['project', 'jobs', 'config', 'epics']);
     expect(idsOf(p.data)).toEqual(['001-old-merged', '002-archived-old', '003-recent-merged', '004-no-end', '005-abandoned', '006-working', '007-needs-human']);
     // Every narrow event is narrow, every plain event plain.
     expect(narrow.seen.filter((e) => e.event === 'board').every((e) => isRec(e.data) && 'settled' in e.data)).toBe(true);
@@ -322,7 +322,7 @@ describe('the settle timer (AC4, AC5)', () => {
     await plain.next((e) => e.event === 'projects');
     const before = await get(`${url}/projects/${projectId(root)}/board?settled=summary`);
     expect(idsOf(before.body)).toEqual(['002-crossing', '003-working']);
-    expect(field(before.body, 'settled')).toEqual({ count: 1, lastMergedAt: old.endedAt });
+    expect(field(before.body, 'settled')).toEqual({ count: 1, lastMergedAt: old.endedAt, epics: 0 });
     // Late fs events from the fixture setup may still yield board events: only what follows counts.
     await quiet([narrow, plain], 200);
     expect(Date.now()).toBeLessThan(ended + hours * H);
@@ -334,7 +334,7 @@ describe('the settle timer (AC4, AC5)', () => {
     expect(lag).toBeGreaterThanOrEqual(0);
     expect(lag).toBeLessThan(2000);
     expect(idsOf(ev.data)).toEqual(['003-working']);
-    expect(field(ev.data, 'settled')).toEqual({ count: 2, lastMergedAt: crossing.endedAt });
+    expect(field(ev.data, 'settled')).toEqual({ count: 2, lastMergedAt: crossing.endedAt, epics: 0 });
     await sleep(300);
     expect(plain.seen.slice(fromP).filter((e) => e.event === 'board')).toEqual([]);
 
@@ -345,12 +345,12 @@ describe('the settle timer (AC4, AC5)', () => {
     const fromN2 = narrow.seen.length;
     await writeFile(join(root, 'factory', 'config.json'), JSON.stringify({ ...CONFIG, dashboard: { settleAfterHours: hours2 } }));
     const back = await narrow.next((e) => e.event === 'board' && idsOf(e.data).includes('002-crossing'), fromN2);
-    expect(field(back.data, 'settled')).toEqual({ count: 1, lastMergedAt: old.endedAt });
+    expect(field(back.data, 'settled')).toEqual({ count: 1, lastMergedAt: old.endedAt, epics: 0 });
     await quiet([plain], 150);
     const fromP2 = plain.seen.length;
     const again = await narrow.next(gone, narrow.seen.indexOf(back) + 1, 4000);
     expect(Date.now() - (ended + hours2 * H)).toBeLessThan(2000);
-    expect(field(again.data, 'settled')).toEqual({ count: 2, lastMergedAt: crossing.endedAt });
+    expect(field(again.data, 'settled')).toEqual({ count: 2, lastMergedAt: crossing.endedAt, epics: 0 });
     await sleep(300);
     expect(plain.seen.slice(fromP2).filter((e) => e.event === 'board')).toEqual([]);
     narrow.close();
@@ -436,7 +436,7 @@ describe('GET /projects/<pid>/settled (AC6)', () => {
     const settled = await get(`${url}/projects/${pid}/settled`);
     expect(settled.status).toBe(200);
     expect(settled.cache).toBe('no-store');
-    expect(Object.keys(isRec(settled.body) ? settled.body : {})).toEqual(['jobs']);
+    expect(Object.keys(isRec(settled.body) ? settled.body : {})).toEqual(['jobs', 'epics']);
     expect(idsOf(settled.body)).toEqual(['001-old-merged', '002-archived-old', '005-abandoned']);
     // A partition of the plain board, entry for entry.
     const plainIds = idsOf(plain.body);

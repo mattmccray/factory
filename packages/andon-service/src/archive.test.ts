@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { ARCHIVE_REF, parseBatch, parseTree, spawnGit, wanted } from './archive';
+import { ARCHIVE_REF, parseBatch, parseEpicTree, parseTree, spawnGit, wanted } from './archive';
 
 const enc = new TextEncoder();
 const A = 'a'.repeat(40);
@@ -32,6 +32,27 @@ describe('ls-tree parsing (AC6)', () => {
       { id: '001-first-job', rel: 'round-1/review-code.md', sha: A },
       { id: '003-third-job', rel: 'job.json', sha: B },
     ]);
+  });
+
+  test('epics: only regular-file events.jsonl and plan.md directly under epics/<slug>/; job parsing skips them (job 054 AC2)', () => {
+    const recs = [
+      `100644 blob ${A}\tepics/feature-x/events.jsonl`,
+      `100644 blob ${B}\tepics/feature-x/plan.md`,
+      `100644 blob ${A}\tepics/feature-x/epic.json`, // a projection: never read
+      `100644 blob ${A}\tepics/feature-x/deep/plan.md`,
+      `120000 blob ${A}\tepics/linked/plan.md`, // a symlink
+      `100644 blob ${A}\tepics/Bad_Slug/plan.md`,
+      `100644 blob ${A}\tepics/001-job-like/plan.md`,
+      `100644 blob ${A}\tepics/plan.md`,
+      `100644 blob ${A}\tnotes/feature-x/plan.md`,
+      `100644 blob ${A}\t001-first-job/events.jsonl`,
+    ];
+    const raw = enc.encode(`${recs.join('\0')}\0`);
+    expect(parseEpicTree(raw)).toEqual([
+      { slug: 'feature-x', rel: 'events.jsonl', sha: A },
+      { slug: 'feature-x', rel: 'plan.md', sha: B },
+    ]);
+    expect(parseTree(raw)).toEqual([{ id: '001-first-job', rel: 'events.jsonl', sha: A }]);
   });
 
   test('wanted: the log, a legacy job.json, the top-level docs, and round markdown', () => {

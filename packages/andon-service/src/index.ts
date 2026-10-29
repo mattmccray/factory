@@ -2,14 +2,16 @@
 // project listed in the Andon registry through `@factory/contract` and serves it, read-only, on
 // loopback:
 //   GET /projects                        → { projects: [{ id, name, root }] } (name: config.json's `name`, else basename(root))
-//   GET /projects/<pid>/board            → { jobs, config } (a bad config is a 500 carrying the reason)
-//   GET /projects/<pid>/board?settled=summary → { jobs, config, settled }: unsettled jobs only, plus
-//                                          settled: { count, lastMergedAt } (only the exact value `summary` opts in)
-//   GET /projects/<pid>/settled          → { jobs }, the project's settled jobs only (errors as for board)
+//   GET /projects/<pid>/board            → { jobs, config, epics } (a bad config is a 500 carrying the reason);
+//                                          epics: the on-board (unsettled) epics' epic.json, in slug order
+//   GET /projects/<pid>/board?settled=summary → { jobs, config, settled, epics }: unsettled jobs only, plus
+//                                          settled: { count, lastMergedAt, epics } (only the exact value `summary` opts in)
+//   GET /projects/<pid>/settled          → { jobs, epics }, the project's settled jobs and epics only (errors as for board)
 //   GET /projects/<pid>/jobs/<id>/docs   → { files: [{ path, text }] }, that job's markdown in reading order
+//   GET /projects/<pid>/epics/<slug>/docs → { files: [{ path, text }] }, the epic's plan, then its member briefs in plan order
 //   GET /events                          → text/event-stream of `projects`, `board`, and `error` events
 //   GET /events?settled=summary          → the same stream, with each `board` event narrow
-//                                          ({ project, jobs, config, settled }, as for the narrow board)
+//                                          ({ project, jobs, config, settled, epics }, as for the narrow board)
 //   GET /, GET /<asset>                  → the built Andon UI (`uiDir`), read-only; a path outside it is a 404
 // `board` (endpoint and event) and `docs` also serve jobs found only on the project's
 // `factory/archive` branch, in the same shapes: re-projected from the archived `events.jsonl` (a
@@ -17,17 +19,22 @@
 // is read from git (`rev-parse`, `ls-tree`, `cat-file` only; see archive.ts) into a cache keyed by
 // the branch's tip sha, so a `jobs/` change runs no git and an archive move runs one `ls-tree` and
 // one `cat-file --batch`.
+// Epics are read the same way: each local `factory/jobs/epics/<slug>/epic.json` as stored (last
+// good snapshot kept), and each archived-only `epics/<slug>/` re-projected with the contract's
+// `projectEpic` from its archived log and plan and the board's jobs; a local epic dir always wins.
 // Changes are found with fs.watch, never by polling: one recursive watch on each project's
-// `factory/jobs/`, one non-recursive watch on its `factory/` (for `config.json`), and one on the
+// `factory/jobs/` (epic runtime state included), one non-recursive watch on its `factory/` (for
+// `config.json`), one non-recursive watch on its `factory/epics/` (plan edits), and one on the
 // registry file's directory. The archive ref is watched in the git common dir (so a linked
 // worktree's project works too): non-recursive watches on `refs/heads/factory/`, on `refs/heads/`
 // (for `factory/` appearing), and on the common dir itself for `packed-refs` only.
 // `.worktrees/` and `.lock/` are never watched or served.
-// "Settled" is the contract's rule (settled.ts). A merged job settles with no file change, so
-// while any narrow `/events` client is connected each project has at most one one-shot settle
-// timer, armed for its next unsettled merged job's crossing and re-armed after every build; it
-// sends a narrow `board` event to narrow clients only. It is not polling: with no narrow client,
-// or no unsettled merged job, no timer is armed.
+// "Settled" is the contract's epic-aware rule (settled.ts). A merged job or a landed epic settles
+// with no file change, so while any narrow `/events` client is connected each project has at most
+// one one-shot settle timer, armed for its next crossing (an unsettled merged job with no epic, or
+// an unsettled landed epic, whose jobs settle with it) and re-armed after every build; it sends a
+// narrow `board` event to narrow clients only. It is not polling: with no narrow client, or no
+// coming crossing, no timer is armed.
 // A project's name is resolved from its config.json on every GET /projects and on connect, and
 // `projects` is re-sent whenever a resolved name changes (or the registry's list does).
 // The board and docs readers are ported from the vendored `factory/serve.ts` (not imported).
@@ -36,9 +43,9 @@ import { watch } from 'node:fs';
 import type { FSWatcher } from 'node:fs';
 import { lstat, mkdir, readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import { parseConfig, readRegistry } from '@factory/contract';
+import { isEpicSlug, parseConfig, parsePlan, readRegistry } from '@factory/contract';
 import type { Config } from '@factory/contract';
-import { EMPTY_ARCHIVE, archiveTip, gitCommonDir, readArchive, spawnGit } from './archive';
+import { EMPTY_ARCHIVE, archiveTip, gitCommonDir, projectArchivedEpic, readArchive, spawnGit } from './archive';
 import type { ArchiveCache, GitRunner } from './archive';
 import { MAX_DELAY_MS, nextSettle, partition, summarize } from './settled';
 import type { SettledSummary } from './settled';
@@ -78,8 +85,10 @@ interface Project {
   info: ProjectInfo;
   factory: string; // <root>/factory
   lastGood: Map<string, Job>; // per job id: the last job.json that parsed
+  lastGoodEpic: Map<string, Job>; // per epic slug: the last epic.json that parsed
   factoryWatcher: FSWatcher | null;
   jobsWatcher: FSWatcher | null;
+  epicsWatcher: FSWatcher | null; // `factory/epics/` (plan files), non-recursive
   timer: ReturnType<typeof setTimeout> | null;
   settleTimer: ReturnType<typeof setTimeout> | null; // armed only while a narrow `/events` client is connected
   settleDue: number; // when the settle timer's job crosses the line (ms since the epoch)
@@ -88,6 +97,7 @@ interface Project {
   archiveDirty: boolean; // the archive ref may have moved since it was read
   archiveTask: Promise<void>; // the archive's setup or latest refresh; readers wait on it
   refs: { common: FSWatcher | null; heads: FSWatcher | null; factory: FSWatcher | null }; // the archive ref watches, in the git common dir
+  log: (line: string) => void; // the service's diagnostics
 }
 
 export const HOSTNAME = '127.0.0.1';
@@ -116,6 +126,17 @@ async function readJob(p: Project, id: string): Promise<Job | undefined> {
   return p.lastGood.get(id);
 }
 
+// The same for an epic's epic.json, under `jobs/epics/<slug>/` (the slug is already checked).
+async function readEpic(p: Project, slug: string): Promise<Job | undefined> {
+  try {
+    const epic: unknown = JSON.parse(await readFile(join(p.factory, 'jobs', 'epics', slug, 'epic.json'), 'utf8'));
+    if (isRecord(epic)) p.lastGoodEpic.set(slug, { ...epic });
+  } catch {
+    // missing or mid-write: fall back to the last good read
+  }
+  return p.lastGoodEpic.get(slug);
+}
+
 // Read per request, parsed strictly, so an edit to config.json shows up on the next read.
 async function readConfig(p: Project): Promise<Config> {
   return parseConfig(JSON.parse(await readFile(join(p.factory, 'config.json'), 'utf8')));
@@ -131,7 +152,10 @@ async function resolveName(p: Project): Promise<string> {
   }
 }
 
-// Local jobs, then the archived jobs that have no local dir, sorted by id together.
+const bySlugOrId = <T extends { id: string }>(a: T, b: T): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+// Local jobs, then the archived jobs that have no local dir, sorted by id together; and every
+// epic, local (its epic.json as stored) or archived-only (re-projected over those jobs), by slug.
 async function board(p: Project): Promise<Board> {
   const config = await readConfig(p);
   await p.archiveTask;
@@ -141,17 +165,84 @@ async function board(p: Project): Promise<Board> {
   const local = new Set(ids);
   const read = await Promise.all(ids.map(async (id) => ({ id, job: await readJob(p, id) })));
   for (const [id, a] of p.archive.jobs) if (!local.has(id)) read.push({ id, job: { ...a.job } });
-  read.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return { jobs: read.map((r) => r.job).filter((j) => j !== undefined), config };
+  read.sort(bySlugOrId);
+  const jobs = read.map((r) => r.job).filter((j) => j !== undefined);
+
+  const slugs = (await entries(join(p.factory, 'jobs', 'epics')))
+    .filter((d) => d.isDirectory() && isEpicSlug(d.name))
+    .map((d) => d.name);
+  const localEpics = new Set(slugs);
+  const epicRead = await Promise.all(slugs.map(async (id) => ({ id, epic: await readEpic(p, id) })));
+  for (const [slug, a] of p.archive.epics) {
+    if (localEpics.has(slug)) continue;
+    try {
+      epicRead.push({ id: slug, epic: projectArchivedEpic(a, jobs) });
+    } catch (e) {
+      p.log(`andon: ${p.info.root}: factory/archive epics/${slug}: ${message(e)}; left out`);
+    }
+  }
+  epicRead.sort(bySlugOrId);
+  const epics = new Map<string, Job>();
+  for (const r of epicRead) if (r.epic !== undefined) epics.set(r.id, r.epic);
+  return { jobs, config, epics };
 }
 
-type Board = { jobs: Job[]; config: Config };
+// `epics` holds every epic the project has, settled or not; the payloads below split it.
+type Board = { jobs: Job[]; config: Config; epics: Map<string, Job> };
 
-// The narrow form of a board: its unsettled jobs, its config, and the settled summary, by the
+// The plain form of a board: every job, its config, and the on-board (unsettled) epics, by the
 // system clock.
-function narrow(b: Board, now: number): Board & { settled: SettledSummary } {
-  const { unsettled, settled } = partition(b.jobs, b.config.dashboard.settleAfterHours, now);
-  return { jobs: unsettled, config: b.config, settled: summarize(settled) };
+function plain(b: Board, now: number): { jobs: Job[]; config: Config; epics: Job[] } {
+  const { unsettledEpics } = partition([], b.epics, b.config.dashboard.settleAfterHours, now);
+  return { jobs: b.jobs, config: b.config, epics: unsettledEpics };
+}
+
+// The narrow form of a board: its unsettled jobs, its config, the settled summary, and the
+// on-board epics, by the system clock.
+function narrow(b: Board, now: number): { jobs: Job[]; config: Config; settled: SettledSummary; epics: Job[] } {
+  const { unsettled, settled, unsettledEpics, settledEpics } = partition(b.jobs, b.epics, b.config.dashboard.settleAfterHours, now);
+  return { jobs: unsettled, config: b.config, settled: summarize(settled, settledEpics), epics: unsettledEpics };
+}
+
+// The settled side: the settled jobs and epics.
+function settledOf(b: Board, now: number): { jobs: Job[]; epics: Job[] } {
+  const { settled, settledEpics } = partition(b.jobs, b.epics, b.config.dashboard.settleAfterHours, now);
+  return { jobs: settled, epics: settledEpics };
+}
+
+// The text of `rel` (relative to factory/) when it is a regular file, not a symlink, that resolves
+// inside the project's factory/; null otherwise (missing, a symlink, a directory, or outside).
+async function readInside(p: Project, rel: string): Promise<string | null> {
+  const path = join(p.factory, rel);
+  try {
+    if (!(await lstat(path)).isFile()) return null;
+    const [root, real] = await Promise.all([realpath(p.factory), realpath(path)]);
+    if (!real.startsWith(root + sep)) return null;
+    return await readFile(real, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+// An epic's docs: its plan (`epics/<slug>.md`, locally when that is a regular file, else the
+// archived `plan.md`), then each member's brief (`briefs/<m>.md`, local regular files only) in
+// plan order. Null when the slug has no plan locally or archived. `slug` is already checked.
+async function epicDocs(p: Project, slug: string): Promise<{ files: Array<{ path: string; text: string }> } | null> {
+  const path = `epics/${slug}.md`;
+  let plan = await readInside(p, path);
+  if (plan === null) {
+    await p.archiveTask;
+    plan = p.archive.epics.get(slug)?.plan ?? null;
+  }
+  if (plan === null) return null;
+  const files = [{ path, text: plan }];
+  // Member slugs are checked by the plan parser (the slug rule), so no path escapes `briefs/`.
+  for (const m of parsePlan(plan).members) {
+    const brief = `briefs/${m.slug}.md`;
+    const text = await readInside(p, brief);
+    if (text !== null) files.push({ path: brief, text });
+  }
+  return { files };
 }
 
 const num = (name: string): number => Number(name.match(/\d+/)?.[0] ?? 0);
@@ -325,7 +416,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     clearSettle(p);
     if (p.closed || stopped || !hasForm('narrow')) return;
     const now = Date.now();
-    const delay = nextSettle(b.jobs, b.config.dashboard.settleAfterHours, now);
+    const delay = nextSettle(b.jobs, b.epics, b.config.dashboard.settleAfterHours, now);
     if (delay === null) return;
     p.settleDue = now + delay;
     p.settleTimer = timers.set(() => {
@@ -391,8 +482,9 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       const b = await board(p);
       if (!p.closed) {
         // Each form is built only when a client of that form is connected.
-        if (hasForm('plain')) broadcast('board', { project: p.info.id, ...b }, 'plain');
-        if (hasForm('narrow')) broadcast('board', { project: p.info.id, ...narrow(b, Date.now()) }, 'narrow');
+        const now = Date.now();
+        if (hasForm('plain')) broadcast('board', { project: p.info.id, ...plain(b, now) }, 'plain');
+        if (hasForm('narrow')) broadcast('board', { project: p.info.id, ...narrow(b, now) }, 'narrow');
         armSettle(p, b);
       }
     } catch (e) {
@@ -424,6 +516,14 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     } catch {
       // no factory/jobs/ yet: the factory/ watch attaches it when it appears
     }
+  }
+
+  // Plan files: a non-recursive watch on `factory/epics/`, attached when it appears.
+  function watchEpics(p: Project): void {
+    if (p.closed || p.epicsWatcher !== null) return;
+    p.epicsWatcher = watchDir(join(p.factory, 'epics'), () => schedule(p), (w) => {
+      if (p.epicsWatcher === w) p.epicsWatcher = null;
+    });
   }
 
   // The archive ref may have moved: the next `board` (event or request) re-reads the tip first.
@@ -487,8 +587,10 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       info: { id: projectId(root), name: basename(root), root },
       factory: join(root, 'factory'),
       lastGood: new Map(),
+      lastGoodEpic: new Map(),
       factoryWatcher: null,
       jobsWatcher: null,
+      epicsWatcher: null,
       timer: null,
       settleTimer: null,
       settleDue: 0,
@@ -497,6 +599,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       archiveDirty: false,
       archiveTask: Promise.resolve(),
       refs: { common: null, heads: null, factory: null },
+      log,
     };
     p.archiveTask = openArchive(p);
     try {
@@ -505,6 +608,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       const w = watch(p.factory, (_event, filename) => {
         if (filename !== null && filename.startsWith('.')) return;
         if (filename === null || filename === 'jobs') watchJobs(p);
+        if (filename === null || filename === 'epics') watchEpics(p);
         schedule(p);
       });
       w.on('error', () => {
@@ -516,6 +620,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       // no factory/: the project is still listed, just not watched
     }
     watchJobs(p);
+    watchEpics(p);
     return p;
   }
 
@@ -523,8 +628,10 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     p.closed = true;
     p.factoryWatcher?.close();
     p.jobsWatcher?.close();
+    p.epicsWatcher?.close();
     p.factoryWatcher = null;
     p.jobsWatcher = null;
+    p.epicsWatcher = null;
     for (const w of [p.refs.common, p.refs.heads, p.refs.factory]) w?.close();
     p.refs = { common: null, heads: null, factory: null };
     if (p.timer !== null) clearTimeout(p.timer);
@@ -647,8 +754,9 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       try {
         await archiveReady(p);
         const full = await board(p);
-        if (b[2] === 'settled') return json({ jobs: partition(full.jobs, full.config.dashboard.settleAfterHours, Date.now()).settled });
-        return json(summary ? narrow(full, Date.now()) : full);
+        const now = Date.now();
+        if (b[2] === 'settled') return json(settledOf(full, now));
+        return json(summary ? narrow(full, now) : plain(full, now));
       } catch (e) {
         return text(`config.json: ${message(e)}`, 500);
       }
@@ -665,6 +773,15 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       } catch (e) {
         return text(`config.json: ${message(e)}`, 500);
       }
+    }
+
+    const e = pathname.match(/^\/projects\/([^/]+)\/epics\/([^/]+)\/docs$/);
+    if (e !== null) {
+      const p = projects.get(e[1] ?? '');
+      const slug = e[2] ?? '';
+      if (p === undefined || !isEpicSlug(slug)) return notFound(); // checked before any path is built
+      await archiveReady(p);
+      return (await epicDocs(p, slug).then((d) => (d === null ? null : json(d)))) ?? notFound();
     }
     if (opts.uiDir !== undefined) return (await uiFile(opts.uiDir, pathname)) ?? notFound();
     return notFound();

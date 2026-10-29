@@ -3,8 +3,11 @@
 // keeps its archived `job.json`), with the markdown the `docs` endpoint serves, held in memory and
 // keyed by the branch's tip sha. Git is only read: `rev-parse`, `ls-tree`, and `cat-file`, spawned
 // without a shell, with fixed argument arrays. A rebuild runs one `ls-tree` and one
-// `cat-file --batch` for all files, and only when the tip has moved.
-import { isJobId, parseLog, project } from '@factory/contract';
+// `cat-file --batch` for all files, and only when the tip has moved. The same pass reads each
+// archived epic's `epics/<slug>/events.jsonl` and `plan.md`; an archived epic is re-projected with
+// the contract's `projectEpic` per board build, since its member jobs come from the board.
+import { JOB_KINDS, isEpicSlug, isJobId, parseEpicLog, parseLog, parsePlan, planPath, project, projectEpic } from '@factory/contract';
+import type { EpicEvent, EpicJob, PlanMember } from '@factory/contract';
 
 export interface GitOutput {
   code: number;
@@ -51,13 +54,23 @@ export interface ArchivedJob {
   files: Map<string, string>;
 }
 
-/** The archive as read at `tip` (null: no branch, so no jobs). */
+/** One archived epic: its parsed log (starting with `epic.started`) and its archived plan. */
+export interface ArchivedEpic {
+  slug: string;
+  log: EpicEvent[];
+  plan: string | null; // `plan.md`'s text; null when the archive holds none
+  members: PlanMember[]; // the members that parsed from the plan
+  planError: string | null; // why the plan couldn't be read or parsed in full, as `epic.json` says it
+}
+
+/** The archive as read at `tip` (null: no branch, so no jobs or epics). */
 export interface ArchiveCache {
   tip: string | null;
   jobs: Map<string, ArchivedJob>;
+  epics: Map<string, ArchivedEpic>; // by slug, in slug order
 }
 
-export const EMPTY_ARCHIVE: ArchiveCache = { tip: null, jobs: new Map() };
+export const EMPTY_ARCHIVE: ArchiveCache = { tip: null, jobs: new Map(), epics: new Map() };
 
 const HEX_SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 const TOP_MD = /^(feature|spec|build|decision|rework-\d+|conflict-\d+)\.md$/;
@@ -102,16 +115,30 @@ interface TreeBlob {
   sha: string;
 }
 
+interface EpicBlob {
+  slug: string;
+  rel: 'events.jsonl' | 'plan.md';
+  sha: string;
+}
+
 // `git ls-tree -r -z <tip>` records: `<mode> SP <type> SP <sha> TAB <path>`, NUL-terminated. Kept:
-// regular-file blobs under a top-level dir named like a job id, at a path the service reads.
-export function parseTree(raw: Uint8Array): TreeBlob[] {
-  const out: TreeBlob[] = [];
+// regular-file blobs only (never a symlink or a submodule).
+function blobs(raw: Uint8Array): Array<{ path: string; sha: string }> {
+  const out: Array<{ path: string; sha: string }> = [];
   for (const rec of decoder.decode(raw).split('\0')) {
     const tab = rec.indexOf('\t');
     if (tab < 0) continue;
     const [mode, type, sha] = rec.slice(0, tab).split(' ');
-    const path = rec.slice(tab + 1);
     if (type !== 'blob' || mode === undefined || !REGULAR.test(mode) || sha === undefined || !HEX_SHA.test(sha)) continue;
+    out.push({ path: rec.slice(tab + 1), sha });
+  }
+  return out;
+}
+
+// The job blobs: under a top-level dir named like a job id, at a path the service reads.
+function jobBlobs(all: ReadonlyArray<{ path: string; sha: string }>): TreeBlob[] {
+  const out: TreeBlob[] = [];
+  for (const { path, sha } of all) {
     const slash = path.indexOf('/');
     if (slash < 0) continue; // a file at the top level is not a job
     const id = path.slice(0, slash);
@@ -121,6 +148,23 @@ export function parseTree(raw: Uint8Array): TreeBlob[] {
   }
   return out;
 }
+
+// The epic blobs: exactly `epics/<slug>/events.jsonl` and `epics/<slug>/plan.md`, for an epic slug.
+function epicBlobs(all: ReadonlyArray<{ path: string; sha: string }>): EpicBlob[] {
+  const out: EpicBlob[] = [];
+  for (const { path, sha } of all) {
+    const [top, slug, rel, ...rest] = path.split('/');
+    if (top !== 'epics' || slug === undefined || !isEpicSlug(slug) || rest.length > 0) continue;
+    if (rel === 'events.jsonl' || rel === 'plan.md') out.push({ slug, rel, sha });
+  }
+  return out;
+}
+
+/** The archived jobs' blobs in `git ls-tree -r -z` output. */
+export const parseTree = (raw: Uint8Array): TreeBlob[] => jobBlobs(blobs(raw));
+
+/** The archived epics' blobs in `git ls-tree -r -z` output. */
+export const parseEpicTree = (raw: Uint8Array): EpicBlob[] => epicBlobs(blobs(raw));
 
 // `git cat-file --batch` output: per requested id, `<sha> <type> <size>\n<content>\n`, or
 // `<sha> missing\n`. Returns each blob's text by sha.
@@ -166,8 +210,10 @@ export async function readArchive(git: GitRunner, root: string, tip: string, log
   if (!HEX_SHA.test(tip)) throw new Error('archive tip is not an object id');
   const tree = await git(['ls-tree', '-r', '-z', '--full-tree', tip], { cwd: root });
   if (tree.code !== 0) throw new Error(`git ls-tree exited ${tree.code}`);
-  const blobs = parseTree(tree.stdout);
-  const shas = [...new Set(blobs.map((b) => b.sha))];
+  const all = blobs(tree.stdout);
+  const jobFiles = jobBlobs(all);
+  const epicFiles = epicBlobs(all);
+  const shas = [...new Set([...jobFiles, ...epicFiles].map((b) => b.sha))];
   let texts = new Map<string, string>();
   if (shas.length > 0) {
     const batch = await git(['cat-file', '--batch'], { cwd: root, input: shas.map((s) => `${s}\n`).join('') });
@@ -176,7 +222,7 @@ export async function readArchive(git: GitRunner, root: string, tip: string, log
   }
 
   const byJob = new Map<string, Map<string, string>>();
-  for (const b of blobs) {
+  for (const b of jobFiles) {
     const text = texts.get(b.sha);
     if (text === undefined) continue;
     const files = byJob.get(b.id) ?? new Map<string, string>();
@@ -191,5 +237,68 @@ export async function readArchive(git: GitRunner, root: string, tip: string, log
       log(`andon: ${root}: factory/archive ${id}: ${message(e)}; left out`);
     }
   }
-  return { tip, jobs };
+  const byEpic = new Map<string, Map<string, string>>();
+  for (const b of epicFiles) {
+    const text = texts.get(b.sha);
+    if (text === undefined) continue;
+    const files = byEpic.get(b.slug) ?? new Map<string, string>();
+    files.set(b.rel, text);
+    byEpic.set(b.slug, files);
+  }
+  const epics = new Map<string, ArchivedEpic>();
+  for (const [slug, files] of [...byEpic].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    try {
+      epics.set(slug, archivedEpic(slug, files));
+    } catch (e) {
+      log(`andon: ${root}: factory/archive epics/${slug}: ${message(e)}; left out`);
+    }
+  }
+  return { tip, jobs, epics };
+}
+
+// An archived epic's parsed log and plan. Throws a one-line reason when it can't be projected (no
+// log, a torn or malformed one, or one that doesn't start with this epic's `epic.started`).
+function archivedEpic(slug: string, files: Map<string, string>): ArchivedEpic {
+  const text = files.get('events.jsonl');
+  if (text === undefined) throw new Error('no events.jsonl');
+  if (text !== '' && !text.endsWith('\n')) throw new Error('events.jsonl does not end with a newline (torn)');
+  const log = parseEpicLog(text);
+  const first = log[0];
+  if (first === undefined || first.type !== 'epic.started') throw new Error('events.jsonl does not start with epic.started');
+  if (first.slug !== slug) throw new Error(`events.jsonl claims ${JSON.stringify(first.slug)}`);
+  const plan = files.get('plan.md') ?? null;
+  let members: PlanMember[] = [];
+  let planError: string | null = null;
+  if (plan === null) planError = `plan ${planPath(slug)} is missing`;
+  else {
+    const parsed = parsePlan(plan);
+    members = parsed.members;
+    const [problem] = parsed.errors;
+    if (problem !== undefined) planError = `plan ${planPath(slug)} ${problem}`;
+  }
+  return { slug, log, plan, members, planError };
+}
+
+// A board job as the epic projection reads it (as the CLI reads `job.json`), or null when it isn't
+// one of `slug`'s jobs or has no string `stage`.
+function epicJob(job: Job, slug: string): EpicJob | null {
+  if (job.epic !== slug || typeof job.id !== 'string' || typeof job.stage !== 'string') return null;
+  return {
+    id: job.id,
+    stage: job.stage,
+    kind: JOB_KINDS.find((k) => k === job.kind) ?? 'member',
+    brief: typeof job.brief === 'string' ? job.brief : null,
+    updated: typeof job.updated === 'string' ? job.updated : null,
+  };
+}
+
+/**
+ * An archived epic's `epic.json`, as the CLI would project it: by `projectEpic` from its archived
+ * log and plan and its jobs as the board holds them (`jobs`: local wins, else archived).
+ */
+export function projectArchivedEpic(epic: ArchivedEpic, jobs: readonly Job[]): Job {
+  const mine = jobs.map((j) => epicJob(j, epic.slug)).filter((j) => j !== null).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const snap: unknown = JSON.parse(JSON.stringify(projectEpic(epic.log, epic.members, mine, epic.planError)));
+  if (!isRecord(snap)) throw new Error('projection is not an object');
+  return snap;
 }

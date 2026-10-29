@@ -745,7 +745,7 @@ describe('archived jobs (job 047)', () => {
     const { url } = await start();
     const board = await getJson(`${url}/projects/${projectId(root)}/board`);
     expect(board.status).toBe(200);
-    expect(Object.keys(isRec(board.body) ? board.body : {}).sort()).toEqual(['config', 'jobs']);
+    expect(Object.keys(isRec(board.body) ? board.body : {}).sort()).toEqual(['config', 'epics', 'jobs']);
     expect(field(board.body, 'config')).toEqual(parseConfig(CONFIG));
     expect(idsOf(board.body)).toEqual(['001-local-job', '002-archived-job', '003-legacy-job', '004-later-local']);
     expect(jobOf(board.body, '002-archived-job')).toEqual(job2);
@@ -954,7 +954,7 @@ describe('archived jobs (job 047)', () => {
     for (const root of [repo, plain]) {
       const board = await getJson(`${url}/projects/${projectId(root)}/board`);
       expect(board.status).toBe(200);
-      expect(board.body).toEqual({ jobs: [await readJson(join(root, 'factory', 'jobs', '001-first-job', 'job.json'))], config: parseConfig(CONFIG) });
+      expect(board.body).toEqual({ jobs: [await readJson(join(root, 'factory', 'jobs', '001-first-job', 'job.json'))], config: parseConfig(CONFIG), epics: [] });
       expect((await getJson(`${url}/projects/${projectId(root)}/jobs/001-first-job/docs`)).body).toEqual({ files: [] });
       expect((await getJson(`${url}/projects/${projectId(root)}/jobs/002-not-there/docs`)).body).toEqual({ files: [] });
     }
