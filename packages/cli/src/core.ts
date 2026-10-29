@@ -5,6 +5,7 @@
 //   show <id>
 //   abandon <id> "<reason>" [--force] [--delete-branch]
 //   archive <id> | --all [--force]
+//   prune
 //   doctor
 // This is everything the installed, self-contained `factory/cli.ts` carries (`installed.ts`).
 // The source CLI (`index.ts`) adds `init` and `upgrade` on top.
@@ -15,13 +16,14 @@ import { archiveJob, archivedIds, isTerminal, localJobIds, readLocalJob } from '
 import { doctor } from './doctor';
 import { deleteBranch, removeWorktree, resolveTarget } from './git';
 import { isNotFound } from './paths';
+import { pruneAll } from './prune';
 
 export interface Io {
   root: string; // the factory/ directory
   stdout: (line: string) => void;
   stderr: (line: string) => void;
   registry?: string; // the Andon registry file `init` registers in (source CLI only); absent: none
-  now?: () => Date; // drives `show`'s open spans; event timestamps always come from the store's clock
+  now?: () => Date; // drives `show`'s open spans and `prune`'s settle check; event timestamps always come from the store's clock
 }
 
 export const USAGE = {
@@ -31,7 +33,8 @@ export const USAGE = {
   show: 'usage: show <id>',
   abandon: 'usage: abandon <id> "<reason>" [--force] [--delete-branch]',
   archive: 'usage: archive <id> | --all [--force]',
-  // The installed CLI's top-level usage line; `doctor`, `abandon`, and `archive` are documented in docs/contract/v1.md.
+  prune: 'usage: prune',
+  // The installed CLI's top-level usage line; `doctor`, `abandon`, `archive`, and `prune` are documented in docs/contract/v1.md.
   all: 'usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id>',
 };
 
@@ -89,6 +92,12 @@ export async function dispatchCore(argv: readonly string[], io: Io, usage: strin
       const args = parseArchive(rest);
       if (!archiveEnabled(config)) throw new Error('archiving is disabled: config.json has no "archive": { "enabled": true }; nothing written');
       return args.all ? archiveAll(io, args.force) : archiveOne(io, args.target, args.force);
+    }
+    case 'prune': {
+      // In order: the arguments (none), the archiving-off refusal (before any job dir or ref is read), the sweep.
+      if (rest.length > 0) throw new Error(USAGE.prune);
+      if (!archiveEnabled(config)) throw new Error('archiving is disabled: config.json has no "archive": { "enabled": true }; nothing removed');
+      return pruneAll(io, config.dashboard.settleAfterHours);
     }
     default:
       throw new Error(usage);
