@@ -1,6 +1,7 @@
 # Rename the archive branch to `factory/archive`
 
-- Status: ready
+- Status: done
+- Job: 046-archive-branch-rename (merged add081a, 2026-10-29)
 - Sources: validating `factory archive --all` on 2026-10-29 (bare `git log factory/jobs` fails as
   ambiguous); factory/briefs/job-archive.md (decision 2; job 045); docs/contract/v1.md ("Job
   archive", job ids, `config.json` `archive`, CLI); packages/cli/src/archive.ts
