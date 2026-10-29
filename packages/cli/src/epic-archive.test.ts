@@ -133,6 +133,8 @@ describe('prune: epics and their jobs (AC7)', () => {
     expect((await f.cli('prune')).out).toEqual([`kept ${a}: not archived`, 'kept epic auth: not archived', 'prune: removed 0, kept 2, failed 0']);
     await f.ok('archive', 'auth');
     expect((await f.cli('prune')).out).toEqual([`kept ${a}: not archived`, 'pruned epic auth', 'prune: removed 1, kept 1, failed 0']);
+    // rebuilding a job whose epic dir was pruned rebuilds the job and skips the epic
+    expect(await f.cli('rebuild', a)).toEqual({ code: 0, out: [`rebuilt 1: ${a}`], err: [] });
     await f.ok('archive', a);
     expect((await f.cli('prune')).out).toEqual([`pruned ${a}`, 'prune: removed 1, kept 0, failed 0']);
   });

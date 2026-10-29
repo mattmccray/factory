@@ -40,6 +40,16 @@ describe('startEpic', () => {
     expect((await readdir(root)).sort()).toEqual(['briefs', 'epics']);
   });
 
+  test('a failing undo adds its reason to the error, and the dir still goes', async () => {
+    await expect(startEpic(root, 'auth', started, undefined, async () => {
+      await mkdir(join(root, 'jobs', 'epics', 'auth', 'events.jsonl'));
+      return async () => {
+        throw new Error('rollback left behind: branch factory/epic/auth');
+      };
+    })).rejects.toThrow(/; rollback left behind: branch factory\/epic\/auth$/);
+    expect((await readdir(root)).sort()).toEqual(['briefs', 'epics']);
+  });
+
   test('a second start is refused before setup runs', async () => {
     await startEpic(root, 'auth', started);
     let ran = false;

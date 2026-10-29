@@ -1,6 +1,7 @@
 // The factory's only writer of job state (docs/contract/v1.md): reads/appends events.jsonl and
 // rewrites the derived job.json. `root` is the factory/ directory so tests can use a temp dir.
 import { appendFile, mkdir, readFile, readdir, rename, rmdir, stat, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { JOB_NUMBER_MAX, checkSlug, checkTransition, epicMaxParallel, parseEventInput } from './contract';
 import type { Config, EventInput, FactoryEvent, TransitionOptions, Verdict } from './contract';
@@ -185,7 +186,8 @@ export async function rebuildAll(root: string, id?: string): Promise<{ jobs: str
     if (snap.epic !== null) named.add(snap.epic);
     done.push(j);
   }
-  const epics = id !== undefined ? [...named] : await epicSlugs(root);
+  // From a job id, an epic with no local dir (pruned once it was terminal and archived) is skipped.
+  const epics = id !== undefined ? [...named].filter((e) => existsSync(join(root, 'jobs', 'epics', e))) : await epicSlugs(root);
   for (const e of epics) await rebuildEpic(root, e);
   return { jobs: done, epics };
 }

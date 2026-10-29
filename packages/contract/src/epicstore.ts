@@ -177,8 +177,8 @@ export async function withEpicLock<T>(root: string, slug: string, fn: () => Prom
  * concurrent one, is refused here, before anything else runs), takes the epic's lock, runs
  * `setup` (the CLI's git work; it returns how to undo it), logs `epic.started` (its first event)
  * with the system clock's timestamp, and writes `epic.json`. On any failure after the
- * reservation, the undo runs (if setup returned one) and the dirs this call created are removed,
- * so a refused start leaves nothing.
+ * reservation, the undo runs (if setup returned one; a failing undo adds its reason to the error)
+ * and the dirs this call created are removed, so a refused start leaves nothing.
  */
 export async function startEpic(
   root: string,
@@ -212,10 +212,14 @@ export async function startEpic(
     await writeEpicSnapshot(root, slug, snap);
     ok = true;
     return snap;
+  } catch (e) {
+    // The undo's own failure (git state left behind) is added to the reason, never hidden.
+    const reason = (e instanceof Error ? e.message : String(e)).split('\n')[0] ?? '';
+    const left = undo === null ? null : await undo().then(() => null, (u: unknown) => (u instanceof Error ? u.message : String(u)));
+    throw left === null ? e : new Error(`${reason}; ${left}`);
   } finally {
     await release(lock);
     if (!ok) {
-      if (undo !== null) await undo();
       await rm(dir, { recursive: true, force: true });
       if (madeParent !== undefined) await removeEmpty(parent, madeParent);
     }
@@ -317,7 +321,9 @@ export async function claimIntoEpic<T>(
       if (!maxRoundGiven && planRound !== null) next = { ...claimed, maxRound: planRound };
     }
     const out = await append(next);
-    await rebuildLocked(root, slug);
+    // The job exists now: epic.json is a disposable projection, so a failed rewrite never fails
+    // the claim (it would leave a job whose id was never printed). `epic show` and `rebuild` regenerate it.
+    await rebuildLocked(root, slug).catch(() => undefined);
     return out;
   });
 }

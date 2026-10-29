@@ -25,7 +25,7 @@ import {
 } from '@factory/contract';
 import type { Config, EpicSnapshot } from '@factory/contract';
 import { abandonJob, isDir } from './abandon';
-import { addWorktree, branchExists, deleteBranch, removeWorktree, resolveTarget } from './git';
+import { addWorktree, branchExists, deleteBranch, removeWorktree, resolveTarget, runGit } from './git';
 import { isNotFound } from './paths';
 
 export const EPIC_USAGE = {
@@ -53,6 +53,12 @@ async function pathExists(path: string): Promise<boolean> {
     if (isNotFound(e)) return false;
     throw e;
   }
+}
+
+// Whether two branch names point at the same commit (false when either can't be resolved).
+async function sameCommit(repo: string, a: string, b: string): Promise<boolean> {
+  const [x, y] = await Promise.all([a, b].map((r) => runGit(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${r}^{commit}`], { what: 'epic start' })));
+  return x !== undefined && y !== undefined && x.code === 0 && y.code === 0 && x.out === y.out;
 }
 
 /** The epic worktree, relative to the repo root: `factory/.worktrees/epic-<slug>`. */
@@ -95,14 +101,29 @@ async function start(args: readonly string[], io: EpicIo, config: Config): Promi
   const setup = async (): Promise<() => Promise<void>> => {
     if (await branchExists(repo, branch)) throw new Error(`epic start ${slug}: branch ${branch} already exists`);
     if (await pathExists(join(repo, worktree))) throw new Error(`epic start ${slug}: ${worktree} already exists`);
+    // Undo removes only what this start made; a rollback that fails is reported, never hidden.
+    const cleanup = async (deleteIt: boolean): Promise<string[]> => {
+      const left: string[] = [];
+      if (await isDir(join(repo, worktree))) {
+        const w = await removeWorktree(repo, worktree);
+        if (w !== null) left.push(`worktree ${worktree} (${w})`);
+      }
+      if (deleteIt && left.length === 0) {
+        const b = await deleteBranch(repo, branch);
+        if (b !== null) left.push(`branch ${branch} (${b})`);
+      }
+      return left;
+    };
     const undo = async (): Promise<void> => {
-      if (await isDir(join(repo, worktree))) await removeWorktree(repo, worktree);
-      await deleteBranch(repo, branch);
+      const left = await cleanup(true);
+      if (left.length > 0) throw new Error(`epic start ${slug} failed, and its rollback left behind: ${left.join('; ')}`);
     };
     const why = await addWorktree(repo, worktree, branch, target);
     if (why !== null) {
-      await undo();
-      throw new Error(`epic start ${slug}: git worktree add failed: ${why}`);
+      // The add failed: delete the branch only if it is the one this add made (at the target's tip).
+      const ours = (await branchExists(repo, branch)) && (await sameCommit(repo, branch, target));
+      const left = await cleanup(ours);
+      throw new Error(`epic start ${slug}: git worktree add failed: ${why}${left.length > 0 ? `; rollback left behind: ${left.join('; ')}` : ''}`);
     }
     return undo;
   };

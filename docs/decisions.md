@@ -114,6 +114,10 @@ contract is `docs/contract/v1.md`.
       disposable projection over the log, the plan, and the epic's jobs, and the CLI is its only
       writer. It amends decision 8's fixed list (above). The contract is `docs/contract/v1.md`,
       "Epics".
+    - On `factory/archive`, an epic is `epics/<slug>/` with its `events.jsonl` and its plan as
+      `plan.md`, not its `epic.json` (narrowing the design's decision 7, as jobs omit `job.json`):
+      a reader re-projects `epic.json` from the archived epic log, that plan, and the archived
+      member logs (brief `andon-epics-service`).
 
 ## Invariants
 

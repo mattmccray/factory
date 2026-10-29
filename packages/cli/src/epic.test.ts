@@ -330,7 +330,7 @@ describe('epic.json, epic next, epic show (AC4)', () => {
     expect((await epicJson()).members).toHaveLength(2);
     await rm(join(epicDir('auth'), 'epic.json'));
     expect(await f.ok('rebuild', a)).toEqual([`rebuilt 1: ${a}`, 'rebuilt epics 1: auth']);
-    expect(((await epicJson()).members as unknown[]).length).toBe(3);
+    expect((await epicJson()).members).toHaveLength(3);
     expect(await f.ok('epic', 'next', 'auth')).toEqual(['claim c']);
     expect(await f.ok('rebuild', '--all')).toEqual([`rebuilt 1: ${a}`, 'rebuilt epics 1: auth']);
   });
