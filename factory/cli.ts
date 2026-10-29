@@ -1,7 +1,7 @@
 // factory 0.1.0 · managed file, do not edit: it is replaced on upgrade. Project settings go in the overlay: factory/config.json
 // packages/cli/src/core.ts
 import { readFile as readFile4, stat as stat2 } from "fs/promises";
-import { dirname as dirname3, join as join5, relative as relative2, resolve as resolve3 } from "path";
+import { dirname as dirname4, join as join6, relative as relative2, resolve as resolve4 } from "path";
 
 // packages/contract/src/contract.ts
 var WORKING_STAGES = ["claimed", "spec", "build", "review", "approve"];
@@ -638,6 +638,9 @@ async function readLog(root, id) {
       return [];
     throw e;
   }
+  return parseLog(text);
+}
+function parseLog(text) {
   const lines = text.split(`
 `);
   if (lines[lines.length - 1] === "")
@@ -1117,7 +1120,7 @@ async function exists2(path) {
     throw e;
   }
 }
-async function legacyStage(dir) {
+async function legacySnapshot(dir) {
   let raw;
   try {
     raw = JSON.parse(await readFile2(join3(dir, "job.json"), "utf8"));
@@ -1126,7 +1129,8 @@ async function legacyStage(dir) {
   }
   if (typeof raw !== "object" || raw === null || !("stage" in raw) || typeof raw.stage !== "string")
     return null;
-  return raw.stage;
+  const endedAt = "endedAt" in raw && typeof raw.endedAt === "string" ? raw.endedAt : null;
+  return { stage: raw.stage, endedAt };
 }
 async function readLocalJob(root, id) {
   if (!isJobId(id))
@@ -1141,10 +1145,10 @@ async function readLocalJob(root, id) {
   if (log.length === 0 && await exists2(join3(dir, "events.jsonl")))
     throw new Error(`${id}: events.jsonl is empty; not archived`);
   if (log.length === 0) {
-    const stage = await legacyStage(dir);
-    if (stage === null)
+    const snap = await legacySnapshot(dir);
+    if (snap === null)
       throw new Error(`${id}: no events.jsonl and no readable job.json; not archived`);
-    return { id, dir, legacy: true, stage, claimed: null, mergedSha: null };
+    return { id, dir, legacy: true, stage: snap.stage, claimed: null, mergedSha: null, endedAt: snap.endedAt };
   }
   const [first] = log;
   if (first === undefined || first.type !== "job.claimed")
@@ -1154,7 +1158,8 @@ async function readLocalJob(root, id) {
   for (const e of log)
     if (e.type === "job.merged")
       mergedSha = e.sha;
-  return { id, dir, legacy: false, stage: project(log).stage, claimed, mergedSha };
+  const snap = project(log);
+  return { id, dir, legacy: false, stage: snap.stage, claimed, mergedSha, endedAt: snap.endedAt };
 }
 var isTerminal = (job) => job.stage === "merged" || job.stage === "abandoned";
 function skipTop(name, isDirectory, legacy) {
@@ -1199,14 +1204,33 @@ function alternate(path) {
     return path;
   return `"${path.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
 }
-async function trialTree(repo, job) {
+async function scratchTree(repo, job) {
   const objects = (await git2(repo, ["rev-parse", "--path-format=absolute", "--git-path", "objects"])).out;
   const scratch = await mkdtemp(join3(tmpdir(), "factory-archive-"));
   try {
-    return await jobTree(repo, job, { GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternate(objects) });
+    return await buildTree(repo, job.dir, true, job.legacy, { GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternate(objects) });
   } finally {
     await rm2(scratch, { recursive: true, force: true });
   }
+}
+async function trialTree(repo, job) {
+  const sha = await scratchTree(repo, job);
+  if (sha === null)
+    throw new Error(`${job.id}: nothing to archive (no files)`);
+  return sha;
+}
+async function archivedTrees(repo) {
+  const tip = await archiveTip(repo);
+  const out = new Map;
+  if (tip === null)
+    return out;
+  for (const e of await lsTree(repo, tip))
+    if (e.type === "tree" && isJobId(e.name))
+      out.set(e.name, e.sha);
+  return out;
+}
+async function matchesArchived(repo, job, archived) {
+  return await scratchTree(repo, job) === archived;
 }
 async function archivedClaim(repo, tree) {
   const log = (await lsTree(repo, tree)).find((e) => e.name === "events.jsonl" && e.type === "blob");
@@ -1387,6 +1411,104 @@ async function doctor(root) {
   return [await checkConfig(root), ...await checkManaged(root), ...await checkJobNumbers(root)];
 }
 
+// packages/cli/src/prune.ts
+import { lstat as lstat2, mkdir as mkdir2, rm as rm3 } from "fs/promises";
+import { dirname as dirname3, join as join5, resolve as resolve3 } from "path";
+var LOCK = ".events.lock";
+var IN_FLIGHT = `an event is in flight (${LOCK})`;
+var isSystemError = (e) => typeof e === "object" && e !== null && ("code" in e);
+var lineOf = (e) => (e instanceof Error ? e.message : String(e)).split(`
+`)[0] ?? "";
+async function exists3(path) {
+  try {
+    await lstat2(path);
+    return true;
+  } catch (e) {
+    if (isNotFound2(e))
+      return false;
+    throw e;
+  }
+}
+function isSettled(job, hours, now) {
+  if (job.stage === "abandoned")
+    return true;
+  if (job.stage !== "merged" || job.endedAt === null)
+    return false;
+  const ended = Date.parse(job.endedAt);
+  return !Number.isNaN(ended) && now.getTime() - ended > hours * 3600000;
+}
+async function check(io, id, trees, hours, now) {
+  if (await exists3(join5(io.root, "jobs", id, LOCK)))
+    return { kind: "keep", reason: IN_FLIGHT };
+  let job;
+  try {
+    job = await readLocalJob(io.root, id);
+  } catch (e) {
+    if (isSystemError(e))
+      throw e;
+    const text = lineOf(e);
+    return { kind: "keep", reason: text.startsWith(`${id}: `) ? text.slice(id.length + 2) : text };
+  }
+  if (!isTerminal(job))
+    return { kind: "keep", reason: `not merged or abandoned (${job.stage ?? "unreadable"})` };
+  if (!isSettled(job, hours, now))
+    return { kind: "keep", reason: "not settled" };
+  const tree = trees.get(id);
+  if (tree === undefined)
+    return { kind: "keep", reason: "not archived" };
+  return { kind: "candidate", job, tree };
+}
+async function compareAndRemove(repo, job, tree) {
+  const lock = join5(job.dir, LOCK);
+  try {
+    await mkdir2(lock);
+  } catch (e) {
+    if (typeof e === "object" && e !== null && "code" in e && e.code === "EEXIST")
+      return { kind: "keep", reason: IN_FLIGHT };
+    throw e;
+  }
+  let same;
+  try {
+    same = await matchesArchived(repo, job, tree);
+  } catch (e) {
+    await rm3(lock, { recursive: true, force: true });
+    throw e;
+  }
+  if (!same) {
+    await rm3(lock, { recursive: true, force: true });
+    return { kind: "keep", reason: "differs from its archived tree" };
+  }
+  await rm3(job.dir, { recursive: true });
+  return { kind: "prune" };
+}
+async function pruneAll(io, settleAfterHours) {
+  const repo = dirname3(resolve3(io.root));
+  const now = (io.now ?? (() => new Date))();
+  const trees = await archivedTrees(repo);
+  let removed = 0;
+  let kept = 0;
+  let failed = 0;
+  for (const id of await localJobIds(io.root)) {
+    try {
+      const first = await check(io, id, trees, settleAfterHours, now);
+      const decision = first.kind === "candidate" ? await compareAndRemove(repo, first.job, first.tree) : first;
+      if (decision.kind === "prune") {
+        removed++;
+        io.stdout(`pruned ${id}`);
+      } else {
+        kept++;
+        io.stdout(`kept ${id}: ${decision.reason}`);
+      }
+    } catch (e) {
+      failed++;
+      const text = lineOf(e);
+      io.stderr(text.startsWith(`${id}: `) ? text : `${id}: ${text}`);
+    }
+  }
+  io.stdout(`prune: removed ${removed}, kept ${kept}, failed ${failed}`);
+  return failed === 0 ? 0 : 1;
+}
+
 // packages/cli/src/core.ts
 var USAGE = {
   claim: "usage: claim <slug> [brief=\u2026] [issue=\u2026] [maxRound=\u2026] [session=t3code:<environmentId>/<threadId>]",
@@ -1395,6 +1517,7 @@ var USAGE = {
   show: "usage: show <id>",
   abandon: 'usage: abandon <id> "<reason>" [--force] [--delete-branch]',
   archive: "usage: archive <id> | --all [--force]",
+  prune: "usage: prune",
   all: "usage: claim <slug> [k=v \u2026] | event <id> <type> [k=v \u2026] | rebuild <id>|--all | show <id>"
 };
 async function dispatchCore(argv, io, usage = USAGE.all) {
@@ -1405,7 +1528,7 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       io.stdout(f.line);
     return findings.every((f) => f.ok) ? 0 : 1;
   }
-  const config = parseConfig(JSON.parse(await readFile4(join5(io.root, "config.json"), "utf8")));
+  const config = parseConfig(JSON.parse(await readFile4(join6(io.root, "config.json"), "utf8")));
   switch (cmd) {
     case "claim": {
       const [slug, ...kv] = rest;
@@ -1414,7 +1537,7 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       checkSlug(slug);
       const fields = parseFields(kv);
       checkClaim(slug, { fields, config });
-      const repo = dirname3(resolve3(io.root));
+      const repo = dirname4(resolve4(io.root));
       const target = await resolveTarget(repo, mergeTarget(config));
       io.stdout((await claimJob(io.root, slug, { fields, config, target }, undefined, { archived: () => archivedIds(repo) })).id);
       return 0;
@@ -1456,6 +1579,13 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
         throw new Error('archiving is disabled: config.json has no "archive": { "enabled": true }; nothing written');
       return args.all ? archiveAll(io, args.force) : archiveOne(io, args.target, args.force);
     }
+    case "prune": {
+      if (rest.length > 0)
+        throw new Error(USAGE.prune);
+      if (!archiveEnabled(config))
+        throw new Error('archiving is disabled: config.json has no "archive": { "enabled": true }; nothing removed');
+      return pruneAll(io, config.dashboard.settleAfterHours);
+    }
     default:
       throw new Error(usage);
   }
@@ -1484,11 +1614,11 @@ async function abandon(rest, io) {
     throw new Error(`job id '${args.id}' must match ^\\d{3}-[a-z0-9-]+$`);
   const input = parseEventInput("job.abandoned", { reason: args.reason });
   const snap = await appendEvent(io.root, args.id, input, undefined, { force: args.force });
-  const repo = dirname3(resolve3(io.root));
+  const repo = dirname4(resolve4(io.root));
   const branch = `factory/${args.id}`;
-  const worktree = relative2(repo, join5(resolve3(io.root), ".worktrees", args.id));
+  const worktree = relative2(repo, join6(resolve4(io.root), ".worktrees", args.id));
   const left = [];
-  if (await isDir2(join5(repo, worktree))) {
+  if (await isDir2(join6(repo, worktree))) {
     const why = await removeWorktree(repo, worktree);
     if (why !== null)
       left.push(`worktree ${worktree} (${why})`);
@@ -1521,12 +1651,12 @@ function parseArchive2(rest) {
 }
 async function archiveOne(io, id, force) {
   const job = await readLocalJob(io.root, id);
-  const outcome = await archiveJob(dirname3(resolve3(io.root)), job, force);
+  const outcome = await archiveJob(dirname4(resolve4(io.root)), job, force);
   io.stdout(outcome.kind === "archived" ? `archived ${id} ${outcome.commit.slice(0, 7)}` : `${id}: already archived (unchanged)`);
   return 0;
 }
 async function archiveAll(io, force) {
-  const repo = dirname3(resolve3(io.root));
+  const repo = dirname4(resolve4(io.root));
   let archived = 0;
   let unchanged = 0;
   let skipped = 0;

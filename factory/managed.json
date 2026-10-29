@@ -11,7 +11,7 @@
     ".claude/agents/factory-ui.md": "fe9a0819b38bfd75b670f2581e3429142c11f76e1f2a0571c13240e53322778a",
     ".claude/skills/factory/SKILL.md": "8152ca7d2e5af7ff3c69a13e88dca8ba5754ce4ab0cdcaa274586cc2b6c1f77e",
     ".claude/skills/factory/explore.md": "2d992ad3faa61e1b5225005e61fd0ce648580491942c468a2f260d9f4afa6625",
-    "factory/CONTRACT.md": "25c58b68e95a115ccdfd8c8d9dc7a828ac3d1bf636fcdad0febad3156e9b8ab0",
-    "factory/cli.ts": "02d97e85c99c195db5a3d8c9a88e838af833aff5ce35afd1479a2c726f4450dd"
+    "factory/CONTRACT.md": "421e670f93dc2e449aac790f351a932407f45ba6a30c7b568fb40d68ea5d6c21",
+    "factory/cli.ts": "51abeec2a4bacfc10c3a804d948336404f3fc8b57558ae2ff2865bc2d2716434"
   }
 }

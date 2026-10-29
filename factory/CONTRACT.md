@@ -40,7 +40,9 @@ factory/
 
 When archiving is on, `factory archive` also copies each `merged` or `abandoned` job to the
 orphan branch `factory/archive` in the same repo (see "Job archive"). That branch is history, not
-state: the job dirs under `jobs/` stay the live, local, gitignored copy.
+state: the job dirs under `jobs/` stay the live, local, gitignored copy until `factory prune`
+removes the ones already archived and settled (see "CLI"); a pruned job's record lives on the
+branch, and its number is never handed out again.
 
 Job id: `^\d{3}-[a-z0-9-]+$` (three-digit sequence + kebab slug). The CLI checks it before
 building any path under `jobs/`, so a bad id never reads, writes, or creates anything.
@@ -434,6 +436,7 @@ bun factory/cli.ts rebuild <id> | --all                # regenerate job.json fro
 bun factory/cli.ts show <id>                           # human-readable timing summary
 bun factory/cli.ts abandon <id> "<reason>" [--force] [--delete-branch]  # close a job for good
 bun factory/cli.ts archive <id> | --all [--force]      # copy terminal jobs to the factory/archive branch
+bun factory/cli.ts prune                               # remove local job dirs already archived and settled
 bun factory/cli.ts doctor                              # validate config.json, verify managed hashes, note duplicate job numbers
 factory init [--force]                                 # (source only) install the managed core
 factory upgrade [--force]                              # (source only) replace the managed core
@@ -530,6 +533,44 @@ working tree, index, or `HEAD`. The CLI never archives on its own: `event` and `
 no archive side effects; the skill runs `archive` after `job.merged` and after `abandon`.
 *(Added within v1, additively: a new command.)*
 
+`prune` removes the local `jobs/<id>/` dirs whose record is already on the `factory/archive`
+branch, and nothing else. In order, it: checks the arguments (it takes none; any argument exits 1
+with `usage: prune` and removes nothing); refuses when archiving is off (no `archive` key, or
+`"enabled": false`), with one line saying archiving is disabled, before any job dir or git ref is
+read; reads the branch tip once; then sweeps every local job dir named like a job id, in id order
+(a symlinked `jobs/<id>` is never listed or followed), as `archive --all` does. A job dir is
+removed only when all of these hold, checked in this order:
+- no top-level `.events.lock` dir is present (an event in flight);
+- it reads as `archive` reads it (a refusal, such as a legacy dir with no readable `job.json` or
+  an `events.jsonl` that does not start with `job.claimed`, keeps it, with that refusal's text);
+- its stage is `merged` or `abandoned`;
+- it is *settled* by the existing rule (`job.json`'s `endedAt`): `abandoned` at once, `merged`
+  when `endedAt` is older than `dashboard.settleAfterHours` by the system clock. The stage and
+  `endedAt` come from `events.jsonl`; a legacy job (no `events.jsonl`) uses its `job.json`'s, and
+  a merged one with no readable `endedAt` is not settled;
+- `<id>/` is on the branch tip, as a directory;
+- the tree built from the local dir, with exactly the file set `archive` copies (see "Job
+  archive": not `job.json`, `job.json.tmp`, or top-level `*.lock` dirs; a legacy job keeps its
+  `job.json`), equals the archived `<id>/` tree byte for byte. An equal tree also means the same
+  job. The comparison builds its tree in a scratch object directory, under the job's
+  `.events.lock` (taken without waiting; a held lock keeps the job), so no event lands between
+  the comparison and the removal.
+
+It prints one stdout line per job: `pruned <id>`, or `kept <id>: <reason>`, where the reason is
+`an event is in flight (.events.lock)`, the read refusal's text, `not merged or abandoned
+(<stage>)`, `not settled`, `not archived`, or `differs from its archived tree`. It ends with
+`prune: removed <n>, kept <n>, failed <n>`. A kept job is not a failure and is left byte for
+byte. A job that can't be checked or removed (a git error, a read or `rm` error) is one stderr
+line naming it and counts as failed; the rest still run. It exits 1 when any job failed (or when
+the branch tip can't be read, before any job is checked), else 0. Removal never follows a symlink
+inside the dir. `prune` reads only the local `factory/archive` branch: it writes no git object,
+moves no ref, never fetches or pushes, and never touches the main checkout's working tree, index,
+or `HEAD`, worktrees, branches, or `jobs/.claim.lock`. The removed job dirs are the only thing it
+changes. A pruned job keeps its number (`claim` counts the branch's ids, see "File layout") and
+stays on the board (see "Archived jobs" under "Andon service"). The CLI never prunes on its own,
+and the skill never runs `prune`: it is a maintainer's manual step.
+*(Added within v1, additively: a new command.)*
+
 `doctor` writes nothing. It runs every check and reports every finding, one line per check
 (`ok`, `FAIL`, or `note`), rather than stopping at the first:
 
@@ -552,13 +593,14 @@ An installed copy that predates `doctor` gains it when the CLI is promoted.
 The installed `factory/cli.ts` is a single self-contained file (the source CLI bundled with its
 contract code), so it runs with `bun` alone, with no workspace packages or `node_modules`. It
 finds its factory root from its own location (its directory), and keeps the same commands
-(`claim`, `event`, `rebuild`, `show`, `abandon`, `archive`, `doctor`), value parsing, per-command usage lines, and exit codes as
+(`claim`, `event`, `rebuild`, `show`, `abandon`, `archive`, `prune`, `doctor`), value parsing, per-command usage lines, and exit codes as
 the source. The top-level usage line (printed for a missing or unknown command) differs: the
 installed CLI prints
 `usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id>`, and the source CLI prints
 that line followed by ` | doctor | init [--force] | upgrade [--force]`. Neither line lists
-`abandon` or `archive`; each prints its own usage line for its usage errors. An installed copy
-that predates `abandon`, `archive`, or `claim` gains it when the CLI is promoted.
+`abandon`, `archive`, or `prune`; each prints its own usage line for its usage errors. An
+installed copy that predates `abandon`, `archive`, `prune`, or `claim` gains it when the CLI is
+promoted.
 The same source always bundles to the same bytes. It does not offer `init` or `upgrade`: those
 run from the factory's source against a project, as the linked `factory init` with the project
 root as the cwd.
@@ -707,12 +749,16 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
   and rules as the dashboard's `GET /board`: a `job.json` that is missing or mid-write keeps the
   job's last good snapshot, unknown `job.json` fields are passed through (an `abandoned` job,
   `stoppedBy`, and `stoppedFrom` included, unchanged), and a bad
-  `config.json` is a 500 whose text is `config.json: <reason>`.
+  `config.json` is a 500 whose text is `config.json: <reason>`. `jobs` also holds every job found
+  only on the project's `factory/archive` branch (see "Archived jobs" below), in the same shape
+  and sorted by id together with the local jobs.
 - `GET /projects/<pid>/jobs/<id>/docs` returns `{ files: [{ path, text }] }`, with the same
   reading order, brief handling, and paths (relative to `factory/`) as the dashboard's
   `GET /jobs/<id>/docs`, except that it reads only regular files: a symlinked brief, file, or
   job directory is skipped. The job id is checked against `^\d{3}-[a-z0-9-]+$` before any path is
-  built.
+  built. For a job found only on `factory/archive`, `files` are its archived files, with the same
+  paths (`jobs/<id>/…`), reading order, and text as the local copy had, led by the brief when the
+  job names one that exists locally under `factory/briefs/`.
 - `GET /` returns the Andon UI's `index.html`, and `GET /<path>` returns that file of the UI
   build (`apps/andon-ui/dist`, built by `bun run andon:ui:build`), read-only. The URL path is decoded,
   and it must resolve to a regular file inside the build directory both before and after
@@ -737,15 +783,39 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
     `error` event. A `config.json` edit that leaves every resolved name unchanged sends no
     `projects` event. *(Added within v1, additively: the re-send on a name change.)*
   - `board`: `{ project: <pid>, jobs, config }`, sent when anything under a registered
-    project's `factory/jobs/` or its `factory/config.json` changes. A burst of changes is
-    debounced to one `board` event per project (at most about 100 ms of delay).
+    project's `factory/jobs/` or its `factory/config.json` changes, or its `factory/archive`
+    branch moves. `jobs` is as in `GET /projects/<pid>/board`, archived jobs included. A burst of
+    changes is debounced to one `board` event per project (at most about 100 ms of delay).
   - `error`: `{ project: <pid>, reason: "config.json: <reason>" }`, sent instead of `board` when
     that project's `config.json` is bad.
 
 The service finds changes with `fs.watch`, never by polling: one recursive watch on each project's
 `factory/jobs/`, one non-recursive watch on its `factory/` (for `config.json`), and one on the
-registry file's directory. It never watches or serves `factory/.worktrees/` or `factory/.lock/`.
-An invalid registry edit keeps the current list.
+registry file's directory. For a project in a git repo, the archive ref is watched in the repo's
+git common dir (found once, by `git rev-parse --git-common-dir`, so a linked worktree's project
+watches its main repo's refs): non-recursive watches on `refs/heads/factory/` (a loose archive ref),
+on `refs/heads/` (for `factory/` appearing, so a branch created after startup is seen), and on the
+common dir itself for `packed-refs` only (`git pack-refs`, `git update-ref`). It never watches or
+serves `factory/.worktrees/` or `factory/.lock/`. An invalid registry edit keeps the current list.
+
+**Archived jobs.** A job whose `factory/jobs/<id>/` is gone (pruned, or never there on a fresh
+clone) but which is on the local `factory/archive` branch (see "Job archive") is still served by
+`board` (endpoint and event) and `docs`, in the existing shapes: no new field, endpoint, or event
+marks it. Its board entry is re-projected from its archived `events.jsonl` exactly as the CLI
+projects `job.json`; a legacy job (no `events.jsonl`) uses its archived `job.json`. A local
+`factory/jobs/<id>/` always wins: such a job is served from the local copy only, with the
+`job.json` and last-good rules above. Only the tip's top-level directories named like a job id
+(`^\d{3}-[a-z0-9-]+/`) are read, and in them only regular-file blobs; anything else is ignored. A
+job that can't be projected (a torn or empty `events.jsonl`, a log that doesn't start with
+`job.claimed`, a legacy `job.json` that isn't a JSON object) is left out and logged, and never
+fails the board. The service reads git only (`rev-parse`, `ls-tree`, `cat-file`; never a write,
+fetch, or push), spawned without a shell, with fixed arguments naming only
+`refs/heads/factory/archive` and object ids. It caches the archive in memory, keyed by the branch's
+tip: a `factory/jobs/` change runs no git, a ref change that leaves the tip where it was runs only
+the tip's `rev-parse`, and a moved tip (or startup) is read with one `git ls-tree` and one
+`git cat-file --batch` for all files. With no `factory/archive` branch, or a root that isn't a git
+repo, nothing changes and nothing is logged. *(Added within v1, additively: before, `board` and
+`docs` read `factory/jobs/` only.)*
 
 ## Versioning
 
@@ -793,5 +863,10 @@ These rules record how the code behaves today; they change no behavior.
   is ignored; rename it by hand with `git branch -m factory/jobs factory/archive`). The
   `factory/jobs/` directory, the tree layout, the commit message and trailers, and the `archive`
   key are unchanged.
+- **2026-10-29: `prune`.** Additive within v1 (the brief `job-prune`'s contract call, approved
+  in the brief): the new `prune` command, which removes local job dirs that are archived on
+  `factory/archive`, settled, and equal to their archived tree. It reuses the existing settle
+  rule (`dashboard.settleAfterHours`, `endedAt`) and the archive's file set. No event, snapshot
+  field, config key, or transition changes.
 - **`config.json` is strict, so upgrade first.** A config that uses a newer v1 key needs a CLI that
   knows that key. Upgrade the managed files before adding the key to the overlay.
