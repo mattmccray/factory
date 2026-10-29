@@ -31,7 +31,8 @@ example, `[accepted: <the decision>]`).
 - **Code:** only inside the job worktree (`<worktree>`, branch `factory/<job id>`, based on
   `<base>`, the job's target branch from the `base:` line on your card). Run every command from
   there (`cd <worktree> && …`). Never touch the main checkout's code, never check out or commit
-  to `<base>`, never merge, never push.
+  to `<base>`, never merge (except `<base>` into the job branch for a conflict note, below), never
+  push.
 - **Not the factory:** never change `factory/` (the factory's config, CLI, and job state) or
   any managed file (one listed in `factory/managed.json`, or stamped as managed). They are the
   installed factory that is running this job.
@@ -43,7 +44,8 @@ example, `[accepted: <the decision>]`).
 - `<job dir>/spec.md` — the contract for this job. The acceptance criteria are what "done" means.
 - The project's instructions (`CLAUDE.md` or its equivalent): its conventions are yours.
 - On a later round: every `review-*.md` in the round folder you are pointed at, any
-  `<job dir>/rework-*.md` (human feedback), and your own `build.md`.
+  `<job dir>/rework-*.md` (human feedback), any `<job dir>/conflict-*.md` (merge conflicts with
+  `<base>`), and your own `build.md`.
 
 ## The gate
 The gate is `gate` in `<repo>/factory/config.json`: a list of shell commands. Run each, in
@@ -63,7 +65,34 @@ and never invent a command to stand in for it.
 On a review round: fix every **[blocking]** finding. If you believe a finding is wrong, don't
 fix it — say why in build.md; reviewers will read it. Nits are optional. Don't expand scope.
 
-## Write — `<job dir>/build.md` (create in round 0, add a section each round)
+## A conflict note
+When your card or the message resuming you names a conflict note, `<job dir>/conflict-<c>.md`,
+the job branch no longer merges cleanly into `<base>`. The note holds the facts: the target
+branch and its sha at the failed merge, the conflicting paths, and `git merge`'s one-line
+summary. Then:
+1. Merge `<base>` into the job branch, in the job worktree, as a merge commit:
+   `cd <worktree> && git merge --no-ff --no-commit <base>`. Never rebase, never force-push, and
+   never rewrite history: every commit the reviewers already saw stays as it is.
+2. Resolve each conflict keeping both sides' intent: what this job's branch does and what
+   `<base>` changed since. Never drop one side to make a conflict go away; if the two truly
+   can't both stand, keep the job's acceptance criteria and say what gave way, and why, in
+   build.md.
+3. Run the gate (above) on the resolved tree. Green, or none configured.
+4. Commit the merge with the message `Merge <base> into factory/<job id>`, ending with
+   `Co-Authored-By: Claude <noreply@anthropic.com>`, then any fixes as their own commits
+   (Conventional Commits). Leave the worktree clean.
+5. Add a `## Conflict <c>` section to `build.md` saying how each path was resolved and what it
+   kept from each side:
+
+```
+## Conflict <c>
+**Merged:** <base> @ <sha> into factory/<job id> as <short sha of the merge commit>
+**Resolved:** one line per conflicting path: how it was resolved, and what it kept from each side
+**Commits:** <short sha> <subject>, …
+**Gate:** <each command: pass/fail + counts> | none configured
+```
+
+## Write — `<job dir>/build.md` (create in round 0, add a section each round and each conflict note)
 
 Create it with the **Write tool (Edit to add a later round)**, at the absolute `write:` path on your card. It is pipeline
 input, not a report: the orchestrator parses it and the dashboard renders it. So the general

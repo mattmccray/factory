@@ -588,11 +588,13 @@ describe('the customize interview in SKILL.md', () => {
     // Job 020 (overlay outcome rule) updated every agent hash: each "Project rules (overlay)"
     // section gains the outcome rule. Job 044 (backlog holds only open work) updated the EXPLORE
     // hash: Finish takes the lock, resume shows abandoned attempts, the format gains `- Abandoned:`.
+    // Job 051 (merge conflicts go back to the builder) updated the builder and approver hashes: the
+    // builder gains "A conflict note", and both read any `conflict-*.md`.
     const before: Record<string, string> = {
       [EXPLORE]: '2d992ad3faa61e1b5225005e61fd0ce648580491942c468a2f260d9f4afa6625',
       [agent('spec-writer')]: 'e8595a8b596b936e369373677acac3c37e233de10fc6b7035b12fb5b5c29a0b1',
-      [agent('builder')]: 'c89ce77e6e090651f57959b4e2a98a034176156c11d19b09a0f6e8106c56740f',
-      [agent('approver')]: '4874e89a848fb9434b9379e6f0165d4b3c47d86943c9b9ed82d4293435e7edd3',
+      [agent('builder')]: '44767f8cd0a0d6893403c8375fb0b4301590df53fea4aa02e6281e612802833f',
+      [agent('approver')]: '14d08440888b6d077f6a429def65cfd0cd9d5d964392feca3fea44d5cf2421f9',
       [agent('alpha')]: 'dfe1cd9b59957007a63f3f4474d145d1ecc8e6a616db0236196fd065ef6c053d',
       [agent('beta-2')]: '8c6e2ba134bb732ef87f579b5822350108bb6553b4257674fb30a4f5a3618840',
     };
@@ -652,11 +654,12 @@ describe('per-role model from config.roles', () => {
     // Job 015 updated the EXPLORE hash (the brief format gains `done` and the `- Job:` line).
     // Job 020 updated every agent hash (the overlay outcome rule in "Project rules (overlay)").
     // Job 044 updated the EXPLORE hash (Finish under the lock, abandoned attempts, `- Abandoned:`).
+    // Job 051 updated the builder and approver hashes (a conflict note, and `conflict-*.md` reads).
     const before: Record<string, string> = {
       [EXPLORE]: '2d992ad3faa61e1b5225005e61fd0ce648580491942c468a2f260d9f4afa6625',
       [agent('spec-writer')]: 'e8595a8b596b936e369373677acac3c37e233de10fc6b7035b12fb5b5c29a0b1',
-      [agent('builder')]: 'c89ce77e6e090651f57959b4e2a98a034176156c11d19b09a0f6e8106c56740f',
-      [agent('approver')]: '4874e89a848fb9434b9379e6f0165d4b3c47d86943c9b9ed82d4293435e7edd3',
+      [agent('builder')]: '44767f8cd0a0d6893403c8375fb0b4301590df53fea4aa02e6281e612802833f',
+      [agent('approver')]: '14d08440888b6d077f6a429def65cfd0cd9d5d964392feca3fea44d5cf2421f9',
       [agent('alpha')]: 'dfe1cd9b59957007a63f3f4474d145d1ecc8e6a616db0236196fd065ef6c053d',
       [agent('beta-2')]: '8c6e2ba134bb732ef87f579b5822350108bb6553b4257674fb30a4f5a3618840',
     };
@@ -1359,5 +1362,105 @@ describe('the job archive in SKILL.md (job 045, AC8)', () => {
     expect(old).not.toBe(TEMPLATES.skill);
     const text = flat(at(renderClaudeCode({ config: config(), templates: { ...TEMPLATES, skill: old } }).files, SKILL));
     expect(section(text, 'Merge')).not.toContain(ARCHIVE);
+  });
+});
+
+describe('merge conflicts go back to the builder (job 051)', () => {
+  const flat = (s: string): string => s.replace(/\s+/g, ' ');
+  const configs = [config(), config({ reviewers: ['q'] }), config({ merge: { target: 'develop' }, archive: { enabled: true } })];
+  const files = (c: Config = config()): Record<string, string> => renderClaudeCode({ config: c }).files;
+  const skill = (c: Config = config()): string => flat(at(files(c), SKILL));
+  const section = (text: string, heading: string): string => {
+    const start = text.indexOf(`## ${heading}`);
+    if (start < 0) throw new Error(`no section ${heading}`);
+    const end = text.indexOf(' ## ', start + 3);
+    return end < 0 ? text.slice(start) : text.slice(start, end);
+  };
+  // Every needle is present, and each one comes after the one before it.
+  const inOrder = (text: string, needles: readonly string[]): void => {
+    let last = -1;
+    for (const needle of needles) {
+      const i = text.indexOf(needle, last + 1);
+      expect({ needle, found: i >= 0 }).toEqual({ needle, found: true });
+      expect({ needle, after: i > last }).toEqual({ needle, after: true });
+      last = i;
+    }
+  };
+
+  test('AC5: Merge separates a conflict from a refusal, and the conflict path runs in order', () => {
+    for (const c of configs) {
+      const merge = section(skill(c), 'Merge');
+      const conflict = merge.slice(merge.indexOf('- **Conflict**'), merge.indexOf('- **Refusal**'));
+      expect(merge.indexOf('- **Conflict**')).toBeGreaterThanOrEqual(0);
+      expect(merge.indexOf('- **Refusal**')).toBeGreaterThan(merge.indexOf('- **Conflict**'));
+      expect(conflict).toContain('`git diff --name-only --diff-filter=U` lists at least one path');
+      inOrder(conflict, [
+        'list the conflicting paths (`git diff --name-only --diff-filter=U`) and the sha of `<target>` (`git rev-parse --short <target>`)',
+        '`git merge --abort`',
+        'Then release the lock (`rmdir factory/.lock`).',
+        'If `conflicts` in job.json is already 2 (a missing key counts as 0)',
+        'board: `merge.failed reason=',
+        'Otherwise write `jobs/<id>/conflict-<c>.md` (`c` = `conflicts` + 1)',
+        'Board: `merge.conflicted reason=',
+        'Resume `builder-<id>` (span `role=builder name=builder-<id> round=<round>`)',
+        "If that builder isn't alive in this session, spawn a fresh `factory-builder`",
+        'Continue at step 4 with round `<round> + 1`',
+      ]);
+      expect(conflict).toContain('facts only: the target branch and its sha, the conflicting paths, and `git merge`\'s one-line summary');
+      expect(conflict).toContain('with the card plus the note path');
+      expect(conflict).toContain('<R>/factory/jobs/<id>/conflict-<c>.md');
+      expect(conflict).toContain('If the CLI refuses `merge.conflicted`, board: `merge.failed');
+      inOrder(conflict, ['Continue at step 4', 'the approver', '**Merge**']);
+      const refusal = merge.slice(merge.indexOf('- **Refusal**'), merge.indexOf('- Success →'));
+      expect(refusal).toContain('board: `merge.failed reason=');
+      expect(refusal).toContain('index.lock');
+      expect(merge).not.toMatch(/rebase/i);
+    }
+  });
+
+  test('AC5: /factory approve says a conflict enters the same loop and an approver ESCALATE comes back to the human', () => {
+    const commands = section(skill(), 'Commands');
+    const entry = commands.slice(commands.indexOf('**`/factory approve <id>`**'), commands.indexOf('**`/factory rework <id> <note>`**'));
+    expect(entry).toContain('If **Merge** finds a conflict, the job enters the same loop as any conflict');
+    expect(entry).toContain('an approver `ESCALATE` there comes back to the human');
+    expect(entry).toContain('clears the human approval');
+  });
+
+  test('AC5: Ground rules and the Files table list conflict notes among what the orchestrator writes', () => {
+    const s = skill();
+    expect(section(s, 'Ground rules')).toContain("you write only your job's feature.md, rework notes, and conflict notes");
+    expect(s).toContain('| `factory/jobs/<id>/conflict-<c>.md` — the facts of a merge conflict with `<target>` | you |');
+  });
+
+  test('AC6: the builder has a conflict-note section: merge <base> as a merge commit, keep both sides, gate, ## Conflict <c>', () => {
+    for (const c of configs) {
+      const builder = flat(at(files(c), agent('builder')));
+      const sec = section(builder, 'A conflict note');
+      expect(sec).toContain('`<job dir>/conflict-<c>.md`');
+      expect(sec).toContain('Merge `<base>` into the job branch, in the job worktree, as a merge commit');
+      expect(sec).toContain('Never rebase, never force-push, and never rewrite history');
+      expect(sec).toContain("keeping both sides' intent");
+      expect(sec).toContain('Run the gate');
+      expect(sec).toContain('Add a `## Conflict <c>` section to `build.md`');
+      expect(sec).toContain('how each path was resolved and what it kept from each side');
+      inOrder(sec, ['as a merge commit', "both sides' intent", 'Run the gate', '`## Conflict <c>`']);
+      // The one merge the builder makes is carved out of "never merge".
+      expect(section(builder, 'Where you work')).toContain('never merge (except `<base>` into the job branch for a conflict note, below), never push');
+    }
+  });
+
+  test('AC6: the builder and approver read any conflict-*.md next to rework-*.md', () => {
+    const f = files();
+    const builder = section(flat(at(f, agent('builder'))), 'Read');
+    expect(builder).toContain('any `<job dir>/rework-*.md` (human feedback), any `<job dir>/conflict-*.md` (merge conflicts with `<base>`)');
+    const approver = section(flat(at(f, agent('approver'))), 'Read');
+    expect(approver).toContain('any `rework-*.md`, any `conflict-*.md`');
+  });
+
+  test('the pins fail on the old text', () => {
+    const old = TEMPLATES.skill.replace(/- \*\*Conflict\*\*[\s\S]*?(?=- \*\*Refusal\*\*)/, '');
+    expect(old).not.toBe(TEMPLATES.skill);
+    const text = flat(at(renderClaudeCode({ config: config(), templates: { ...TEMPLATES, skill: old } }).files, SKILL));
+    expect(section(text, 'Merge')).not.toContain('merge.conflicted');
   });
 });
