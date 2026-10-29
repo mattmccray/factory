@@ -1,6 +1,7 @@
 # Merge conflicts go back to the builder instead of to a human
 
-- Status: ready
+- Status: done
+- Job: 051-merge-conflict-rework (merged 6fd1894, 2026-10-29)
 - Sources: docs/design/epics/design.md (decisions 4 and 5; brief 1 of 5); `/factory explore` on
   2026-10-29; docs/contract/v1.md ("`events.jsonl`", "Transitions the CLI enforces", "`job.json`",
   "CLI"); packages/contract/src/contract.ts (event parsing and transition checks);
