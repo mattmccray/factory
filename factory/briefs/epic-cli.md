@@ -1,6 +1,7 @@
 # Epics in the contract and the CLI
 
-- Status: ready
+- Status: done
+- Job: 052-epic-cli (merged 764e248, 2026-10-29)
 - Sources: docs/design/epics/design.md (decisions 1–3, 6–8, 10; brief 2 of 5); `/factory
   explore` on 2026-10-29; docs/contract/v1.md ("File layout", "`config.json`", "`events.jsonl`",
   "Transitions the CLI enforces", "`job.json`", "CLI", "Job archive"); packages/contract/src
