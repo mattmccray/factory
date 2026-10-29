@@ -2,7 +2,7 @@
 // files to the orphan branch `factory/jobs`, one top-level `<id>/` dir per job, with git plumbing
 // only. It never touches the main checkout's working tree, index, or HEAD, never fetches, and
 // never pushes. `archivedIds` lists the branch's job ids for `claim`.
-import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isJobId, project, readLog } from '@factory/contract';
@@ -82,9 +82,20 @@ export interface LocalJob {
   mergedSha: string | null; // the last job.merged sha, when there is one
 }
 
+// `lstat`, so a symlinked job dir is never followed.
 async function isDir(path: string): Promise<boolean> {
   try {
-    return (await stat(path)).isDirectory();
+    return (await lstat(path)).isDirectory();
+  } catch (e) {
+    if (isNotFound(e)) return false;
+    throw e;
+  }
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
   } catch (e) {
     if (isNotFound(e)) return false;
     throw e;
@@ -106,15 +117,21 @@ async function legacyStage(dir: string): Promise<string | null> {
 export async function readLocalJob(root: string, id: string): Promise<LocalJob> {
   if (!isJobId(id)) throw new Error(`job id '${id}' must match ^\\d{3}-[a-z0-9-]+$`);
   const dir = join(root, 'jobs', id);
-  if (!(await isDir(dir))) throw new Error(`${id}: no such job`);
+  if (!(await isDir(dir))) {
+    if (await exists(dir)) throw new Error(`${id}: not a directory (a symlinked job dir is never followed); not archived`);
+    throw new Error(`${id}: no such job`);
+  }
   const log = await readLog(root, id);
+  // Legacy means no events.jsonl at all; an empty one is a broken log, not a legacy job.
+  if (log.length === 0 && (await exists(join(dir, 'events.jsonl')))) throw new Error(`${id}: events.jsonl is empty; not archived`);
   if (log.length === 0) {
     const stage = await legacyStage(dir);
     if (stage === null) throw new Error(`${id}: no events.jsonl and no readable job.json; not archived`);
     return { id, dir, legacy: true, stage, claimed: null, mergedSha: null };
   }
   const [first] = log;
-  const claimed = first !== undefined && first.type === 'job.claimed' ? { id: first.id, ts: first.ts } : null;
+  if (first === undefined || first.type !== 'job.claimed') throw new Error(`${id}: events.jsonl does not start with job.claimed; not archived`);
+  const claimed = { id: first.id, ts: first.ts };
   let mergedSha: string | null = null;
   for (const e of log) if (e.type === 'job.merged') mergedSha = e.sha;
   // The stage comes from the log (the truth), never from job.json.
@@ -158,13 +175,20 @@ async function jobTree(repo: string, job: LocalJob, env?: Record<string, string>
   return sha;
 }
 
+// One entry for GIT_ALTERNATE_OBJECT_DIRECTORIES: C-quoted when it holds the ':' separator or
+// starts with a quote, so git never splits a repo path.
+function alternate(path: string): string {
+  if (!path.includes(':') && !path.startsWith('"')) return path;
+  return `"${path.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
 // Builds the job's tree in a scratch object directory (the repo's objects are read through it as
 // an alternate), so comparing it with the archive writes nothing to the repo.
 async function trialTree(repo: string, job: LocalJob): Promise<string> {
   const objects = (await git(repo, ['rev-parse', '--path-format=absolute', '--git-path', 'objects'])).out;
   const scratch = await mkdtemp(join(tmpdir(), 'factory-archive-'));
   try {
-    return await jobTree(repo, job, { GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: objects });
+    return await jobTree(repo, job, { GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternate(objects) });
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -205,7 +229,7 @@ export type ArchiveOutcome = { kind: 'archived'; commit: string } | { kind: 'unc
  */
 export async function archiveJob(repo: string, job: LocalJob, force: boolean): Promise<ArchiveOutcome> {
   if (!isTerminal(job)) throw new Error(`${job.id} is ${job.stage ?? 'unreadable'}: only merged or abandoned jobs are archived`);
-  if (job.mergedSha !== null && !HEX_SHA.test(job.mergedSha)) throw new Error(`${job.id}: job.merged sha is not a hex commit id; not archived`);
+  if (job.mergedSha !== null && !HEX_SHA.test(job.mergedSha)) throw new Error(`${job.id}: job.merged sha is not a hex commit id (${HEX_SHA.source}); not archived`);
   if (!job.legacy && job.claimed === null) throw new Error(`${job.id}: events.jsonl does not start with job.claimed; not archived`);
   let lastErr = '';
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {

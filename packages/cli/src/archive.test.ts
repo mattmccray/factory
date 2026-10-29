@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { archivedIds } from './archive';
@@ -291,6 +291,66 @@ describe('factory archive (job 045)', () => {
     }
   });
 
+  test('the other refusals are one line each and move no ref', async () => {
+    // A merged job whose job.merged sha is not a hex commit id.
+    const bad = await seedJob('001-badsha', 'merged');
+    const log = (await readFile(join(bad, 'events.jsonl'), 'utf8')).replace(`"sha":"${SHA}"`, '"sha":"main\\nEvil: x"');
+    await writeFile(join(bad, 'events.jsonl'), log);
+    expect((await cli('archive', '001-badsha')).err).toEqual(['001-badsha: job.merged sha is not a hex commit id (^[0-9a-f]{4,64}$); not archived']);
+    // A log that does not start with job.claimed.
+    const noClaim = await seedJob('002-noclaim', 'abandoned');
+    const lines = (await readFile(join(noClaim, 'events.jsonl'), 'utf8')).split('\n');
+    await writeFile(join(noClaim, 'events.jsonl'), `${lines.slice(1).join('\n')}`);
+    expect((await cli('archive', '002-noclaim')).err).toEqual(['002-noclaim: events.jsonl does not start with job.claimed; not archived']);
+    // A legacy dir with no readable job.json, and an empty events.jsonl (not legacy: refused).
+    await mkdir(join(root, 'jobs', '003-empty'));
+    expect((await cli('archive', '003-empty')).err).toEqual(['003-empty: no events.jsonl and no readable job.json; not archived']);
+    await mkdir(join(root, 'jobs', '004-blank'));
+    await writeFile(join(root, 'jobs', '004-blank', 'events.jsonl'), '');
+    await writeFile(join(root, 'jobs', '004-blank', 'job.json'), JSON.stringify({ stage: 'merged' }));
+    expect((await cli('archive', '004-blank')).err).toEqual(['004-blank: events.jsonl is empty; not archived']);
+    // A symlinked job dir is never followed.
+    const outside = await mkdtemp(join(tmpdir(), 'factory-archive-outside-'));
+    try {
+      await writeFile(join(outside, 'job.json'), JSON.stringify({ stage: 'merged' }));
+      await symlink(outside, join(root, 'jobs', '005-link'));
+      expect((await cli('archive', '005-link')).err).toEqual(['005-link: not a directory (a symlinked job dir is never followed); not archived']);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+    expect(tip()).toBeNull();
+    // <id> on the branch as a file, not a directory.
+    const blob = gitIn(repo, 'hash-object', '-w', '--stdin');
+    const tree = Bun.spawnSync(['git', '-C', repo, 'mktree'], { stdin: new TextEncoder().encode(`100644 blob ${blob}\t006-file\n`) }).stdout.toString().trim();
+    const commit = gitIn(repo, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit-tree', tree, '-m', 'x');
+    gitIn(repo, 'update-ref', REF, commit);
+    await seedJob('006-file', 'merged');
+    expect((await cli('archive', '006-file')).err).toEqual(['006-file: factory/jobs has 006-file as a blob, not a directory; nothing written']);
+    expect(tip()).toBe(commit);
+  });
+
+  test('a symlink inside a job dir is not followed or copied', async () => {
+    const id = '001-links';
+    const dir = await seedJob(id, 'merged');
+    await symlink('/etc/hosts', join(dir, 'hosts.md'));
+    await symlink(join(dir, 'round-1'), join(dir, 'round-2'));
+    expect((await cli('archive', id)).code).toBe(0);
+    expect(files(REF)).toEqual(JOB_FILES.map((f) => `${id}/${f}`));
+  });
+
+  test('a repo path containing a colon (the alternates separator) archives and compares', async () => {
+    const odd = join(repo, 'a:b');
+    await mkdir(odd);
+    initRepo(odd, 'main');
+    for (const [k, v] of [['user.name', 'factory-test'], ['user.email', 'test@example.invalid'], ['commit.gpgsign', 'false']]) gitIn(odd, 'config', k ?? '', v ?? '');
+    root = join(odd, 'factory');
+    await mkdir(join(root, 'jobs'), { recursive: true });
+    await writeConfig(ON);
+    await seedJob('001-odd', 'merged');
+    expect((await cli('archive', '001-odd')).code).toBe(0);
+    expect(await cli('archive', '001-odd')).toEqual({ code: 0, out: ['001-odd: already archived (unchanged)'], err: [] });
+  });
+
   test('usage errors', async () => {
     for (const argv of [[], ['--force'], ['001-a', '--force', '--force'], ['001-a', '002-b'], ['--every'], ['001-a', '--delete-branch']]) {
       const r = await cli('archive', ...argv);
@@ -309,9 +369,14 @@ describe('claim counts the archive branch (job 045, AC7)', () => {
     expect(await archivedIds(repo)).toEqual(['007-old']);
     const on = await cli('claim', 'next-on');
     expect(on).toEqual({ code: 0, out: ['008-next-on'], err: [] });
+    // Off: only the branch holds a number above the local dirs, so the claim depends on reading it.
+    await rm(join(root, 'jobs', '008-next-on'), { recursive: true });
     await writeConfig(BASE);
     const off = await cli('claim', 'next-off');
-    expect(off).toEqual({ code: 0, out: ['009-next-off'], err: [] });
+    expect(off).toEqual({ code: 0, out: ['008-next-off'], err: [] });
+    await writeConfig({ ...BASE, archive: { enabled: false } });
+    await rm(join(root, 'jobs', '008-next-off'), { recursive: true });
+    expect((await cli('claim', 'next-false')).out).toEqual(['008-next-false']);
   });
 
   test('with no branch, claim picks the same id as before', async () => {
