@@ -1,6 +1,7 @@
 # The backlog holds only open work, and every backlog edit is committed at once
 
-- Status: ready
+- Status: done
+- Job: 044-backlog-open-only (merged a3de0b0, 2026-10-28)
 - Sources: `/factory explore job-archive` on 2026-10-28; packages/templates/assets/skill/SKILL.md
   (claim, `/factory next`, Merge bookkeeping, `/factory abandon`, `queue`);
   packages/templates/assets/skill/explore.md (Finish); `git log -- factory/backlog.md` (e.g.
