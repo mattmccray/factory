@@ -26,6 +26,11 @@ const at = (files: Record<string, string>, path: string): string => {
   if (text === undefined) throw new Error(`not rendered: ${path}`);
   return text;
 };
+// Whether `text` mentions a banned word. Andon (the dashboard's name) counts only as a word of its
+// own, never inside another word: "abandon" (the `/factory abandon` command, a brief's
+// `- Abandoned:` line) is not a mention of Andon. Every other word is a plain substring.
+const mentions = (text: string, word: string): boolean =>
+  word === 'Andon' || word === 'andon' ? new RegExp(`(?<![A-Za-z])${word}`).test(text) : text.includes(word);
 const frontmatterName = (text: string): string | undefined => /^name: (.+)$/m.exec(splitFrontmatter(text).frontmatter)?.[1];
 
 describe('renderClaudeCode (AC1)', () => {
@@ -77,7 +82,7 @@ describe('neutrality and placeholders (AC2)', () => {
       for (const [path, text] of Object.entries(renderClaudeCode({ config: c }).files)) {
         for (const word of BANNED) {
           if (ALLOWED_IN[word]?.includes(path)) continue;
-          expect({ path, word, found: text.includes(word) }).toEqual({ path, word, found: false });
+          expect({ path, word, found: mentions(text, word) }).toEqual({ path, word, found: false });
         }
       }
     }
@@ -89,12 +94,21 @@ describe('neutrality and placeholders (AC2)', () => {
       const { files } = renderClaudeCode({ config: c });
       for (const [path, text] of Object.entries(files)) {
         if (path === SKILL) continue;
-        for (const word of ['Andon', 'andon']) expect({ path, word, found: text.includes(word) }).toEqual({ path, word, found: false });
+        for (const word of ['Andon', 'andon']) expect({ path, word, found: mentions(text, word) }).toEqual({ path, word, found: false });
       }
       const skill = at(files, SKILL);
       for (const word of BANNED.filter((w) => w !== 'Andon' && w !== 'andon')) {
         expect({ path: SKILL, word, found: skill.includes(word) }).toEqual({ path: SKILL, word, found: false });
       }
+    }
+  });
+
+  test('the Andon check still catches the dashboard name, and not the word abandon', () => {
+    for (const hit of ['open Andon', 'bun run andon:service', '~/.andon', 'Andon.']) {
+      expect({ hit, found: mentions(hit, 'Andon') || mentions(hit, 'andon') }).toEqual({ hit, found: true });
+    }
+    for (const miss of ['/factory abandon', '- Abandoned: 004-x (2026-10-28): why', 'abandoned']) {
+      expect({ miss, found: mentions(miss, 'Andon') || mentions(miss, 'andon') }).toEqual({ miss, found: false });
     }
   });
 
@@ -562,7 +576,7 @@ describe('the customize interview in SKILL.md', () => {
     const BANNED = ['Minerva', 'Andon', 'andon', 'packages/', 'apps/', 'bun run test', 'bun run check', 'here:'];
     for (const reviewers of [['alpha', 'beta-2'], ['q'], ['zeta', 'eta-1', 'theta']]) {
       const s = section(config({ reviewers }));
-      for (const word of BANNED) expect({ word, found: s.includes(word) }).toEqual({ word, found: false });
+      for (const word of BANNED) expect({ word, found: mentions(s, word) }).toEqual({ word, found: false });
     }
   });
 
@@ -572,9 +586,10 @@ describe('the customize interview in SKILL.md', () => {
     // agents now diff against the card's `<base>` instead of a literal `main`. Job 015 (brief
     // done status) updated the EXPLORE hash: the brief format gains `done` and the `- Job:` line.
     // Job 020 (overlay outcome rule) updated every agent hash: each "Project rules (overlay)"
-    // section gains the outcome rule.
+    // section gains the outcome rule. Job 044 (backlog holds only open work) updated the EXPLORE
+    // hash: Finish takes the lock, resume shows abandoned attempts, the format gains `- Abandoned:`.
     const before: Record<string, string> = {
-      [EXPLORE]: 'f963a37517018fd21bfec5dd62c829fa0cc92d8edcd502b34bf4789cab97e528',
+      [EXPLORE]: '2d992ad3faa61e1b5225005e61fd0ce648580491942c468a2f260d9f4afa6625',
       [agent('spec-writer')]: 'e8595a8b596b936e369373677acac3c37e233de10fc6b7035b12fb5b5c29a0b1',
       [agent('builder')]: 'c89ce77e6e090651f57959b4e2a98a034176156c11d19b09a0f6e8106c56740f',
       [agent('approver')]: '4874e89a848fb9434b9379e6f0165d4b3c47d86943c9b9ed82d4293435e7edd3',
@@ -636,8 +651,9 @@ describe('per-role model from config.roles', () => {
     // Job 014 updated the builder, approver, and reviewer hashes (`<base>` instead of `main`).
     // Job 015 updated the EXPLORE hash (the brief format gains `done` and the `- Job:` line).
     // Job 020 updated every agent hash (the overlay outcome rule in "Project rules (overlay)").
+    // Job 044 updated the EXPLORE hash (Finish under the lock, abandoned attempts, `- Abandoned:`).
     const before: Record<string, string> = {
-      [EXPLORE]: 'f963a37517018fd21bfec5dd62c829fa0cc92d8edcd502b34bf4789cab97e528',
+      [EXPLORE]: '2d992ad3faa61e1b5225005e61fd0ce648580491942c468a2f260d9f4afa6625',
       [agent('spec-writer')]: 'e8595a8b596b936e369373677acac3c37e233de10fc6b7035b12fb5b5c29a0b1',
       [agent('builder')]: 'c89ce77e6e090651f57959b4e2a98a034176156c11d19b09a0f6e8106c56740f',
       [agent('approver')]: '4874e89a848fb9434b9379e6f0165d4b3c47d86943c9b9ed82d4293435e7edd3',
@@ -932,7 +948,7 @@ describe('marking a brief done when its job merges (job 015)', () => {
       const files = render(c);
       const touched = [mergeOf(files), claimOf(files), flat(at(files, EXPLORE))];
       for (const s of touched) {
-        for (const word of BANNED) expect({ word, found: s.includes(word) }).toEqual({ word, found: false });
+        for (const word of BANNED) expect({ word, found: mentions(s, word) }).toEqual({ word, found: false });
         expect(s).not.toMatch(/\{\{[^}]*\}\}/);
       }
     }
@@ -1024,7 +1040,8 @@ describe('CLI-owned job ids in SKILL.md (job 024, AC7)', () => {
     const side = section(skill(), 'Running jobs side by side');
     expect(side).toContain('The job-id sequence is the CLI\'s: `claim` hands out each number under its own lock');
     expect(side).toContain('under `factory/.lock`');
-    expect(side).toContain('- **Claim:** pick the work, run the overlap check, run `bun factory/cli.ts claim <slug> …` (it picks the number, creates the job dir, and prints the id), then, with that printed id, write `feature.md` and tick the backlog line.');
+    // Job 044: the claim runs the backlog check first, and commits the tick it makes.
+    expect(side).toContain('- **Claim:** run **the backlog check**, pick the work, run the overlap check, run `bun factory/cli.ts claim <slug> …` (it picks the number, creates the job dir, and prints the id), then, with that printed id, write `feature.md`, tick the backlog line as `- [x] … → <id>`, and commit the tick at once by pathspec, still under the lock:');
   });
 
   test('/factory <feature>: brief refusals come before claim, which runs under the lock and prints the id', () => {
@@ -1034,7 +1051,7 @@ describe('CLI-owned job ids in SKILL.md (job 024, AC7)', () => {
     expect(entry).toContain('The CLI picks the number and prints the job\'s id, e.g. `004-export-csv-report`; use that id from then on.');
     expect(entry.indexOf('stop before claiming')).toBeGreaterThan(-1);
     expect(entry.indexOf('stop before claiming')).toBeLessThan(entry.indexOf('claim <slug>'));
-    expect(entry).toContain('under the lock (overlap check first)');
+    expect(entry).toContain('under the lock (backlog check and overlap check first)');
   });
 
   test('the files table lists the CLI-owned .claim.lock', () => {
@@ -1078,5 +1095,190 @@ describe('the thread lookup in SKILL.md (job 039, AC5)', () => {
     expect(approve).toContain('run **the thread lookup**, board: `job.human-approved [session=…]`');
     const rework = entry(commands, '**`/factory rework <id> <note>`**', '**`/factory abandon <id> <reason>`**');
     expect(rework).toContain('run **the thread lookup**, board: `job.reworked k=<k> maxRound=<round + 2> [session=…]`');
+  });
+});
+
+describe('the backlog holds only open work, every edit committed at once (job 044)', () => {
+  const flat = (s: string): string => s.replace(/\s+/g, ' ');
+  const configs = [config(), config({ reviewers: ['q'] }), config({ reviewers: ['zeta', 'eta-1', 'theta'], gate: ['x'], merge: { target: 'develop' } })];
+  const render = (c: Config = config()): Record<string, string> => renderClaudeCode({ config: c }).files;
+  const skill = (c: Config = config()): string => flat(at(render(c), SKILL));
+  const explore = (c: Config = config()): string => flat(at(render(c), EXPLORE));
+  const section = (text: string, heading: string): string => {
+    const start = text.indexOf(`## ${heading}`);
+    if (start < 0) throw new Error(`no section ${heading}`);
+    const end = text.indexOf(' ## ', start + 3);
+    return end < 0 ? text.slice(start) : text.slice(start, end);
+  };
+  // A slice of `text` from `from` up to `to` (or the end), throwing when `from` is missing.
+  const between = (text: string, from: string, to?: string): string => {
+    const start = text.indexOf(from);
+    if (start < 0) throw new Error(`missing: ${from}`);
+    const end = to === undefined ? -1 : text.indexOf(to, start + from.length);
+    return end < 0 ? text.slice(start) : text.slice(start, end);
+  };
+  const claimBullet = (text: string): string => between(section(text, 'Running jobs side by side'), '- **Claim:**', '- **Merge:**');
+  const commands = (text: string): string => section(text, 'Commands');
+  const feature = (text: string): string => between(commands(text), '**`/factory <feature>`**', '**`/factory queue <text>`**');
+  const queue = (text: string): string => between(commands(text), '**`/factory queue <text>`**', '**`/factory explore');
+  const next = (text: string): string => between(commands(text), '**`/factory next [words]`**', '**`/factory approve <id>`**');
+  const abandon = (text: string): string => between(commands(text), '**`/factory abandon <id> <reason>`**');
+  const bookkeeping = (text: string): string => between(section(text, 'Merge'), '- Then **bookkeeping**', '- Release the lock');
+  const STOP = '"commit or discard your backlog edits first"';
+  const TRAILER = '-m "Co-Authored-By: Claude <noreply@anthropic.com>"';
+  const BOTH = '-- factory/backlog.md factory/briefs/<slug>.md';
+  const ABANDONED = '- Abandoned: <id> (<YYYY-MM-DD>): <reason>';
+  const QUESTION = "*\"Brief `<slug>` was abandoned as job `<id>`: '<reason>'. Start it again, or revise it first with `/factory explore <slug>`?\"*";
+
+  test('AC1: the claim ticks the line and commits it by pathspec under the lock, before release and before the branch', () => {
+    for (const c of configs) {
+      const text = skill(c);
+      const claim = claimBullet(text);
+      const commit = `git commit -m "chore(factory): claim job <id>" ${TRAILER} -- factory/backlog.md`;
+      expect(claim).toContain('tick the backlog line as `- [x] … → <id>`');
+      expect(claim).toContain(commit);
+      expect(claim).toContain('still under the lock');
+      expect(claim.indexOf('bun factory/cli.ts claim <slug> …')).toBeLessThan(claim.indexOf(commit));
+      expect(claim).toContain('Release the lock only after that commit; the job\'s branch is created later (step 2 of the loop).');
+      expect(claim).toContain('The ticked line stays in the backlog while the job runs');
+      // the branch really is created in step 2, after the claim
+      expect(section(text, 'The loop')).toContain('**2 · Worktree.** `git worktree add -b factory/<id>');
+      // /factory next and /factory <feature> both commit the tick as Claim says
+      expect(next(text)).toContain('tick it as `- [x] … → <id>` and commit it (`chore(factory): claim job <id>`) in the same step');
+      expect(feature(text)).toContain('If the work has a backlog line, tick and commit it as **Claim** under **Running jobs side by side** says; free text with no backlog line makes no backlog commit. Then release the lock');
+    }
+  });
+
+  test('AC2: Merge bookkeeping removes the line and commits it with the brief in one record commit', () => {
+    for (const c of configs) {
+      const book = bookkeeping(skill(c));
+      expect(book).toContain('remove the job\'s line (`- [x] … → <id>`) from `factory/backlog.md`; don\'t tick it, the line goes');
+      expect(book).not.toContain('backlog tick');
+      expect(book).toContain("set that brief's `Status:` line to `done` and add `- Job: <id> (merged <short sha>, <YYYY-MM-DD>)` right below it");
+      expect(book).toContain(`git commit -m "chore(factory): record job <id>" ${TRAILER} ${BOTH}`);
+      expect(book).toContain('With no brief, commit the backlog only, ending the same command with `-- factory/backlog.md` (nothing changed → skip)');
+      expect(book.indexOf('remove the job\'s line')).toBeLessThan(book.indexOf(BOTH));
+    }
+  });
+
+  test('AC3: abandon removes the line, notes the attempt in the brief, and commits both under the lock', () => {
+    for (const c of configs) {
+      const entry = abandon(skill(c));
+      const after = entry.slice(entry.indexOf('Once the job is abandoned (the CLI printed `abandoned`'));
+      expect(after).not.toBe('');
+      expect(after).toContain('take `factory/.lock`');
+      expect(after).toContain('Remove the job\'s line (`- [x] … → <id>`) from `factory/backlog.md`');
+      expect(after).toContain(`add \`${ABANDONED}\` right below that brief's \`Status:\` line`);
+      expect(after).toContain('one line per attempt');
+      expect(after).toContain('`Status:` stays `ready`');
+      expect(after).toContain(`git commit -m "chore(factory): abandon job <id>" ${TRAILER} ${BOTH}`);
+      expect(after).toContain('With no brief, commit the backlog only, ending the same command with `-- factory/backlog.md` (nothing changed → skip)');
+      expect(after.indexOf(BOTH)).toBeLessThan(after.indexOf('Release the lock (`rmdir factory/.lock`)'));
+      expect(after.indexOf('take `factory/.lock`')).toBeLessThan(after.indexOf('Remove the job\'s line'));
+    }
+  });
+
+  test('AC4: queue and explore\'s Finish take the lock around the edit and commit, and release it before asking', () => {
+    for (const c of configs) {
+      const q = queue(skill(c));
+      expect(q).toContain('take `factory/.lock`');
+      expect(q).toContain('`chore(factory): queue <title>` (+ the Co-Authored-By trailer) `-- factory/backlog.md`');
+      expect(q.indexOf('take `factory/.lock`')).toBeLessThan(q.indexOf('-- factory/backlog.md'));
+      expect(q.indexOf('-- factory/backlog.md')).toBeLessThan(q.indexOf('Release the lock, then show the user the lines you added'));
+      expect(q).toContain('never hold the lock while you ask the user anything');
+      const finish = section(explore(c), 'Finish');
+      const lock = finish.indexOf('Take `factory/.lock`');
+      const commit = finish.indexOf(`\`-- factory/backlog.md factory/briefs/<slug>.md\``);
+      const release = finish.indexOf('Then release the lock (`rmdir factory/.lock`)');
+      const ask = finish.indexOf('Only after the release, ask whether to run it now');
+      for (const i of [lock, commit, release, ask]) expect(i).toBeGreaterThanOrEqual(0);
+      expect(lock).toBeLessThan(commit);
+      expect(commit).toBeLessThan(release);
+      expect(release).toBeLessThan(ask);
+      expect(finish).toContain('`git add -- factory/backlog.md factory/briefs/<slug>.md`');
+      expect(finish).toContain('`git commit -m "specs(factory): add brief <slug>"`');
+    }
+  });
+
+  test('AC5: every backlog step stops on uncommitted backlog edits, with what the stop means for it', () => {
+    for (const c of configs) {
+      const text = skill(c);
+      const check = between(section(text, 'Running jobs side by side'), '**The backlog check**', '**Live jobs**');
+      expect(check).toContain('`git status --porcelain -- factory/backlog.md`');
+      expect(check).toContain(`stop with the one line ${STOP}`);
+      expect(check).toContain('never sweep them into your commit');
+      // claim (both entry points): the check comes first, and nothing is claimed
+      expect(claimBullet(text)).toContain('- **Claim:** run **the backlog check**, pick the work');
+      expect(feature(text)).toContain('If **the backlog check** stops the claim, nothing is claimed');
+      expect(next(text)).toContain('run **the backlog check** (if it stops you, nothing is claimed)');
+      expect(next(text).indexOf('**the backlog check**')).toBeLessThan(next(text).indexOf('re-read `factory/backlog.md`'));
+      // merge: the merge stands, only the bookkeeping waits, and the skipped steps are named
+      const book = bookkeeping(text);
+      expect(book).toContain('First run **the backlog check**');
+      expect(book).toContain('the merge stands (`job.merged` is logged) and only the bookkeeping waits');
+      expect(book).toContain(STOP);
+      expect(book).toContain('which bookkeeping you skipped (removing the job\'s backlog line, marking the brief `done` with its `- Job:` line, and the `record job <id>` commit)');
+      expect(book.indexOf('First run **the backlog check**')).toBeLessThan(book.indexOf('remove the job\'s line'));
+      // abandon: checked after the answers and before the CLI, so a stop changes nothing
+      const entry = abandon(text);
+      expect(entry).toContain(`Before running the CLI (after both answers), run **the backlog check**: if \`factory/backlog.md\` already has uncommitted changes, stop with ${STOP}; nothing is abandoned and nothing changes.`);
+      // queue
+      expect(queue(text)).toContain('run **the backlog check** (if it stops you, nothing is queued)');
+      // explore's Finish
+      const finish = section(explore(c), 'Finish');
+      expect(finish).toContain('**backlog check**');
+      expect(finish).toContain(`stop with the one line ${STOP}`);
+      expect(finish.indexOf('**backlog check**')).toBeLessThan(finish.indexOf('Set `Status: ready`'));
+    }
+  });
+
+  test('AC6: a brief with an Abandoned: line asks once before claiming; explore shows attempts and lists the line', () => {
+    for (const c of configs) {
+      const text = skill(c);
+      const f = feature(text);
+      expect(f).toContain('If the brief has `- Abandoned:` lines');
+      expect(f).toContain('ask once, before claiming and before taking the lock');
+      expect(f).toContain(QUESTION);
+      expect(f.indexOf(QUESTION)).toBeLessThan(f.indexOf('bun factory/cli.ts claim <slug>'));
+      expect(next(text)).toContain('If its brief has `- Abandoned:` lines, release the lock and ask the abandoned-brief question from `/factory <feature>` first');
+      const ex = at(render(c), EXPLORE);
+      expect(section(flat(ex), 'Start')).toContain('If it has `- Abandoned:` lines, show its abandoned attempts in that summary');
+      const open = ex.indexOf('```\n# <Title>');
+      const format = ex.slice(open, ex.indexOf('```', open + 3));
+      expect(format).toContain(`${ABANDONED}   (optional; written only by /factory abandon, one per attempt)`);
+      expect(format.indexOf('- Status:')).toBeLessThan(format.indexOf('- Abandoned:'));
+      expect(format).toContain('- Status: draft | ready | done');
+      expect(flat(ex)).toContain('Only `/factory abandon` writes an `- Abandoned:` line');
+    }
+  });
+
+  test('AC7: next reports finished work from done briefs\' Job: lines, and a ticked line as a running job', () => {
+    for (const c of configs) {
+      const n = next(skill(c));
+      expect(n).toContain('When the words match no open line but describe finished work, say it already ran and which job: find it by the done briefs\' `- Job:` lines');
+      expect(n).toContain('never by ticked lines');
+      expect(n).not.toContain('a ticked line means it already ran');
+      expect(n).toContain('A ticked `- [x] … → <id>` line is a running job: never pick it; if the words describe it, report it as running job `<id>`.');
+    }
+  });
+
+  test('the files table and ground rules describe the backlog as open work with committed edits', () => {
+    const text = skill();
+    expect(text).not.toContain('human (you tick items off)');
+    expect(text).toContain('| `factory/backlog.md` — open and running work only, the queue for `/factory next` |');
+    expect(section(text, 'Ground rules')).toContain('backlog edits (each committed at once)');
+    expect(section(text, 'Ground rules')).not.toContain('backlog ticks');
+  });
+
+  test('AC8: SKILL.md and explore.md stay neutral and fully filled for several configs', () => {
+    const BANNED = ['Minerva', 'Andon', 'andon', 'packages/', 'apps/', 'bun run test', 'bun run check'];
+    for (const c of configs) {
+      const text = skill(c);
+      const touched = [claimBullet(text), feature(text), queue(text), next(text), abandon(text), bookkeeping(text), explore(c)];
+      for (const s of touched) {
+        for (const word of BANNED) expect({ word, found: mentions(s, word) }).toEqual({ word, found: false });
+        expect(s).not.toMatch(/\{\{[^}]*\}\}/);
+      }
+    }
   });
 });

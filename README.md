@@ -157,7 +157,8 @@ Work reaches the factory through `factory/backlog.md`:
 /factory next csv export  # or the line these words describe
 ```
 
-The session claims the line (ticking it as `- [x] … → 001-csv-export`) and runs the loop. Each
+The session claims the line (ticking it as `- [x] … → 001-csv-export` and committing the tick
+at once, so a running job stays visible and no other session picks it) and runs the loop. Each
 stage leaves its file in `factory/jobs/001-csv-export/`:
 
 | Stage | Who | Writes |
@@ -170,7 +171,8 @@ stage leaves its file in `factory/jobs/001-csv-export/`:
 
 Throughout, the CLI keeps `events.jsonl` (the log) and `job.json` (the snapshot) in the same
 folder. On `APPROVE`, the orchestrator merges the branch into the job's target branch locally with `--no-ff`,
-removes the worktree and branch, and commits the backlog tick. It never pushes: pushing is
+removes the worktree and branch, removes the job's line from the backlog (which holds only open
+and running work), and commits that with the brief's `done` mark. It never pushes: pushing is
 yours.
 
 ### 4. When it stops
@@ -201,8 +203,11 @@ bun factory/cli.ts show 001-csv-export   # stage and timing summary
 Run as many Claude Code sessions as you like, one job each: each job has its own worktree,
 branch, and job folder. Job ids come from the CLI: `bun factory/cli.ts claim <slug>` picks the
 next number under its own lock and prints the id, so two sessions never get the same one. The
-shared steps, claiming work (running `claim` and ticking the backlog) and merging into the target
-branch, happen under a short lock, `factory/.lock/`. Before
+shared steps, claiming work (running `claim`, then ticking and committing the backlog line),
+merging into the target branch, and every other backlog edit, happen under a short lock,
+`factory/.lock/`. Each backlog edit is committed at once by the step that makes it, so parallel
+jobs never mix; a step that finds uncommitted hand edits in `factory/backlog.md` stops and asks
+you to commit or discard them first. Before
 claiming, each session runs an **overlap check** against the live jobs; if the new work looks
 likely to change the same area, it asks you whether to start it anyway or take a different
 backlog line.

@@ -28,7 +28,7 @@ feature → spec-writer → builder ⇄ [configured reviewers] → approver → 
 | `factory/roles/<role>.md` — the project's rules for one role (optional) | human (or `customize`, with the human) |
 | `factory/.lock/` — a short mutex for claiming work and merging | you, briefly |
 | `factory/jobs/.claim.lock/` — the CLI's mutex for handing out job ids | the factory CLI (never by hand) |
-| `factory/backlog.md` — queue for `/factory next` | human (you tick items off) |
+| `factory/backlog.md` — open and running work only, the queue for `/factory next` | human (adds and edits lines); you, at claim, merge, abandon, `queue`, and `explore`, each edit committed at once |
 | `factory/briefs/<slug>.md` — decisions from an `explore` interview (tracked in git) | you, with the human |
 | `factory/jobs/<id>/feature.md` — the request, verbatim | you |
 | `factory/jobs/<id>/rework-<k>.md` — a human's rework note, verbatim | you |
@@ -141,16 +141,39 @@ cd <R>; until mkdir factory/.lock 2>/dev/null; do
 ```
 
 Release it with `rmdir factory/.lock` as soon as the step is done, and never hold it while you
-wait on the user or an agent. Two steps take the lock:
-- **Claim:** pick the work, run the overlap check, run `bun factory/cli.ts claim <slug> …` (it
-  picks the number, creates the job dir, and prints the id), then, with that printed id, write
-  `feature.md` and tick the backlog line. Run **the thread lookup** before taking the lock.
+wait on the user or an agent. These steps take the lock:
+- **Claim:** run **the backlog check**, pick the work, run the overlap check, run
+  `bun factory/cli.ts claim <slug> …` (it picks the number, creates the job dir, and prints the
+  id), then, with that printed id, write `feature.md`, tick the backlog line as
+  `- [x] … → <id>`, and commit the tick at once by pathspec, still under the lock:
+  `git commit -m "chore(factory): claim job <id>" -m "Co-Authored-By: Claude
+  <noreply@anthropic.com>" -- factory/backlog.md`. Release the lock only
+  after that commit; the job's branch is created later (step 2 of the loop). The ticked line
+  stays in the backlog while the job runs, so other sessions see it and never pick it. Work
+  claimed from free text with no backlog line has nothing to tick: no backlog commit. Run
+  **the thread lookup** before taking the lock.
 - **Merge:** everything in **Merge** below, bookkeeping included.
+- **Abandon bookkeeping:** removing the job's backlog line and noting the attempt in its brief
+  (`/factory abandon`).
+- **Queue:** appending lines with `/factory queue`, and its commit.
+- **Explore's Finish:** marking a brief ready, appending its backlog line, and their commit.
+
+**The backlog holds only open and running work, and every edit to it is committed at once** by
+the step that makes it, by pathspec, under `factory/.lock`. A pathspec commit takes the whole
+file, so nothing may be left uncommitted between steps, or one job's edit lands in another's
+commit. A line is `- [ ]` while open, `- [x] … → <id>` while its job runs, and removed when the
+job merges or is abandoned.
+
+**The backlog check** (the first thing each of those steps does). Run
+`git status --porcelain -- factory/backlog.md` from `<R>`. If it prints anything,
+`factory/backlog.md` already has uncommitted changes (someone's hand edits): never sweep them
+into your commit. Release the lock, stop with the one line "commit or discard your backlog
+edits first", and leave the backlog as it is. Each step below says what that stop means for it.
 
 **Live jobs** are the jobs whose `job.json` (read-only to you) has a stage other than
 `merged`. That includes `needs-human`, because those branches still have to merge.
 
-**Overlap check** (the first step of a claim). Compare the new work with each live job's title
+**Overlap check** (part of every claim, right after the backlog check). Compare the new work with each live job's title
 and `feature.md`, and its `spec.md` Touchpoints if they're written yet. The question is whether
 they look likely to change the same area: the same module, the same surface or component, the
 same doc. A judgment call at a glance is enough; no file-level analysis is needed. If they
@@ -271,14 +294,21 @@ as `'\''` (as for board values), so `$` and backticks in it are never expanded.
   shell commands run in order from the repo root, and it is green only when every command
   exits 0. If `config.json` has no `gate`, no gate is configured: tell the user so instead of
   running anything, and never invent a command.
-- Then **bookkeeping**, so every job leaves `<target>` clean. When `job.json` has a non-null
+- Then **bookkeeping**, so every job leaves `<target>` clean. First run **the backlog check**.
+  If `factory/backlog.md` already has uncommitted changes, the merge stands (`job.merged` is
+  logged) and only the bookkeeping waits: release the lock and tell the user "commit or discard
+  your backlog edits first", that the merge landed, and which bookkeeping you skipped (removing
+  the job's backlog line, marking the brief `done` with its `- Job:` line, and the
+  `record job <id>` commit), for them to do once their edits are committed or discarded.
+  Otherwise, remove the job's line (`- [x] … → <id>`) from `factory/backlog.md`; don't tick it,
+  the line goes. When `job.json` has a non-null
   `brief`, mark that brief done: set that brief's `Status:` line to `done` and add
   `- Job: <id> (merged <short sha>, <YYYY-MM-DD>)` right below it (the `<short sha>` you passed
   to `job.merged`, and today's date). Then commit by pathspec, so nothing else of the user's
-  gets swept in, the brief together with the backlog tick: `git commit -m "chore(factory):
-  record job <id>" -m "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md
-  factory/briefs/<slug>.md`. With no brief, commit the backlog only, ending the same command
-  with `-- factory/backlog.md` (nothing changed → skip).
+  gets swept in, the brief together with the backlog line's removal: `git commit -m
+  "chore(factory): record job <id>" -m "Co-Authored-By: Claude <noreply@anthropic.com>" --
+  factory/backlog.md factory/briefs/<slug>.md`. With no brief, commit the backlog only, ending
+  the same command with `-- factory/backlog.md` (nothing changed → skip).
 - Release the lock (`rmdir factory/.lock`).
 - Never push. Pushing stays a human decision.
 
@@ -287,13 +317,19 @@ as `'\''` (as for board values), so `$` and backticks in it are never expanded.
 **`/factory <feature>`** — New job. If the text names a brief (`brief: factory/briefs/<slug>.md`),
 its `Status:` must be `ready`. If it is `done`, a job already carried it out: stop before claiming
 and say `brief <slug> is done (job <id>)`, with the job from its `- Job:` line. Separately, a draft
-brief means the interview isn't done, so stop before claiming and say so. Otherwise **claim** it
-under the lock (overlap check first): pick a 2–4 word kebab slug for the work and run
+brief means the interview isn't done, so stop before claiming and say so. If the brief has
+`- Abandoned:` lines, a job already tried it and was closed: ask once, before claiming and
+before taking the lock, quoting its latest attempt: *"Brief `<slug>` was abandoned as job
+`<id>`: '<reason>'. Start it again, or revise it first with `/factory explore <slug>`?"* Start
+again → go on; revise (or anything unclear) → stop, claiming nothing. Otherwise **claim** it
+under the lock (backlog check and overlap check first): pick a 2–4 word kebab slug for the work and run
 `bun factory/cli.ts claim <slug>` with `brief=factory/briefs/<slug>.md` when it applies (add
 `maxRound=<n>` only to override the config default, and `session=…` from **the thread lookup**,
 run first). The CLI picks the number and prints the
-job's id, e.g. `004-export-csv-report`; use that id from then on. Write `feature.md` verbatim,
-release the lock, run the loop.
+job's id, e.g. `004-export-csv-report`; use that id from then on. Write `feature.md` verbatim.
+If the work has a backlog line, tick and commit it as **Claim** under **Running jobs side by
+side** says; free text with no backlog line makes no backlog commit. Then release the lock and
+run the loop. If **the backlog check** stops the claim, nothing is claimed: no `claim`, no job.
 
 **`/factory queue <text>`** — Add ready work to the backlog without running it. Work arrives
 as text. It is **ready** if it isn't blocked by unmerged work and you can say in one line what
@@ -302,9 +338,11 @@ as text. It is **ready** if it isn't blocked by unmerged work and you can say in
   limits, must-nots (e.g. *no new runtime dependency*) — and none of the history or rationale.
 - Not ready → don't queue it; say why in a sentence and suggest `/factory explore <idea>`.
 
-Show the user the lines you added, then commit just the backlog by pathspec:
-`chore(factory): queue <title>` (+ the Co-Authored-By trailer) `-- factory/backlog.md`.
-`queue` never starts a job.
+Then take `factory/.lock` and run **the backlog check** (if it stops you, nothing is queued).
+Append the lines and commit just the backlog by pathspec, still under the lock:
+`chore(factory): queue <title>` (+ the Co-Authored-By trailer) `-- factory/backlog.md`. Release
+the lock, then show the user the lines you added; never hold the lock while you ask the user
+anything. `queue` never starts a job.
 
 **`/factory explore <idea | brief slug>`** — An interactive interview that turns a fuzzy
 idea into a brief, then queues it. Read [explore.md](explore.md) in this skill's folder and
@@ -315,17 +353,24 @@ the project's overlay (`factory/config.json` and `factory/roles/<role>.md`), the
 and commits it. Follow **Customize** below. It runs entirely in this session with the user; it
 spawns no agents, claims no job, and never runs the `factory init` or `factory upgrade` installer.
 
-**`/factory next [words]`** — Under the lock, re-read `factory/backlog.md` (another
-session may have just ticked a line) and pick a `- [ ]` item:
+**`/factory next [words]`** — Under the lock, run **the backlog check** (if it stops you,
+nothing is claimed), re-read `factory/backlog.md` (another session may have just ticked a line)
+and pick a `- [ ]` item:
 - no argument → the first one;
 - words → the line they clearly describe, matched by meaning, not exact text.
 
-Claim it as `/factory <item text>` does, and tick it as `- [x] … → <id>` in the same step. If
-the overlap check stops you, leave the line unticked. Then run the loop.
+A ticked `- [x] … → <id>` line is a running job: never pick it; if the words describe it,
+report it as running job `<id>`. Claim the line as `/factory <item text>` does, and tick it as
+`- [x] … → <id>` and commit it (`chore(factory): claim job <id>`) in the same step, as **Claim**
+says. If its brief has `- Abandoned:` lines, release the lock and ask the abandoned-brief
+question from `/factory <feature>` first; on start again, take the lock and re-read. If the
+overlap check or that question stops you, leave the line unticked. Then run the loop.
 
-Don't guess. If there's nothing unchecked, or nothing matches (a ticked line means it already
-ran, so say which job), release the lock and stop. If the words fit more than one line,
-release the lock and ask which one.
+Don't guess. If there's nothing unchecked, or nothing matches, release the lock and stop. When
+the words match no open line but describe finished work, say it already ran and which job: find
+it by the done briefs' `- Job:` lines (`factory/briefs/*.md` with `Status: done`), never by
+ticked lines, since a merged job's line is gone from the backlog. If the words fit more than one
+line, release the lock and ask which one.
 
 **`/factory approve <id>`** — Human override for a `needs-human` job. Refuse any other stage:
 a job in flight belongs to the session running it.
@@ -373,6 +418,23 @@ prints `abandoned`. A non-zero exit before the event is logged (a wrong stage wi
 `--force`, a bad id or reason) changed nothing: report the one-line reason. A non-zero exit
 naming what was left behind means the job **is** abandoned but cleanup failed: tell the user
 what to remove by hand. Never write the event yourself to get around a refusal.
+
+Before running the CLI (after both answers), run **the backlog check**: if
+`factory/backlog.md` already has uncommitted changes, stop with "commit or discard your backlog
+edits first"; nothing is abandoned and nothing changes. Once the job is abandoned (the CLI
+printed `abandoned`, or named what it left behind), take `factory/.lock`, run the backlog check
+again (if it stops you now, the job stays abandoned and only this bookkeeping waits: name it to
+the user), and then:
+- Remove the job's line (`- [x] … → <id>`) from `factory/backlog.md`, so a later
+  `/factory next` never picks up abandoned work.
+- When `job.json` has a non-null `brief`, add `- Abandoned: <id> (<YYYY-MM-DD>): <reason>`
+  right below that brief's `Status:` line (today's date and the reason given; one line per
+  attempt, below any earlier `- Abandoned:` lines). `Status:` stays `ready`.
+- Commit both by pathspec: `git commit -m "chore(factory): abandon job <id>" -m
+  "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md
+  factory/briefs/<slug>.md`. With no brief, commit the backlog only, ending the same command
+  with `-- factory/backlog.md` (nothing changed → skip).
+- Release the lock (`rmdir factory/.lock`).
 
 ## Customize — the overlay interview
 
@@ -481,7 +543,8 @@ Finish with what changed, doctor's result, the commit (or why there is none), an
   (`abandon` from a working stage needs the user to confirm the driving session is stopped).
   Finding another job in flight is never a reason to stop; it's only a reason for the overlap check.
 - Agents write only their own file (a reviewer also its `round-<N>/<key>/` supporting files);
-  you write only your job's feature.md and rework notes, backlog ticks, and events through the
+  you write only your job's feature.md and rework notes, backlog edits (each committed at once),
+  briefs' bookkeeping lines (`- Job:`, `- Abandoned:`), and events through the
   factory CLI (and, in `customize`, the overlay). If an agent wrote somewhere else, note it and tell the user.
 - The managed files (this skill and the `factory-*` agents) are never edited by hand. A
   project's own rules for a role live in its overlay, `factory/roles/<role>.md`, which each
