@@ -1,16 +1,17 @@
 ---
 name: factory
-description: Run the factory — a feature goes spec → build → parallel reviews → approve → merge, driven by subagents that talk only through markdown files; `queue` and `explore` feed its backlog, and `customize` (alias `init`) tailors the project's overlay. Use when the user invokes /factory with a feature, `next [words]`, `queue <text>`, `explore <idea|brief>`, `customize`, `init`, `approve <job-id>`, `rework <job-id> <note>`, or `abandon <job-id> <reason>`.
-argument-hint: "<feature> | next [words] | queue <text> | explore <idea|brief> | customize | init | approve <job-id> | rework <job-id> <note> | abandon <job-id> <reason>"
+description: Run the factory — a feature goes spec → build → parallel reviews → approve → merge, driven by subagents that talk only through markdown files; `queue` and `explore` feed its backlog, and `customize` (alias `init`) tailors the project's overlay. Use when the user invokes /factory with a feature, `next [words]`, `queue <text>`, `explore <idea|brief>`, `customize`, `init`, `approve <job-id>`, `rework <job-id> <note>`, `abandon <job-id> <reason>`, `epic <slug>` (start or resume an epic: several briefs run as member jobs into one branch, then land as one merge), or `epic abandon <slug> <reason>`.
+argument-hint: "<feature> | next [words] | queue <text> | explore <idea|brief> | customize | init | approve <job-id> | rework <job-id> <note> | abandon <job-id> <reason> | epic <slug> | epic abandon <slug> <reason>"
 ---
 <!-- factory 0.1.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/config.json and factory/roles/<role>.md -->
 
 # /factory — the orchestrator
 
-The session running this skill **is the orchestrator** of one job. You run its loop, spawn
-every agent, and record every state change through the **factory CLI**. You never write code,
-specs, reviews, or decisions yourself; agents do, one file each. Other sessions may be running other
-jobs at the same time; see **Running jobs side by side**.
+The session running this skill **is the orchestrator** of one job, or of one epic (several
+member jobs driven together; see **Epics**). You run its loop, spawn every agent, and record
+every state change through the **factory CLI**. You never write code, specs, reviews, or
+decisions yourself; agents do, one file each. Other sessions may be running other jobs at the
+same time; see **Running jobs side by side**.
 
 ```
 clear work ── queue ────────────────────┐
@@ -31,7 +32,9 @@ feature → spec-writer → builder ⇄ [configured reviewers] → approver → 
 | `factory/jobs/.claim.lock/` — the CLI's mutex for handing out job ids | the factory CLI (never by hand) |
 | `factory/backlog.md` — open and running work only, the queue for `/factory next` | human (adds and edits lines); you, at claim, merge, abandon, `queue`, and `explore`, each edit committed at once |
 | `factory/briefs/<slug>.md` — decisions from an `explore` interview (tracked in git) | you, with the human |
-| `factory/jobs/<id>/feature.md` — the request, verbatim | you |
+| `factory/epics/<slug>.md` — an epic's plan: its member briefs and their `after:` edges (tracked in git) | you, with the human (`explore`); you, for its bookkeeping lines (`Status:`, `- Landed:`, `- Abandoned:`) and dependent drops |
+| `factory/jobs/epics/<slug>/events.jsonl` and `epic.json` — an epic's log and its derived snapshot | the factory CLI (never by hand) |
+| `factory/jobs/<id>/feature.md` — the request, verbatim (generated, for an epic's sync and fix jobs) | you |
 | `factory/jobs/<id>/rework-<k>.md` — a human's rework note, verbatim | you |
 | `factory/jobs/<id>/conflict-<c>.md` — the facts of a merge conflict with `<target>` | you |
 | `factory/jobs/<id>/spec.md` | `factory-spec-writer` |
@@ -40,6 +43,7 @@ feature → spec-writer → builder ⇄ [configured reviewers] → approver → 
 | `factory/jobs/<id>/round-<N>/<key>/*` — supporting files such as screenshots, when its rules ask for them | that reviewer |
 | `factory/jobs/<id>/decision.md` | `factory-approver` |
 | `factory/.worktrees/<id>/` — the job's checkout, branch `factory/<id>` | builder (code) |
+| `factory/.worktrees/epic-<slug>/` — an epic's checkout, branch `factory/epic/<slug>` | the factory CLI creates and removes it; you merge into it |
 
 `jobs/`, `.lock/`, and `.worktrees/` are gitignored runtime state. Code lives on the
 branch; the main checkout stays on the job's target branch so your files never move under you.
@@ -113,24 +117,29 @@ Run this **thread lookup** right before `claim` (before taking `factory/.lock`),
 only when T3 Code's tools `t3_environment_read` and `t3_thread_search` are both present in this
 session. Without them, skip it and run the command without `session`.
 
+**In an epic** the lookup runs **once**, when `/factory epic <slug>` starts or resumes the epic,
+right before `epic start` or `epic event <slug> epic.resumed`. The `session=` it gives goes on
+that command and on every claim this session makes for the epic (members, sync, and fix jobs);
+never run it again per claim.
+
 1. Write a unique phrase in your reply to the user: `factory session <random>`, where
    `<random>` is 12 random letters and digits you make up now (never reuse one).
 2. Call `t3_environment_read` for the environment id, then `t3_thread_search` for the phrase.
    If no thread comes back, wait a couple of seconds (`sleep 2`) and search once more.
 3. Only if exactly one thread matches, add `session=t3code:<environmentId>/<threadId>` to the
-   command (`claim`, `job.reworked`, or `job.human-approved`).
+   command (`claim`, `job.reworked`, `job.human-approved`, `epic start`, or `epic.resumed`).
 4. Otherwise (no match after the retry, several matches, or a tool error), run the command
    without `session` and tell the user in one line: "couldn't find this T3 Code thread; the job
    won't link to it".
 
 It is best effort: never stop the job, wait on the user, or ask them about it. If the CLI
 refuses the `session=` value, run the same command again without it and say that one line.
-Pass `session=` on nothing else (the CLI refuses it on every other event), and never record any
-other id, such as Claude Code's own session id.
+Pass `session=` on nothing else (the CLI refuses it on every other event and epic event), and
+never record any other id, such as Claude Code's own session id.
 
 ## Running jobs side by side
 
-Any number of sessions can run `/factory` at once, one job each. Each job has its own worktree,
+Any number of sessions can run `/factory` at once, one job, or one epic, each. Each job has its own worktree,
 branch, job dir, and `job.json`, so they don't touch each other's files. The job-id sequence is
 the CLI's: `claim` hands out each number under its own lock, so two sessions never get the same
 id. Two more things are shared: the backlog and the main checkout that merges land in. Those
@@ -159,12 +168,25 @@ wait on the user or an agent. These steps take the lock:
   (`/factory abandon`).
 - **Queue:** appending lines with `/factory queue`, and its commit.
 - **Explore's Finish:** marking a brief ready, appending its backlog line, and their commit.
+- **Epic start:** the backlog check, `epic start`, and the tick of the epic's backlog line as
+  `- [x] … → epic <slug>`, with its commit (**Epics**, "Start or resume").
+- **Landing:** everything in **Epics**, "Landing", from the checkout check to the
+  `land epic <slug>` commit.
+- **Epic bookkeeping:** a member brief's `- Abandoned:` line, dropping members from a plan, and
+  `/factory epic abandon`'s bookkeeping, each with its commit.
+
+Member, sync, and fix claims don't take the lock: they touch no backlog line, and the CLI checks
+the epic's plan and cap under the epic's own lock. A member's merge into the epic branch doesn't
+take it either: it happens in the epic's worktree, never the main checkout, and only the session
+driving the epic merges there.
 
 **The backlog holds only open and running work, and every edit to it is committed at once** by
 the step that makes it, by pathspec, under `factory/.lock`. A pathspec commit takes the whole
 file, so nothing may be left uncommitted between steps, or one job's edit lands in another's
 commit. A line is `- [ ]` while open, `- [x] … → <id>` while its job runs, and removed when the
-job merges or is abandoned.
+job merges or is abandoned. An epic's line (ending `— epic: factory/epics/<slug>.md`) is
+`- [x] … → epic <slug>` while the epic runs, and removed when it lands or is abandoned; its
+member jobs never get lines of their own.
 
 **The backlog check** (the first thing each of those steps does). Run
 `git status --porcelain -- factory/backlog.md` from `<R>`. If it prints anything,
@@ -174,6 +196,8 @@ edits first", and leave the backlog as it is. Each step below says what that sto
 
 **Live jobs** are the jobs whose `job.json` (read-only to you) has a stage other than
 `merged`. That includes `needs-human`, because those branches still have to merge.
+**Running epics** are the epics whose `factory/jobs/epics/<slug>/epic.json` (read-only to you)
+has a state other than `landed` or `abandoned`.
 
 **Overlap check** (part of every claim, right after the backlog check). Compare the new work with each live job's title
 and `feature.md`, and its `spec.md` Touchpoints if they're written yet. The question is whether
@@ -223,6 +247,11 @@ agent to fix that first line to the exact format its definition gives (`VERDICT:
 
 ## The loop
 
+Every job runs this loop, an epic's jobs included. For a job in an epic (its `job.json` has an
+`epic`), `<target>` is the epic branch `factory/epic/<slug>`, so its worktree branches from it
+and its reviewers diff against it, and it merges by **Member merge** (under **Epics**) wherever
+this loop says **Merge**.
+
 **1 · Spec.** Board: `stage.entered stage=spec`. Spawn `factory-spec-writer` → `spec.md`
 (span `role=spec-writer`). Board: `job.titled title='<spec.md's # H1>'`.
 
@@ -265,6 +294,9 @@ line:
   they can `/factory approve <id>` or `/factory rework <id> "<note>"`.
 
 ## Merge
+
+This is a standalone job's merge into its target from the main checkout. A job in an epic merges
+into the epic branch instead, by **Member merge** under **Epics**.
 
 Take `factory/.lock` first. Another session may be merging. Everything below runs from the
 main checkout, which must be on the job's `<target>`. Check it first with
@@ -355,6 +387,283 @@ as `'\''` (as for board values), so `$` and backticks in it are never expanded.
 - Release the lock (`rmdir factory/.lock`).
 - Never push. Pushing stays a human decision.
 
+## Epics
+
+An **epic** runs several briefs as ordinary jobs, its **members**, in the order its plan
+`factory/epics/<slug>.md` gives (each `## Members` item names a brief, with optional `after:`
+members it waits on). Members branch from, are reviewed against, and merge into the epic's own
+branch, `factory/epic/<slug>`, checked out at `<R>/factory/.worktrees/epic-<slug>`; when every
+member has merged, the epic **lands** on its target with one merge. Below, `<slug>` is the epic's
+slug and `<target>` is the epic's target (`target` in `epic show`), never the epic branch. Besides
+members, an epic may claim two kinds of **generated** jobs inside itself: a **sync** job (brings
+`<target>` into the epic branch after a catch-up conflict) and a **fix** job (makes a red gate
+green before landing). Every epic job runs **The loop**.
+
+The CLI owns the epic's setup, teardown, log, and scheduling; you own every merge (members,
+catch-ups, landing) and record each outcome as an event. You never write `epic.json` or the
+epic's log. Run, from `<R>`:
+
+```bash
+bun factory/cli.ts epic start <slug> [session=…]          # set up the branch and worktree; logs epic.started
+bun factory/cli.ts epic event <slug> <type> [k=v …]       # epic.waiting | epic.resumed | epic.landing | epic.landed
+bun factory/cli.ts epic next <slug>                       # what to do now: claim <member> lines, or land
+bun factory/cli.ts epic show <slug>                       # state, members, generated jobs, why it waits
+bun factory/cli.ts epic abandon <slug> '<reason>' [--force] [--delete-branch]
+```
+
+A non-zero exit wrote nothing (or, for `epic abandon`, names what it left behind): read its one
+line and fix the cause or tell the user. Free-text values are single-quoted, as on the board.
+
+### Start or resume
+
+`/factory epic <slug>`, and `/factory next` on an epic's backlog line, first read the epic's
+state with `bun factory/cli.ts epic show <slug>`.
+
+**Not started** (`epic show` says it has not started):
+1. Read the plan. Its `Status:` must be `ready`. A `draft` plan's interview isn't done: say so
+   (`/factory explore <slug>` finishes it). A `done` plan has landed: say `epic <slug> landed
+   (<sha>)` from its `- Landed:` line. An `abandoned` plan has had its one run: say so. Each of
+   these stops before starting anything.
+2. **The abandoned-brief question, once.** List every member brief that has `- Abandoned:`
+   lines, each with its latest attempt (job id and reason), and ask once, before taking the
+   lock: *"These member briefs were abandoned before: <slug> as <id>: '<reason>'; … Start the
+   epic anyway, or revise them first with `/factory explore`?"* Start anyway → go on; revise (or
+   anything unclear) → stop, starting nothing. No such brief → don't ask.
+3. **The overlap question, once.** Compare the epic as a whole (every member brief's Intent and
+   Scope) with each live job that has no `epic` and each other running epic (its plan), at a
+   glance, as the overlap check does. If they overlap, ask once: *"This epic and <id or epic
+   slug> both change the same module, so they'll likely conflict at landing. Start it anyway?"*
+   and do what the user says. Never compare members with each other: the `after:` edges already
+   decided what runs in parallel, and conflicts between members are handled at **Member merge**.
+4. Run **the thread lookup** (once for the whole run).
+5. Take `factory/.lock`. When the backlog has an open line for this plan
+   (`- [ ] … — epic: factory/epics/<slug>.md`), run **the backlog check** first (if it stops you,
+   nothing is started). Run `bun factory/cli.ts epic start <slug> [session=…]`: it checks the
+   plan, creates `factory/epic/<slug>` from the target and its worktree, logs `epic.started`, and
+   prints `running`. A non-zero exit started nothing: release the lock, leave the line unticked,
+   and report its one line. Then tick the line as `- [x] … → epic <slug>` and commit it at once
+   by pathspec, still under the lock: `git commit -m "chore(factory): start epic <slug>" -m
+   "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md` (no line → no commit).
+   Release the lock.
+6. Run **The epic loop**.
+
+**`running` or `waiting`:** resume and take over driving. Ask neither start question (both were
+asked when it began). Run **the thread lookup**, then `bun factory/cli.ts epic event
+<slug> epic.resumed [session=…]`: it records this session as the driver and, from a logged
+`waiting`, puts the epic back where it was, and prints the state. Taking over assumes any
+earlier driving session has stopped. If it prints `landing` (a `waiting` logged during landing,
+such as a wrong checkout or a refused landing merge), or the CLI refuses `epic.resumed` because
+the epic is `landing`, go on as for `landing`. Otherwise run **The epic loop** from the files.
+
+**`landing`** (a driver stopped partway through landing; the CLI refuses `epic.resumed` there),
+or an `epic.resumed` that printed `landing`: run **the thread lookup** if you haven't yet, for
+any claim this session makes, and continue at **Landing**, "Resuming a landing".
+
+**`landed` or `abandoned`:** say so, with its note, and stop.
+
+### The epic loop
+
+You drive every epic job yourself, interleaved. Each runs **The loop**, and **every agent is
+spawned in the background**, so several jobs move at once; as each agent returns (and its file
+exists), take that job's next step, then go back to waiting. Never block on one job while
+another could move. **WAIT FOR ALL** still holds within each job's review round.
+
+**Schedule.** When the epic starts or resumes, and whenever an epic job merges, leaves a working
+stage, or is abandoned, first read the epic's state (`epic show <slug>`). **While it is
+`landing`**, `epic next` prints nothing, so don't run it: drive any live sync or fix job, and
+once none is live, go back to **Landing** from step 1, skipping `epic.landing` (already logged).
+Otherwise run `bun factory/cli.ts epic next <slug>` and do exactly what it prints, nothing more:
+- `claim <member>` → run **Catch-up** first; if it claimed a sync job, claim no member now. Then
+  `bun factory/cli.ts claim <member> epic=<slug> brief=factory/briefs/<member>.md session=…`
+  (the `session=` from the start or resume lookup, left off when it found none; no `maxRound=`:
+  the plan's, else the config's, applies). Use the printed id, write its `feature.md`
+  (`<the brief's # title> — brief: factory/briefs/<member>.md (member of epic <slug>)`), and run
+  its loop from step 1. A refused claim claimed nothing: report its one line.
+- `land` → **Landing**.
+- nothing → read `epic show <slug>`. While an epic job is still in a working stage, keep waiting on
+  its agents. Otherwise the epic is waiting on you: tell the user which jobs are in
+  `needs-human` (each id and why), that they can `/factory approve`, `rework`, or `abandon` each
+  in this session, and stop.
+
+**State lives in files, never in your memory.** After a compaction, on a resume, or whenever
+unsure, re-read `epic show <slug>` (members, their jobs and stages, generated jobs) and each epic
+job's `job.json` (`stage`, `round`, `maxRound`, `decision`, `conflicts`, and its open spans:
+`timing.agents` entries with `finishedAt` null), and look at which of its files exist. Continue
+each job from what they say: an open span whose file exists → `agent.finished`, then the next
+step; an open span whose agent isn't alive in this session → re-spawn it once with the same
+card, inside that span (**Spawning agents**). When the old builder isn't alive, spawn a fresh
+`factory-builder` named `builder-<id>` with the card plus the newest review round, rework note,
+or conflict note it must address: everything it needs is in files (the rework path).
+
+**Status lines name the epic**: `<epic> · <id> review round <N>: <k>/<n> in` (e.g.
+`checkout-flow · 027 review round 1: 3/4 in`).
+
+**A member escalates** (approver `ESCALATE`, budget spent, no file, a merge conflict past its two
+tries): it goes to `needs-human` exactly as a standalone job does. Log it as **The loop** says,
+tell the user in one line, and keep driving: independent members keep running, and its dependents
+stay unclaimed (`epic next` won't offer them). Never retry, rework, or approve it on your own;
+that is the user's call, in this session.
+
+**A member is abandoned.** The epic can't land while an abandoned member is in its plan, and its
+dependents (members whose `after:` reaches it, directly or through others; `epic show` lists them
+as blocked on it) can never run. Ask the user once: *"Member `<m>` (<id>) is abandoned, and
+<dependents, or no member> depend(s) on it. Drop it and its dependents from the plan, or abandon
+the epic?"* Then do what they say:
+- **Drop** → take `factory/.lock`, remove those members' items from the plan's `## Members` (and
+  any `after:` entry naming them), and commit the plan at once by pathspec: `git commit -m
+  "chore(factory): drop <members> from epic <slug>" -m "Co-Authored-By: Claude
+  <noreply@anthropic.com>" -- factory/epics/<slug>.md`. Release the lock, then **Schedule**. This
+  removal is the only edit you ever make to a running epic's members.
+- **Abandon the epic** → `/factory epic abandon <slug> <reason>`.
+- Anything unclear → change nothing; the epic waits on you.
+
+An abandoned sync or fix job isn't a plan member: nothing to drop. The next catch-up or landing
+tries again.
+
+### Catch-up
+
+Before each member claim and before landing, the epic brings in its target, **only when the
+target has moved**. In the epic worktree (`cd <R>/factory/.worktrees/epic-<slug>`):
+
+```bash
+git merge-base --is-ancestor <target> factory/epic/<slug>
+```
+
+Exit 0 → up to date, nothing to do. Otherwise merge the target into the epic branch there, as a
+merge commit, never a rebase:
+
+```bash
+git merge --no-ff <target> -m 'Merge <target> into factory/epic/<slug>' \
+  -m 'Co-Authored-By: Claude <noreply@anthropic.com>'
+```
+
+- Clean → go on.
+- **Conflict** (`git diff --name-only --diff-filter=U` lists at least one path) → record the
+  conflicting paths and the target's sha (`git rev-parse --short <target>`), then
+  `git merge --abort`. Claim a **sync job**: `bun factory/cli.ts claim sync-<sha> epic=<slug>
+  kind=sync session=…` (no `brief=`; the CLI refuses one). Write its `feature.md`, generated:
+
+  ```
+  Sync epic <slug> with <target>
+  Merge <target> @ <sha> into factory/epic/<slug> and resolve the conflicts, keeping both sides'
+  intent. The gate stays green.
+  Conflicting paths:
+  - <path>
+  ```
+
+  and run its loop. **While a sync job is live, no member is claimed** (`epic next` offers none,
+  and the CLI refuses), and running members keep going. Claiming resumes once the sync job merges
+  (**Member merge**, then **Schedule**).
+- Any other failure → `git merge --abort` (if a merge is in progress), board the epic:
+  `epic event <slug> epic.waiting reason='catch-up merge of <target> refused: <its one-line
+  error>'` (an apostrophe as `'\''`), and stop: tell the user what blocked it and that `/factory epic <slug>` retries.
+
+### Member merge
+
+When an epic job is approved (its approver's `APPROVE`, or `/factory approve` in this session),
+it merges into the epic branch. Follow **Merge**, with these differences:
+- No `factory/.lock` and no checkout check. Every git command runs in the epic worktree,
+  `<R>/factory/.worktrees/epic-<slug>`, which is always on `factory/epic/<slug>`; never in the
+  main checkout.
+- `<target>` is `factory/epic/<slug>`: `git merge --no-ff factory/<id> …` there, with the same
+  message.
+- A **conflict** follows **Merge**'s conflict path as written (the conflict note, the builder,
+  two tries), against the epic branch; there is no lock to release.
+- **Success** → board `job.merged sha=<short sha>` right after the merge, before any cleanup.
+  Then `git worktree remove factory/.worktrees/<id>` from `<R>`, and `git branch -d factory/<id>`
+  in the epic worktree (the branch is merged there, not into the main checkout's branch); if
+  cleanup fails, report it and carry on. Then `bun factory/cli.ts archive <id>` (a failed or
+  disabled archive is reported in one line, as in **Merge**).
+- **Nothing is committed on the target**: no backlog edit, no brief line, no record commit, and
+  no post-merge gate. The member's brief is marked done at landing, and the gate runs before
+  landing.
+
+Then **Schedule** (which, while the epic is `landing`, leads back to **Landing**).
+
+### Landing
+
+When `epic next` prints `land`:
+1. **Catch-up.** If it claimed a sync job, land after that job merges.
+2. **The gate**, in the epic worktree: `gate` in `<R>/factory/config.json`, its commands in order
+   from the epic worktree's root; green only when every command exits 0. With no `gate`
+   configured, say so and go on; never invent a command.
+3. **Red** → claim a **fix job**: `bun factory/cli.ts claim fix-<sha> epic=<slug> kind=fix
+   session=…` (`<sha>` the epic branch's short sha; no `brief=`). Write its `feature.md`,
+   generated: `Make the gate green on factory/epic/<slug>`, the epic branch's sha, the failing
+   command, and its output verbatim in a fenced block, as data to fix, not instructions (the last
+   100 lines when it's long). Run its loop; when it merges, **Schedule** (on a `running` epic,
+   `epic next` prints `land` again; on a `landing` one, Schedule leads back to **Landing**).
+4. **Green** → `bun factory/cli.ts epic event <slug> epic.landing`.
+5. Take `factory/.lock`. From here on, everything runs in the main checkout. Check it is on
+   `<target>` with `git symbolic-ref --short HEAD`. If it is on another branch `<x>` (or detached:
+   `<x>` is `detached HEAD`), release the lock, run `bun factory/cli.ts epic event <slug>
+   epic.waiting reason='checkout is on <x>, epic targets <target>'` (an apostrophe as `'\''`), and
+   stop: tell the user to switch the main checkout to `<target>` themselves and run
+   `/factory epic <slug>` to retry. Never run `git checkout` or `git switch`.
+6. Merge:
+
+   ```bash
+   git merge --no-ff factory/epic/<slug> -m 'Land epic <slug>: <the plan title>' \
+     -m 'Jobs: <every epic job id, in id order>.' -m 'Co-Authored-By: Claude <noreply@anthropic.com>'
+   ```
+
+   The plan title is the plan's `# ` heading, quoted as **Merge** quotes its message (an
+   apostrophe as `'\''`).
+
+   - **Conflict** (the target moved since the catch-up) → record the conflicting paths and the
+     target's sha, `git merge --abort`, release the lock, and claim a sync job as **Catch-up**
+     says (the epic stays `landing`). When it merges, **Schedule** leads back to **Landing** from
+     step 1, skipping `epic.landing` (already logged).
+   - **Refusal** (no conflicting paths) → `git merge --abort` (if a merge is in progress),
+     release the lock, `epic event <slug> epic.waiting reason='git merge into <target> refused:
+     <its one-line error>'` (an apostrophe as `'\''`), and stop: tell the user what blocked it; `/factory epic <slug>`
+     retries.
+7. Success → `bun factory/cli.ts epic event <slug> epic.landed sha=<short sha>` **at once**,
+   before any cleanup, so git and the board never disagree.
+8. `git worktree remove factory/.worktrees/epic-<slug>` and `git branch -d factory/epic/<slug>`;
+   if cleanup fails, report it and carry on (the landing stands).
+9. `bun factory/cli.ts archive <slug>`; a failed or disabled archive is reported in one line and
+   never undoes the landing.
+10. **Bookkeeping.** First run **the backlog check**. If it stops you, the landing stands and
+    only the bookkeeping waits: release the lock and tell the user "commit or discard your
+    backlog edits first", that the epic landed, and which bookkeeping you skipped (below).
+    Otherwise:
+    - remove the epic's line (`- [x] … → epic <slug>`) from `factory/backlog.md`;
+    - give each member brief `Status: done` and, right below it, `- Job: <id> (merged <member
+      sha> via epic <slug>, <YYYY-MM-DD>)`: the member's newest job, and the sha its `job.merged`
+      logged (its `job.json` `note` reads `merged <sha>`);
+    - give the plan `Status: done` and, right below it, `- Landed: <short sha> (<YYYY-MM-DD>)`
+      (the sha you passed to `epic.landed`);
+    - make one pathspec commit: `git commit -m "chore(factory): land epic <slug>" -m
+      "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md
+      factory/epics/<slug>.md factory/briefs/<member>.md …` (every member brief).
+11. Release the lock (`rmdir factory/.lock`), and tell the user the epic landed. Never push.
+
+**Resuming a landing.** First re-read state from the files, as **The epic loop** says ("State
+lives in files"), and drive any live sync or fix job until it merges; never claim a second sync
+job while one is live. Once no epic job is live, check in the main checkout whether the epic
+branch is already in `<target>` (`git merge-base --is-ancestor factory/epic/<slug> <target>`).
+If not, run **Landing** from step 1, skipping `epic.landing`. If it is, step 6 happened: take the
+lock, log `epic.landed` with the short sha of that `Land epic <slug>` merge commit, and go on
+from step 8.
+
+### Member commands
+
+`/factory approve`, `rework`, and `abandon <id>` on a job whose `job.json` has an `epic` run only
+in the session driving that epic (the one that started or last resumed it with
+`/factory epic <slug>`). Any other session refuses, changing nothing, with the one line:
+"<id> is in epic <slug>; run it in the epic's session, or `/factory epic <slug>` to take it
+over". In the driving session:
+- **approve** runs as the command says, recreating the worktree from `factory/epic/<slug>` when
+  it's gone, and merges by **Member merge**: into the epic branch, never the target.
+- **rework** runs as the command says; the job then goes on in **The epic loop**.
+- **abandon** runs as the command says, with its two questions and the CLI call, but the job has
+  no backlog line: skip the backlog check and the line. For a member, take `factory/.lock`, add
+  its brief's `- Abandoned:` line as the command says, and commit just the brief:
+  `git commit -m "chore(factory): abandon job <id>" -m "Co-Authored-By: Claude
+  <noreply@anthropic.com>" -- factory/briefs/<member>.md`, then release the lock (a sync or fix
+  job has no brief: nothing to commit). Then **A member is abandoned**.
+
 ## Commands
 
 **`/factory <feature>`** — New job. If the text names a brief (`brief: factory/briefs/<slug>.md`),
@@ -403,7 +712,11 @@ and pick a `- [ ]` item:
 - words → the line they clearly describe, matched by meaning, not exact text.
 
 A ticked `- [x] … → <id>` line is a running job: never pick it; if the words describe it,
-report it as running job `<id>`. Claim the line as `/factory <item text>` does, and tick it as
+report it as running job `<id>`. A ticked `- [x] … → epic <slug>` line is a running epic: never pick
+it; report it as running epic `<slug>`. A picked line ending `— epic: factory/epics/<slug>.md` is
+an epic: release the lock and start it as `/factory epic <slug>` does (its start-time questions
+first, then `epic start` and the tick as `- [x] … → epic <slug>`, committed by pathspec under the
+lock), then drive it. Claim the line as `/factory <item text>` does, and tick it as
 `- [x] … → <id>` and commit it (`chore(factory): claim job <id>`) in the same step, as **Claim**
 says. If its brief has `- Abandoned:` lines, release the lock and ask the abandoned-brief
 question from `/factory <feature>` first; on start again, take the lock and re-read. If the
@@ -415,7 +728,8 @@ it by the done briefs' `- Job:` lines (`factory/briefs/*.md` with `Status: done`
 ticked lines, since a merged job's line is gone from the backlog. If the words fit more than one
 line, release the lock and ask which one.
 
-**`/factory approve <id>`** — Human override for a `needs-human` job. Refuse any other stage:
+**`/factory approve <id>`** — Human override for a `needs-human` job. A job in an epic: see
+**Member commands** under **Epics** first. Refuse any other stage:
 a job in flight belongs to the session running it.
 If the approver never ran on this work (no `APPROVE`/`ESCALATE` from it, so job.json's `decision`
 is null: an escalation before or during review, or after a rework before the approver), say so and
@@ -430,7 +744,8 @@ drives it on. `merge.conflicted` clears the human approval (the human approved t
 the resolution existed), so an approver `ESCALATE` there comes back to the human, as any
 escalation does.
 
-**`/factory rework <id> <note>`** — Send a `needs-human` job back with human feedback. Write
+**`/factory rework <id> <note>`** — Send a `needs-human` job back with human feedback. A job in
+an epic: see **Member commands** under **Epics** first. Write
 the note verbatim to `rework-<k>.md` (`k` = `reworks` + 1, from job.json), recreate the worktree
 if needed (step 2, from the job's `<target>`), run **the thread lookup**, board:
 `job.reworked k=<k> maxRound=<round + 2> [session=…]` (a fresh review budget; it clears
@@ -443,7 +758,8 @@ commit."* If that builder isn't alive in this session, spawn a fresh `factory-bu
 continue at step 4 with round `<round> + 1` (round 1 if the job escalated before any review).
 
 **`/factory abandon <id> <reason>`** — Close a job for good, without merging: it leaves the
-board, its worktree is removed, and it can never take another event. Read the job's `stage` from
+board, its worktree is removed, and it can never take another event. A job in an epic: see **Member
+commands** under **Epics** first. Read the job's `stage` from
 job.json. Refuse `merged` and `abandoned` (both are terminal). Otherwise ask the user two
 questions, one at a time, and wait for each answer:
 1. **Confirm.** *"Abandon <id> (<stage>): '<reason>'? This can't be undone."* From a working
@@ -487,6 +803,47 @@ the user), and then:
   with `-- factory/backlog.md` (nothing changed → skip).
 - Release the lock (`rmdir factory/.lock`).
 
+**`/factory epic <slug>`** — Start or resume an epic, idempotently: `epic start` when it hasn't
+started, and on a `running` or `waiting` epic `epic.resumed`, taking over driving. Follow
+**Epics**, "Start or resume", then **The epic loop**.
+
+**`/factory epic abandon <slug> <reason>`** — Close an epic for good, without landing. Read its
+state with `bun factory/cli.ts epic show <slug>`. Refuse one that hasn't started, `landed`, or
+`abandoned`. Otherwise ask the user two questions, one at a time, and wait for each answer:
+1. **Confirm.** *"Abandon epic <slug> (<state>): '<reason>'? This can't be undone."* When any
+   epic job is in a working stage (`claimed`, `spec`, `build`, `review`, `approve`), name them and
+   also ask the user to confirm that members are still working and should be abandoned with it,
+   and that no other session is driving the epic. Anything but a clear yes: stop and change
+   nothing.
+2. **The branch.** *"Keep the branch `factory/epic/<slug>`, or delete it?"* The default is
+   **keep** (an unclear answer keeps it).
+
+Before running the CLI (after both answers), run **the backlog check**: if it stops you, nothing
+is abandoned and nothing changes. Then, from `<R>`, run
+
+```bash
+bun factory/cli.ts epic abandon <slug> '<reason>'
+```
+
+adding `--force` only after the user confirmed that members are still working, and
+`--delete-branch` only when the user chose delete. It logs `epic.abandoned`, abandons every epic
+job that isn't `merged` or `abandoned` (keeping their branches), removes the epic worktree (and
+the branch, if asked), and prints `abandoned`. A non-zero exit before that changed nothing: report
+its one line. One naming what was left behind means the epic **is** abandoned: tell the user what
+to remove by hand. Then run `bun factory/cli.ts archive <slug>` (a failure, or archiving
+disabled, is one line and never fails the abandon; never push `factory/archive`). Then take
+`factory/.lock`, run the backlog check again (if it stops you now, the epic stays abandoned and
+only this bookkeeping waits: name it to the user), and:
+- remove the epic's line (`- [x] … → epic <slug>`) from `factory/backlog.md`;
+- give the plan `Status: abandoned` and, right below it, `- Abandoned: <YYYY-MM-DD>: <reason>`;
+- for each member brief that had a job, add `- Abandoned: <id> (<YYYY-MM-DD>): epic <slug>
+  abandoned: <reason>` below its `Status:` line and any earlier `- Abandoned:` lines (`<id>` its
+  newest job). Its `Status` stays `ready`, so a new plan can reuse it;
+- commit it all in one pathspec commit: `git commit -m "chore(factory): abandon epic <slug>" -m
+  "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md factory/epics/<slug>.md
+  factory/briefs/<member>.md …` (each brief you changed);
+- release the lock (`rmdir factory/.lock`).
+
 ## Customize — the overlay interview
 
 `/factory customize` (or `/factory init`) writes only `factory/config.json` and
@@ -521,10 +878,13 @@ are facts; which of them gate a merge is a decision). Cover only the v1 overlay,
    `git fetch`. Recommend off unless the user wants the history kept in the repo: job files can
    hold paths, notes, and pasted material, and pushing the branch publishes them (archiving never
    pushes). No `archive` key keeps it off.
-8. `roles` — for any role that should not run on the default model (`opus`): its runner
+8. `epic.maxParallel` — the most members of one epic in a working stage at once (a member in
+   `needs-human` holds no slot; sync and fix jobs don't count). Recommend 3, the default; no
+   `epic` key keeps it.
+9. `roles` — for any role that should not run on the default model (`opus`): its runner
    (`claude`, the only runner in v1) and, optionally, the harness model name (e.g. a cheaper
    model for a narrow reviewer). No entry, or no `roles` key at all, keeps the default.
-9. `factory/roles/<role>.md` — for `spec-writer`, `builder`, `approver`, and each configured
+10. `factory/roles/<role>.md` — for `spec-writer`, `builder`, `approver`, and each configured
    reviewer key: the project's own rules for that role, or no file (the managed defaults apply).
 
 Anything else (a runner other than `claude`, per-role tools or effort, a tracker, any merge policy
@@ -534,7 +894,7 @@ beyond `merge.target` such as squashing, PRs, or pushing, conditional reviewers)
 breaks one is refused: tell the user which rule and why, and ask again. Nothing is written for it.
 - No key outside v1. `config.json` holds only `schema` (`"factory/v1"`), `name`, `reviewers`,
   `maxRound`, `dashboard` (only `settleAfterHours`), `gate`, `merge` (only `target`), `archive`
-  (only `enabled`), and `roles`.
+  (only `enabled`), `epic` (only `maxParallel`), and `roles`.
 - `name`, when present, is a string of 1–64 characters (Unicode code points) with no leading or
   trailing whitespace and no control characters; spaces, punctuation, and non-ASCII are fine.
   No name means leaving the key out, never an empty string.
@@ -555,6 +915,8 @@ breaks one is refused: tell the user which rule and why, and ask again. Nothing 
   a job is claimed, or the claim is refused.
 - `archive`, when present, is an object holding only `enabled`, which is required and is `true`
   or `false`. Off means `enabled: false` or leaving the key out, never an empty object.
+- `epic`, when present, is an object holding only `maxParallel`, a positive integer. For the
+  default (3), leave the key out (the CLI also reads `"epic": {}` as 3, but don't write it).
 - A role file exists only for a fixed role or a configured reviewer key. Dropping a reviewer
   whose role file exists means deleting that file too, or keeping the reviewer; ask which.
 - Role rules add rules only. They never change which file an agent writes, its path, or its
@@ -587,6 +949,9 @@ agreed to drop. Write nothing else.
 **When `merge.target` changed.** No re-render is needed: the CLI reads it at each claim. Live
 jobs keep the target they recorded at claim.
 
+**When `epic` changed.** No re-render is needed: the CLI reads `epic.maxParallel` at each
+`epic next` and member claim, so a running epic uses the new cap from its next claim.
+
 **When `archive` changed.** No re-render is needed: `factory archive` reads it at each run.
 Turning it on copies nothing by itself; `bun factory/cli.ts archive --all` backfills the jobs
 that are already `merged` or `abandoned`, and is the user's call.
@@ -601,16 +966,22 @@ Finish with what changed, doctor's result, the commit (or why there is none), an
 
 ## Ground rules
 
-- One job per session; as many sessions as the user likes. A job is driven only by the session
-  that claimed it, or, once it's `needs-human`, by whoever runs `approve`/`rework`/`abandon` on it
-  (`abandon` from a working stage needs the user to confirm the driving session is stopped).
+- One job, or one epic, per session; as many sessions as the user likes. A job is driven only by
+  the session that claimed it, or, once it's `needs-human`, by whoever runs
+  `approve`/`rework`/`abandon` on it (`abandon` from a working stage needs the user to confirm the
+  driving session is stopped). A job in an epic is driven only by the session driving its epic
+  (**Member commands**); `/factory epic <slug>` takes an epic over.
   Finding another job in flight is never a reason to stop; it's only a reason for the overlap check.
 - Agents write only their own file (a reviewer also its `round-<N>/<key>/` supporting files);
-  you write only your job's feature.md, rework notes, and conflict notes, backlog edits (each committed at once),
-  briefs' bookkeeping lines (`- Job:`, `- Abandoned:`), and events through the
+  you write only your job's feature.md, rework notes, and conflict notes (in an epic, every epic
+  job's, including the generated sync and fix `feature.md`), backlog edits (each committed at once),
+  briefs' bookkeeping lines (`- Job:`, `- Abandoned:`), an epic plan's bookkeeping (`Status:`,
+  `- Landed:`, `- Abandoned:`) and dependent drops, and events and epic events through the
   factory CLI (and, in `customize`, the overlay). If an agent wrote somewhere else, note it and tell the user.
 - The managed files (this skill and the `factory-*` agents) are never edited by hand. A
   project's own rules for a role live in its overlay, `factory/roles/<role>.md`, which each
   agent reads at run time.
-- Keep the user posted with one short line per transition (`003 · review round 1: 3/4 in`).
-- Finish every command with the job's stage, decision, and where to read the files.
+- Keep the user posted with one short line per transition (`003 · review round 1: 3/4 in`); in
+  an epic, name the epic first (`<epic> · <id> review round <N>: <k>/<n> in`).
+- Finish every command with the job's stage, decision, and where to read the files (for an epic,
+  its state from `epic show <slug>` and its plan's path).

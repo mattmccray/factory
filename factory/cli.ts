@@ -1,11 +1,16 @@
 // factory 0.1.0 · managed file, do not edit: it is replaced on upgrade. Project settings go in the overlay: factory/config.json
 // packages/cli/src/core.ts
-import { readFile as readFile4, stat as stat2 } from "fs/promises";
-import { dirname as dirname4, join as join6, relative as relative2, resolve as resolve4 } from "path";
+import { readFile as readFile5 } from "fs/promises";
+import { dirname as dirname7, join as join9, resolve as resolve6 } from "path";
 
 // packages/contract/src/contract.ts
 var WORKING_STAGES = ["claimed", "spec", "build", "review", "approve"];
 var workingStage = (stage) => WORKING_STAGES.find((w) => w === stage) ?? null;
+var JOB_KINDS = ["member", "sync", "fix"];
+var DEFAULT_MAX_PARALLEL = 3;
+function epicMaxParallel(config) {
+  return config.epic?.maxParallel ?? DEFAULT_MAX_PARALLEL;
+}
 function archiveEnabled(config) {
   return config.archive?.enabled === true;
 }
@@ -31,6 +36,23 @@ function checkSlug(slug) {
   if (!SLUG_PATTERN.test(slug))
     throw new Error(`slug ${JSON.stringify(slug)} must match ${SLUG_PATTERN.source}`);
 }
+function checkEpicSlug(slug) {
+  if (slug.length > SLUG_MAX)
+    throw new Error(`epic slug ${JSON.stringify(slug)} is ${slug.length} characters (at most ${SLUG_MAX})`);
+  if (!SLUG_PATTERN.test(slug))
+    throw new Error(`epic slug ${JSON.stringify(slug)} must match ${SLUG_PATTERN.source}`);
+  if (JOB_ID.test(slug))
+    throw new Error(`epic slug ${JSON.stringify(slug)} must not look like a job id (^\\d{3}-[a-z0-9-]+$)`);
+}
+function isEpicSlug(slug) {
+  try {
+    checkEpicSlug(slug);
+    return true;
+  } catch {
+    return false;
+  }
+}
+var epicBranch = (slug) => `factory/epic/${slug}`;
 var SESSION_APP = "t3code";
 var SESSION_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
 function parseSession(value) {
@@ -70,7 +92,7 @@ function noExtraKeys(obj, allowed, what) {
 function parseConfig(raw) {
   if (!isRecord(raw))
     throw new Error("config: must be a JSON object");
-  noExtraKeys(raw, ["schema", "name", "reviewers", "maxRound", "dashboard", "gate", "roles", "merge", "archive"], "config");
+  noExtraKeys(raw, ["schema", "name", "reviewers", "maxRound", "dashboard", "gate", "roles", "merge", "archive", "epic"], "config");
   if (raw.schema !== SCHEMA)
     throw new Error(`config: schema must be "${SCHEMA}"`);
   const { reviewers, maxRound, dashboard } = raw;
@@ -105,7 +127,19 @@ function parseConfig(raw) {
     config.merge = parseMerge(raw.merge);
   if (raw.archive !== undefined)
     config.archive = parseArchive(raw.archive);
+  if (raw.epic !== undefined)
+    config.epic = parseEpic(raw.epic);
   return config;
+}
+function parseEpic(epic) {
+  if (!isRecord(epic))
+    throw new Error("config: epic must be an object { maxParallel? }");
+  noExtraKeys(epic, ["maxParallel"], "config.epic");
+  if (epic.maxParallel === undefined)
+    return {};
+  if (!isPosInt(epic.maxParallel))
+    throw new Error("config: epic.maxParallel must be a positive integer");
+  return { maxParallel: epic.maxParallel };
 }
 function parseArchive(archive) {
   if (!isRecord(archive))
@@ -236,7 +270,7 @@ function parseEventInput(type, fields, ctx) {
   const allow = (...keys) => noExtraKeys(fields, keys, `${type}: extra field`);
   switch (type) {
     case "job.claimed": {
-      allow("brief", "issue", "maxRound", "session");
+      allow("brief", "issue", "maxRound", "session", "epic", "kind");
       if (!ctx)
         throw new Error("job.claimed: needs the job id and config from the CLI");
       if (ctx.target !== undefined && !isTargetBranch(ctx.target))
@@ -247,6 +281,22 @@ function parseEventInput(type, fields, ctx) {
         claimed.target = ctx.target;
       if (fields.session !== undefined)
         claimed.session = parseSession(fields.session);
+      const kind = fields.kind === undefined ? undefined : oneOf(fields, "kind", JOB_KINDS);
+      if (fields.epic === undefined) {
+        if (kind !== undefined)
+          throw new Error(`job.claimed: kind=${kind} needs epic=<slug>`);
+        return claimed;
+      }
+      const epic = str(fields, "epic");
+      checkEpicSlug(epic);
+      claimed.epic = epic;
+      claimed.kind = kind ?? "member";
+      if (claimed.kind === "member" && claimed.brief === null)
+        throw new Error(`job.claimed: a member claim needs brief=factory/briefs/<member>.md`);
+      if (claimed.kind !== "member" && claimed.brief !== null)
+        throw new Error(`job.claimed: a ${claimed.kind} job takes no brief=`);
+      if (ctx.target !== undefined && ctx.target !== epicBranch(epic))
+        throw new Error(`job.claimed: a job in epic ${epic} targets ${epicBranch(epic)}, not ${ctx.target}`);
       return claimed;
     }
     case "job.titled":
@@ -306,6 +356,8 @@ function parseEventInput(type, fields, ctx) {
       allow("reason");
       return { type, reason: str(fields, "reason") };
     default:
+      if (type.startsWith("epic."))
+        throw new Error(`${type} is an epic event, not a job event: run epic event <slug> ${type} \u2026`);
       throw new Error(`unknown event type '${type}'`);
   }
 }
@@ -450,6 +502,748 @@ function requireComplete(s) {
   if (waiting.length)
     fail(`round ${s.round} is not complete, waiting on: ${waiting.join(", ")}`);
 }
+// packages/contract/src/epic.ts
+var PLAN_STATUSES = ["draft", "ready", "done", "abandoned"];
+var isSlug = (s) => s.length <= SLUG_MAX && SLUG_PATTERN.test(s);
+var ITEM = /^- `([^`]*)`(.*)$/;
+var AFTER = /\bafter:/g;
+var AFTER_LIST = /\bafter:\s*(`[^`]*`(?:\s*,\s*`[^`]*`)*)/;
+var MAX_ROUND = /\bmaxRound:/g;
+var MAX_ROUND_VALUE = /\bmaxRound:\s*([1-9]\d*)(?!\w|\.\d)/;
+var STATUS = /^- Status:(.*)$/;
+function statusLine(text) {
+  for (const line of text.split(`
+`)) {
+    if (line.startsWith("## "))
+      return null;
+    const m = STATUS.exec(line.trimEnd());
+    if (m)
+      return (m[1] ?? "").trim();
+  }
+  return null;
+}
+function parsePlan(text) {
+  const plan = { status: null, statusError: null, members: [], errors: [] };
+  const status = statusLine(text);
+  if (status === null)
+    plan.statusError = 'has no "- Status:" line';
+  else {
+    const hit = PLAN_STATUSES.find((s) => s === status);
+    if (hit === undefined)
+      plan.statusError = `has an unknown status (want ${PLAN_STATUSES.join("|")})`;
+    else
+      plan.status = hit;
+  }
+  const lines = text.split(`
+`);
+  const start = lines.findIndex((l) => l.trimEnd() === "## Members");
+  if (start < 0) {
+    plan.errors.push('has no "## Members" section');
+    return plan;
+  }
+  const items = [];
+  for (let i = start + 1;i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (/^#{1,2} /.test(line))
+      break;
+    if (line.startsWith("- ") || line === "-" || line.startsWith("* ") || line.startsWith("+ ") || /^\d+[.)] /.test(line))
+      items.push({ n: i + 1, text: line });
+    else if (/^\s/.test(line) && line.trim() !== "" && items.length > 0) {
+      const last = items[items.length - 1];
+      if (last)
+        last.text += ` ${line.trim()}`;
+    }
+  }
+  const seen = new Set;
+  for (const { n, text: item } of items) {
+    const where = `## Members line ${n}`;
+    const m = ITEM.exec(item);
+    if (!m) {
+      plan.errors.push(`${where} is malformed (want "- \`<brief slug>\`" first)`);
+      continue;
+    }
+    const slug = m[1] ?? "";
+    const rest = m[2] ?? "";
+    if (!isSlug(slug)) {
+      plan.errors.push(`${where}: member slug must match ${SLUG_PATTERN.source} (at most ${SLUG_MAX} characters)`);
+      continue;
+    }
+    if (seen.has(slug)) {
+      plan.errors.push(`${where}: member ${slug} is listed twice`);
+      continue;
+    }
+    let after = [];
+    const afters = rest.match(AFTER)?.length ?? 0;
+    if (afters > 1) {
+      plan.errors.push(`${where}: member ${slug} has more than one after:`);
+      continue;
+    }
+    if (afters === 1) {
+      const a = AFTER_LIST.exec(rest);
+      if (!a) {
+        plan.errors.push(`${where}: member ${slug} has a malformed after: (want after: \`<slug>\`[, \`<slug>\`])`);
+        continue;
+      }
+      after = [...(a[1] ?? "").matchAll(/`([^`]*)`/g)].map((x) => x[1] ?? "");
+      const bad = after.find((s) => !isSlug(s));
+      if (bad !== undefined) {
+        plan.errors.push(`${where}: member ${slug} has an after: entry that is not a slug`);
+        continue;
+      }
+      if (new Set(after).size !== after.length) {
+        plan.errors.push(`${where}: member ${slug} lists an after: member twice`);
+        continue;
+      }
+    }
+    let maxRound = null;
+    const rounds = rest.match(MAX_ROUND)?.length ?? 0;
+    if (rounds > 1) {
+      plan.errors.push(`${where}: member ${slug} has more than one maxRound:`);
+      continue;
+    }
+    if (rounds === 1) {
+      const r = MAX_ROUND_VALUE.exec(rest);
+      const value = r ? Number(r[1]) : Number.NaN;
+      if (!Number.isSafeInteger(value) || value < 1) {
+        plan.errors.push(`${where}: member ${slug} has a malformed maxRound: (want a positive integer)`);
+        continue;
+      }
+      maxRound = value;
+    }
+    seen.add(slug);
+    plan.members.push({ slug, after, maxRound });
+  }
+  if (items.length === 0)
+    plan.errors.push('"## Members" lists no members');
+  return plan;
+}
+function planGraphError(members) {
+  const names = new Set(members.map((m) => m.slug));
+  for (const m of members) {
+    const missing = m.after.find((a) => !names.has(a));
+    if (missing !== undefined)
+      return `member ${m.slug} is after ${missing}, which is not a member`;
+  }
+  const bySlug = new Map(members.map((m) => [m.slug, m]));
+  const state = new Map;
+  const stack = [];
+  const visit = (slug) => {
+    if (state.get(slug) === "done")
+      return null;
+    if (state.get(slug) === "visiting")
+      return [...stack.slice(stack.indexOf(slug)), slug];
+    state.set(slug, "visiting");
+    stack.push(slug);
+    for (const a of bySlug.get(slug)?.after ?? []) {
+      const cycle = visit(a);
+      if (cycle)
+        return cycle;
+    }
+    stack.pop();
+    state.set(slug, "done");
+    return null;
+  };
+  for (const m of members) {
+    const cycle = visit(m.slug);
+    if (cycle)
+      return `the after: edges form a cycle: ${cycle.join(" -> ")}`;
+  }
+  return null;
+}
+var planPath = (slug) => `factory/epics/${slug}.md`;
+var briefPath = (member) => `factory/briefs/${member}.md`;
+async function planStartProblem(slug, text, readBrief) {
+  const what = `plan ${planPath(slug)}`;
+  if (text === null)
+    return `${what} is missing`;
+  const plan = parsePlan(text);
+  if (plan.statusError !== null)
+    return `${what} ${plan.statusError}`;
+  if (plan.status !== "ready")
+    return `${what} is ${plan.status ?? "unknown"}, not ready`;
+  const [parse] = plan.errors;
+  if (parse !== undefined)
+    return `${what} ${parse}`;
+  const graph = planGraphError(plan.members);
+  if (graph !== null)
+    return `${what}: ${graph}`;
+  for (const m of plan.members) {
+    const brief = await readBrief(m.slug);
+    if (brief === null)
+      return `${what}: member brief ${briefPath(m.slug)} is missing`;
+    const status = statusLine(brief);
+    if (status !== "ready")
+      return `${what}: member brief ${briefPath(m.slug)} is ${status === null ? 'without a "- Status:" line' : JSON.stringify(status)}, not ready`;
+  }
+  return null;
+}
+var EPIC_EVENT_TYPES = ["epic.started", "epic.waiting", "epic.resumed", "epic.landing", "epic.landed", "epic.abandoned"];
+function parseEpicEventInput(type, fields, ctx) {
+  const allow = (...keys) => noExtraKeys(fields, keys, `${type}: extra field`);
+  switch (type) {
+    case "epic.started": {
+      allow("session");
+      if (!ctx)
+        throw new Error("epic.started: needs the slug and target from the CLI");
+      checkEpicSlug(ctx.slug);
+      if (!isTargetBranch(ctx.target))
+        throw new Error(`epic.started: target ${JSON.stringify(ctx.target)} is not an allowed branch name`);
+      const started = { type, schema: "factory/v1", slug: ctx.slug, target: ctx.target };
+      if (fields.session !== undefined)
+        started.session = parseSession(fields.session);
+      return started;
+    }
+    case "epic.waiting":
+      allow("reason");
+      return { type, reason: str(fields, "reason") };
+    case "epic.resumed": {
+      allow("session");
+      const resumed = { type };
+      if (fields.session !== undefined)
+        resumed.session = parseSession(fields.session);
+      return resumed;
+    }
+    case "epic.landing":
+      allow();
+      return { type };
+    case "epic.landed":
+      allow("sha");
+      return { type, sha: str(fields, "sha") };
+    case "epic.abandoned":
+      allow("reason");
+      return { type, reason: str(fields, "reason") };
+    default:
+      throw new Error(`unknown epic event type '${type}' (want ${EPIC_EVENT_TYPES.join("|")})`);
+  }
+}
+function isEpicEvent(v) {
+  return typeof v === "object" && v !== null && "ts" in v && typeof v.ts === "string" && "type" in v && typeof v.type === "string";
+}
+function logged(prior) {
+  const s = { state: null, resumeTo: "running" };
+  for (const e of prior) {
+    switch (e.type) {
+      case "epic.started":
+        s.state = "running";
+        break;
+      case "epic.waiting":
+        if (s.state === "running" || s.state === "landing")
+          s.resumeTo = s.state;
+        s.state = "waiting";
+        break;
+      case "epic.resumed":
+        if (s.state === "waiting")
+          s.state = s.resumeTo;
+        break;
+      case "epic.landing":
+        s.state = "landing";
+        break;
+      case "epic.landed":
+        s.state = "landed";
+        break;
+      case "epic.abandoned":
+        s.state = "abandoned";
+        break;
+      default:
+        break;
+    }
+  }
+  return s;
+}
+var loggedEpicState = (prior) => logged(prior).state;
+function checkEpicTransition(prior, next, landBlock = null) {
+  const { state } = logged(prior);
+  if (state === null) {
+    if (next.type !== "epic.started")
+      throw new Error(`no epic log yet: only epic.started (epic start) is allowed, got ${next.type}`);
+    return;
+  }
+  if (state === "landed" || state === "abandoned")
+    throw new Error(`epic is ${state} (terminal): ${next.type} not allowed`);
+  const bad = () => {
+    throw new Error(`${next.type} not allowed from epic state '${state}'`);
+  };
+  switch (next.type) {
+    case "epic.started":
+      throw new Error("epic has already started: one run per plan");
+    case "epic.waiting":
+      return state === "running" || state === "landing" ? undefined : bad();
+    case "epic.resumed":
+      return state === "running" || state === "waiting" ? undefined : bad();
+    case "epic.landing":
+      if (state !== "running")
+        return bad();
+      if (landBlock !== null)
+        throw new Error(`epic.landing refused: ${landBlock}`);
+      return;
+    case "epic.landed":
+      return state === "landing" ? undefined : bad();
+    case "epic.abandoned":
+      return;
+  }
+}
+var WORKING = ["claimed", "spec", "build", "review", "approve"];
+var isWorking = (stage) => WORKING.includes(stage);
+var isLiveStage = (stage) => stage !== "merged" && stage !== "abandoned";
+var memberJobs = (jobs, member) => jobs.filter((j) => j.kind === "member" && j.brief === briefPath(member)).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+function viewEpic(log, members, jobs) {
+  const newest = new Map;
+  for (const m of members) {
+    const mine = memberJobs(jobs, m.slug);
+    const last = mine[mine.length - 1];
+    if (last)
+      newest.set(m.slug, last);
+  }
+  const merged = (slug) => newest.get(slug)?.stage === "merged";
+  const out = members.map((m) => {
+    const job = newest.get(m.slug);
+    const base = { slug: m.slug, after: [...m.after], job: job?.id ?? null, stage: job?.stage ?? null, blockedOn: [] };
+    if (job) {
+      const state = job.stage === "merged" ? "merged" : job.stage === "abandoned" ? "abandoned" : job.stage === "needs-human" ? "needs-human" : "running";
+      return { ...base, state };
+    }
+    const blockedOn = m.after.filter((a) => !merged(a)).map((a) => ({ member: a, job: newest.get(a)?.id ?? null }));
+    return { ...base, state: blockedOn.length > 0 ? "blocked" : "queued", blockedOn };
+  });
+  const generated = jobs.filter((j) => j.kind !== "member").sort((a, b) => a.id < b.id ? -1 : 1);
+  const liveSync = generated.find((j) => j.kind === "sync" && isLiveStage(j.stage)) ?? null;
+  const liveGenerated = generated.filter((j) => isLiveStage(j.stage));
+  const claimable = liveSync === null ? out.filter((m) => m.state === "queued").map((m) => m.slug) : [];
+  const workingMembers = jobs.filter((j) => j.kind === "member" && isWorking(j.stage)).length;
+  let landBlock = null;
+  const unmerged = out.filter((m) => m.state !== "merged");
+  if (out.length === 0)
+    landBlock = "the plan lists no members";
+  else if (unmerged.length > 0)
+    landBlock = `not every member has merged (${unmerged.map((m) => `${m.slug}: ${m.state}`).join(", ")})`;
+  else if (liveGenerated.length > 0)
+    landBlock = `${liveGenerated.map((j) => `${j.kind} job ${j.id}`).join(", ")} ${liveGenerated.length === 1 ? "is" : "are"} live`;
+  return { logged: loggedEpicState(log), members: out, generated, claimable, workingMembers, liveSync, landBlock };
+}
+function projectEpic(log, members, jobs, planError = null) {
+  const first = log[0];
+  if (!first || first.type !== "epic.started")
+    throw new Error("epic log must start with epic.started");
+  const view = viewEpic(log, members, jobs);
+  const snap = {
+    schema: "factory/v1",
+    slug: first.slug,
+    branch: epicBranch(first.slug),
+    target: first.target,
+    plan: planPath(first.slug),
+    planError,
+    state: "running",
+    waitingOn: null,
+    note: "",
+    session: isSession(first.session) ? { app: first.session.app, environment: first.session.environment, thread: first.session.thread } : null,
+    sha: null,
+    members: view.members,
+    generated: view.generated.map((j) => ({ id: j.id, kind: j.kind, stage: j.stage })),
+    counts: { queued: 0, blocked: 0, running: 0, merged: 0, "needs-human": 0, abandoned: 0 },
+    startedAt: first.ts,
+    endedAt: null,
+    updated: first.ts
+  };
+  for (const e of log.slice(1)) {
+    snap.updated = e.ts;
+    switch (e.type) {
+      case "epic.waiting":
+        snap.note = e.reason;
+        break;
+      case "epic.resumed":
+        snap.note = "";
+        if (isSession(e.session))
+          snap.session = { app: e.session.app, environment: e.session.environment, thread: e.session.thread };
+        break;
+      case "epic.landed":
+        snap.sha = e.sha;
+        snap.note = `landed ${e.sha}`;
+        snap.endedAt = e.ts;
+        break;
+      case "epic.abandoned":
+        snap.note = e.reason;
+        snap.endedAt = e.ts;
+        break;
+      default:
+        break;
+    }
+  }
+  for (const j of jobs)
+    if (j.updated !== null && j.updated > snap.updated)
+      snap.updated = j.updated;
+  for (const m of view.members)
+    snap.counts[m.state] += 1;
+  const state = view.logged ?? "running";
+  snap.state = state;
+  if (state === "waiting")
+    snap.waitingOn = "you";
+  else if ((state === "running" || state === "landing") && membersWait(view, jobs)) {
+    snap.state = "waiting";
+    snap.waitingOn = "members";
+  }
+  return snap;
+}
+function membersWait(view, jobs) {
+  if (jobs.some((j) => isWorking(j.stage)))
+    return false;
+  if (!jobs.some((j) => j.stage === "needs-human"))
+    return false;
+  return view.claimable.length === 0 && view.landBlock !== null;
+}
+function epicNext(view, maxParallel) {
+  if (view.logged !== "running")
+    return [];
+  if (view.landBlock === null)
+    return ["land"];
+  const room = Math.max(0, maxParallel - view.workingMembers);
+  return view.claimable.slice(0, room).map((m) => `claim ${m}`);
+}
+function memberClaimRefusal(view, member, maxParallel) {
+  const m = view.members.find((x) => x.slug === member);
+  if (m === undefined)
+    return `${briefPath(member)} is not listed in the plan's ## Members`;
+  if (m.job !== null && m.state !== "abandoned")
+    return `member ${member} already has job ${m.job} (${m.stage ?? "unknown"})`;
+  const waits = m.after.filter((a) => view.members.find((x) => x.slug === a)?.state !== "merged");
+  if (waits.length > 0) {
+    const named = waits.map((a) => {
+      const job = view.members.find((x) => x.slug === a)?.job ?? null;
+      return job === null ? a : `${a} (${job})`;
+    });
+    return `member ${member} waits on ${named.join(", ")}, not yet merged`;
+  }
+  if (view.liveSync !== null)
+    return `sync job ${view.liveSync.id} is live: no member is claimed until it is merged or abandoned`;
+  if (view.workingMembers >= maxParallel)
+    return `${view.workingMembers} members are working, at epic.maxParallel ${maxParallel}`;
+  return null;
+}
+var HOUR_MS = 3600000;
+var time = (now) => typeof now === "number" ? now : now.getTime();
+function endedBefore(endedAt, hours, now) {
+  if (endedAt === null)
+    return false;
+  const ended = Date.parse(endedAt);
+  return !Number.isNaN(ended) && time(now) - ended > hours * HOUR_MS;
+}
+function isEpicSettled(epic, hours, now) {
+  if (epic.state === "abandoned")
+    return true;
+  return epic.state === "landed" && endedBefore(epic.endedAt, hours, now);
+}
+function isSettled(job, hours, now, epic) {
+  if (job.stage === "abandoned")
+    return true;
+  if (job.stage !== "merged")
+    return false;
+  if (job.epic === undefined || job.epic === null)
+    return endedBefore(job.endedAt, hours, now);
+  if (epic === undefined || epic === null || epic.state !== "landed" && epic.state !== "abandoned")
+    return false;
+  return isEpicSettled(epic, hours, now);
+}
+// packages/contract/src/epicstore.ts
+import { appendFile, lstat, mkdir as mkdir2, readFile, readdir, rename, rm as rm2, rmdir, writeFile } from "fs/promises";
+import { dirname, join } from "path";
+
+// packages/contract/src/lock.ts
+import { mkdir, rm, stat } from "fs/promises";
+var LOCK_STALE_MS = 30000;
+var LOCK_RETRY_MS = 25;
+var isNotFound = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "ENOENT";
+var isExists = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "EEXIST";
+var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function acquire(lock) {
+  for (;; ) {
+    try {
+      await mkdir(lock);
+      return;
+    } catch (e) {
+      if (!isExists(e))
+        throw e;
+      try {
+        if (Date.now() - (await stat(lock)).mtimeMs > LOCK_STALE_MS)
+          await rm(lock, { recursive: true, force: true });
+      } catch (s) {
+        if (!isNotFound(s))
+          throw s;
+      }
+      await sleep(LOCK_RETRY_MS);
+    }
+  }
+}
+async function release(lock) {
+  await rm(lock, { recursive: true, force: true });
+}
+async function exists(path) {
+  try {
+    await stat(path);
+    return true;
+  } catch (e) {
+    if (isNotFound(e))
+      return false;
+    throw e;
+  }
+}
+
+// packages/contract/src/epicstore.ts
+function epicDir(root, slug) {
+  checkEpicSlug(slug);
+  return join(root, "jobs", "epics", slug);
+}
+var epicLogPath = (root, slug) => join(epicDir(root, slug), "events.jsonl");
+function parseEpicLog(text) {
+  const lines = text.split(`
+`);
+  if (lines[lines.length - 1] === "")
+    lines.pop();
+  return lines.map((line, i) => {
+    let raw;
+    try {
+      raw = JSON.parse(line);
+    } catch {
+      throw new Error(`epic events.jsonl line ${i + 1} is not valid JSON`);
+    }
+    if (!isEpicEvent(raw))
+      throw new Error(`epic events.jsonl line ${i + 1} is not an epic event`);
+    return raw;
+  });
+}
+async function readText(path) {
+  try {
+    return await readFile(path, "utf8");
+  } catch (e) {
+    if (isNotFound(e))
+      return null;
+    throw e;
+  }
+}
+async function readEpicLog(root, slug) {
+  const text = await readText(epicLogPath(root, slug));
+  return text === null ? [] : parseEpicLog(text);
+}
+async function readForAppend(root, slug) {
+  const raw = await readText(epicLogPath(root, slug)) ?? "";
+  if (raw !== "" && !raw.endsWith(`
+`))
+    throw new Error(`epic ${slug}: events.jsonl does not end with a newline (corrupt tail); refusing to append`);
+  return parseEpicLog(raw);
+}
+async function readRegular(path, rel) {
+  let st;
+  try {
+    st = await lstat(path);
+  } catch (e) {
+    if (isNotFound(e))
+      return null;
+    throw e;
+  }
+  if (!st.isFile())
+    throw new Error(`${rel} is not a regular file (a symlink is never followed)`);
+  return readFile(path, "utf8");
+}
+function readPlan(root, slug) {
+  checkEpicSlug(slug);
+  return readRegular(join(root, "epics", `${slug}.md`), planPath(slug));
+}
+function readBrief(root, member) {
+  if (member.length > SLUG_MAX || !SLUG_PATTERN.test(member))
+    return Promise.resolve(null);
+  return readRegular(join(root, "briefs", `${member}.md`), briefPath(member));
+}
+async function epicPlanProblem(root, slug) {
+  return planStartProblem(slug, await readPlan(root, slug), (m) => readBrief(root, m));
+}
+var isRecord2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+async function readEpicJobs(root, slug) {
+  let names;
+  try {
+    names = (await readdir(join(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && isJobId(d.name)).map((d) => d.name).sort();
+  } catch (e) {
+    if (isNotFound(e))
+      return [];
+    throw e;
+  }
+  const out = [];
+  for (const id of names) {
+    let raw;
+    try {
+      raw = JSON.parse(await readFile(join(root, "jobs", id, "job.json"), "utf8"));
+    } catch {
+      continue;
+    }
+    if (!isRecord2(raw) || raw.epic !== slug || typeof raw.stage !== "string")
+      continue;
+    const kind = JOB_KINDS.find((k) => k === raw.kind) ?? "member";
+    out.push({
+      id,
+      stage: raw.stage,
+      kind,
+      brief: typeof raw.brief === "string" ? raw.brief : null,
+      updated: typeof raw.updated === "string" ? raw.updated : null
+    });
+  }
+  return out;
+}
+async function loadEpic(root, slug, log) {
+  const events = log ?? await readEpicLog(root, slug);
+  const text = await readPlan(root, slug);
+  let members = [];
+  let planError = null;
+  if (text === null)
+    planError = `plan ${planPath(slug)} is missing`;
+  else {
+    const plan = parsePlan(text);
+    members = plan.members;
+    const [first] = plan.errors;
+    if (first !== undefined)
+      planError = `plan ${planPath(slug)} ${first}`;
+  }
+  const jobs = await readEpicJobs(root, slug);
+  return { log: events, members, planError, jobs, view: viewEpic(events, members, jobs) };
+}
+async function writeEpicSnapshot(root, slug, snap) {
+  const file = join(epicDir(root, slug), "epic.json");
+  const tmp = `${file}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(snap, null, 2)}
+`);
+  await rename(tmp, file);
+}
+var project = (i) => projectEpic(i.log, i.members, i.jobs, i.planError);
+async function withEpicLock(root, slug, fn) {
+  const dir = epicDir(root, slug);
+  if (!await exists(dir))
+    throw new Error(`epic ${slug} has not started (no jobs/epics/${slug}/)`);
+  const lock = join(dir, ".events.lock");
+  await acquire(lock);
+  try {
+    return await fn();
+  } finally {
+    await release(lock);
+  }
+}
+async function startEpic(root, slug, input, now = () => new Date, setup = async () => async () => {
+  return;
+}) {
+  const dir = epicDir(root, slug);
+  if (input.type !== "epic.started" || input.slug !== slug)
+    throw new Error(`epic ${slug}: start needs epic.started for ${slug}`);
+  const parent = join(root, "jobs", "epics");
+  const madeParent = await mkdir2(parent, { recursive: true });
+  try {
+    await mkdir2(dir);
+  } catch (e) {
+    if (madeParent !== undefined)
+      await removeEmpty(parent, madeParent);
+    if (isExists(e))
+      throw new Error(`epic ${slug} has already started: one run per plan`);
+    throw e;
+  }
+  const lock = join(dir, ".events.lock");
+  await acquire(lock);
+  let ok = false;
+  let undo = null;
+  try {
+    const prior = await readForAppend(root, slug);
+    checkEpicTransition(prior, input);
+    undo = await setup();
+    const event = { ts: now().toISOString(), ...input };
+    await appendFile(epicLogPath(root, slug), `${JSON.stringify(event)}
+`);
+    const snap = project(await loadEpic(root, slug));
+    await writeEpicSnapshot(root, slug, snap);
+    ok = true;
+    return snap;
+  } catch (e) {
+    const reason = (e instanceof Error ? e.message : String(e)).split(`
+`)[0] ?? "";
+    const left = undo === null ? null : await undo().then(() => null, (u) => u instanceof Error ? u.message : String(u));
+    throw left === null ? e : new Error(`${reason}; ${left}`);
+  } finally {
+    await release(lock);
+    if (!ok) {
+      await rm2(dir, { recursive: true, force: true });
+      if (madeParent !== undefined)
+        await removeEmpty(parent, madeParent);
+    }
+  }
+}
+async function removeEmpty(dir, made) {
+  for (let d = dir;d.length >= made.length; d = dirname(d)) {
+    if (!await rmdir(d).then(() => true, () => false))
+      return;
+  }
+}
+async function appendEpicEvent(root, slug, input, now = () => new Date, opts = {}) {
+  return withEpicLock(root, slug, async () => {
+    const prior = await readForAppend(root, slug);
+    if (prior.length === 0)
+      throw new Error(`epic ${slug} has not started (no epic.started)`);
+    const inputs = await loadEpic(root, slug, prior);
+    checkEpicTransition(prior, input, inputs.view.landBlock);
+    opts.check?.(inputs);
+    const event = { ts: now().toISOString(), ...input };
+    await appendFile(epicLogPath(root, slug), `${JSON.stringify(event)}
+`);
+    const snap = project(await loadEpic(root, slug));
+    await writeEpicSnapshot(root, slug, snap);
+    return snap;
+  });
+}
+async function rebuildLocked(root, slug) {
+  const inputs = await loadEpic(root, slug);
+  if (inputs.log.length === 0)
+    throw new Error(`epic ${slug}: no events.jsonl to rebuild from`);
+  const snap = project(inputs);
+  await writeEpicSnapshot(root, slug, snap);
+  return snap;
+}
+function rebuildEpic(root, slug) {
+  return withEpicLock(root, slug, () => rebuildLocked(root, slug));
+}
+async function epicSlugs(root) {
+  try {
+    return (await readdir(join(root, "jobs", "epics"), { withFileTypes: true })).filter((d) => d.isDirectory() && isEpicSlug(d.name)).map((d) => d.name).sort();
+  } catch (e) {
+    if (isNotFound(e))
+      return [];
+    throw e;
+  }
+}
+async function claimIntoEpic(root, claimed, maxParallel, maxRoundGiven, append) {
+  const slug = claimed.epic;
+  if (slug === undefined)
+    throw new Error("claimIntoEpic: the claim names no epic");
+  return withEpicLock(root, slug, async () => {
+    const prior = await readForAppend(root, slug);
+    const state = loggedEpicState(prior);
+    if (state === null)
+      throw new Error(`epic ${slug} has not started (no epic.started)`);
+    if (state === "landed" || state === "abandoned")
+      throw new Error(`epic ${slug} is ${state}: no job is claimed into it`);
+    const inputs = await loadEpic(root, slug, prior);
+    let next = claimed;
+    if ((claimed.kind ?? "member") === "member") {
+      const m = /^factory\/briefs\/([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/.exec(claimed.brief ?? "");
+      if (!m)
+        throw new Error(`a member claim needs brief=factory/briefs/<member>.md, got ${JSON.stringify(claimed.brief)}`);
+      const member = m[1] ?? "";
+      if (inputs.planError !== null && inputs.members.length === 0)
+        throw new Error(inputs.planError);
+      const refusal = memberClaimRefusal(inputs.view, member, maxParallel);
+      if (refusal !== null)
+        throw new Error(`epic ${slug}: ${refusal}`);
+      const planRound = inputs.members.find((x) => x.slug === member)?.maxRound ?? null;
+      if (!maxRoundGiven && planRound !== null)
+        next = { ...claimed, maxRound: planRound };
+    }
+    const out = await append(next);
+    await rebuildLocked(root, slug).catch(() => {
+      return;
+    });
+    return out;
+  });
+}
 // packages/contract/src/project.ts
 var ms = (from, to) => Date.parse(to) - Date.parse(from);
 function enterStage(s, stage, ts) {
@@ -590,7 +1384,7 @@ function apply(s, e) {
       return;
   }
 }
-function project(events) {
+function project2(events) {
   const first = events[0];
   if (!first || first.type !== "job.claimed")
     throw new Error("event log must start with job.claimed");
@@ -615,6 +1409,8 @@ function project(events) {
     brief: first.brief,
     issue: first.issue,
     session: storedSession(first.session),
+    epic: typeof first.epic === "string" ? first.epic : null,
+    kind: typeof first.epic === "string" ? JOB_KINDS.find((k) => k === first.kind) ?? "member" : null,
     startedAt: first.ts,
     stageEnteredAt: first.ts,
     endedAt: null,
@@ -626,20 +1422,16 @@ function project(events) {
   return snapshot;
 }
 // packages/contract/src/store.ts
-import { appendFile, mkdir, readFile, readdir, rename, rm, rmdir, stat, writeFile } from "fs/promises";
-import { join } from "path";
-var LOCK_STALE_MS = 30000;
-var LOCK_RETRY_MS = 25;
+import { appendFile as appendFile2, mkdir as mkdir3, readFile as readFile2, readdir as readdir2, rename as rename2, rmdir as rmdir2, stat as stat2, writeFile as writeFile2 } from "fs/promises";
+import { existsSync } from "fs";
+import { join as join2 } from "path";
 var JOB_ID2 = /^\d{3}-[a-z0-9-]+$/;
 function jobDir(root, id) {
   if (!JOB_ID2.test(id))
     throw new Error(`job id '${id}' must match ^\\d{3}-[a-z0-9-]+$`);
-  return join(root, "jobs", id);
+  return join2(root, "jobs", id);
 }
-var logPath = (root, id) => join(jobDir(root, id), "events.jsonl");
-var isNotFound = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "ENOENT";
-var isExists = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "EEXIST";
-var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+var logPath = (root, id) => join2(jobDir(root, id), "events.jsonl");
 function parseLine(line, n) {
   let raw;
   try {
@@ -657,7 +1449,7 @@ function isEvent(v) {
 async function readLog(root, id) {
   let text;
   try {
-    text = await readFile(logPath(root, id), "utf8");
+    text = await readFile2(logPath(root, id), "utf8");
   } catch (e) {
     if (isNotFound(e))
       return [];
@@ -675,7 +1467,7 @@ function parseLog(text) {
 async function readVerdict(path, allowed) {
   let text;
   try {
-    text = await readFile(path, "utf8");
+    text = await readFile2(path, "utf8");
   } catch (e) {
     if (isNotFound(e))
       throw new Error(`${path}: missing`);
@@ -694,7 +1486,7 @@ async function withVerdict(root, id, input) {
   if (input.type !== "agent.finished")
     return input;
   if (input.role === "reviewer") {
-    const path = join(jobDir(root, id), `round-${input.round}`, `review-${input.key}.md`);
+    const path = join2(jobDir(root, id), `round-${input.round}`, `review-${input.key}.md`);
     const v = await readVerdict(path, REVIEW_VERDICTS.map((x) => `VERDICT: ${x}`));
     const verdict = REVIEW_VERDICTS.find((x) => x === v);
     if (verdict === undefined)
@@ -702,7 +1494,7 @@ async function withVerdict(root, id, input) {
     return { ...input, verdict };
   }
   if (input.role === "approver") {
-    const path = join(jobDir(root, id), "decision.md");
+    const path = join2(jobDir(root, id), "decision.md");
     const v = await readVerdict(path, DECISION_VERDICTS);
     const verdict = DECISION_VERDICTS.find((x) => x === v);
     if (verdict === undefined)
@@ -711,32 +1503,13 @@ async function withVerdict(root, id, input) {
   }
   return input;
 }
-async function acquire(lock) {
-  for (;; ) {
-    try {
-      await mkdir(lock);
-      return;
-    } catch (e) {
-      if (!isExists(e))
-        throw e;
-      try {
-        if (Date.now() - (await stat(lock)).mtimeMs > LOCK_STALE_MS)
-          await rm(lock, { recursive: true, force: true });
-      } catch (s) {
-        if (!isNotFound(s))
-          throw s;
-      }
-      await sleep(LOCK_RETRY_MS);
-    }
-  }
-}
 async function withLock(dir, create, fn) {
   let created = false;
   if (create)
-    created = await mkdir(dir, { recursive: true }) !== undefined;
+    created = await mkdir3(dir, { recursive: true }) !== undefined;
   else if (!await exists(dir))
     throw new Error(`${dir.split("/").pop()}: no such job`);
-  const lock = join(dir, ".events.lock");
+  const lock = join2(dir, ".events.lock");
   await acquire(lock);
   let ok = false;
   try {
@@ -744,68 +1517,77 @@ async function withLock(dir, create, fn) {
     ok = true;
     return out;
   } finally {
-    await rm(lock, { recursive: true, force: true });
+    await release(lock);
     if (created && !ok)
-      await rmdir(dir).catch(() => {
+      await rmdir2(dir).catch(() => {
         return;
       });
   }
 }
-async function exists(path) {
-  try {
-    await stat(path);
-    return true;
-  } catch (e) {
-    if (isNotFound(e))
-      return false;
-    throw e;
-  }
-}
 async function writeSnapshot(root, id, snap) {
-  const file = join(jobDir(root, id), "job.json");
+  const file = join2(jobDir(root, id), "job.json");
   const tmp = `${file}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(snap, null, 2)}
+  await writeFile2(tmp, `${JSON.stringify(snap, null, 2)}
 `);
-  await rename(tmp, file);
+  await rename2(tmp, file);
 }
 async function appendEvent(root, id, input, now = () => new Date, opts = {}) {
+  const snap = await appendJobEvent(root, id, input, now, opts);
+  if (snap.epic !== null)
+    await refreshEpic(root, snap.epic);
+  return snap;
+}
+async function refreshEpic(root, epic) {
+  await rebuildEpic(root, epic).catch(() => {
+    return;
+  });
+}
+function appendJobEvent(root, id, input, now, opts) {
   return withLock(jobDir(root, id), input.type === "job.claimed", async () => {
     const prior = await readLog(root, id);
-    if (prior.length === 0 && await exists(join(jobDir(root, id), "job.json"))) {
+    if (prior.length === 0 && await exists(join2(jobDir(root, id), "job.json"))) {
       throw new Error(`${id} is a legacy job (no events.jsonl); not modifiable`);
     }
-    const raw = prior.length === 0 ? "" : await readFile(logPath(root, id), "utf8");
+    const raw = prior.length === 0 ? "" : await readFile2(logPath(root, id), "utf8");
     if (raw !== "" && !raw.endsWith(`
 `))
       throw new Error(`${id}: events.jsonl does not end with a newline (corrupt tail); refusing to append`);
     const checked = await withVerdict(root, id, input);
     checkTransition(prior, checked, opts);
     const event = { ts: now().toISOString(), ...checked };
-    await appendFile(logPath(root, id), `${JSON.stringify(event)}
+    await appendFile2(logPath(root, id), `${JSON.stringify(event)}
 `);
-    const snap = project(await readLog(root, id));
+    const snap = project2(await readLog(root, id));
     await writeSnapshot(root, id, snap);
     return snap;
   });
 }
-async function rebuild(root, id) {
+async function rebuildAll(root, id) {
   const ids = id !== undefined ? [id] : await listEventedJobs(root);
   const done = [];
+  const named = new Set;
   for (const j of ids) {
-    await withLock(jobDir(root, j), false, async () => {
+    const snap = await withLock(jobDir(root, j), false, async () => {
       const log = await readLog(root, j);
       if (log.length === 0)
         throw new Error(`${j}: no events.jsonl to rebuild from`);
-      await writeSnapshot(root, j, project(log));
+      const s = project2(log);
+      await writeSnapshot(root, j, s);
+      return s;
     });
+    if (snap.epic !== null)
+      named.add(snap.epic);
     done.push(j);
   }
-  return done;
+  const epics = id !== undefined ? [...named].filter((e) => existsSync(join2(root, "jobs", "epics", e))) : await epicSlugs(root);
+  for (const e of epics)
+    await rebuildEpic(root, e);
+  return { jobs: done, epics };
 }
 async function listEventedJobs(root) {
   let entries;
   try {
-    entries = (await readdir(join(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && JOB_ID2.test(d.name)).map((d) => d.name);
+    entries = (await readdir2(join2(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && JOB_ID2.test(d.name)).map((d) => d.name);
   } catch (e) {
     if (isNotFound(e))
       return [];
@@ -814,7 +1596,7 @@ async function listEventedJobs(root) {
   const out = [];
   for (const name of entries.sort()) {
     try {
-      await stat(logPath(root, name));
+      await stat2(logPath(root, name));
       out.push(name);
     } catch (e) {
       if (!isNotFound(e))
@@ -835,7 +1617,7 @@ function checkClaim(slug, input) {
 }
 async function jobDirs(root) {
   try {
-    return (await readdir(join(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && JOB_ID2.test(d.name)).map((d) => d.name).sort();
+    return (await readdir2(join2(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && JOB_ID2.test(d.name)).map((d) => d.name).sort();
   } catch (e) {
     if (isNotFound(e))
       return [];
@@ -845,7 +1627,7 @@ async function jobDirs(root) {
 async function isLive(root, id) {
   let raw;
   try {
-    raw = JSON.parse(await readFile(join(jobDir(root, id), "job.json"), "utf8"));
+    raw = JSON.parse(await readFile2(join2(jobDir(root, id), "job.json"), "utf8"));
   } catch {
     return false;
   }
@@ -855,9 +1637,9 @@ async function isLive(root, id) {
 }
 async function claimJob(root, slug, input, now = () => new Date, opts = {}) {
   checkClaim(slug, input);
-  const jobs = join(root, "jobs");
-  await mkdir(jobs, { recursive: true });
-  const lock = join(jobs, ".claim.lock");
+  const jobs = join2(root, "jobs");
+  await mkdir3(jobs, { recursive: true });
+  const lock = join2(jobs, ".claim.lock");
   await acquire(lock);
   try {
     const dirs = await jobDirs(root);
@@ -870,10 +1652,15 @@ async function claimJob(root, slug, input, now = () => new Date, opts = {}) {
     if (highest >= JOB_NUMBER_MAX)
       throw new Error(`job number ${JOB_NUMBER_MAX} is taken: no job numbers are left`);
     const id = `${String(highest + 1).padStart(3, "0")}-${slug}`;
-    const snapshot = await appendEvent(root, id, claimedInput(id, input), now);
+    const claimed = claimedInput(id, input);
+    if (claimed.type !== "job.claimed" || claimed.epic === undefined) {
+      const snapshot = await appendJobEvent(root, id, claimed, now, {});
+      return { id, snapshot };
+    }
+    const snapshot = await claimIntoEpic(root, claimed, epicMaxParallel(input.config), input.fields.maxRound !== undefined, (c) => appendJobEvent(root, id, c, now, {}));
     return { id, snapshot };
   } finally {
-    await rm(lock, { recursive: true, force: true });
+    await release(lock);
   }
 }
 // packages/contract/src/fields.ts
@@ -933,7 +1720,7 @@ function formatShow(snap, now) {
 // packages/contract/src/manifest.ts
 var SCHEMA2 = "factory/v1";
 var SHA256_HEX = /^[0-9a-f]{64}$/;
-var isRecord2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 function checkManifestPath(p) {
   if (p === "")
     return "empty path";
@@ -948,7 +1735,7 @@ function checkManifestPath(p) {
   return null;
 }
 function parseManifest(raw) {
-  if (!isRecord2(raw))
+  if (!isRecord3(raw))
     throw new Error("must be a JSON object");
   const extra = Object.keys(raw).filter((k) => !["schema", "version", "files"].includes(k));
   if (extra.length)
@@ -957,7 +1744,7 @@ function parseManifest(raw) {
     throw new Error(`schema must be "${SCHEMA2}"`);
   if (typeof raw.version !== "string" || raw.version === "")
     throw new Error("version must be a non-empty string");
-  if (!isRecord2(raw.files))
+  if (!isRecord3(raw.files))
     throw new Error("files must be an object");
   const files = {};
   for (const [path, hash] of Object.entries(raw.files)) {
@@ -970,10 +1757,9 @@ function parseManifest(raw) {
   }
   return { schema: SCHEMA2, version: raw.version, files };
 }
-// packages/cli/src/archive.ts
-import { lstat, mkdtemp, readFile as readFile2, readdir as readdir2, rm as rm2 } from "fs/promises";
-import { tmpdir } from "os";
-import { join as join3 } from "path";
+// packages/cli/src/abandon.ts
+import { stat as stat3 } from "fs/promises";
+import { dirname as dirname3, join as join4, relative as relative2, resolve as resolve2 } from "path";
 
 // packages/cli/src/git.ts
 var REDIRECTS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR"];
@@ -1039,10 +1825,22 @@ async function deleteBranch(repo, branch) {
   const r = await git(repo, ["branch", "-D", branch], "abandon");
   return r.code === 0 ? null : r.err || `exit ${r.code}`;
 }
+async function branchExists(repo, branch, what = "epic") {
+  const r = await git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], what);
+  if (r.code === 0)
+    return true;
+  if (r.code === 1)
+    return false;
+  throw new Error(`${what}: git failed in ${repo}: ${r.err || `exit ${r.code}`}`);
+}
+async function addWorktree(repo, path, branch, from) {
+  const r = await git(repo, ["worktree", "add", "--quiet", "-b", branch, path, from], "epic start");
+  return r.code === 0 ? null : r.err || `exit ${r.code}`;
+}
 
 // packages/cli/src/paths.ts
 import { realpath } from "fs/promises";
-import { basename, dirname, isAbsolute, join as join2, posix, relative, resolve, sep } from "path";
+import { basename, dirname as dirname2, isAbsolute, join as join3, posix, relative, resolve, sep } from "path";
 var isNotFound2 = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "ENOENT";
 function assertInside(repoReal, p) {
   const back = relative(repoReal, p);
@@ -1057,19 +1855,19 @@ async function locate(repo, rel) {
   const repoReal = await realpath(repo);
   const abs = resolve(repoReal, rel);
   const rest = [basename(abs)];
-  let dir = dirname(abs);
+  let dir = dirname2(abs);
   let dirReal = null;
   while (dirReal === null) {
     try {
       dirReal = await realpath(dir);
     } catch (e) {
-      if (!isNotFound2(e) || dirname(dir) === dir)
+      if (!isNotFound2(e) || dirname2(dir) === dir)
         throw e;
       rest.unshift(basename(dir));
-      dir = dirname(dir);
+      dir = dirname2(dir);
     }
   }
-  const at = join2(dirReal, ...rest);
+  const at = join3(dirReal, ...rest);
   assertInside(repoReal, at);
   try {
     assertInside(repoReal, await realpath(at));
@@ -1080,7 +1878,48 @@ async function locate(repo, rel) {
   return at;
 }
 
+// packages/cli/src/abandon.ts
+var isDir = async (path) => {
+  try {
+    return (await stat3(path)).isDirectory();
+  } catch (e) {
+    if (isNotFound2(e))
+      return false;
+    throw e;
+  }
+};
+async function abandonJob(root, args) {
+  if (!isJobId(args.id))
+    throw new Error(`job id '${args.id}' must match ^\\d{3}-[a-z0-9-]+$`);
+  const input = parseEventInput("job.abandoned", { reason: args.reason });
+  const snap = await appendEvent(root, args.id, input, undefined, { force: args.force });
+  const repo = dirname3(resolve2(root));
+  const branch = `factory/${args.id}`;
+  const worktree = relative2(repo, join4(resolve2(root), ".worktrees", args.id));
+  const left = [];
+  if (await isDir(join4(repo, worktree))) {
+    const why = await removeWorktree(repo, worktree);
+    if (why !== null)
+      left.push(`worktree ${worktree} (${why})`);
+  }
+  if (args.deleteBranch) {
+    if (snap.branch !== branch)
+      left.push(`branch ${snap.branch} (not ${branch}; not deleted)`);
+    else if (left.length > 0)
+      left.push(`branch ${branch} (its worktree is still there)`);
+    else {
+      const why = await deleteBranch(repo, branch);
+      if (why !== null)
+        left.push(`branch ${branch} (${why})`);
+    }
+  }
+  return { snap, left };
+}
+
 // packages/cli/src/archive.ts
+import { lstat as lstat2, mkdtemp, readFile as readFile3, readdir as readdir3, rm as rm3 } from "fs/promises";
+import { tmpdir } from "os";
+import { join as join5 } from "path";
 var ARCHIVE_BRANCH = "factory/archive";
 var ARCHIVE_REF = `refs/heads/${ARCHIVE_BRANCH}`;
 var WHAT = "archive";
@@ -1126,9 +1965,9 @@ async function archivedIds(repo) {
     return [];
   return (await lsTree(repo, tip)).filter((e) => e.type === "tree" && isJobId(e.name)).map((e) => e.name).sort();
 }
-async function isDir(path) {
+async function isDir2(path) {
   try {
-    return (await lstat(path)).isDirectory();
+    return (await lstat2(path)).isDirectory();
   } catch (e) {
     if (isNotFound2(e))
       return false;
@@ -1137,7 +1976,7 @@ async function isDir(path) {
 }
 async function exists2(path) {
   try {
-    await lstat(path);
+    await lstat2(path);
     return true;
   } catch (e) {
     if (isNotFound2(e))
@@ -1148,7 +1987,7 @@ async function exists2(path) {
 async function legacySnapshot(dir) {
   let raw;
   try {
-    raw = JSON.parse(await readFile2(join3(dir, "job.json"), "utf8"));
+    raw = JSON.parse(await readFile3(join5(dir, "job.json"), "utf8"));
   } catch {
     return null;
   }
@@ -1160,20 +1999,20 @@ async function legacySnapshot(dir) {
 async function readLocalJob(root, id) {
   if (!isJobId(id))
     throw new Error(`job id '${id}' must match ^\\d{3}-[a-z0-9-]+$`);
-  const dir = join3(root, "jobs", id);
-  if (!await isDir(dir)) {
+  const dir = join5(root, "jobs", id);
+  if (!await isDir2(dir)) {
     if (await exists2(dir))
       throw new Error(`${id}: not a directory (a symlinked job dir is never followed); not archived`);
     throw new Error(`${id}: no such job`);
   }
   const log = await readLog(root, id);
-  if (log.length === 0 && await exists2(join3(dir, "events.jsonl")))
+  if (log.length === 0 && await exists2(join5(dir, "events.jsonl")))
     throw new Error(`${id}: events.jsonl is empty; not archived`);
   if (log.length === 0) {
     const snap = await legacySnapshot(dir);
     if (snap === null)
       throw new Error(`${id}: no events.jsonl and no readable job.json; not archived`);
-    return { id, dir, legacy: true, stage: snap.stage, claimed: null, mergedSha: null, endedAt: snap.endedAt };
+    return { id, dir, legacy: true, stage: snap.stage, claimed: null, mergedSha: null, endedAt: snap.endedAt, epic: null };
   }
   const [first] = log;
   if (first === undefined || first.type !== "job.claimed")
@@ -1183,8 +2022,8 @@ async function readLocalJob(root, id) {
   for (const e of log)
     if (e.type === "job.merged")
       mergedSha = e.sha;
-  const snap = project(log);
-  return { id, dir, legacy: false, stage: snap.stage, claimed, mergedSha, endedAt: snap.endedAt };
+  const snap = project2(log);
+  return { id, dir, legacy: false, stage: snap.stage, claimed, mergedSha, endedAt: snap.endedAt, epic: snap.epic };
 }
 var isTerminal = (job) => job.stage === "merged" || job.stage === "abandoned";
 function skipTop(name, isDirectory, legacy) {
@@ -1193,7 +2032,7 @@ function skipTop(name, isDirectory, legacy) {
   return name === "job.json" && !legacy || name === "job.json.tmp";
 }
 async function buildTree(repo, dir, top, legacy, env) {
-  const entries = await readdir2(dir, { withFileTypes: true });
+  const entries = await readdir3(dir, { withFileTypes: true });
   const files = [];
   const tree = [];
   for (const e of entries) {
@@ -1202,13 +2041,13 @@ async function buildTree(repo, dir, top, legacy, env) {
     if (e.isFile())
       files.push(e.name);
     else if (e.isDirectory()) {
-      const sha = await buildTree(repo, join3(dir, e.name), false, legacy, env);
+      const sha = await buildTree(repo, join5(dir, e.name), false, legacy, env);
       if (sha !== null)
         tree.push({ mode: "040000", type: "tree", sha, name: e.name });
     }
   }
   if (files.length > 0) {
-    const shas = (await git2(repo, ["hash-object", "-w", "--no-filters", "--", ...files.map((f) => join3(dir, f))], { env })).out.split(`
+    const shas = (await git2(repo, ["hash-object", "-w", "--no-filters", "--", ...files.map((f) => join5(dir, f))], { env })).out.split(`
 `);
     if (shas.length !== files.length)
       throw new Error(`${WHAT}: git hash-object returned ${shas.length} ids for ${files.length} files`);
@@ -1231,11 +2070,11 @@ function alternate(path) {
 }
 async function scratchTree(repo, job) {
   const objects = (await git2(repo, ["rev-parse", "--path-format=absolute", "--git-path", "objects"])).out;
-  const scratch = await mkdtemp(join3(tmpdir(), "factory-archive-"));
+  const scratch = await mkdtemp(join5(tmpdir(), "factory-archive-"));
   try {
     return await buildTree(repo, job.dir, true, job.legacy, { GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternate(objects) });
   } finally {
-    await rm2(scratch, { recursive: true, force: true });
+    await rm3(scratch, { recursive: true, force: true });
   }
 }
 async function trialTree(repo, job) {
@@ -1327,25 +2166,186 @@ async function archiveJob(repo, job, force) {
 }
 async function localJobIds(root) {
   try {
-    return (await readdir2(join3(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && isJobId(d.name)).map((d) => d.name).sort();
+    return (await readdir3(join5(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && isJobId(d.name)).map((d) => d.name).sort();
   } catch (e) {
     if (isNotFound2(e))
       return [];
     throw e;
   }
 }
+var EPICS_DIR = "epics";
+async function readLocalEpic(root, slug) {
+  checkEpicSlug(slug);
+  const dir = join5(root, "jobs", "epics", slug);
+  if (!await isDir2(dir)) {
+    if (await exists2(dir))
+      throw new Error(`epic ${slug}: not a directory (a symlinked epic dir is never followed); not archived`);
+    throw new Error(`epic ${slug}: no such epic`);
+  }
+  const log = await readEpicLog(root, slug);
+  const [first] = log;
+  if (first === undefined)
+    throw new Error(`epic ${slug}: no events.jsonl, or an empty one; not archived`);
+  if (first.type !== "epic.started")
+    throw new Error(`epic ${slug}: events.jsonl does not start with epic.started; not archived`);
+  let landedSha = null;
+  let endedAt = null;
+  for (const e of log) {
+    if (e.type === "epic.landed") {
+      landedSha = e.sha;
+      endedAt = e.ts;
+    } else if (e.type === "epic.abandoned")
+      endedAt = e.ts;
+  }
+  return {
+    slug,
+    dir,
+    state: loggedEpicState(log),
+    started: { slug: first.slug, ts: first.ts },
+    landedSha,
+    endedAt,
+    files: [
+      { name: "events.jsonl", path: join5(dir, "events.jsonl") },
+      { name: "plan.md", path: join5(root, "epics", `${slug}.md`) }
+    ]
+  };
+}
+var isEpicTerminal = (epic) => epic.state === "landed" || epic.state === "abandoned";
+async function checkEpicFiles(epic) {
+  for (const f of epic.files) {
+    let st;
+    try {
+      st = await lstat2(f.path);
+    } catch (e) {
+      if (!isNotFound2(e))
+        throw e;
+      if (f.name === "plan.md")
+        throw new Error(`epic ${epic.slug}: plan factory/epics/${epic.slug}.md is missing; not archived`);
+      throw new Error(`epic ${epic.slug}: ${f.name} is missing; not archived`);
+    }
+    if (!st.isFile())
+      throw new Error(`epic ${epic.slug}: ${f.name === "plan.md" ? `plan factory/epics/${epic.slug}.md` : f.name} is not a regular file; not archived`);
+  }
+}
+async function filesTree(repo, files, env) {
+  const shas = (await git2(repo, ["hash-object", "-w", "--no-filters", "--", ...files.map((f) => f.path)], { env })).out.split(`
+`);
+  if (shas.length !== files.length)
+    throw new Error(`${WHAT}: git hash-object returned ${shas.length} ids for ${files.length} files`);
+  return mkTree(repo, files.map((f, i) => ({ mode: "100644", type: "blob", sha: shas[i] ?? "", name: f.name })), env);
+}
+async function scratchEpicTree(repo, epic) {
+  const objects = (await git2(repo, ["rev-parse", "--path-format=absolute", "--git-path", "objects"])).out;
+  const scratch = await mkdtemp(join5(tmpdir(), "factory-archive-"));
+  try {
+    return await filesTree(repo, epic.files, { GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternate(objects) });
+  } finally {
+    await rm3(scratch, { recursive: true, force: true });
+  }
+}
+async function archivedEpicTrees(repo) {
+  const out = new Map;
+  const tip = await archiveTip(repo);
+  if (tip === null)
+    return out;
+  const epics = (await lsTree(repo, tip)).find((e) => e.name === EPICS_DIR && e.type === "tree");
+  if (epics === undefined)
+    return out;
+  for (const e of await lsTree(repo, epics.sha))
+    if (e.type === "tree" && isEpicSlug(e.name))
+      out.set(e.name, e.sha);
+  return out;
+}
+async function matchesArchivedEpic(repo, epic, archived) {
+  await checkEpicFiles(epic);
+  return await scratchEpicTree(repo, epic) === archived;
+}
+async function archivedEpicLog(repo, slug) {
+  checkEpicSlug(slug);
+  const tree = (await archivedEpicTrees(repo)).get(slug);
+  if (tree === undefined)
+    return null;
+  const log = (await lsTree(repo, tree)).find((e) => e.name === "events.jsonl" && e.type === "blob");
+  if (log === undefined)
+    return null;
+  return parseEpicLog((await git2(repo, ["cat-file", "blob", log.sha])).raw);
+}
+async function archivedStart(repo, tree) {
+  const log = (await lsTree(repo, tree)).find((e) => e.name === "events.jsonl" && e.type === "blob");
+  if (log === undefined)
+    return null;
+  const first = (await git2(repo, ["cat-file", "blob", log.sha])).raw.split(`
+`)[0] ?? "";
+  let raw;
+  try {
+    raw = JSON.parse(first);
+  } catch {
+    return null;
+  }
+  if (typeof raw !== "object" || raw === null || !("type" in raw) || raw.type !== "epic.started")
+    return null;
+  if (!("slug" in raw) || typeof raw.slug !== "string" || !("ts" in raw) || typeof raw.ts !== "string")
+    return null;
+  return { slug: raw.slug, ts: raw.ts };
+}
+var describeStart = (s) => s === null ? "no epic.started" : `epic.started slug=${s.slug} ts=${s.ts}`;
+async function archiveEpic(repo, epic, force) {
+  const name = `epic ${epic.slug}`;
+  if (!isEpicTerminal(epic))
+    throw new Error(`${name} is ${epic.state ?? "unreadable"}: only landed or abandoned epics are archived`);
+  if (epic.landedSha !== null && !HEX_SHA.test(epic.landedSha))
+    throw new Error(`${name}: epic.landed sha is not a hex commit id (${HEX_SHA.source}); not archived`);
+  await checkEpicFiles(epic);
+  let lastErr = "";
+  for (let attempt = 0;attempt < MAX_ATTEMPTS; attempt++) {
+    const tip = await archiveTip(repo);
+    const top = tip === null ? [] : await lsTree(repo, tip);
+    const dir = top.find((e) => e.name === EPICS_DIR);
+    if (dir !== undefined && dir.type !== "tree")
+      throw new Error(`${name}: ${ARCHIVE_BRANCH} has ${EPICS_DIR} as a ${dir.type}, not a directory; nothing written`);
+    const sub = dir === undefined ? [] : await lsTree(repo, dir.sha);
+    const existing = sub.find((e) => e.name === epic.slug);
+    if (existing !== undefined && existing.type !== "tree")
+      throw new Error(`${name}: ${ARCHIVE_BRANCH} has ${EPICS_DIR}/${epic.slug} as a ${existing.type}, not a directory; nothing written`);
+    if (existing !== undefined) {
+      const there = await archivedStart(repo, existing.sha);
+      if (there === null || there.slug !== epic.started.slug || there.ts !== epic.started.ts) {
+        throw new Error(`${name}: ${ARCHIVE_BRANCH} already holds a different epic at ${EPICS_DIR}/${epic.slug}/ (archived: ${describeStart(there)}; local: ${describeStart(epic.started)}); nothing written`);
+      }
+      if (await scratchEpicTree(repo, epic) === existing.sha)
+        return { kind: "unchanged" };
+      if (!force)
+        throw new Error(`${name}: changed since it was archived on ${ARCHIVE_BRANCH}; run archive ${epic.slug} --force to add a new commit`);
+    }
+    const tree = await filesTree(repo, epic.files);
+    const epics = await mkTree(repo, [...sub.filter((e) => e.name !== epic.slug), { mode: "040000", type: "tree", sha: tree, name: epic.slug }]);
+    const root = await mkTree(repo, [...top.filter((e) => e.name !== EPICS_DIR), { mode: "040000", type: "tree", sha: epics, name: EPICS_DIR }]);
+    const trailers = [`Factory-Epic: ${epic.slug}`];
+    if (epic.state === "landed" && epic.landedSha !== null)
+      trailers.push(`Landed-As: ${epic.landedSha}`);
+    const message = ["-m", `chore(factory): archive epic ${epic.slug}`, "-m", trailers.join(`
+`)];
+    const commit = (await git2(repo, ["commit-tree", root, ...tip === null ? [] : ["-p", tip], ...message])).out;
+    const r = await runGit(repo, ["update-ref", "-m", `archive epic ${epic.slug}`, ARCHIVE_REF, commit, tip ?? ""], { what: WHAT });
+    if (r.code === 0)
+      return { kind: "archived", commit };
+    lastErr = r.err || `exit ${r.code}`;
+    await sleep2(5 + Math.floor(Math.random() * 25));
+  }
+  throw new Error(`${name}: ${ARCHIVE_BRANCH} kept moving; gave up after ${MAX_ATTEMPTS} tries (${lastErr})`);
+}
 
 // packages/cli/src/doctor.ts
 import { createHash } from "crypto";
-import { readFile as readFile3, readdir as readdir3 } from "fs/promises";
-import { dirname as dirname2, join as join4, resolve as resolve2 } from "path";
+import { readFile as readFile4, readdir as readdir4 } from "fs/promises";
+import { dirname as dirname4, join as join6, resolve as resolve3 } from "path";
 var firstLine = (e) => (e instanceof Error ? e.message : String(e)).split(`
 `)[0] ?? "";
 var ok = (what) => ({ ok: true, line: `ok    ${what}` });
 var bad = (what, why) => ({ ok: false, line: `FAIL  ${what}: ${why}` });
-async function readText(path) {
+async function readText2(path) {
   try {
-    return await readFile3(path, "utf8");
+    return await readFile4(path, "utf8");
   } catch (e) {
     if (isNotFound2(e))
       return null;
@@ -1355,7 +2355,7 @@ async function readText(path) {
 async function checkConfig(root) {
   let text;
   try {
-    text = await readText(join4(root, "config.json"));
+    text = await readText2(join6(root, "config.json"));
   } catch (e) {
     return bad("config.json", firstLine(e));
   }
@@ -1377,7 +2377,7 @@ async function checkConfig(root) {
 async function safeRead(repo, rel) {
   const at = await locate(repo, rel);
   try {
-    return await readFile3(at);
+    return await readFile4(at);
   } catch (e) {
     if (isNotFound2(e))
       return null;
@@ -1387,7 +2387,7 @@ async function safeRead(repo, rel) {
 async function checkManaged(root) {
   let text;
   try {
-    text = await readText(join4(root, "managed.json"));
+    text = await readText2(join6(root, "managed.json"));
   } catch (e) {
     return [bad("managed.json", firstLine(e))];
   }
@@ -1399,7 +2399,7 @@ async function checkManaged(root) {
   } catch (e) {
     return [bad("managed.json", e instanceof SyntaxError ? "not valid JSON" : firstLine(e))];
   }
-  const repo = dirname2(resolve2(root));
+  const repo = dirname4(resolve3(root));
   const out = [ok(`managed.json (version ${manifest.version})`)];
   for (const [rel, want] of Object.entries(manifest.files)) {
     try {
@@ -1419,7 +2419,7 @@ async function checkManaged(root) {
 async function checkJobNumbers(root) {
   let names;
   try {
-    names = (await readdir3(join4(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && isJobId(d.name)).map((d) => d.name);
+    names = (await readdir4(join6(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && isJobId(d.name)).map((d) => d.name);
   } catch (e) {
     if (isNotFound2(e))
       return [];
@@ -1432,21 +2432,78 @@ async function checkJobNumbers(root) {
   }
   return [...byNumber.entries()].filter(([, ids]) => ids.length > 1).map(([n, ids]) => ({ ok: true, line: `note: job number ${n} is used by ${ids.join(", ")}` }));
 }
+async function checkPlans(root) {
+  let entries;
+  try {
+    entries = (await readdir4(join6(root, "epics"), { withFileTypes: true })).filter((d) => d.name.endsWith(".md")).sort((a, b) => a.name < b.name ? -1 : 1);
+  } catch (e) {
+    if (isNotFound2(e))
+      return [];
+    return [bad("factory/epics/", firstLine(e))];
+  }
+  const out = [];
+  for (const e of entries) {
+    const rel = `factory/epics/${e.name}`;
+    if (!e.isFile()) {
+      out.push(bad(rel, "not a regular file (a symlink is never followed)"));
+      continue;
+    }
+    const slug = e.name.slice(0, -".md".length);
+    let plan;
+    try {
+      plan = parsePlan(await readFile4(join6(root, "epics", e.name), "utf8"));
+    } catch (err) {
+      out.push(bad(rel, firstLine(err)));
+      continue;
+    }
+    if (plan.status === "done" || plan.status === "abandoned")
+      continue;
+    let slugError = null;
+    try {
+      checkEpicSlug(slug);
+    } catch (err) {
+      slugError = firstLine(err);
+    }
+    if (plan.status === "draft") {
+      const notes = [...slugError === null ? [] : [slugError], ...plan.errors];
+      if (notes.length === 0)
+        out.push(ok(`${rel} (draft)`));
+      for (const n of notes)
+        out.push({ ok: true, line: `note  ${rel}: ${n}` });
+      continue;
+    }
+    if (slugError !== null) {
+      out.push(bad(rel, slugError));
+      continue;
+    }
+    try {
+      const problem = await epicPlanProblem(root, slug);
+      out.push(problem === null ? ok(rel) : bad(rel, problem));
+    } catch (err) {
+      out.push(bad(rel, firstLine(err)));
+    }
+  }
+  return out;
+}
 async function doctor(root) {
-  return [await checkConfig(root), ...await checkManaged(root), ...await checkJobNumbers(root)];
+  return [await checkConfig(root), ...await checkManaged(root), ...await checkJobNumbers(root), ...await checkPlans(root)];
 }
 
-// packages/cli/src/prune.ts
-import { lstat as lstat2, mkdir as mkdir2, rm as rm3 } from "fs/promises";
-import { dirname as dirname3, join as join5, resolve as resolve3 } from "path";
-var LOCK = ".events.lock";
-var IN_FLIGHT = `an event is in flight (${LOCK})`;
-var isSystemError = (e) => typeof e === "object" && e !== null && ("code" in e);
-var lineOf = (e) => (e instanceof Error ? e.message : String(e)).split(`
-`)[0] ?? "";
-async function exists3(path) {
+// packages/cli/src/epic.ts
+import { lstat as lstat3 } from "fs/promises";
+import { dirname as dirname5, join as join7, relative as relative3, resolve as resolve4 } from "path";
+var EPIC_USAGE = {
+  epic: "usage: epic start|event|next|show|abandon <slug> \u2026",
+  epicStart: "usage: epic start <slug> [session=t3code:<environmentId>/<threadId>]",
+  epicEvent: "usage: epic event <slug> <type> [field=value \u2026]",
+  epicNext: "usage: epic next <slug>",
+  epicShow: "usage: epic show <slug>",
+  epicAbandon: 'usage: epic abandon <slug> "<reason>" [--force] [--delete-branch]'
+};
+var WORKING2 = ["claimed", "spec", "build", "review", "approve"];
+async function pathExists(path) {
   try {
-    await lstat2(path);
+    await lstat3(path);
     return true;
   } catch (e) {
     if (isNotFound2(e))
@@ -1454,16 +2511,247 @@ async function exists3(path) {
     throw e;
   }
 }
-function isSettled(job, hours, now) {
-  if (job.stage === "abandoned")
-    return true;
-  if (job.stage !== "merged" || job.endedAt === null)
-    return false;
-  const ended = Date.parse(job.endedAt);
-  return !Number.isNaN(ended) && now.getTime() - ended > hours * 3600000;
+async function sameCommit(repo, a, b) {
+  const [x, y] = await Promise.all([a, b].map((r) => runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${r}^{commit}`], { what: "epic start" })));
+  return x !== undefined && y !== undefined && x.code === 0 && y.code === 0 && x.out === y.out;
 }
-async function check(io, id, trees, hours, now) {
-  if (await exists3(join5(io.root, "jobs", id, LOCK)))
+var worktreeOf = (repo, root, slug) => relative3(repo, join7(resolve4(root), ".worktrees", `epic-${slug}`));
+async function runEpic(rest, io, config) {
+  const [sub, ...args] = rest;
+  switch (sub) {
+    case "start":
+      return start(args, io, config);
+    case "event":
+      return event(args, io);
+    case "next":
+      return next(args, io, config);
+    case "show":
+      return show(args, io);
+    case "abandon":
+      return abandon(args, io);
+    default:
+      throw new Error(EPIC_USAGE.epic);
+  }
+}
+async function start(args, io, config) {
+  const [slug, ...kv] = args;
+  if (slug === undefined || slug === "")
+    throw new Error(EPIC_USAGE.epicStart);
+  checkEpicSlug(slug);
+  const fields = parseFields(kv);
+  const problem = await epicPlanProblem(io.root, slug);
+  if (problem !== null)
+    throw new Error(`epic start ${slug}: ${problem}`);
+  const repo = dirname5(resolve4(io.root));
+  const target = await resolveTarget(repo, mergeTarget(config));
+  const input = parseEpicEventInput("epic.started", fields, { slug, target });
+  const branch = epicBranch(slug);
+  const worktree = worktreeOf(repo, io.root, slug);
+  const setup = async () => {
+    if (await branchExists(repo, branch))
+      throw new Error(`epic start ${slug}: branch ${branch} already exists`);
+    if (await pathExists(join7(repo, worktree)))
+      throw new Error(`epic start ${slug}: ${worktree} already exists`);
+    const cleanup = async (deleteIt) => {
+      const left = [];
+      if (await isDir(join7(repo, worktree))) {
+        const w = await removeWorktree(repo, worktree);
+        if (w !== null)
+          left.push(`worktree ${worktree} (${w})`);
+      }
+      if (deleteIt && left.length === 0) {
+        const b = await deleteBranch(repo, branch);
+        if (b !== null)
+          left.push(`branch ${branch} (${b})`);
+      }
+      return left;
+    };
+    const undo = async () => {
+      const left = await cleanup(true);
+      if (left.length > 0)
+        throw new Error(`epic start ${slug} failed, and its rollback left behind: ${left.join("; ")}`);
+    };
+    const why = await addWorktree(repo, worktree, branch, target);
+    if (why !== null) {
+      const ours = await branchExists(repo, branch) && await sameCommit(repo, branch, target);
+      const left = await cleanup(ours);
+      throw new Error(`epic start ${slug}: git worktree add failed: ${why}${left.length > 0 ? `; rollback left behind: ${left.join("; ")}` : ""}`);
+    }
+    return undo;
+  };
+  const snap = await startEpic(io.root, slug, input, undefined, setup);
+  io.stdout(snap.state);
+  return 0;
+}
+async function event(args, io) {
+  const [slug, type, ...kv] = args;
+  if (!slug || !type)
+    throw new Error(EPIC_USAGE.epicEvent);
+  checkEpicSlug(slug);
+  if (type === "epic.started")
+    throw new Error(`epic.started is written only by epic start: run ${EPIC_USAGE.epicStart.replace("usage: ", "")}`);
+  if (type === "epic.abandoned")
+    throw new Error(`epic.abandoned is written only by epic abandon: run ${EPIC_USAGE.epicAbandon.replace("usage: ", "")}`);
+  const input = parseEpicEventInput(type, parseFields(kv));
+  io.stdout((await appendEpicEvent(io.root, slug, input)).state);
+  return 0;
+}
+async function next(args, io, config) {
+  const [slug, ...extra] = args;
+  if (!slug || extra.length > 0)
+    throw new Error(EPIC_USAGE.epicNext);
+  checkEpicSlug(slug);
+  const inputs = await loadEpic(io.root, slug);
+  if (inputs.log.length === 0)
+    throw new Error(`epic ${slug} has not started`);
+  for (const line of epicNext(inputs.view, epicMaxParallel(config)))
+    io.stdout(line);
+  return 0;
+}
+async function show(args, io) {
+  const [slug, ...extra] = args;
+  if (!slug || extra.length > 0)
+    throw new Error(EPIC_USAGE.epicShow);
+  checkEpicSlug(slug);
+  for (const line of formatEpicShow(await rebuildEpic(io.root, slug)))
+    io.stdout(line);
+  return 0;
+}
+function formatEpicShow(snap) {
+  const out = [`epic ${snap.slug}  ${snap.state}  ${snap.branch} -> ${snap.target}`];
+  if (snap.waitingOn === "you")
+    out.push(`waiting on you: ${snap.note}`);
+  if (snap.waitingOn === "members") {
+    const stuck = [...snap.members.filter((m) => m.state === "needs-human").map((m) => `${m.slug} (${m.job ?? ""})`), ...snap.generated.filter((g) => g.stage === "needs-human").map((g) => `${g.kind} ${g.id}`)];
+    out.push(`waiting on members: nothing else can run; needs-human: ${stuck.join(", ")}`);
+  }
+  if (snap.state === "abandoned" || snap.state === "landed")
+    out.push(`note: ${snap.note}`);
+  if (snap.planError !== null)
+    out.push(`plan: ${snap.planError}`);
+  for (const m of snap.members) {
+    const parts = [`member ${m.slug}`, m.state];
+    if (m.job !== null)
+      parts.push(m.job);
+    if (m.state === "running" && m.stage !== null)
+      parts.push(m.stage);
+    if (m.state === "blocked")
+      parts.push(`blocked on ${m.blockedOn.map((b) => b.job === null ? b.member : `${b.member} (${b.job})`).join(", ")}`);
+    out.push(parts.join("  "));
+  }
+  for (const g of snap.generated)
+    out.push(`${g.kind} ${g.id}  ${g.stage}`);
+  return out;
+}
+function parseAbandon(args) {
+  const [slug, reason, ...flags] = args;
+  if (slug === undefined || reason === undefined || reason === "" || flags.length > 2)
+    throw new Error(EPIC_USAGE.epicAbandon);
+  const known = ["--force", "--delete-branch"];
+  if (flags.some((f) => !known.includes(f)) || new Set(flags).size !== flags.length)
+    throw new Error(EPIC_USAGE.epicAbandon);
+  return { slug, reason, force: flags.includes("--force"), deleteBranch: flags.includes("--delete-branch") };
+}
+async function abandon(args, io) {
+  const a = parseAbandon(args);
+  checkEpicSlug(a.slug);
+  const input = parseEpicEventInput("epic.abandoned", { reason: a.reason });
+  await appendEpicEvent(io.root, a.slug, input, undefined, {
+    check: ({ jobs }) => {
+      const working = jobs.filter((j) => WORKING2.includes(j.stage));
+      if (working.length > 0 && !a.force) {
+        throw new Error(`epic ${a.slug}: ${working.map((j) => `${j.id} (${j.stage})`).join(", ")} ${working.length === 1 ? "is" : "are"} in a working stage; stop ${working.length === 1 ? "its session" : "their sessions"} and pass --force`);
+      }
+    }
+  });
+  const left = [];
+  for (const j of await readEpicJobs(io.root, a.slug)) {
+    if (j.stage === "merged" || j.stage === "abandoned")
+      continue;
+    try {
+      const r = await abandonJob(io.root, { id: j.id, reason: `epic ${a.slug} abandoned: ${a.reason}`, force: a.force, deleteBranch: false });
+      left.push(...r.left);
+    } catch (e) {
+      left.push(`job ${j.id} (${(e instanceof Error ? e.message : String(e)).split(`
+`)[0] ?? ""})`);
+    }
+  }
+  const repo = dirname5(resolve4(io.root));
+  const worktree = worktreeOf(repo, io.root, a.slug);
+  const branch = epicBranch(a.slug);
+  let worktreeLeft = false;
+  if (await isDir(join7(repo, worktree))) {
+    const why = await removeWorktree(repo, worktree);
+    if (why !== null) {
+      worktreeLeft = true;
+      left.push(`worktree ${worktree} (${why})`);
+    }
+  }
+  if (a.deleteBranch) {
+    if (worktreeLeft)
+      left.push(`branch ${branch} (its worktree is still there)`);
+    else {
+      const why = await deleteBranch(repo, branch);
+      if (why !== null)
+        left.push(`branch ${branch} (${why})`);
+    }
+  }
+  if (left.length > 0)
+    throw new Error(`epic ${a.slug} is abandoned, but cleanup left behind: ${left.join("; ")}`);
+  io.stdout("abandoned");
+  return 0;
+}
+
+// packages/cli/src/prune.ts
+import { lstat as lstat4, mkdir as mkdir4, rm as rm4 } from "fs/promises";
+import { dirname as dirname6, join as join8, resolve as resolve5 } from "path";
+var LOCK = ".events.lock";
+var IN_FLIGHT = `an event is in flight (${LOCK})`;
+var isSystemError = (e) => typeof e === "object" && e !== null && ("code" in e);
+var lineOf = (e) => (e instanceof Error ? e.message : String(e)).split(`
+`)[0] ?? "";
+async function exists3(path) {
+  try {
+    await lstat4(path);
+    return true;
+  } catch (e) {
+    if (isNotFound2(e))
+      return false;
+    throw e;
+  }
+}
+function epicFacts(io, repo) {
+  const cache = new Map;
+  const read = async (slug) => {
+    if (!isEpicSlug(slug))
+      return null;
+    if (await exists3(join8(io.root, "jobs", "epics", slug))) {
+      try {
+        const epic = await readLocalEpic(io.root, slug);
+        return { state: epic.state, endedAt: epic.endedAt };
+      } catch (e) {
+        if (isSystemError(e))
+          throw e;
+        return null;
+      }
+    }
+    const log = await archivedEpicLog(repo, slug);
+    if (log === null || log.length === 0)
+      return null;
+    const end = [...log].reverse().find((e) => e.type === "epic.landed" || e.type === "epic.abandoned");
+    return { state: loggedEpicState(log), endedAt: end?.ts ?? null };
+  };
+  return (slug) => {
+    let hit = cache.get(slug);
+    if (hit === undefined) {
+      hit = read(slug);
+      cache.set(slug, hit);
+    }
+    return hit;
+  };
+}
+async function check(io, id, trees, hours, now, facts) {
+  if (await exists3(join8(io.root, "jobs", id, LOCK)))
     return { kind: "keep", reason: IN_FLIGHT };
   let job;
   try {
@@ -1476,47 +2764,78 @@ async function check(io, id, trees, hours, now) {
   }
   if (!isTerminal(job))
     return { kind: "keep", reason: `not merged or abandoned (${job.stage ?? "unreadable"})` };
-  if (!isSettled(job, hours, now))
+  let epic = null;
+  if (job.epic !== null) {
+    epic = await facts(job.epic);
+    if (epic === null)
+      return { kind: "keep", reason: `its epic ${job.epic} is not found` };
+    if (epic.state !== "landed" && epic.state !== "abandoned")
+      return { kind: "keep", reason: `its epic ${job.epic} is not landed or abandoned (${epic.state ?? "unreadable"})` };
+  }
+  if (!isSettled(job, hours, now, epic))
     return { kind: "keep", reason: "not settled" };
   const tree = trees.get(id);
   if (tree === undefined)
     return { kind: "keep", reason: "not archived" };
   return { kind: "candidate", job, tree };
 }
-async function compareAndRemove(repo, job, tree) {
-  const lock = join5(job.dir, LOCK);
+async function compareAndRemove(dir, same) {
+  const lock = join8(dir, LOCK);
   try {
-    await mkdir2(lock);
+    await mkdir4(lock);
   } catch (e) {
     if (typeof e === "object" && e !== null && "code" in e && e.code === "EEXIST")
       return { kind: "keep", reason: IN_FLIGHT };
     throw e;
   }
-  let same;
+  let equal;
   try {
-    same = await matchesArchived(repo, job, tree);
+    equal = await same();
   } catch (e) {
-    await rm3(lock, { recursive: true, force: true });
+    await rm4(lock, { recursive: true, force: true });
     throw e;
   }
-  if (!same) {
-    await rm3(lock, { recursive: true, force: true });
+  if (!equal) {
+    await rm4(lock, { recursive: true, force: true });
     return { kind: "keep", reason: "differs from its archived tree" };
   }
-  await rm3(job.dir, { recursive: true });
+  await rm4(dir, { recursive: true });
   return { kind: "prune" };
 }
+async function checkEpic(io, slug, trees, hours, now) {
+  if (await exists3(join8(io.root, "jobs", "epics", slug, LOCK)))
+    return { kind: "keep", reason: IN_FLIGHT };
+  let epic;
+  try {
+    epic = await readLocalEpic(io.root, slug);
+  } catch (e) {
+    if (isSystemError(e))
+      throw e;
+    const text = lineOf(e);
+    return { kind: "keep", reason: text.startsWith(`epic ${slug}: `) ? text.slice(`epic ${slug}: `.length) : text };
+  }
+  if (!isEpicTerminal(epic))
+    return { kind: "keep", reason: `not landed or abandoned (${epic.state ?? "unreadable"})` };
+  if (!isEpicSettled(epic, hours, now))
+    return { kind: "keep", reason: "not settled" };
+  const tree = trees.get(slug);
+  if (tree === undefined)
+    return { kind: "keep", reason: "not archived" };
+  return { kind: "candidate", epic, tree };
+}
 async function pruneAll(io, settleAfterHours) {
-  const repo = dirname3(resolve3(io.root));
+  const repo = dirname6(resolve5(io.root));
   const now = (io.now ?? (() => new Date))();
   const trees = await archivedTrees(repo);
+  const epicTrees = await archivedEpicTrees(repo);
+  const facts = epicFacts(io, repo);
   let removed = 0;
   let kept = 0;
   let failed = 0;
   for (const id of await localJobIds(io.root)) {
     try {
-      const first = await check(io, id, trees, settleAfterHours, now);
-      const decision = first.kind === "candidate" ? await compareAndRemove(repo, first.job, first.tree) : first;
+      const first = await check(io, id, trees, settleAfterHours, now, facts);
+      const decision = first.kind === "candidate" ? await compareAndRemove(first.job.dir, () => matchesArchived(repo, first.job, first.tree)) : first;
       if (decision.kind === "prune") {
         removed++;
         io.stdout(`pruned ${id}`);
@@ -1530,19 +2849,38 @@ async function pruneAll(io, settleAfterHours) {
       io.stderr(text.startsWith(`${id}: `) ? text : `${id}: ${text}`);
     }
   }
+  for (const slug of await epicSlugs(io.root)) {
+    const name = `epic ${slug}`;
+    try {
+      const first = await checkEpic(io, slug, epicTrees, settleAfterHours, now);
+      const decision = first.kind === "candidate" ? await compareAndRemove(first.epic.dir, () => matchesArchivedEpic(repo, first.epic, first.tree)) : first;
+      if (decision.kind === "prune") {
+        removed++;
+        io.stdout(`pruned ${name}`);
+      } else {
+        kept++;
+        io.stdout(`kept ${name}: ${decision.reason}`);
+      }
+    } catch (e) {
+      failed++;
+      const text = lineOf(e);
+      io.stderr(text.startsWith(`${name}: `) ? text : `${name}: ${text}`);
+    }
+  }
   io.stdout(`prune: removed ${removed}, kept ${kept}, failed ${failed}`);
   return failed === 0 ? 0 : 1;
 }
 
 // packages/cli/src/core.ts
 var USAGE = {
-  claim: "usage: claim <slug> [brief=\u2026] [issue=\u2026] [maxRound=\u2026] [session=t3code:<environmentId>/<threadId>]",
+  claim: "usage: claim <slug> [brief=\u2026] [issue=\u2026] [maxRound=\u2026] [session=t3code:<environmentId>/<threadId>] [epic=<slug> [kind=member|sync|fix]]",
   event: "usage: event <id> <type> [field=value \u2026]",
   rebuild: "usage: rebuild <id> | --all",
   show: "usage: show <id>",
   abandon: 'usage: abandon <id> "<reason>" [--force] [--delete-branch]',
   archive: "usage: archive <id> | --all [--force]",
   prune: "usage: prune",
+  ...EPIC_USAGE,
   all: "usage: claim <slug> [k=v \u2026] | event <id> <type> [k=v \u2026] | rebuild <id>|--all | show <id>"
 };
 async function dispatchCore(argv, io, usage = USAGE.all) {
@@ -1553,7 +2891,7 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       io.stdout(f.line);
     return findings.every((f) => f.ok) ? 0 : 1;
   }
-  const config = parseConfig(JSON.parse(await readFile4(join6(io.root, "config.json"), "utf8")));
+  const config = parseConfig(JSON.parse(await readFile5(join9(io.root, "config.json"), "utf8")));
   switch (cmd) {
     case "claim": {
       const [slug, ...kv] = rest;
@@ -1562,8 +2900,9 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       checkSlug(slug);
       const fields = parseFields(kv);
       checkClaim(slug, { fields, config });
-      const repo = dirname4(resolve4(io.root));
-      const target = await resolveTarget(repo, mergeTarget(config));
+      const repo = dirname7(resolve6(io.root));
+      const epic = typeof fields.epic === "string" ? fields.epic : undefined;
+      const target = epic === undefined ? await resolveTarget(repo, mergeTarget(config)) : await epicTarget(io.root, repo, epic);
       io.stdout((await claimJob(io.root, slug, { fields, config, target }, undefined, { archived: () => archivedIds(repo) })).id);
       return 0;
     }
@@ -1581,8 +2920,10 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       const [target] = rest;
       if (!target)
         throw new Error(USAGE.rebuild);
-      const ids = await rebuild(io.root, target === "--all" ? undefined : target);
-      io.stdout(`rebuilt ${ids.length}: ${ids.join(" ")}`);
+      const { jobs, epics } = await rebuildAll(io.root, target === "--all" ? undefined : target);
+      io.stdout(`rebuilt ${jobs.length}: ${jobs.join(" ")}`);
+      if (epics.length > 0)
+        io.stdout(`rebuilt epics ${epics.length}: ${epics.join(" ")}`);
       return 0;
     }
     case "show": {
@@ -1592,12 +2933,14 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       const log = await readLog(io.root, id);
       if (log.length === 0)
         throw new Error(`${id}: no events.jsonl (legacy or unknown job)`);
-      for (const line of formatShow(project(log), (io.now ?? (() => new Date))()))
+      for (const line of formatShow(project2(log), (io.now ?? (() => new Date))()))
         io.stdout(line);
       return 0;
     }
     case "abandon":
-      return abandon(rest, io);
+      return abandon2(rest, io);
+    case "epic":
+      return runEpic(rest, io, config);
     case "archive": {
       const args = parseArchive2(rest);
       if (!archiveEnabled(config))
@@ -1615,7 +2958,15 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       throw new Error(usage);
   }
 }
-function parseAbandon(rest) {
+async function epicTarget(root, repo, epic) {
+  if ((await readEpicLog(root, epic)).length === 0)
+    throw new Error(`epic ${epic} has not started (no epic.started)`);
+  const branch = epicBranch(epic);
+  if (!await branchExists(repo, branch))
+    throw new Error(`epic ${epic}: no branch refs/heads/${branch}`);
+  return branch;
+}
+function parseAbandon2(rest) {
   const [id, reason, ...flags] = rest;
   if (id === undefined || reason === undefined || reason === "" || flags.length > 2)
     throw new Error(USAGE.abandon);
@@ -1624,41 +2975,9 @@ function parseAbandon(rest) {
     throw new Error(USAGE.abandon);
   return { id, reason, force: flags.includes("--force"), deleteBranch: flags.includes("--delete-branch") };
 }
-var isDir2 = async (path) => {
-  try {
-    return (await stat2(path)).isDirectory();
-  } catch (e) {
-    if (isNotFound2(e))
-      return false;
-    throw e;
-  }
-};
-async function abandon(rest, io) {
-  const args = parseAbandon(rest);
-  if (!isJobId(args.id))
-    throw new Error(`job id '${args.id}' must match ^\\d{3}-[a-z0-9-]+$`);
-  const input = parseEventInput("job.abandoned", { reason: args.reason });
-  const snap = await appendEvent(io.root, args.id, input, undefined, { force: args.force });
-  const repo = dirname4(resolve4(io.root));
-  const branch = `factory/${args.id}`;
-  const worktree = relative2(repo, join6(resolve4(io.root), ".worktrees", args.id));
-  const left = [];
-  if (await isDir2(join6(repo, worktree))) {
-    const why = await removeWorktree(repo, worktree);
-    if (why !== null)
-      left.push(`worktree ${worktree} (${why})`);
-  }
-  if (args.deleteBranch) {
-    if (snap.branch !== branch)
-      left.push(`branch ${snap.branch} (not ${branch}; not deleted)`);
-    else if (left.length > 0)
-      left.push(`branch ${branch} (its worktree is still there)`);
-    else {
-      const why = await deleteBranch(repo, branch);
-      if (why !== null)
-        left.push(`branch ${branch} (${why})`);
-    }
-  }
+async function abandon2(rest, io) {
+  const args = parseAbandon2(rest);
+  const { snap, left } = await abandonJob(io.root, args);
   if (left.length > 0)
     throw new Error(`${args.id} is abandoned, but cleanup left behind: ${left.join("; ")}`);
   io.stdout(snap.stage);
@@ -1675,13 +2994,19 @@ function parseArchive2(rest) {
   return { all: target === "--all", target, force: force === 1 };
 }
 async function archiveOne(io, id, force) {
+  if (!isJobId(id) && isEpicSlug(id)) {
+    const epic = await readLocalEpic(io.root, id);
+    const outcome = await archiveEpic(dirname7(resolve6(io.root)), epic, force);
+    io.stdout(outcome.kind === "archived" ? `archived epic ${id} ${outcome.commit.slice(0, 7)}` : `epic ${id}: already archived (unchanged)`);
+    return 0;
+  }
   const job = await readLocalJob(io.root, id);
-  const outcome = await archiveJob(dirname4(resolve4(io.root)), job, force);
+  const outcome = await archiveJob(dirname7(resolve6(io.root)), job, force);
   io.stdout(outcome.kind === "archived" ? `archived ${id} ${outcome.commit.slice(0, 7)}` : `${id}: already archived (unchanged)`);
   return 0;
 }
 async function archiveAll(io, force) {
-  const repo = dirname4(resolve4(io.root));
+  const repo = dirname7(resolve6(io.root));
   let archived = 0;
   let unchanged = 0;
   let skipped = 0;
@@ -1699,6 +3024,26 @@ async function archiveAll(io, force) {
       else {
         archived++;
         io.stdout(`archived ${id} ${outcome.commit.slice(0, 7)}`);
+      }
+    } catch (e) {
+      failed++;
+      io.stderr((e instanceof Error ? e.message : String(e)).split(`
+`)[0] ?? "");
+    }
+  }
+  for (const slug of await epicSlugs(io.root)) {
+    try {
+      const epic = await readLocalEpic(io.root, slug);
+      if (!isEpicTerminal(epic)) {
+        skipped++;
+        continue;
+      }
+      const outcome = await archiveEpic(repo, epic, force);
+      if (outcome.kind === "unchanged")
+        unchanged++;
+      else {
+        archived++;
+        io.stdout(`archived epic ${slug} ${outcome.commit.slice(0, 7)}`);
       }
     } catch (e) {
       failed++;

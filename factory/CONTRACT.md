@@ -27,6 +27,7 @@ factory/
   roles/<role>.md             # overlay: the project's rules for one role (tracked; optional)
   cli.ts                      # the only writer of job state (managed: a self-contained bundle)
   backlog.md  briefs/         # human-facing queue and interview briefs (tracked)
+  epics/<slug>.md             # an epic's plan: its member briefs and their order (tracked; see "Epics")
   jobs/.claim.lock/           # the CLI's mutex for handing out job ids (runtime; never by hand)
   jobs/<id>/                  # runtime state, one dir per job (gitignored)
     events.jsonl              # append-only event log — the truth
@@ -36,8 +37,21 @@ factory/
     spec.md  build.md  decision.md
     round-<N>/review-<key>.md # one per reviewer key in the round
     round-<N>/<key>/*         # that reviewer's supporting files, e.g. round-<N>/ui/*.png screenshots
+  jobs/epics/<slug>/          # runtime state, one dir per epic (gitignored with jobs/; see "Epics")
+    events.jsonl              # the epic's append-only log — the truth
+    epic.json                 # derived snapshot over the log, the plan, and the epic's jobs
   .lock/  .worktrees/<id>/    # runtime (gitignored)
+  .worktrees/epic-<slug>/     # an epic's worktree, on branch factory/epic/<slug> (runtime)
 ```
+
+An **epic** (see "Epics") has its plan at `factory/epics/<slug>.md`, its runtime state at
+`factory/jobs/epics/<slug>/`, its integration branch `factory/epic/<slug>`, and its worktree at
+`factory/.worktrees/epic-<slug>/`. An **epic slug** follows the job slug rule below
+(`^[a-z0-9]+(-[a-z0-9]+)*$`, at most 40 characters) and must not match the job-id pattern, so a
+command argument, a dir under `jobs/epics/`, or an entry on the archive branch can always be told
+from a job; the CLI checks it before building any path or ref. `jobs/epics/` is not named like a
+job id, so job numbering, `doctor`'s duplicate-number note, and readers that list job dirs skip
+it. *(Added within v1, additively: new files and dirs.)*
 
 `conflict-<c>.md` is written by the orchestrator right before it logs `merge.conflicted` (see
 "`events.jsonl`"), with `c` the job's new `conflicts` count (1 or 2). It holds facts only: the
@@ -82,6 +96,7 @@ reports each such number as a `note`.
   "gate": ["bun test", "tsc --noEmit"],
   "merge": { "target": "current" },
   "archive": { "enabled": true },
+  "epic": { "maxParallel": 3 },
   "roles": { "builder": { "runner": "claude", "model": "sonnet" }, "ux": { "runner": "claude" } }
 }
 ```
@@ -101,6 +116,16 @@ reports each such number as a `note`.
 - `dashboard.settleAfterHours` — a merged job older than this is *settled*: hidden from the
   Merged column and listed in the Settled dialog. Purely a view; no event records it. An
   abandoned job is settled at once, whatever this says.
+
+  **The epic-aware settle rule** extends it to epics and their jobs (see "Epics"), and is
+  exported once from `packages/contract` (`isSettled`, `isEpicSettled`): an epic settles like a
+  job (`landed`: when its `endedAt` is more than `settleAfterHours` old; `abandoned`: at once). A
+  job with no `epic` settles by the rule above, unchanged. An `abandoned` job is settled at once,
+  whatever its epic's state, as always. A `merged` job with an `epic` is never settled while its
+  epic isn't `landed` or `abandoned` (an unknown epic counts as not terminal); once it is, the job
+  settles when its epic does (by the epic's `endedAt`). `prune` uses it, behind its own stricter
+  guard (see "CLI", `prune`), and so does the Andon service (see "Andon service", "Epics in the
+  service"). *(Added within v1, additively: jobs without an epic settle exactly as before.)*
 - `gate` — optional. The project's gate: an ordered, non-empty array of non-empty shell command
   strings. Agents run them in order from the worktree root, and the gate is green only when
   every command exits 0. There is no default: when `gate` is absent, no gate is configured, and
@@ -122,6 +147,13 @@ reports each such number as a `note`.
   archive` refuses, saying archiving is disabled. It is overlay config: `factory init` and
   `factory upgrade` never write it. Archiving never pushes. *(Added within v1, additively: a new
   optional key; a CLI from before it rejects a config that sets `archive`, so upgrade first.)*
+- `epic` — optional. How an epic schedules its members (see "Epics"): an object holding only
+  `maxParallel`, a positive integer, the most members of one epic in a working stage at once
+  (a member in `needs-human` holds no slot; sync and fix jobs bypass it). No `epic` key, or
+  `"epic": {}`, means `maxParallel` 3. Any other shape, any other key inside `epic`, or a
+  `maxParallel` that isn't a positive integer is an error. It is overlay config: `factory init`
+  and `factory upgrade` never write it. *(Added within v1, additively: a new optional key; a CLI
+  from before it rejects a config that sets `epic`, so upgrade first.)*
 - `roles` — optional. Says how each role is run: an object mapping a role name to
   `{ "runner": "claude", "model"?: string }`. A role name is a fixed role (`spec-writer`,
   `builder`, `approver`) or a key in `reviewers`; any other name is an error. In an entry,
@@ -296,7 +328,7 @@ Plus the type's own fields:
 
 | type | fields | effect on the job |
 |---|---|---|
-| `job.claimed` | `schema: "factory/v1"`, `id`, `maxRound`, `brief: string\|null`, `issue: string\|null`, `target?` (the resolved target branch; filled by the CLI), `session?` (see "Session" below) | first line of every log, written only by `claim`; stage `claimed`; sets `target`; sets `session` (or `null`) |
+| `job.claimed` | `schema: "factory/v1"`, `id`, `maxRound`, `brief: string\|null`, `issue: string\|null`, `target?` (the resolved target branch; filled by the CLI), `session?` (see "Session" below), `epic?` and `kind?` (see "Epic membership" below) | first line of every log, written only by `claim`; stage `claimed`; sets `target`; sets `session` (or `null`); sets `epic` and `kind` (or `null`) |
 | `job.titled` | `title` | sets the card title (from spec.md's H1) |
 | `stage.entered` | `stage` (`spec`\|`build`\|`approve`) | moves the job to that stage |
 | `round.started` | `round`, `reviewers: string[]` (filled by the CLI from `config.reviewers` when omitted; the stored event always has it) | stage `review`; previous round (if any) moves to history; every listed reviewer `pending` |
@@ -333,6 +365,14 @@ event with a one-line reason, and nothing is written (on `claim`, no job dir). L
 `session` are still valid v1. Readers are tolerant: a stored `session` that isn't a well-formed
 object is ignored by the projection. *(Added within v1, additively: a new optional field on
 three events.)*
+
+**Epic membership.** `epic` and `kind` are set together, only on a job claimed into an epic
+(`claim … epic=<slug>`, see "CLI"): `epic` is the epic's slug and `kind` is `member` (a plan
+member, the default), `sync`, or `fix` (a job the epic generates; see "Epics"). On a job claimed
+into an epic, `target` is always `factory/epic/<slug>`. A standalone job's `job.claimed` has
+neither key, exactly as before. Both are caller fields of `claim` only; on any other event they
+are extra fields. Logs without them are still valid v1, and readers treat their absence as a
+standalone job. *(Added within v1, additively: two new optional fields on `job.claimed`.)*
 
 `verdict` is never supplied by the orchestrator: the CLI reads it from the agent's file — the first
 non-empty line, trimmed, which must be exactly `VERDICT: PASS` or `VERDICT: CHANGES` for reviews,
@@ -405,6 +445,7 @@ see a partial file). Field-compatible with the pre-contract `job.json`, plus tim
   "reworks": 0, "conflicts": 0, "decision": null, "note": "", "stoppedBy": null, "stoppedFrom": null,
   "brief": null, "issue": "M80",
   "session": { "app": "t3code", "environment": "env-1", "thread": "thread-A" },
+  "epic": null, "kind": null,
   "startedAt": "2026-10-23T14:02:11.204Z",
   "stageEnteredAt": "2026-10-23T14:31:40.019Z",
   "endedAt": null,
@@ -429,6 +470,11 @@ see a partial file). Field-compatible with the pre-contract `job.json`, plus tim
   `job.reworked` or `job.human-approved` without one keeps the earlier one, and no other event
   changes it. `null` when none was ever recorded. Readers treat a missing key as `null` (a
   snapshot written before it, until a `rebuild`). *(Added within v1, additively.)*
+- `epic`, `kind` — from `job.claimed`'s `epic` and `kind` (see "Epic membership" in
+  "`events.jsonl`"): the epic's slug and `member`, `sync`, or `fix` for a job in an epic; both
+  `null` for a standalone job and for a log written before them (a stored `epic` with no valid
+  `kind` reads as `member`). Snapshots written by the CLI always carry both keys; readers treat a
+  missing key as `null`. *(Added within v1, additively.)*
 - `conflicts` — the number of `merge.conflicted` events in the log, `0` when there are none
   (at most 2: see "Transitions the CLI enforces"). Snapshots written by the CLI (`event`,
   `rebuild`) always carry the key, and `rebuild` derives it from the log; readers treat a missing
@@ -453,17 +499,166 @@ see a partial file). Field-compatible with the pre-contract `job.json`, plus tim
 **Legacy jobs** (no `events.jsonl`, written before this contract) are left untouched. Viewers treat
 them as having no timing and use `updated` as the merge time when `stage` is `merged`.
 
+## Epics
+
+An **epic** runs several briefs, in the order a plan gives, as ordinary jobs (its **members**)
+that branch from, are reviewed against, and merge into the epic's own integration branch,
+`factory/epic/<slug>`; when every member has merged, the epic lands on its target with one
+merge. The design is `docs/design/epics/design.md`, and decision 13 in `docs/decisions.md`
+records it. The CLI owns the epic's setup and teardown (`epic start`, `epic abandon`), its log,
+its snapshot, and its scheduling rules (`epic next`, and the checks `claim … epic=` makes); every
+merge (members into the epic branch, catch-ups, landing) stays with the orchestrator, which
+records the outcomes as events. Besides its members, an epic may claim **generated** jobs inside
+itself: a **sync** job (brings the target into the epic branch after a conflicting catch-up) or a
+**fix** job (makes a red gate green before landing). Each epic job is a normal job with a normal
+log; only `job.claimed`'s `epic` and `kind` tie it to the epic. *(Added within v1, additively:
+new files, events, optional fields, a config key with a default, and new commands; no existing
+event, field, or transition changes.)*
+
+### The plan — `factory/epics/<slug>.md`
+
+A tracked markdown file, written by humans and `explore`, never by the CLI. Its slug (the file
+name without `.md`) is the epic's id, with one run per plan. The CLI reads two things from it,
+with one parser (`parsePlan`) that serves `epic start`, `epic next`, `doctor`, and the
+projection alike:
+
+- **Status.** The first line starting with `- Status:` before the first `## ` heading, as briefs
+  have. Its trimmed value is one of `draft`, `ready`, `done`, or `abandoned`; no such line, or
+  any other value, is a status error.
+- **Members.** The `## Members` section, from that heading to the next `#` or `##` heading. Each
+  list item at column 0 is one member and must start with the member's brief slug in backticks,
+  `` - `<slug>` ``; free text may follow. Indented lines continue the item above (so an item may
+  wrap); other non-list lines are prose. An item may carry `` after: `<slug>`[, `<slug>`] `` (the
+  members it waits on) and `maxRound: <n>` (a positive integer: the member job's review budget
+  when `claim` gives none), each at most once. Any other list item (no backticked slug first, a
+  `*`, `+`, or numbered item), a slug that isn't a job slug (`^[a-z0-9]+(-[a-z0-9]+)*$`, at most
+  40 characters), a malformed `after:` or `maxRound:`, an `after:` listing one slug twice, a
+  duplicate member, a missing `## Members` section, and a section with no items are parse
+  errors, each one line naming the section line.
+- **Graph.** Every `after:` slug must be a member, and the `after:` edges must have no cycle.
+- **Member briefs.** Member `<m>`'s brief is `factory/briefs/<m>.md`; it counts as `ready` when
+  its `- Status:` line (read the same way) says exactly `ready`. Plans and briefs are read only as
+  regular files: a symlink is never followed.
+
+A plan's live state (running, blocked, waiting) is never written to it.
+
+`epic start` refuses a plan, and `doctor` FAILs a `ready` plan, with the same one-line reason,
+checked in this order: the plan is missing; its status (missing, unknown, or not `ready`:
+`plan factory/epics/<slug>.md is <status>, not ready`); its first parse error; its graph (`member
+<m> is after <x>, which is not a member`, or `the after: edges form a cycle: a -> b -> a`); then
+each member's brief, in plan order (missing, or not `ready`).
+
+### The epic log — `jobs/epics/<slug>/events.jsonl`
+
+The same format as a job's log (one JSON object per line, `ts` set by the CLI from the system
+clock, appended only), written only by the CLI under the epic's own lock,
+`jobs/epics/<slug>/.events.lock` (an `mkdir`, stale after 30 s, as for jobs). It records only
+epic-level facts; a member's progress lives in its own log.
+
+| type | fields | effect on the epic |
+|---|---|---|
+| `epic.started` | `schema: "factory/v1"`, `slug`, `target` (resolved by the CLI with `claim`'s rule), `session?` | first line of every epic log, written only by `epic start`; state `running` |
+| `epic.waiting` | `reason` (non-empty) | state `waiting` on you; `note = reason` |
+| `epic.resumed` | `session?` | from a logged `waiting`, back to the state before it (`running` or `landing`); clears `note`; with `session`, records the driving session (on a running epic it records the session only) |
+| `epic.landing` | none | state `landing` |
+| `epic.landed` | `sha` (non-empty; a string, never coerced) | state `landed`; `sha`; `note = "landed <sha>"`; `endedAt = ts`; terminal |
+| `epic.abandoned` | `reason` (non-empty) | state `abandoned`; `note = reason`; `endedAt = ts`; terminal; written only by `epic abandon` |
+
+`session` (the same shape and CLI check as "Session" in "`events.jsonl`") is accepted on
+`epic.started` and `epic.resumed` only; on any other epic event it is an extra field. Any
+unknown field is rejected. Transitions are checked against the epic's **logged** state:
+
+| from | allowed events |
+|---|---|
+| (no log) | `epic.started` |
+| `running` | `epic.waiting`, `epic.resumed`, `epic.landing` (only when every plan member's newest job is `merged` and no sync or fix job is live), `epic.abandoned` |
+| `waiting` (logged) | `epic.resumed`, `epic.abandoned` |
+| `landing` | `epic.waiting`, `epic.landed`, `epic.abandoned` |
+| `landed` | nothing (terminal) |
+| `abandoned` | nothing (terminal) |
+
+A second `epic.started` is always refused (one run per plan). A refused event, a torn last line,
+or a bad slug (checked before any path is built) exits non-zero with a one-line reason and writes
+nothing. `epic.landing`'s refusal names what is missing (`not every member has merged (a:
+running, …)`, or `sync job <id> is live`). A job is **live** when it is neither `merged` nor
+`abandoned`, as for `claim`.
+
+### `epic.json` — the derived snapshot
+
+A disposable projection, written to a temp file and renamed, over three inputs: the epic's log,
+the plan **as it reads now** (so a member added to the plan mid-run appears at the next rebuild),
+and every job whose `job.json` names the epic (`epic` equal to the slug). It is rebuilt after
+every epic event, after every event on an epic job (`claim`, `event`, `abandon`; under the
+epic's lock, taken after the job's is released; a failure there never fails the job's event),
+by `rebuild`, and by `epic show`.
+
+```json
+{
+  "schema": "factory/v1", "slug": "auth", "branch": "factory/epic/auth", "target": "main",
+  "plan": "factory/epics/auth.md", "planError": null,
+  "state": "running", "waitingOn": null, "note": "", "session": null, "sha": null,
+  "members": [
+    { "slug": "a", "after": [], "state": "merged", "job": "053-a", "stage": "merged", "blockedOn": [] },
+    { "slug": "b", "after": ["a"], "state": "running", "job": "054-b", "stage": "review", "blockedOn": [] },
+    { "slug": "c", "after": ["b"], "state": "blocked", "job": null, "stage": null,
+      "blockedOn": [{ "member": "b", "job": "054-b" }] }
+  ],
+  "generated": [{ "id": "055-sync-main", "kind": "sync", "stage": "merged" }],
+  "counts": { "queued": 0, "blocked": 1, "running": 1, "merged": 1, "needs-human": 0, "abandoned": 0 },
+  "startedAt": "…", "endedAt": null, "updated": "…"
+}
+```
+
+- `state` — the logged state (`running`, `waiting`, `landing`, `landed`, `abandoned`), except
+  that a `running` or `landing` epic is `waiting` when nothing can run (no member can be claimed
+  and it can't land), no epic job is in a working stage, and some epic job (a member, or a
+  generated sync or fix job) is in `needs-human`.
+- `waitingOn` — `"you"` when the state is a logged `epic.waiting` (then `note` is its reason),
+  `"members"` when the waiting is derived, `null` otherwise.
+- `members` — every plan member, in plan order. A member's `job` is its newest job (the highest
+  id among the epic's `member` jobs whose `brief` is `factory/briefs/<m>.md`), and its `state`
+  comes from that job's stage: `running` (with the working `stage`), `needs-human`, `merged`, or
+  `abandoned`. A member with no job is `queued` when every `after:` member has merged, else
+  `blocked`, with `blockedOn` naming each unmerged `after:` member and its job id (`null` when it
+  has none). An abandoned member blocks its dependents.
+- `generated` — the epic's sync and fix jobs, in id order, with their stage.
+- `counts` — the members by state.
+- `planError` — why the plan couldn't be read or parsed in full (missing, or its first parse
+  error), else `null`; the members that did parse still count.
+- `session` — the latest `session` on `epic.started` or `epic.resumed`, else `null`. `sha` —
+  the `epic.landed` sha, else `null`.
+- `startedAt` — `epic.started`'s `ts`; `endedAt` — the `epic.landed` or `epic.abandoned` `ts`,
+  else `null`; `updated` — the latest of the epic log's last `ts` and its jobs' `updated`.
+
+### Scheduling
+
+`epic next <slug>` prints one action per line, and only while the epic's logged state is
+`running`: `claim <member>` for each `queued` member (no job, every `after:` member merged), in
+plan order, while the members in a working stage plus those already printed stay under
+`epic.maxParallel` and no sync job is live; or `land` when every member has merged and no sync or
+fix job is live; nothing otherwise (`epic show` says why). An abandoned member is never offered
+again.
+
+`claim <slug> epic=<e> …` enforces the same plan (see "CLI"). The cap counts working members
+only (a member in `needs-human` holds no slot); sync and fix jobs bypass it, but while a sync job
+is live no member is claimed.
+
 ## CLI
 
 ```
-bun factory/cli.ts claim <slug> [brief=…] [issue=…] [maxRound=…] [session=t3code:<environmentId>/<threadId>]  # create a job; prints its id
+bun factory/cli.ts claim <slug> [brief=…] [issue=…] [maxRound=…] [session=t3code:<environmentId>/<threadId>] [epic=<slug> [kind=member|sync|fix]]  # create a job; prints its id
 bun factory/cli.ts event <id> <type> [field=value …]   # validate, append, rebuild job.json
-bun factory/cli.ts rebuild <id> | --all                # regenerate job.json from the log
+bun factory/cli.ts rebuild <id> | --all                # regenerate job.json (and epic.json) from the logs
 bun factory/cli.ts show <id>                           # human-readable timing summary
 bun factory/cli.ts abandon <id> "<reason>" [--force] [--delete-branch]  # close a job for good
 bun factory/cli.ts archive <id> | --all [--force]      # copy terminal jobs to the factory/archive branch
 bun factory/cli.ts prune                               # remove local job dirs already archived and settled
-bun factory/cli.ts doctor                              # validate config.json, verify managed hashes, note duplicate job numbers
+bun factory/cli.ts doctor                              # validate config.json, verify managed hashes, note duplicate job numbers, check epic plans
+bun factory/cli.ts epic start <slug> [session=…]       # set up an epic: branch, worktree, epic.started
+bun factory/cli.ts epic event <slug> <type> [field=value …]  # validate, append, rebuild epic.json
+bun factory/cli.ts epic next <slug>                    # what the epic should do now
+bun factory/cli.ts epic show <slug>                    # the epic's state, its members, and why it waits
+bun factory/cli.ts epic abandon <slug> "<reason>" [--force] [--delete-branch]  # close an epic for good
 factory init [--force]                                 # (source only) install the managed core
 factory upgrade [--force]                              # (source only) replace the managed core
 ```
@@ -494,13 +689,83 @@ claimed again under a new number. On success `claim` exits 0 and prints only the
 or missing slug, a bad field, a refused target, a live slug, no numbers left) exits 1 with one
 stderr line and writes nothing: no job dir, no `events.jsonl`, no `job.json`. The slug, field,
 and target checks run before the lock is taken, so they also leave no `.claim.lock` and use up
-no number. A missing slug prints `usage: claim <slug> [brief=…] [issue=…] [maxRound=…] [session=t3code:<environmentId>/<threadId>]`.
+no number. A missing slug prints `usage: claim <slug> [brief=…] [issue=…] [maxRound=…] [session=t3code:<environmentId>/<threadId>] [epic=<slug> [kind=member|sync|fix]]`.
+
+**Claiming into an epic.** `claim <slug> epic=<e> [kind=member|sync|fix] [brief=…]` claims a job
+into epic `<e>` (see "Epics"), recording `epic` and `kind` on `job.claimed` (`kind` defaults to
+`member`). Before any lock, with the slug and field checks, it refuses: `kind` without `epic`
+(`job.claimed: kind=<k> needs epic=<slug>`); an `epic` that isn't an epic slug; a member claim
+without `brief=`; a `brief=` on a sync or fix job (`job.claimed: a <kind> job takes no brief=`);
+and a caller-supplied `target` (an extra field, as always). Instead of resolving `merge.target`,
+it sets `target` to `factory/epic/<e>`: the epic must have a log (`epic <e> has not started (no
+epic.started)`) and
+the branch must exist (`epic <e>: no branch refs/heads/factory/epic/<e>`). Then, holding
+`jobs/.claim.lock` and, nested in it, the epic's `.events.lock`, after the live-slug check and
+the number pick, it refuses: an epic whose log has no `epic.started`, or is `landed` or
+`abandoned`, or is torn; for a member, a `brief` that isn't `factory/briefs/<m>.md` for a member
+`<m>` listed in the plan's `## Members`, a member whose `after:` members haven't all merged, a
+member that already has a job that isn't abandoned, a member claim while a sync job is live, and
+a member claim when the members in a working stage are already at `epic.maxParallel`. When
+`maxRound=` is omitted, the plan's `maxRound` for that member applies, if it has one, else
+`config.maxRound`. It appends `job.claimed` and rewrites `epic.json` before releasing the epic's
+lock, so two concurrent claims can't both pass the cap or both claim one member (a failed
+`epic.json` rewrite after the append never fails the claim: the job exists and its id is
+printed). Every refusal
+writes nothing and uses up no job number. A claim without `epic` behaves exactly as before.
+*(Added within v1, additively: two new caller fields.)*
 `event <id> job.reworked k=… maxRound=… [session=…]` and `event <id> job.human-approved [session=…]`
 take the same `session=` argument with the same check; `session=` on any other event is refused as
 an extra field, and nothing is written.
 
 `show` treats `abandoned` like `merged`: its terminal stage span is never closed and is not
 shown as running.
+
+`rebuild <id>` regenerates the job's `job.json` and, when the job names an epic that still has a
+local dir, that epic's `epic.json` (an epic dir already pruned is skipped; a corrupt epic log
+fails the command after `job.json` is rewritten); `rebuild --all` regenerates every job's and then every epic's (each dir under
+`jobs/epics/` named like an epic slug). It prints `rebuilt <n>: <ids>` as before and, when it
+rebuilt any epic, a second line `rebuilt epics <n>: <slugs>`.
+
+**Epic commands.** Each checks the epic slug before building any path or ref, and prints its own
+usage line for its usage errors (`usage: epic start|event|next|show|abandon <slug> …` for a
+missing or unknown subcommand).
+
+- `epic start <slug> [session=…]` is all or nothing. In order, it: checks the slug and the fields
+  (`session` only); checks the plan as "Epics" says (the same one-line reason `doctor` gives);
+  resolves the target with `claim`'s rule (`merge.target`); reserves `jobs/epics/<slug>/` with an
+  exclusive `mkdir` (refused when it exists: `epic <slug> has already started: one run per plan`);
+  under the epic's lock, refuses an existing `factory/epic/<slug>` branch or
+  `factory/.worktrees/epic-<slug>` path; runs `git worktree add -b factory/epic/<slug>
+  factory/.worktrees/epic-<slug> <target>` in the repo root; logs `epic.started`; writes
+  `epic.json`; and prints `running`. Any refusal exits 1 with one line and leaves no epic dir,
+  branch, or worktree: a failure after the reservation removes the git state it created (a failed
+  `worktree add` deletes the branch only when it points at the target's commit, so a branch made
+  by someone else is never deleted) and the dir; a rollback that itself fails adds what it left
+  behind to the line.
+- `epic event <slug> <type> [field=value …]` appends `epic.waiting`, `epic.resumed`,
+  `epic.landing`, or `epic.landed` with the transitions in "Epics", rewrites `epic.json`, and
+  prints the new state (the projected one, so a derived `waiting` prints `waiting`). It uses
+  `event`'s value parsing (so `sha=0123456` stays a string). `epic.started` and `epic.abandoned`
+  are always refused, with one line naming `epic start` or `epic abandon`, and nothing written.
+- `epic next <slug>` prints the actions in "Scheduling" (nothing when there are none) and writes
+  nothing.
+- `epic show <slug>` rewrites `epic.json` and prints it for humans: `epic <slug>  <state>
+  <branch> -> <target>`; `waiting on you: <note>` or `waiting on members: …` naming the jobs in
+  `needs-human`; the note of a terminal epic; any `plan: <planError>`; one `member <m>  <state>
+  [<job>] [<stage>] [blocked on <m> (<job>), …]` line per member; one `<kind> <id>  <stage>` line
+  per generated job.
+- `epic abandon <slug> "<reason>" [--force] [--delete-branch]` closes an epic for good. Under the
+  epic's lock it refuses, writing nothing, while any epic job is in a working stage and `--force`
+  isn't given (one line naming them), and on an epic that is already terminal; else it logs
+  `epic.abandoned`, which closes the epic to new claims. Then it abandons every epic job that
+  isn't `merged` or `abandoned` as `abandon` does (passing force with `--force`; jobs in
+  `needs-human` need none), with the reason `epic <slug> abandoned: <reason>`, keeping their
+  branches; removes the epic worktree if it exists; and, with `--delete-branch`, deletes
+  `factory/epic/<slug>`. It prints `abandoned`; a cleanup that fails exits 1 with one line naming
+  what was left behind, while the epic stays `abandoned`. Missing arguments, an empty reason, or an
+  unknown or repeated flag print `usage: epic abandon <slug> "<reason>" [--force] [--delete-branch]`.
+
+*(Added within v1, additively: new commands.)*
 
 `abandon <id> "<reason>" [--force] [--delete-branch]` closes a job without merging it. In order,
 it: checks the job id (`^\d{3}-[a-z0-9-]+$`) before building any path; appends
@@ -544,12 +809,25 @@ directory. It then compares the job with the branch tip:
   `--force`); with `--force`, a new commit replaces `<id>/`, its parent the old tip, so history
   keeps both.
 
-`--all` runs that for every local job dir named like a job id, in id order: jobs that are not
-`merged` or `abandoned` are skipped, unchanged ones are no-ops, and each archived job gets its own
-commit and its `archived <id> <short sha>` line. A per-job failure is one stderr line and the
-rest still run. It ends with
+An argument that is not a job id but is an epic slug (see "File layout") names an **epic**: `archive
+<slug> [--force]` copies a `landed` or `abandoned` epic to the branch under `epics/<slug>/` (see
+"Job archive"), with the same rules: a non-terminal epic is refused with `epic <slug> is <state>:
+only landed or abandoned epics are archived`; the plan, `factory/epics/<slug>.md`, must exist as a
+regular file (`epic <slug>: plan factory/epics/<slug>.md is missing; not archived`); a `landed`
+epic's `sha` must be a hex commit id; `epics/<slug>/` holding a different epic (compared by the
+`epic.started` event's `slug` and `ts`) is refused with or without `--force`; unchanged is a
+no-op (`epic <slug>: already archived (unchanged)`); changed needs `--force`; and it prints
+`archived epic <slug> <short sha>`. An unknown slug is `epic <slug>: no such epic`; an argument
+that is neither is refused as a bad job id.
+
+`--all` runs that for every local job dir named like a job id, in id order, and then for every
+local epic dir under `jobs/epics/`, in slug order: jobs that are not `merged` or `abandoned`, and
+epics that are not `landed` or `abandoned`, are skipped, unchanged ones are no-ops, and each
+archived job or epic gets its own commit and its `archived <id> <short sha>` (or `archived epic
+<slug> <short sha>`) line. A per-job or per-epic failure is one stderr line and the rest still
+run. It ends with
 `archive --all: archived <n>, unchanged <n>, skipped <n> (not merged or abandoned), failed <n>`
-and exits 1 when any job failed. Every refusal exits 1, moves no ref, and writes no git object
+(epics counted in the same totals) and exits 1 when any failed. Every refusal exits 1, moves no ref, and writes no git object
 (the comparison builds its tree in a scratch object directory). A write that fails after it has
 started (a lost compare-and-swap race, giving up after 50 tries, or any other `update-ref`
 failure) is not a refusal: it moves no ref, but it may leave unreachable objects, which `git gc`
@@ -582,10 +860,31 @@ removed only when all of these hold, checked in this order:
   `.events.lock` (taken without waiting; a held lock keeps the job), so no event lands between
   the comparison and the removal.
 
+A job with an `epic` is judged by the epic-aware settle rule (see "`config.json`",
+`dashboard.settleAfterHours`): after the stage check, its epic's state and `endedAt` are read from
+the local `jobs/epics/<slug>/` (or, once the epic dir is pruned, from `epics/<slug>/events.jsonl`
+on the branch tip), and while the epic isn't `landed` or `abandoned` the job is kept, with the
+reason `its epic <slug> is not landed or abandoned (<state>)` (or `its epic <slug> is not found`),
+even when it is merged, archived, and past the window. This keep-while-the-epic-is-live guard is
+stricter than the view rule: it keeps every job in a live (or unknown) epic, abandoned members
+included, though the epic-aware settle rule settles an abandoned job at once. Once the epic is
+terminal, an abandoned job settles at once and a merged job settles when its epic does.
+
+After the jobs, `prune` sweeps every local epic dir under `jobs/epics/` (named like an epic slug),
+in slug order, the same way: an epic dir is removed only when no `.events.lock` is present, its
+log reads (`events.jsonl` starting with `epic.started`), it is `landed` or `abandoned`, it is
+settled (an `abandoned` epic at once; a `landed` one when its `endedAt` is more than
+`settleAfterHours` old), `epics/<slug>/` is on the branch tip, and the tree of its archived file
+set (its `events.jsonl` and the current plan as `plan.md`) equals that tree byte for byte, compared
+under the epic's `.events.lock`. Its line is `pruned epic <slug>` or `kept epic <slug>: <reason>`
+(the reasons as for jobs, with `not landed or abandoned (<state>)`). The plan file is never
+removed.
+
 It prints one stdout line per job: `pruned <id>`, or `kept <id>: <reason>`, where the reason is
 `an event is in flight (.events.lock)`, the read refusal's text, `not merged or abandoned
-(<stage>)`, `not settled`, `not archived`, or `differs from its archived tree`. It ends with
-`prune: removed <n>, kept <n>, failed <n>`. A kept job is not a failure and is left byte for
+(<stage>)`, the epic reason above, `not settled`, `not archived`, or `differs from its archived
+tree`; then one line per epic. It ends with
+`prune: removed <n>, kept <n>, failed <n>` (jobs and epics counted together). A kept job is not a failure and is left byte for
 byte. A job that can't be checked or removed (a git error, a read or `rm` error) is one stderr
 line naming it and counts as failed; the rest still run. It exits 1 when any job failed (or when
 the branch tip can't be read, before any job is checked), else 0. Removal never follows a symlink
@@ -609,6 +908,14 @@ and the skill never runs `prune`: it is a maintainer's manual step.
 3. Each job number held by more than one job dir (directories under `jobs/` named like a job id)
    is a `note`, never a failure, one line per number in number order, with the dirs sorted:
    `note: job number 005 is used by 005-links-footer, 005-week-view-pager`.
+4. Each plan `factory/epics/*.md`, in name order, by the one plan parser (see "Epics"): a plan
+   that is `ready`, or has no readable status, and that `epic start` would refuse on plan grounds
+   is a failure with the same one-line reason (`FAIL  factory/epics/<slug>.md: <reason>`), as is a
+   `ready` plan whose name isn't an epic slug; a sound one is `ok    factory/epics/<slug>.md`. A
+   `draft` plan's parse errors are each a `note` (`note  factory/epics/<slug>.md: <error>`),
+   never a failure (`ok    factory/epics/<slug>.md (draft)` when it has none). `done` and
+   `abandoned` plans are skipped. A plan that isn't a regular file (a symlink) is a failure and is
+   never read. *(Added within v1, additively.)*
 
 `doctor` exits 0 when nothing failed and 1 otherwise.
 
@@ -619,14 +926,14 @@ An installed copy that predates `doctor` gains it when the CLI is promoted.
 The installed `factory/cli.ts` is a single self-contained file (the source CLI bundled with its
 contract code), so it runs with `bun` alone, with no workspace packages or `node_modules`. It
 finds its factory root from its own location (its directory), and keeps the same commands
-(`claim`, `event`, `rebuild`, `show`, `abandon`, `archive`, `prune`, `doctor`), value parsing, per-command usage lines, and exit codes as
+(`claim`, `event`, `rebuild`, `show`, `abandon`, `archive`, `prune`, `doctor`, `epic`), value parsing, per-command usage lines, and exit codes as
 the source. The top-level usage line (printed for a missing or unknown command) differs: the
 installed CLI prints
 `usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id>`, and the source CLI prints
 that line followed by ` | doctor | init [--force] | upgrade [--force]`. Neither line lists
-`abandon`, `archive`, or `prune`; each prints its own usage line for its usage errors. An
-installed copy that predates `abandon`, `archive`, `prune`, or `claim` gains it when the CLI is
-promoted.
+`abandon`, `archive`, `prune`, or `epic`; each prints its own usage line for its usage errors. An
+installed copy that predates `abandon`, `archive`, `prune`, `claim`, or `epic` gains it when the
+CLI is promoted.
 The same source always bundles to the same bytes. It does not offer `init` or `upgrade`: those
 run from the factory's source against a project, as the linked `factory init` with the project
 root as the cwd.
@@ -636,7 +943,8 @@ root as the cwd.
 The archive is the orphan branch `factory/archive` (`refs/heads/factory/archive`) in the project's own
 repo. It shares no history with any target branch, and it sits beside job branches
 `refs/heads/factory/<id>` without a ref conflict, since job ids start with three digits. Its tip's
-tree holds one top-level directory per archived job and nothing else:
+tree holds one top-level directory per archived job and, once an epic is archived, one `epics/`
+directory, and nothing else:
 
 ```
 <id>/                       # one per archived job, named by its job id
@@ -644,7 +952,20 @@ tree holds one top-level directory per archived job and nothing else:
   feature.md  rework-<k>.md  conflict-<c>.md  spec.md  build.md  decision.md
   round-<N>/review-<key>.md
   round-<N>/<key>/*         # reviewers' supporting files (e.g. screenshots), byte for byte
+epics/<slug>/               # one per archived epic, named by its slug
+  events.jsonl              # the epic's log — readers re-project epic.json from it
+  plan.md                   # factory/epics/<slug>.md as it stood when archived
 ```
+
+`epics/` is not named like a job id, so it never counts toward job numbers (`claim` reads only
+the top-level directories named like a job id) and readers that list archived jobs skip it. An
+archived epic holds exactly its `events.jsonl` and its plan, copied from
+`factory/epics/<slug>.md` at archive time as `plan.md` (never `epic.json`, a projection, or the
+lock dir); an epic whose plan is missing is not archived. Its commit message is
+`chore(factory): archive epic <slug>`, a blank line, then the trailer `Factory-Epic: <slug>`,
+followed, for a `landed` epic only, by `Landed-As: <sha>` (the last `epic.landed` sha, which the
+archive requires to be a hex commit id). It is written with the same plumbing and the same
+compare-and-swap as a job. *(Added within v1, additively.)*
 
 `<id>/` is a copy of `jobs/<id>/` as it was when archived: every regular file, at any depth,
 except `job.json` (a disposable projection), its write temp file `job.json.tmp`, and the job
@@ -702,12 +1023,13 @@ matches its hash (a local edit), when a path the new render adds already holds a
 unmanaged file, or when `config.json` is missing or invalid.
 
 Neither command ever writes or deletes the overlay (`config.json`, `roles/**`) or other state
-under `factory/` (`managed.json` aside): `backlog.md`, `briefs/`, `jobs/`, `.lock/`,
+under `factory/` (`managed.json` aside): `backlog.md`, `briefs/`, `epics/`, `jobs/`, `.lock/`,
 `.worktrees/`. Files nobody manages are left alone, and upgrade deletes only paths the old
 manifest lists. Every path they write or delete must be a valid manifest path (see "Managed
 files") and, after symlinks, still resolve inside the project, the same rule `doctor` uses. A
 manifest path that breaks this, or that names (or resolves through a symlink to) the overlay,
-runtime state, or `.git/`, is refused.
+runtime state, the tracked plans and briefs (`factory/epics/`, `factory/briefs/`), or `.git/`,
+is refused.
 
 `--force` overrides only the existing-file and edited-file refusals: `init --force` overwrites
 files at managed paths (this is how an unstamped install is adopted), and `upgrade --force`
@@ -725,7 +1047,11 @@ in `needs-human`, whoever runs approve/rework). The CLI enforces it with a per-j
 append → project → write. Job numbers are handed out under a second `mkdir` lock,
 `jobs/.claim.lock` (the same 30 s stale rule; a fresh one is waited on), held by `claim` across
 scan → pick → create dir → first event; the per-job `.events.lock` nests inside it. Only `claim`
-takes it. Cross-job steps the CLI can't see (the orchestrator's overlap check and backlog tick
+takes it. An epic's log has its own `jobs/epics/<slug>/.events.lock` (the same rule), held across
+read → check → append → project → write for epic events, by `claim … epic=` (nested inside
+`.claim.lock`, around the epic's checks, the job's first event, and the `epic.json` rewrite), and
+for every `epic.json` rewrite after a job event (taken after the job's lock is released). The only
+nesting of the two is a claim's new job lock inside the epic's, so they never deadlock. Cross-job steps the CLI can't see (the orchestrator's overlap check and backlog tick
 around a claim, and merges) stay under `factory/.lock` as before; an orchestrator holds
 `factory/.lock` around its whole claim step, and `claim` never takes `factory/.lock`.
 
@@ -777,28 +1103,38 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
   `stoppedBy`, and `stoppedFrom` included, unchanged), and a bad
   `config.json` is a 500 whose text is `config.json: <reason>`. `jobs` also holds every job found
   only on the project's `factory/archive` branch (see "Archived jobs" below), in the same shape
-  and sorted by id together with the local jobs.
+  and sorted by id together with the local jobs. The response also carries `epics`: the
+  project's *on-board epics*, every epic that is not settled (running, waiting, landing, or
+  landed and not yet settled), in slug order, each its `epic.json` as stored (see "Epics in the
+  service" below); `[]` when there are none, so a project with no epics serves exactly what it did
+  before plus `epics: []`. *(Added within v1, additively: `epics`.)*
 - `GET /projects/<pid>/board?settled=summary` returns the *narrow board* `{ jobs, config,
-  settled }`: `jobs` holds only that project's unsettled jobs, `config` is as on the plain board,
-  and `settled` is the project's *settled summary* `{ count, lastMergedAt }`. Only the exact
-  value `summary` opts in: with no `settled` parameter, or any other value, the response is the
-  plain `{ jobs, config }` above, unchanged. A job is *settled* by the `dashboard.settleAfterHours`
-  rule (see "`config.json`"), applied by the service on the system clock when it builds the
-  board: an `abandoned` job is settled at once; a `merged` job is settled when its `endedAt`
-  parses and is more than `settleAfterHours` before now (a merged job with no readable `endedAt`
-  is not settled); every other stage is unsettled. The narrow `jobs` and the `jobs` of
-  `GET /projects/<pid>/settled` split the plain board's `jobs` between them, entry for entry, each
-  in id order. In the summary, `count` is the number of settled jobs (settled merged plus
-  abandoned), and `lastMergedAt` is the newest `endedAt` among the settled merged jobs, or `null`
-  when there is none (an abandoned job never counts as a merge). Errors are as for the plain
-  board. *(Added within v1, additively: a new query parameter; the plain response is unchanged.)*
-- `GET /projects/<pid>/settled` returns `{ jobs }`: only that project's settled jobs (by the rule
-  above), sorted by id, in the same shape and under the same rules as the plain board's `jobs`
-  (last good snapshot, unknown fields passed through, archived-only jobs included and
-  re-projected as described under "Archived jobs"). A bad `config.json` is a 500 whose text is
-  `config.json: <reason>`, and an unknown `<pid>` is a 404; it sits behind the same guards as
+  settled, epics }`: `jobs` holds only that project's unsettled jobs, `config` and `epics` are as
+  on the plain board, and `settled` is the project's *settled summary* `{ count, lastMergedAt,
+  epics }`. Only the exact value `summary` opts in: with no `settled` parameter, or any other
+  value, the response is the plain `{ jobs, config, epics }` above, unchanged. A job or an epic is
+  *settled* by the epic-aware settle rule (see "`config.json`", `dashboard.settleAfterHours`, and
+  "Epics in the service" below), applied by the service on the system clock when it builds the
+  board. For a job with no `epic` that is the plain rule, unchanged: an `abandoned` job is
+  settled at once; a `merged` job is settled when its `endedAt` parses and is more than
+  `settleAfterHours` before now (a merged job with no readable `endedAt` is not settled); every
+  other stage is unsettled. The narrow `jobs` and the `jobs` of `GET /projects/<pid>/settled`
+  split the plain board's `jobs` between them, entry for entry, each in id order. In the summary,
+  `count` is the number of settled jobs (settled merged plus abandoned), `lastMergedAt` is the
+  newest `endedAt` among the settled merged jobs, or `null` when there is none (an abandoned job
+  never counts as a merge), and `epics` is the number of settled epics (`0` when there are none;
+  settled epics never count toward `count`). Errors are as for the plain board. *(Added within
+  v1, additively: a new query parameter; the plain response is unchanged. The summary's `epics`
+  and the narrow board's `epics` were added later within v1, additively.)*
+- `GET /projects/<pid>/settled` returns `{ jobs, epics }`: only that project's settled jobs (by
+  the rule above), sorted by id, in the same shape and under the same rules as the plain board's
+  `jobs` (last good snapshot, unknown fields passed through, archived-only jobs included and
+  re-projected as described under "Archived jobs"), and only its settled epics, in slug order,
+  in the same shape as the board's `epics`. The board's `epics` and these `epics` split the
+  project's epics between them, with no overlap or gap. A bad `config.json` is a 500 whose text
+  is `config.json: <reason>`, and an unknown `<pid>` is a 404; it sits behind the same guards as
   every endpoint (the `Host`/`Origin` 403, `GET` only, `cache-control: no-store`). *(Added within
-  v1, additively: a new endpoint.)*
+  v1, additively: a new endpoint. Its `epics` was added later within v1, additively.)*
 - `GET /projects/<pid>/jobs/<id>/docs` returns `{ files: [{ path, text }] }`, with the same
   reading order, brief handling, and paths (relative to `factory/`) as the dashboard's
   `GET /jobs/<id>/docs`, except that it reads only regular files: a symlinked brief, file, or
@@ -809,6 +1145,18 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
   `spec.md`, `build.md`, the `rework-<k>.md` notes and then the `conflict-<c>.md` notes (each in
   numeric order), `decision.md`, then each `round-<N>/` in numeric order. *(Added within v1,
   additively: the `conflict-<c>.md` notes; every other file's order is unchanged.)*
+- `GET /projects/<pid>/epics/<slug>/docs` returns `{ files: [{ path, text }] }`: the epic's plan,
+  then each member's brief in plan order, with paths relative to `factory/`. The slug is checked
+  against the epic slug rule (`isEpicSlug`) before any path is built; a slug that fails it
+  (an encoded `..` or `/` included) is a 404. The plan is `factory/epics/<slug>.md` when that is a
+  regular file locally, else the archived `epics/<slug>/plan.md` on `factory/archive`; either way
+  its `path` is `epics/<slug>.md`. A slug with no plan, locally or archived, is a 404. The members
+  are those `## Members` items that parse (see "The plan"; a plan that only partly parses serves
+  the members that parsed), and each brief is `briefs/<m>.md`, read locally; a missing brief is
+  skipped. Plans and briefs are read only as regular files that resolve inside the project's
+  `factory/`: a symlink is never followed (a symlinked plan counts as missing, a symlinked
+  brief is skipped), and nothing outside `factory/` is read. It sits behind the same guards as
+  every endpoint. *(Added within v1, additively: a new endpoint.)*
 - `GET /` returns the Andon UI's `index.html`, and `GET /<path>` returns that file of the UI
   build (`apps/andon-ui/dist`, built by `bun run andon:ui:build`), read-only. The URL path is decoded,
   and it must resolve to a regular file inside the build directory both before and after
@@ -824,7 +1172,7 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
   line; no `'unsafe-inline'` or `'unsafe-eval'`). Only successful UI route responses carry it:
   API responses, `/events`, and every 403, 405, and 404 are unchanged. *(Added within v1,
   additively: a new response header on the UI routes; no status, body, or other header changed.)*
-- An unknown `<pid>`, a malformed job id, or any other path not served by the UI routes is a 404.
+- An unknown `<pid>`, a malformed job id or epic slug, or any other path not served by the UI routes is a 404.
 - `GET /events` is a `text/event-stream` of these events, each `data` one JSON line:
   - `projects`: `{ projects: [{ id, name, root }] }`, with `name` resolved as in
     `GET /projects`. Sent once on connect, again whenever the registry's list of projects
@@ -832,35 +1180,45 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
     changes, or drops `name`, or turns invalid or valid), alongside that change's `board` or
     `error` event. A `config.json` edit that leaves every resolved name unchanged sends no
     `projects` event. *(Added within v1, additively: the re-send on a name change.)*
-  - `board`: `{ project: <pid>, jobs, config }`, sent when anything under a registered
-    project's `factory/jobs/` or its `factory/config.json` changes, or its `factory/archive`
-    branch moves. `jobs` is as in `GET /projects/<pid>/board`, archived jobs included. A burst of
-    changes is debounced to one `board` event per project (at most about 100 ms of delay).
+  - `board`: `{ project: <pid>, jobs, config, epics }`, sent when anything under a registered
+    project's `factory/jobs/` (epic runtime state included), its `factory/config.json`, or its
+    `factory/epics/` (a plan file created or edited) changes, or its `factory/archive` branch
+    moves. `jobs` and `epics` are as in `GET /projects/<pid>/board`, archived jobs and epics
+    included. A burst of changes is debounced to one `board` event per project (at most about
+    100 ms of delay). *(Added within v1, additively: `epics`, and the re-send on a plan edit.
+    There is no separate epic event.)*
   - `error`: `{ project: <pid>, reason: "config.json: <reason>" }`, sent instead of `board` when
     that project's `config.json` is bad.
 
   `GET /events?settled=summary` is the same stream for a *narrow client*: its `projects` and
   `error` events are as above, and each of its `board` events is the narrow form
-  `{ project: <pid>, jobs, config, settled }`, with `jobs` and `settled` as in
+  `{ project: <pid>, jobs, config, settled, epics }`, with `jobs`, `settled`, and `epics` as in
   `GET /projects/<pid>/board?settled=summary`. Only the exact value `summary` opts in; with no
   `settled` parameter, or any other value, the stream is the plain one above, unchanged. Plain and
   narrow clients may be connected at once: a change sends each client its own form of the same
-  board, and an `error` event goes to both. Because a merged job becomes settled with no file
-  change, while at least one narrow client is connected the service keeps one one-shot *settle
-  timer* per project, armed for the moment that project's next unsettled merged job crosses
-  `settleAfterHours` and re-armed after every build of the project's board (so a
-  `settleAfterHours` edit in `config.json` re-arms it through the normal rebuild). When it fires,
-  narrow clients get a fresh narrow `board` event; plain clients get none. It is a single
-  deadline, not periodic refetching (no polling): with no narrow client connected, no unsettled
-  merged job with a readable `endedAt`, or a bad `config.json`, no timer is armed, and the timer
+  board, and an `error` event goes to both. Because a merged job or a landed epic becomes settled
+  with no file change, while at least one narrow client is connected the service keeps one
+  one-shot *settle timer* per project, armed for that project's next crossing of
+  `settleAfterHours`: the earliest among its unsettled merged jobs with no `epic` and its
+  unsettled `landed` epics (an epic's jobs settle with it, so its crossing covers them; the jobs
+  of an epic that isn't `landed` or `abandoned` arm nothing). It is re-armed after every build of
+  the project's board (so a `settleAfterHours` edit in `config.json` re-arms it through the normal
+  rebuild). When it fires, narrow clients get a fresh narrow `board` event; plain clients get
+  none. It is a single deadline, not periodic refetching (no polling): with no narrow client
+  connected, no coming crossing (no unsettled merged job with no `epic`, and no unsettled landed
+  epic, with a readable `endedAt`), or a bad `config.json`, no timer is armed, and the timer
   is cleared when the last narrow client disconnects, the project leaves the registry, or the
   service stops. A delay longer than a timer allows (2^31−1 ms) is clamped; firing early just
   rebuilds and re-arms. *(Added within v1, additively: a new query parameter and the timer's
-  events, sent to narrow clients only; plain clients' events are unchanged.)*
+  events, sent to narrow clients only; plain clients' events are unchanged. Epics' crossings
+  were added later within v1, additively.)*
 
 The service finds changes with `fs.watch`, never by polling: one recursive watch on each project's
-`factory/jobs/`, one non-recursive watch on its `factory/` (for `config.json`), and one on the
-registry file's directory. For a project in a git repo, the archive ref is watched in the repo's
+`factory/jobs/` (which covers `factory/jobs/epics/`), one non-recursive watch on its `factory/`
+(for `config.json`), one non-recursive watch on its `factory/epics/` (plan files; a
+`factory/epics/` created after startup is watched once the `factory/` watch sees it appear), and
+one on the registry file's directory. *(Added within v1, additively: the `factory/epics/`
+watch.)* For a project in a git repo, the archive ref is watched in the repo's
 git common dir (found once, by `git rev-parse --git-common-dir`, so a linked worktree's project
 watches its main repo's refs): non-recursive watches on `refs/heads/factory/` (a loose archive ref),
 on `refs/heads/` (for `factory/` appearing, so a branch created after startup is seen), and on the
@@ -884,7 +1242,41 @@ tip: a `factory/jobs/` change runs no git, a ref change that leaves the tip wher
 the tip's `rev-parse`, and a moved tip (or startup) is read with one `git ls-tree` and one
 `git cat-file --batch` for all files. With no `factory/archive` branch, or a root that isn't a git
 repo, nothing changes and nothing is logged. *(Added within v1, additively: before, `board` and
-`docs` read `factory/jobs/` only.)*
+`docs` read `factory/jobs/` only.)* The same `ls-tree` and `cat-file --batch` pass, and the
+same tip-keyed cache, also read each archived epic's `epics/<slug>/events.jsonl` and
+`epics/<slug>/plan.md` (regular-file blobs only, directly under a top-level `epics/` and a dir
+named by an epic slug; see "Epics in the service"). *(Added within v1, additively.)*
+
+**Epics in the service.** The board's `epics` (endpoint and event, plain and narrow) and
+`/settled`'s `epics` are read from each project's epics, in slug order:
+
+- A *local epic* is a `factory/jobs/epics/<slug>/` directory named by an epic slug (any other
+  entry there is ignored, and is never served as a job). It is served as its `epic.json`, passed
+  through as stored, unknown fields kept. An `epic.json` that is missing or mid-write keeps the
+  epic's last good snapshot, as for jobs; one never read is not served. The service never
+  re-projects or writes a local `epic.json`.
+- An *archived epic* is one whose `epics/<slug>/` is on the `factory/archive` tip and that has no
+  local `factory/jobs/epics/<slug>/` (a local epic dir always wins). The archive holds no
+  `epic.json`, so it is re-projected exactly as the CLI projects `epic.json` (`projectEpic`), from
+  its archived `events.jsonl`, its archived `plan.md` (parsed with `parsePlan`; a missing or partly
+  parsed plan is a `planError`, as for a local epic), and the epic's jobs as the board holds them
+  (local wins, else archived). An archived epic that can't be projected (a torn log, or one that
+  doesn't start with this epic's `epic.started`) is left out and logged once per archive tip
+  (never on every board build), and never fails the board.
+- **Settling.** An epic's settled state comes from its snapshot's `state` and `endedAt` by the
+  epic-aware settle rule (`isEpicSettled`, from `packages/contract`; the service has no copy of
+  its own): `abandoned` at once, `landed` once its `endedAt` is more than `settleAfterHours` old.
+  A job's settled state comes from `isSettled` with its epic's facts, and nothing else: an
+  `abandoned` job is settled at once, whatever its epic's state; a `merged` job with no `epic`
+  settles as before; a `merged` job with an `epic` is never settled while its epic isn't `landed`
+  or `abandoned`, and once it is, it settles when its epic does. A job whose `epic` names an epic
+  the service doesn't find (locally or archived) has an unknown epic, so a merged one is not
+  settled. This applies to the narrow board, the settled summary, `/settled`, and the settle
+  timer.
+
+*(Added within v1, additively: epics in the service. A project with no epics serves exactly what
+it did before plus `epics: []`, and `epics: 0` in the narrow summary; jobs with no `epic` settle
+exactly as before.)*
 
 ## Versioning
 
@@ -897,7 +1289,7 @@ These rules record how the code behaves today; they change no behavior.
 - **Same-diff doc updates.** Every contract change updates this doc (`docs/contract/v1.md`) in the
   same diff, and is reviewed by the contract reviewer (`factory-contract`).
 - **The writer is strict.** The CLI rejects unknown event fields on input and unknown
-  `config.json` keys (and unknown keys inside `roles` entries, inside `merge`, and inside `archive`). Accepting a new `runner` value is
+  `config.json` keys (and unknown keys inside `roles` entries, inside `merge`, inside `archive`, and inside `epic`). Accepting a new `runner` value is
   an additive widening within v1.
 - **Readers are tolerant.** Readers of `events.jsonl` and `job.json` (the projection, the
   dashboard, and Andon) ignore fields they don't know. A reader that meets an unknown event `type`
@@ -946,5 +1338,27 @@ These rules record how the code behaves today; they change no behavior.
   `jobs/<id>/conflict-<c>.md`, on the builder's card, in the builder's and approver's reads, in
   the archive's layout, and in Andon's job docs. No existing transition changes; every existing
   `events.jsonl` stays valid v1 and rebuilds to the same `job.json` plus `conflicts: 0`.
+- **2026-10-29: epics.** Additive within v1 (the brief `epic-cli`'s contract call, approved by
+  Matt on 2026-10-29; design `docs/design/epics/design.md`): the plan file
+  `factory/epics/<slug>.md` and its format; the epic's runtime dir `jobs/epics/<slug>/`
+  (`events.jsonl`, `epic.json`), its branch `factory/epic/<slug>`, and its worktree
+  `factory/.worktrees/epic-<slug>/`; the epic events (`epic.started`, `epic.waiting`,
+  `epic.resumed`, `epic.landing`, `epic.landed`, `epic.abandoned`), their transitions, and the
+  `epic.json` projection; the optional `epic` and `kind` on `job.claimed` and the `epic` and
+  `kind` snapshot fields (`null` for a standalone job); `claim`'s `epic=` and `kind=`; the
+  `epic start|event|next|show|abandon` commands; the optional `config.json` key
+  `epic: { maxParallel }` (absent: 3); `doctor`'s plan checks; epics on the `factory/archive`
+  branch (`epics/<slug>/`) and in `prune`; the epic-aware settle rule beside the existing one;
+  and `factory/epics/` among the paths the installer never touches. No existing event, field, or
+  transition changes: every existing `events.jsonl` stays valid v1 and rebuilds to the same
+  `job.json` plus `epic: null` and `kind: null`, and a standalone claim behaves exactly as before.
+  (The `claim` usage line gains the two new fields.)
+- **2026-10-29: the Andon service serves epics.** Additive within v1 (the brief
+  `andon-epics-service`'s contract call, approved by Matt on 2026-10-29): `epics` on the plain and
+  narrow board and on every `/events` `board` event, `epics` in the narrow settled summary,
+  `epics` from `GET /projects/<pid>/settled`, the new `GET /projects/<pid>/epics/<slug>/docs`,
+  archived epics, a watch on `factory/epics/`, and the service's switch to the epic-aware settle
+  rule. New response fields and a new endpoint
+  only: no event type is added, and jobs with no `epic` settle exactly as before.
 - **`config.json` is strict, so upgrade first.** A config that uses a newer v1 key needs a CLI that
   knows that key. Upgrade the managed files before adding the key to the overlay.
