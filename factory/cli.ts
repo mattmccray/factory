@@ -1,11 +1,14 @@
 // factory 0.1.0 · managed file, do not edit: it is replaced on upgrade. Project settings go in the overlay: factory/config.json
 // packages/cli/src/core.ts
-import { readFile as readFile3, stat as stat2 } from "fs/promises";
-import { dirname as dirname3, join as join4, relative as relative2, resolve as resolve3 } from "path";
+import { readFile as readFile4, stat as stat2 } from "fs/promises";
+import { dirname as dirname3, join as join5, relative as relative2, resolve as resolve3 } from "path";
 
 // packages/contract/src/contract.ts
 var WORKING_STAGES = ["claimed", "spec", "build", "review", "approve"];
 var workingStage = (stage) => WORKING_STAGES.find((w) => w === stage) ?? null;
+function archiveEnabled(config) {
+  return config.archive?.enabled === true;
+}
 var CURRENT_TARGET = "current";
 var BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 function isTargetBranch(name) {
@@ -67,7 +70,7 @@ function noExtraKeys(obj, allowed, what) {
 function parseConfig(raw) {
   if (!isRecord(raw))
     throw new Error("config: must be a JSON object");
-  noExtraKeys(raw, ["schema", "name", "reviewers", "maxRound", "dashboard", "gate", "roles", "merge"], "config");
+  noExtraKeys(raw, ["schema", "name", "reviewers", "maxRound", "dashboard", "gate", "roles", "merge", "archive"], "config");
   if (raw.schema !== SCHEMA)
     throw new Error(`config: schema must be "${SCHEMA}"`);
   const { reviewers, maxRound, dashboard } = raw;
@@ -100,7 +103,17 @@ function parseConfig(raw) {
     config.roles = parseRoles(raw.roles, keys);
   if (raw.merge !== undefined)
     config.merge = parseMerge(raw.merge);
+  if (raw.archive !== undefined)
+    config.archive = parseArchive(raw.archive);
   return config;
+}
+function parseArchive(archive) {
+  if (!isRecord(archive))
+    throw new Error("config: archive must be an object { enabled }");
+  noExtraKeys(archive, ["enabled"], "config.archive");
+  if (typeof archive.enabled !== "boolean")
+    throw new Error("config: archive.enabled must be true or false");
+  return { enabled: archive.enabled };
 }
 function parseMerge(merge) {
   if (!isRecord(merge))
@@ -812,7 +825,7 @@ async function isLive(root, id) {
     return false;
   return raw.stage !== "merged" && raw.stage !== "abandoned";
 }
-async function claimJob(root, slug, input, now = () => new Date) {
+async function claimJob(root, slug, input, now = () => new Date, opts = {}) {
   checkClaim(slug, input);
   const jobs = join(root, "jobs");
   await mkdir(jobs, { recursive: true });
@@ -824,7 +837,8 @@ async function claimJob(root, slug, input, now = () => new Date) {
       if (d.slice(4) === slug && await isLive(root, d))
         throw new Error(`slug ${slug} is live as ${d}`);
     }
-    const highest = dirs.reduce((n, d) => Math.max(n, Number(d.slice(0, 3))), 0);
+    const archived = opts.archived === undefined ? [] : (await opts.archived()).filter((d) => JOB_ID2.test(d));
+    const highest = [...dirs, ...archived].reduce((n, d) => Math.max(n, Number(d.slice(0, 3))), 0);
     if (highest >= JOB_NUMBER_MAX)
       throw new Error(`job number ${JOB_NUMBER_MAX} is taken: no job numbers are left`);
     const id = `${String(highest + 1).padStart(3, "0")}-${slug}`;
@@ -928,10 +942,75 @@ function parseManifest(raw) {
   }
   return { schema: SCHEMA2, version: raw.version, files };
 }
-// packages/cli/src/doctor.ts
-import { createHash } from "crypto";
-import { readFile as readFile2, readdir as readdir2 } from "fs/promises";
-import { dirname as dirname2, join as join3, resolve as resolve2 } from "path";
+// packages/cli/src/archive.ts
+import { lstat, mkdtemp, readFile as readFile2, readdir as readdir2, rm as rm2 } from "fs/promises";
+import { tmpdir } from "os";
+import { join as join3 } from "path";
+
+// packages/cli/src/git.ts
+var REDIRECTS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR"];
+function gitEnv(extra = {}) {
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined && !REDIRECTS.includes(k))
+      env[k] = v;
+  }
+  return { ...env, ...extra };
+}
+async function runGit(repo, args, opts = {}) {
+  const what = opts.what ?? "git";
+  let proc;
+  try {
+    proc = Bun.spawn(["git", "-C", repo, ...args], {
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: opts.input === undefined ? "ignore" : new Blob([opts.input]),
+      env: gitEnv(opts.env)
+    });
+  } catch (e) {
+    throw new Error(`${what}: cannot run git: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const [raw, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  return { code, out: raw.trim(), raw, err: err.trim().split(`
+`)[0] ?? "" };
+}
+var git = (repo, args, what = "merge.target") => runGit(repo, args, { what });
+function allowed(configured, branch) {
+  if (!isTargetBranch(branch)) {
+    throw new Error(`merge.target '${configured}': branch ${JSON.stringify(branch)} is not an allowed target name (want ${BRANCH_PATTERN.source}, no '..', no '.lock' suffix)`);
+  }
+  return branch;
+}
+async function resolveTarget(repo, configured) {
+  if (configured === CURRENT_TARGET) {
+    const r = await git(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    if (r.code === 0 && r.out !== "")
+      return allowed(configured, r.out);
+    if (r.code === 1)
+      throw new Error(`merge.target '${CURRENT_TARGET}': the checkout at ${repo} has a detached HEAD (no branch to target)`);
+    throw new Error(`merge.target '${CURRENT_TARGET}': git failed in ${repo}: ${r.err || `exit ${r.code}`}`);
+  }
+  allowed(configured, configured);
+  const r = await git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${configured}`]);
+  if (r.code === 0)
+    return configured;
+  if (r.code === 1)
+    throw new Error(`merge.target '${configured}': no branch refs/heads/${configured} in ${repo}`);
+  throw new Error(`merge.target '${configured}': git failed in ${repo}: ${r.err || `exit ${r.code}`}`);
+}
+async function removeWorktree(repo, path) {
+  const r = await git(repo, ["worktree", "remove", "--force", path], "abandon");
+  return r.code === 0 ? null : r.err || `exit ${r.code}`;
+}
+async function deleteBranch(repo, branch) {
+  const has = await git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], "abandon");
+  if (has.code === 1)
+    return null;
+  if (has.code !== 0)
+    return has.err || `exit ${has.code}`;
+  const r = await git(repo, ["branch", "-D", branch], "abandon");
+  return r.code === 0 ? null : r.err || `exit ${r.code}`;
+}
 
 // packages/cli/src/paths.ts
 import { realpath } from "fs/promises";
@@ -973,14 +1052,251 @@ async function locate(repo, rel) {
   return at;
 }
 
+// packages/cli/src/archive.ts
+var ARCHIVE_BRANCH = "factory/jobs";
+var ARCHIVE_REF = `refs/heads/${ARCHIVE_BRANCH}`;
+var WHAT = "archive";
+var MAX_ATTEMPTS = 50;
+var HEX_SHA = /^[0-9a-f]{4,64}$/;
+var sleep2 = (ms) => new Promise((r) => setTimeout(r, ms));
+async function git2(repo, args, opts = {}) {
+  const r = await runGit(repo, args, { what: WHAT, ...opts });
+  if (r.code !== 0)
+    throw new Error(`${WHAT}: git ${args[0] ?? ""} failed: ${r.err || `exit ${r.code}`}`);
+  return r;
+}
+async function archiveTip(repo) {
+  const r = await runGit(repo, ["rev-parse", "--verify", "--quiet", `${ARCHIVE_REF}^{commit}`], { what: WHAT });
+  if (r.code === 0 && r.out !== "")
+    return r.out;
+  if (r.code === 1)
+    return null;
+  throw new Error(`${WHAT}: git rev-parse failed in ${repo}: ${r.err || `exit ${r.code}`}`);
+}
+async function lsTree(repo, treeish) {
+  const r = await git2(repo, ["ls-tree", "-z", treeish]);
+  const out = [];
+  for (const line of r.raw.split("\x00")) {
+    if (line === "")
+      continue;
+    const tab = line.indexOf("\t");
+    const [mode, type, sha] = line.slice(0, tab).split(" ");
+    if (tab < 0 || mode === undefined || type === undefined || sha === undefined)
+      throw new Error(`${WHAT}: unexpected git ls-tree line`);
+    out.push({ mode, type, sha, name: line.slice(tab + 1) });
+  }
+  return out;
+}
+var mkTreeLine = (e) => `${e.mode} ${e.type} ${e.sha}	${e.name}`;
+async function mkTree(repo, entries, env) {
+  const input = entries.map((e) => `${mkTreeLine(e)}\x00`).join("");
+  return (await git2(repo, ["mktree", "-z"], { input, env })).out;
+}
+async function archivedIds(repo) {
+  const tip = await archiveTip(repo);
+  if (tip === null)
+    return [];
+  return (await lsTree(repo, tip)).filter((e) => e.type === "tree" && isJobId(e.name)).map((e) => e.name).sort();
+}
+async function isDir(path) {
+  try {
+    return (await lstat(path)).isDirectory();
+  } catch (e) {
+    if (isNotFound2(e))
+      return false;
+    throw e;
+  }
+}
+async function exists2(path) {
+  try {
+    await lstat(path);
+    return true;
+  } catch (e) {
+    if (isNotFound2(e))
+      return false;
+    throw e;
+  }
+}
+async function legacyStage(dir) {
+  let raw;
+  try {
+    raw = JSON.parse(await readFile2(join3(dir, "job.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof raw !== "object" || raw === null || !("stage" in raw) || typeof raw.stage !== "string")
+    return null;
+  return raw.stage;
+}
+async function readLocalJob(root, id) {
+  if (!isJobId(id))
+    throw new Error(`job id '${id}' must match ^\\d{3}-[a-z0-9-]+$`);
+  const dir = join3(root, "jobs", id);
+  if (!await isDir(dir)) {
+    if (await exists2(dir))
+      throw new Error(`${id}: not a directory (a symlinked job dir is never followed); not archived`);
+    throw new Error(`${id}: no such job`);
+  }
+  const log = await readLog(root, id);
+  if (log.length === 0 && await exists2(join3(dir, "events.jsonl")))
+    throw new Error(`${id}: events.jsonl is empty; not archived`);
+  if (log.length === 0) {
+    const stage = await legacyStage(dir);
+    if (stage === null)
+      throw new Error(`${id}: no events.jsonl and no readable job.json; not archived`);
+    return { id, dir, legacy: true, stage, claimed: null, mergedSha: null };
+  }
+  const [first] = log;
+  if (first === undefined || first.type !== "job.claimed")
+    throw new Error(`${id}: events.jsonl does not start with job.claimed; not archived`);
+  const claimed = { id: first.id, ts: first.ts };
+  let mergedSha = null;
+  for (const e of log)
+    if (e.type === "job.merged")
+      mergedSha = e.sha;
+  return { id, dir, legacy: false, stage: project(log).stage, claimed, mergedSha };
+}
+var isTerminal = (job) => job.stage === "merged" || job.stage === "abandoned";
+function skipTop(name, isDirectory, legacy) {
+  if (isDirectory)
+    return name.endsWith(".lock");
+  return name === "job.json" && !legacy || name === "job.json.tmp";
+}
+async function buildTree(repo, dir, top, legacy, env) {
+  const entries = await readdir2(dir, { withFileTypes: true });
+  const files = [];
+  const tree = [];
+  for (const e of entries) {
+    if (top && skipTop(e.name, e.isDirectory(), legacy))
+      continue;
+    if (e.isFile())
+      files.push(e.name);
+    else if (e.isDirectory()) {
+      const sha = await buildTree(repo, join3(dir, e.name), false, legacy, env);
+      if (sha !== null)
+        tree.push({ mode: "040000", type: "tree", sha, name: e.name });
+    }
+  }
+  if (files.length > 0) {
+    const shas = (await git2(repo, ["hash-object", "-w", "--no-filters", "--", ...files.map((f) => join3(dir, f))], { env })).out.split(`
+`);
+    if (shas.length !== files.length)
+      throw new Error(`${WHAT}: git hash-object returned ${shas.length} ids for ${files.length} files`);
+    files.forEach((name, i) => tree.push({ mode: "100644", type: "blob", sha: shas[i] ?? "", name }));
+  }
+  if (tree.length === 0)
+    return null;
+  return mkTree(repo, tree, env);
+}
+async function jobTree(repo, job, env) {
+  const sha = await buildTree(repo, job.dir, true, job.legacy, env);
+  if (sha === null)
+    throw new Error(`${job.id}: nothing to archive (no files)`);
+  return sha;
+}
+function alternate(path) {
+  if (!path.includes(":") && !path.startsWith('"'))
+    return path;
+  return `"${path.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
+}
+async function trialTree(repo, job) {
+  const objects = (await git2(repo, ["rev-parse", "--path-format=absolute", "--git-path", "objects"])).out;
+  const scratch = await mkdtemp(join3(tmpdir(), "factory-archive-"));
+  try {
+    return await jobTree(repo, job, { GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternate(objects) });
+  } finally {
+    await rm2(scratch, { recursive: true, force: true });
+  }
+}
+async function archivedClaim(repo, tree) {
+  const log = (await lsTree(repo, tree)).find((e) => e.name === "events.jsonl" && e.type === "blob");
+  if (log === undefined)
+    return null;
+  const text = (await git2(repo, ["cat-file", "blob", log.sha])).raw;
+  const first = text.split(`
+`)[0] ?? "";
+  let raw;
+  try {
+    raw = JSON.parse(first);
+  } catch {
+    return null;
+  }
+  if (typeof raw !== "object" || raw === null || !("type" in raw) || raw.type !== "job.claimed")
+    return null;
+  if (!("id" in raw) || typeof raw.id !== "string" || !("ts" in raw) || typeof raw.ts !== "string")
+    return null;
+  return { id: raw.id, ts: raw.ts };
+}
+var describeClaim = (c) => c === null ? "no job.claimed" : `job.claimed id=${c.id} ts=${c.ts}`;
+function commitMessage(job) {
+  const trailers = [`Factory-Job: ${job.id}`];
+  if (job.stage === "merged" && job.mergedSha !== null)
+    trailers.push(`Merged-As: ${job.mergedSha}`);
+  return ["-m", `chore(factory): archive job ${job.id}`, "-m", trailers.join(`
+`)];
+}
+async function archiveJob(repo, job, force) {
+  if (!isTerminal(job))
+    throw new Error(`${job.id} is ${job.stage ?? "unreadable"}: only merged or abandoned jobs are archived`);
+  if (job.mergedSha !== null && !HEX_SHA.test(job.mergedSha))
+    throw new Error(`${job.id}: job.merged sha is not a hex commit id (${HEX_SHA.source}); not archived`);
+  if (!job.legacy && job.claimed === null)
+    throw new Error(`${job.id}: events.jsonl does not start with job.claimed; not archived`);
+  let lastErr = "";
+  for (let attempt = 0;attempt < MAX_ATTEMPTS; attempt++) {
+    const tip = await archiveTip(repo);
+    const top = tip === null ? [] : await lsTree(repo, tip);
+    const existing = top.find((e) => e.name === job.id);
+    if (existing !== undefined && existing.type !== "tree")
+      throw new Error(`${job.id}: ${ARCHIVE_BRANCH} has ${job.id} as a ${existing.type}, not a directory; nothing written`);
+    if (existing !== undefined && !job.legacy) {
+      const there = await archivedClaim(repo, existing.sha);
+      if (there === null || there.id !== job.claimed?.id || there.ts !== job.claimed.ts) {
+        throw new Error(`${job.id}: ${ARCHIVE_BRANCH} already holds a different job at ${job.id}/ (archived: ${describeClaim(there)}; local: ${describeClaim(job.claimed)}); nothing written`);
+      }
+    }
+    if (existing !== undefined) {
+      const trial = await trialTree(repo, job);
+      if (trial === existing.sha)
+        return { kind: "unchanged" };
+      if (job.legacy) {
+        throw new Error(`${job.id}: ${ARCHIVE_BRANCH} already holds a different job at ${job.id}/ (archived: tree ${existing.sha.slice(0, 7)}; local legacy job: tree ${trial.slice(0, 7)}); nothing written`);
+      }
+      if (!force)
+        throw new Error(`${job.id}: changed since it was archived on ${ARCHIVE_BRANCH}; run archive ${job.id} --force to add a new commit`);
+    }
+    const tree = await jobTree(repo, job);
+    const root = await mkTree(repo, [...top.filter((e) => e.name !== job.id), { mode: "040000", type: "tree", sha: tree, name: job.id }]);
+    const commit = (await git2(repo, ["commit-tree", root, ...tip === null ? [] : ["-p", tip], ...commitMessage(job)])).out;
+    const r = await runGit(repo, ["update-ref", "-m", `archive job ${job.id}`, ARCHIVE_REF, commit, tip ?? ""], { what: WHAT });
+    if (r.code === 0)
+      return { kind: "archived", commit };
+    lastErr = r.err || `exit ${r.code}`;
+    await sleep2(5 + Math.floor(Math.random() * 25));
+  }
+  throw new Error(`${job.id}: ${ARCHIVE_BRANCH} kept moving; gave up after ${MAX_ATTEMPTS} tries (${lastErr})`);
+}
+async function localJobIds(root) {
+  try {
+    return (await readdir2(join3(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && isJobId(d.name)).map((d) => d.name).sort();
+  } catch (e) {
+    if (isNotFound2(e))
+      return [];
+    throw e;
+  }
+}
+
 // packages/cli/src/doctor.ts
+import { createHash } from "crypto";
+import { readFile as readFile3, readdir as readdir3 } from "fs/promises";
+import { dirname as dirname2, join as join4, resolve as resolve2 } from "path";
 var firstLine = (e) => (e instanceof Error ? e.message : String(e)).split(`
 `)[0] ?? "";
 var ok = (what) => ({ ok: true, line: `ok    ${what}` });
 var bad = (what, why) => ({ ok: false, line: `FAIL  ${what}: ${why}` });
 async function readText(path) {
   try {
-    return await readFile2(path, "utf8");
+    return await readFile3(path, "utf8");
   } catch (e) {
     if (isNotFound2(e))
       return null;
@@ -990,7 +1306,7 @@ async function readText(path) {
 async function checkConfig(root) {
   let text;
   try {
-    text = await readText(join3(root, "config.json"));
+    text = await readText(join4(root, "config.json"));
   } catch (e) {
     return bad("config.json", firstLine(e));
   }
@@ -1012,7 +1328,7 @@ async function checkConfig(root) {
 async function safeRead(repo, rel) {
   const at = await locate(repo, rel);
   try {
-    return await readFile2(at);
+    return await readFile3(at);
   } catch (e) {
     if (isNotFound2(e))
       return null;
@@ -1022,7 +1338,7 @@ async function safeRead(repo, rel) {
 async function checkManaged(root) {
   let text;
   try {
-    text = await readText(join3(root, "managed.json"));
+    text = await readText(join4(root, "managed.json"));
   } catch (e) {
     return [bad("managed.json", firstLine(e))];
   }
@@ -1054,7 +1370,7 @@ async function checkManaged(root) {
 async function checkJobNumbers(root) {
   let names;
   try {
-    names = (await readdir2(join3(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && isJobId(d.name)).map((d) => d.name);
+    names = (await readdir3(join4(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && isJobId(d.name)).map((d) => d.name);
   } catch (e) {
     if (isNotFound2(e))
       return [];
@@ -1071,63 +1387,6 @@ async function doctor(root) {
   return [await checkConfig(root), ...await checkManaged(root), ...await checkJobNumbers(root)];
 }
 
-// packages/cli/src/git.ts
-function gitEnv() {
-  const env = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined && k !== "GIT_DIR" && k !== "GIT_WORK_TREE")
-      env[k] = v;
-  }
-  return env;
-}
-async function git(repo, args, what = "merge.target") {
-  let proc;
-  try {
-    proc = Bun.spawn(["git", "-C", repo, ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore", env: gitEnv() });
-  } catch (e) {
-    throw new Error(`${what}: cannot run git: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-  return { code, out: out.trim(), err: err.trim().split(`
-`)[0] ?? "" };
-}
-function allowed(configured, branch) {
-  if (!isTargetBranch(branch)) {
-    throw new Error(`merge.target '${configured}': branch ${JSON.stringify(branch)} is not an allowed target name (want ${BRANCH_PATTERN.source}, no '..', no '.lock' suffix)`);
-  }
-  return branch;
-}
-async function resolveTarget(repo, configured) {
-  if (configured === CURRENT_TARGET) {
-    const r = await git(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
-    if (r.code === 0 && r.out !== "")
-      return allowed(configured, r.out);
-    if (r.code === 1)
-      throw new Error(`merge.target '${CURRENT_TARGET}': the checkout at ${repo} has a detached HEAD (no branch to target)`);
-    throw new Error(`merge.target '${CURRENT_TARGET}': git failed in ${repo}: ${r.err || `exit ${r.code}`}`);
-  }
-  allowed(configured, configured);
-  const r = await git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${configured}`]);
-  if (r.code === 0)
-    return configured;
-  if (r.code === 1)
-    throw new Error(`merge.target '${configured}': no branch refs/heads/${configured} in ${repo}`);
-  throw new Error(`merge.target '${configured}': git failed in ${repo}: ${r.err || `exit ${r.code}`}`);
-}
-async function removeWorktree(repo, path) {
-  const r = await git(repo, ["worktree", "remove", "--force", path], "abandon");
-  return r.code === 0 ? null : r.err || `exit ${r.code}`;
-}
-async function deleteBranch(repo, branch) {
-  const has = await git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], "abandon");
-  if (has.code === 1)
-    return null;
-  if (has.code !== 0)
-    return has.err || `exit ${has.code}`;
-  const r = await git(repo, ["branch", "-D", branch], "abandon");
-  return r.code === 0 ? null : r.err || `exit ${r.code}`;
-}
-
 // packages/cli/src/core.ts
 var USAGE = {
   claim: "usage: claim <slug> [brief=\u2026] [issue=\u2026] [maxRound=\u2026] [session=t3code:<environmentId>/<threadId>]",
@@ -1135,6 +1394,7 @@ var USAGE = {
   rebuild: "usage: rebuild <id> | --all",
   show: "usage: show <id>",
   abandon: 'usage: abandon <id> "<reason>" [--force] [--delete-branch]',
+  archive: "usage: archive <id> | --all [--force]",
   all: "usage: claim <slug> [k=v \u2026] | event <id> <type> [k=v \u2026] | rebuild <id>|--all | show <id>"
 };
 async function dispatchCore(argv, io, usage = USAGE.all) {
@@ -1145,7 +1405,7 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       io.stdout(f.line);
     return findings.every((f) => f.ok) ? 0 : 1;
   }
-  const config = parseConfig(JSON.parse(await readFile3(join4(io.root, "config.json"), "utf8")));
+  const config = parseConfig(JSON.parse(await readFile4(join5(io.root, "config.json"), "utf8")));
   switch (cmd) {
     case "claim": {
       const [slug, ...kv] = rest;
@@ -1154,8 +1414,9 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       checkSlug(slug);
       const fields = parseFields(kv);
       checkClaim(slug, { fields, config });
-      const target = await resolveTarget(dirname3(resolve3(io.root)), mergeTarget(config));
-      io.stdout((await claimJob(io.root, slug, { fields, config, target })).id);
+      const repo = dirname3(resolve3(io.root));
+      const target = await resolveTarget(repo, mergeTarget(config));
+      io.stdout((await claimJob(io.root, slug, { fields, config, target }, undefined, { archived: () => archivedIds(repo) })).id);
       return 0;
     }
     case "event": {
@@ -1189,6 +1450,12 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
     }
     case "abandon":
       return abandon(rest, io);
+    case "archive": {
+      const args = parseArchive2(rest);
+      if (!archiveEnabled(config))
+        throw new Error('archiving is disabled: config.json has no "archive": { "enabled": true }; nothing written');
+      return args.all ? archiveAll(io, args.force) : archiveOne(io, args.target, args.force);
+    }
     default:
       throw new Error(usage);
   }
@@ -1202,7 +1469,7 @@ function parseAbandon(rest) {
     throw new Error(USAGE.abandon);
   return { id, reason, force: flags.includes("--force"), deleteBranch: flags.includes("--delete-branch") };
 }
-var isDir = async (path) => {
+var isDir2 = async (path) => {
   try {
     return (await stat2(path)).isDirectory();
   } catch (e) {
@@ -1219,9 +1486,9 @@ async function abandon(rest, io) {
   const snap = await appendEvent(io.root, args.id, input, undefined, { force: args.force });
   const repo = dirname3(resolve3(io.root));
   const branch = `factory/${args.id}`;
-  const worktree = relative2(repo, join4(resolve3(io.root), ".worktrees", args.id));
+  const worktree = relative2(repo, join5(resolve3(io.root), ".worktrees", args.id));
   const left = [];
-  if (await isDir(join4(repo, worktree))) {
+  if (await isDir2(join5(repo, worktree))) {
     const why = await removeWorktree(repo, worktree);
     if (why !== null)
       left.push(`worktree ${worktree} (${why})`);
@@ -1241,6 +1508,51 @@ async function abandon(rest, io) {
     throw new Error(`${args.id} is abandoned, but cleanup left behind: ${left.join("; ")}`);
   io.stdout(snap.stage);
   return 0;
+}
+function parseArchive2(rest) {
+  const force = rest.filter((a) => a === "--force").length;
+  const others = rest.filter((a) => a !== "--force");
+  const [target] = others;
+  if (force > 1 || others.length !== 1 || target === undefined || target === "")
+    throw new Error(USAGE.archive);
+  if (target.startsWith("-") && target !== "--all")
+    throw new Error(USAGE.archive);
+  return { all: target === "--all", target, force: force === 1 };
+}
+async function archiveOne(io, id, force) {
+  const job = await readLocalJob(io.root, id);
+  const outcome = await archiveJob(dirname3(resolve3(io.root)), job, force);
+  io.stdout(outcome.kind === "archived" ? `archived ${id} ${outcome.commit.slice(0, 7)}` : `${id}: already archived (unchanged)`);
+  return 0;
+}
+async function archiveAll(io, force) {
+  const repo = dirname3(resolve3(io.root));
+  let archived = 0;
+  let unchanged = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const id of await localJobIds(io.root)) {
+    try {
+      const job = await readLocalJob(io.root, id);
+      if (!isTerminal(job)) {
+        skipped++;
+        continue;
+      }
+      const outcome = await archiveJob(repo, job, force);
+      if (outcome.kind === "unchanged")
+        unchanged++;
+      else {
+        archived++;
+        io.stdout(`archived ${id} ${outcome.commit.slice(0, 7)}`);
+      }
+    } catch (e) {
+      failed++;
+      io.stderr((e instanceof Error ? e.message : String(e)).split(`
+`)[0] ?? "");
+    }
+  }
+  io.stdout(`archive --all: archived ${archived}, unchanged ${unchanged}, skipped ${skipped} (not merged or abandoned), failed ${failed}`);
+  return failed === 0 ? 0 : 1;
 }
 async function guarded(io, body) {
   try {

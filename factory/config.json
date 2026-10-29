@@ -3,6 +3,7 @@
   "schema": "factory/v1",
   "reviewers": ["security", "code", "contract", "ui"],
   "maxRound": 2,
+  "archive": { "enabled": true },
   "dashboard": { "settleAfterHours": 24 },
   "gate": ["bun run test", "bun run check"],
   "roles": {
