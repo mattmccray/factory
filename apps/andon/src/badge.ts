@@ -1,13 +1,18 @@
-// The tray badge: how many jobs need a human across every registered project, and the tray spec
-// built from that count. Runtime-neutral.
+// The tray badge: how many jobs need a human across every registered project, plus each epic
+// waiting on you (`waitingOn: "you"`, as the UI's sidebar counts it), and the tray spec built from
+// that count. Runtime-neutral.
+import { epicsOf, waitsOnYou } from './state';
 import type { AppState } from './state';
 
 export const NEEDS_HUMAN = 'needs-human';
 
-/** Jobs whose `stage` is `needs-human`, across the listed projects only. */
+/** Jobs whose `stage` is `needs-human`, plus epics waiting on you, across the listed projects only. */
 export function needsHumanCount(s: AppState): number {
   let n = 0;
-  for (const p of s.projects) for (const j of s.boards[p.id]?.jobs ?? []) if (j.stage === NEEDS_HUMAN) n++;
+  for (const p of s.projects) {
+    for (const j of s.boards[p.id]?.jobs ?? []) if (j.stage === NEEDS_HUMAN) n++;
+    n += epicsOf(s.boards[p.id]).filter(waitsOnYou).length;
+  }
   return n;
 }
 

@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
-import { diffBoard, noBaselines, noticeText, retainProjects } from './notify';
+import { diffBoard, diffEpics, epicNoticeText, noBaselines, noEpicBaselines, noticeText, retainProjects } from './notify';
 import type { Baselines, Notice } from './notify';
-import type { AppJob } from './state';
+import type { AppEpic, AppJob } from './state';
 
 const P = 'aaaaaaaaaaaa';
 const Q = 'bbbbbbbbbbbb';
@@ -75,4 +75,49 @@ test('notice text carries the job title (or id) and its note', () => {
     body: 'stuck',
   });
   expect(noticeText({ kind: 'merged', project: P, job: '001-a', title: '', note: 'merged abc' }, '')).toEqual({ title: '001-a merged', subtitle: '001-a', body: 'merged abc' });
+});
+
+// ---- epics (056 AC8) ----
+
+const epic = (slug: string, state: string, waitingOn: string | null = null, note = '', members = 3): AppEpic => ({ slug, name: slug === 'auth' ? 'Auth rewrite' : slug, state, waitingOn, note, members });
+
+test('056 AC8: a job with an epic reaching merged does not notify; its escalation to needs-human still does', () => {
+  const inEpic = (id: string, stage: string, note = ''): AppJob => ({ ...job(id, stage, note), epic: 'auth' });
+  const base = run(noBaselines(), P, [inEpic('001-a', 'approve'), inEpic('002-b', 'review'), job('003-c', 'approve')]).base;
+  const r = run(base, P, [inEpic('001-a', 'merged', 'merged abc'), inEpic('002-b', 'needs-human', 'round limit'), job('003-c', 'merged', 'merged def')]);
+  expect(r.notices.map((n) => [n.kind, n.job])).toEqual([
+    ['needs-human', '002-b'],
+    ['merged', '003-c'],
+  ]);
+  // first seen after the baseline, already merged: still nothing
+  expect(run(base, P, [inEpic('004-d', 'merged')]).notices).toEqual([]);
+});
+
+test('056 AC8: an epic entering landed notifies "Epic landed" with its name and member count', () => {
+  const base = diffEpics(noEpicBaselines(), P, [epic('auth', 'landing')]).base;
+  const r = diffEpics(base, P, [epic('auth', 'landed', null, 'landed abc1234', 4)]);
+  expect(r.notices).toEqual([{ kind: 'epic-landed', project: P, epic: 'auth', name: 'Auth rewrite', members: 4, note: 'landed abc1234' }]);
+  expect(epicNoticeText(r.notices[0] ?? { kind: 'epic-landed', project: P, epic: '', name: '', members: 0, note: '' }, 'factory')).toEqual({ title: 'Epic landed', subtitle: 'factory · Auth rewrite', body: 'Auth rewrite: 4 members' });
+  expect(diffEpics(r.base, P, [epic('auth', 'landed')]).notices).toEqual([]); // once
+});
+
+test('056 AC8: an epic newly waiting on you notifies "Epic waiting on you" with its note as the reason', () => {
+  let base = diffEpics(noEpicBaselines(), P, [epic('auth', 'running'), epic('billing', 'waiting', 'members')]).base;
+  const r = diffEpics(base, P, [epic('auth', 'waiting', 'you', 'checkout is on dev'), epic('billing', 'waiting', 'members')]);
+  expect(r.notices.map((n) => [n.kind, n.epic, n.note])).toEqual([['epic-waiting', 'auth', 'checkout is on dev']]);
+  expect(epicNoticeText(r.notices[0] ?? { kind: 'epic-waiting', project: P, epic: '', name: '', members: 0, note: '' }, '')).toEqual({ title: 'Epic waiting on you', subtitle: 'Auth rewrite', body: 'checkout is on dev' });
+  base = r.base;
+  expect(diffEpics(base, P, [epic('auth', 'waiting', 'you', 'checkout is on dev')]).notices).toEqual([]); // still waiting: once
+  // resumed, then waiting again: notifies again
+  const resumed = diffEpics(base, P, [epic('auth', 'running')]).base;
+  expect(diffEpics(resumed, P, [epic('auth', 'waiting', 'you', 'gate red')]).notices).toHaveLength(1);
+  // first seen after the baseline, already waiting on you
+  expect(diffEpics(base, P, [epic('new', 'waiting', 'you', 'why')]).notices.map((n) => n.epic)).toEqual(['new']);
+});
+
+test("056 AC8: a project's first board notifies nothing, epics included; baselines are per project", () => {
+  expect(diffEpics(noEpicBaselines(), P, [epic('auth', 'landed'), epic('billing', 'waiting', 'you', 'x')]).notices).toEqual([]);
+  let base = diffEpics(noEpicBaselines(), P, [epic('auth', 'running')]).base;
+  base = retainProjects(base, [Q]);
+  expect(diffEpics(base, P, [epic('auth', 'landed')]).notices).toEqual([]); // dropped and back: a baseline again
 });

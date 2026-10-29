@@ -106,3 +106,40 @@ test('AC3: the Dock look, the tray, and the badge are each set only when their v
   for (const t of trays) expect(t.spec).toEqual(traySpec(Number(t.spec.title)));
   app.stop();
 });
+
+test('056 AC8: the Mac app counts an epic waiting on you, notifies "Epic waiting on you" and "Epic landed", and stays quiet on member merges', async () => {
+  const controls: Array<ReadableStreamDefaultController<Uint8Array>> = [];
+  const auth = (state: string, waitingOn: string | null, note = '') => ({ slug: 'auth', state, waitingOn, note, members: [{ slug: 'a' }, { slug: 'b' }] });
+  const http: Http = async (path) => {
+    if (path === '/events') {
+      const body = new ReadableStream<Uint8Array>({ start: (c) => void controls.push(c) });
+      return { ok: true, status: 200, body, text: async () => '' };
+    }
+    // the first board already has an epic waiting on you: a baseline, so no notice
+    return { ok: true, status: 200, body: null, text: async () => JSON.stringify({ jobs: [{ id: '001-a', title: 'Alpha', stage: 'build', note: '', epic: 'auth' }], epics: [auth('waiting', 'you', 'checkout is on dev')] }) };
+  };
+  const send = (event: string, data: unknown) => controls.at(-1)?.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+  const trays: TraySpec[] = [];
+  const notes: NoticeText[] = [];
+  const app = startApp({ http, tray: (t) => trays.push(t), dock: () => undefined, badge: () => undefined, notify: (n) => notes.push(n) }, { retryMs: 5 });
+  await wait();
+  send('projects', { projects: [P] });
+  await wait();
+  expect(notes).toEqual([]);
+  expect(trays.at(-1)).toMatchObject({ title: '1', tooltip: 'Andon: 1 needs a human' });
+
+  send('board', { project: P.id, jobs: [{ id: '001-a', title: 'Alpha', stage: 'merged', note: 'merged abc', epic: 'auth' }], epics: [auth('running', null)] });
+  await wait();
+  expect(notes).toEqual([]); // merged into the epic branch: no notice
+  expect(trays.at(-1)).toMatchObject({ title: '' });
+
+  send('board', { project: P.id, jobs: [{ id: '001-a', title: 'Alpha', stage: 'merged', note: 'merged abc', epic: 'auth' }], epics: [auth('waiting', 'you', 'gate red on main')] });
+  await wait();
+  expect(notes).toEqual([{ title: 'Epic waiting on you', subtitle: 'factory · auth', body: 'gate red on main' }]);
+
+  send('board', { project: P.id, jobs: [{ id: '001-a', title: 'Alpha', stage: 'merged', note: 'merged abc', epic: 'auth' }], epics: [auth('landed', null, 'landed f00d123')] });
+  await wait();
+  expect(notes.at(-1)).toEqual({ title: 'Epic landed', subtitle: 'factory · auth', body: 'auth: 2 members' });
+  expect(notes).toHaveLength(2);
+  app.stop();
+});

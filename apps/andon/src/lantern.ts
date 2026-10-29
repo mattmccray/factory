@@ -1,7 +1,8 @@
 // The lantern: what the Dock icon, the tray icon, and the Dock badge show for the board's state,
-// across the listed projects only (the same rule as `needsHumanCount`). A stage the Mac app doesn't
-// know counts as neither running nor needs-human. Runtime-neutral.
+// across the listed projects only (the same rule as `needsHumanCount`, epics waiting on you
+// included). A stage the Mac app doesn't know counts as neither running nor needs-human. Runtime-neutral.
 import { NEEDS_HUMAN } from './badge';
+import { epicsOf, waitsOnYou } from './state';
 import type { AppJob, AppState } from './state';
 
 /** The Dock icon: unlit (idle), blue flame (running), orange flame (escalated). */
@@ -18,9 +19,9 @@ function anyJob(s: AppState, match: (j: AppJob) => boolean): boolean {
 /** True when any listed job is in a running stage, whatever the needs-human count is. */
 export const trayRunning = (s: AppState): boolean => anyJob(s, (j) => RUNNING_STAGES.includes(j.stage));
 
-/** `escalated` when any job needs a human (it wins), `running` when any job is running, else `idle`. */
+/** `escalated` when any job needs a human or any epic waits on you (it wins), `running` when any job is running, else `idle`. */
 export function dockLook(s: AppState): DockLook {
-  if (anyJob(s, (j) => j.stage === NEEDS_HUMAN)) return 'escalated';
+  if (anyJob(s, (j) => j.stage === NEEDS_HUMAN) || s.projects.some((p) => epicsOf(s.boards[p.id]).some(waitsOnYou))) return 'escalated';
   return trayRunning(s) ? 'running' : 'idle';
 }
 
