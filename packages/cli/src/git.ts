@@ -1,33 +1,54 @@
 // The CLI's git calls (docs/contract/v1.md "`job.claimed`" and "CLI"): resolving `merge.target`
 // to the branch a job is based on and merges into (a fact from the system, never from the
-// caller), and `abandon`'s cleanup of a job's worktree and branch.
+// caller), `abandon`'s cleanup of a job's worktree and branch, and the guarded runner `archive.ts`
+// builds on.
 import { BRANCH_PATTERN, CURRENT_TARGET, isTargetBranch } from '@factory/contract';
 
-interface GitResult {
+export interface GitResult {
   code: number;
-  out: string;
-  err: string;
+  out: string; // stdout, trimmed
+  raw: string; // stdout as git wrote it (NUL-separated output, blob bytes)
+  err: string; // stderr's first line
 }
 
-// Git reads the project's own checkout only: an inherited GIT_DIR or GIT_WORK_TREE never redirects it.
-function gitEnv(): Record<string, string> {
+// Variables that would point git at another repo, index, or object store than the one asked for.
+const REDIRECTS = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR'];
+
+// Git reads the project's own checkout only: an inherited GIT_DIR, GIT_WORK_TREE, index, or
+// object directory never redirects it. `extra` is set on top, by the caller, on purpose.
+function gitEnv(extra: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined && k !== 'GIT_DIR' && k !== 'GIT_WORK_TREE') env[k] = v;
+    if (v !== undefined && !REDIRECTS.includes(k)) env[k] = v;
   }
-  return env;
+  return { ...env, ...extra };
 }
 
-async function git(repo: string, args: readonly string[], what = 'merge.target'): Promise<GitResult> {
+export interface GitOptions {
+  what?: string; // names the caller in a can't-run-git reason
+  input?: string; // stdin; none when absent
+  env?: Record<string, string>; // set on top of the guarded environment
+}
+
+/** Runs `git -C <repo> <args>` without a shell; never throws on a non-zero exit. */
+export async function runGit(repo: string, args: readonly string[], opts: GitOptions = {}): Promise<GitResult> {
+  const what = opts.what ?? 'git';
   let proc;
   try {
-    proc = Bun.spawn(['git', '-C', repo, ...args], { stdout: 'pipe', stderr: 'pipe', stdin: 'ignore', env: gitEnv() });
+    proc = Bun.spawn(['git', '-C', repo, ...args], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      stdin: opts.input === undefined ? 'ignore' : new Blob([opts.input]),
+      env: gitEnv(opts.env),
+    });
   } catch (e) {
     throw new Error(`${what}: cannot run git: ${e instanceof Error ? e.message : String(e)}`);
   }
-  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-  return { code, out: out.trim(), err: err.trim().split('\n')[0] ?? '' };
+  const [raw, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  return { code, out: raw.trim(), raw, err: err.trim().split('\n')[0] ?? '' };
 }
+
+const git = (repo: string, args: readonly string[], what = 'merge.target'): Promise<GitResult> => runGit(repo, args, { what });
 
 function allowed(configured: string, branch: string): string {
   if (!isTargetBranch(branch)) {

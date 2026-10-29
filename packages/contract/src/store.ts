@@ -248,17 +248,29 @@ async function isLive(root: string, id: string): Promise<boolean> {
   return raw.stage !== 'merged' && raw.stage !== 'abandoned';
 }
 
+/** How `claimJob` learns of job ids used outside `jobs/`. */
+export interface ClaimOptions {
+  /**
+   * The job ids archived on the `factory/jobs` branch (its top-level entries; none when the
+   * branch is missing). Read under `jobs/.claim.lock`, whatever the config says, so a number on
+   * the archive is never handed out again. Absent: only the job dirs count.
+   */
+  archived?: () => Promise<readonly string[]>;
+}
+
 /**
  * Creates a new job for `slug` (docs/contract/v1.md "CLI", `claim`): under `jobs/.claim.lock`
  * (an `mkdir`, stale after 30 s) it scans the job dirs, refuses a slug held by a live job, picks
- * the highest number + 1 (gaps are never filled; refused past 999), and appends `job.claimed`
- * through `appendEvent`, which creates the dir under its own `.events.lock`. A refusal writes nothing.
+ * the highest number among the job dirs and the archived ids + 1 (gaps are never filled; refused
+ * past 999), and appends `job.claimed` through `appendEvent`, which creates the dir under its own
+ * `.events.lock`. A refusal writes nothing.
  */
 export async function claimJob(
   root: string,
   slug: string,
   input: ClaimInput,
   now: () => Date = () => new Date(),
+  opts: ClaimOptions = {},
 ): Promise<{ id: string; snapshot: JobSnapshot }> {
   checkClaim(slug, input);
   const jobs = join(root, 'jobs');
@@ -270,7 +282,8 @@ export async function claimJob(
     for (const d of dirs) {
       if (d.slice(4) === slug && (await isLive(root, d))) throw new Error(`slug ${slug} is live as ${d}`);
     }
-    const highest = dirs.reduce((n, d) => Math.max(n, Number(d.slice(0, 3))), 0);
+    const archived = opts.archived === undefined ? [] : (await opts.archived()).filter((d) => JOB_ID.test(d));
+    const highest = [...dirs, ...archived].reduce((n, d) => Math.max(n, Number(d.slice(0, 3))), 0);
     if (highest >= JOB_NUMBER_MAX) throw new Error(`job number ${JOB_NUMBER_MAX} is taken: no job numbers are left`);
     const id = `${String(highest + 1).padStart(3, '0')}-${slug}`;
     const snapshot = await appendEvent(root, id, claimedInput(id, input), now);

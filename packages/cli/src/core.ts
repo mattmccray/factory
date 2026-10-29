@@ -4,12 +4,14 @@
 //   rebuild <id> | --all
 //   show <id>
 //   abandon <id> "<reason>" [--force] [--delete-branch]
+//   archive <id> | --all [--force]
 //   doctor
 // This is everything the installed, self-contained `factory/cli.ts` carries (`installed.ts`).
 // The source CLI (`index.ts`) adds `init` and `upgrade` on top.
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
-import { appendEvent, checkClaim, checkSlug, claimJob, formatShow, isJobId, mergeTarget, parseConfig, parseEventInput, parseFields, project, readLog, rebuild } from '@factory/contract';
+import { appendEvent, archiveEnabled, checkClaim, checkSlug, claimJob, formatShow, isJobId, mergeTarget, parseConfig, parseEventInput, parseFields, project, readLog, rebuild } from '@factory/contract';
+import { archiveJob, archivedIds, isTerminal, localJobIds, readLocalJob } from './archive';
 import { doctor } from './doctor';
 import { deleteBranch, removeWorktree, resolveTarget } from './git';
 import { isNotFound } from './paths';
@@ -28,7 +30,8 @@ export const USAGE = {
   rebuild: 'usage: rebuild <id> | --all',
   show: 'usage: show <id>',
   abandon: 'usage: abandon <id> "<reason>" [--force] [--delete-branch]',
-  // The installed CLI's top-level usage line; `doctor` and `abandon` are documented in docs/contract/v1.md.
+  archive: 'usage: archive <id> | --all [--force]',
+  // The installed CLI's top-level usage line; `doctor`, `abandon`, and `archive` are documented in docs/contract/v1.md.
   all: 'usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id>',
 };
 
@@ -51,8 +54,10 @@ export async function dispatchCore(argv: readonly string[], io: Io, usage: strin
       // The slug and fields are checked before git runs; the target is resolved before the claim
       // lock is taken, so a refusal writes nothing and uses up no job number.
       checkClaim(slug, { fields, config });
-      const target = await resolveTarget(dirname(resolve(io.root)), mergeTarget(config));
-      io.stdout((await claimJob(io.root, slug, { fields, config, target })).id);
+      const repo = dirname(resolve(io.root));
+      const target = await resolveTarget(repo, mergeTarget(config));
+      // The archive's ids count whatever the config says, so turning archiving off never reuses a number.
+      io.stdout((await claimJob(io.root, slug, { fields, config, target }, undefined, { archived: () => archivedIds(repo) })).id);
       return 0;
     }
     case 'event': {
@@ -80,6 +85,11 @@ export async function dispatchCore(argv: readonly string[], io: Io, usage: strin
     }
     case 'abandon':
       return abandon(rest, io);
+    case 'archive': {
+      const args = parseArchive(rest);
+      if (!archiveEnabled(config)) throw new Error('archiving is disabled: config.json has no "archive": { "enabled": true }; nothing written');
+      return args.all ? archiveAll(io, args.force) : archiveOne(io, args.target, args.force);
+    }
     default:
       throw new Error(usage);
   }
@@ -138,6 +148,61 @@ async function abandon(rest: readonly string[], io: Io): Promise<number> {
   if (left.length > 0) throw new Error(`${args.id} is abandoned, but cleanup left behind: ${left.join('; ')}`);
   io.stdout(snap.stage);
   return 0;
+}
+
+interface ArchiveArgs {
+  all: boolean;
+  target: string;
+  force: boolean;
+}
+
+// `<id>` or `--all`, plus `--force` at most once, in any order; anything else is usage.
+function parseArchive(rest: readonly string[]): ArchiveArgs {
+  const force = rest.filter((a) => a === '--force').length;
+  const others = rest.filter((a) => a !== '--force');
+  const [target] = others;
+  if (force > 1 || others.length !== 1 || target === undefined || target === '') throw new Error(USAGE.archive);
+  if (target.startsWith('-') && target !== '--all') throw new Error(USAGE.archive);
+  return { all: target === '--all', target, force: force === 1 };
+}
+
+// Archives one job; it must be `merged` or `abandoned`. Prints `archived <id> <short sha>`, or
+// `<id>: already archived (unchanged)` for a no-op.
+async function archiveOne(io: Io, id: string, force: boolean): Promise<number> {
+  const job = await readLocalJob(io.root, id);
+  const outcome = await archiveJob(dirname(resolve(io.root)), job, force);
+  io.stdout(outcome.kind === 'archived' ? `archived ${id} ${outcome.commit.slice(0, 7)}` : `${id}: already archived (unchanged)`);
+  return 0;
+}
+
+// Archives every terminal local job in id order, one commit each; unchanged ones are no-ops and
+// live ones are skipped. A per-job failure is one stderr line, and the rest still run.
+async function archiveAll(io: Io, force: boolean): Promise<number> {
+  const repo = dirname(resolve(io.root));
+  let archived = 0;
+  let unchanged = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const id of await localJobIds(io.root)) {
+    try {
+      const job = await readLocalJob(io.root, id);
+      if (!isTerminal(job)) {
+        skipped++;
+        continue;
+      }
+      const outcome = await archiveJob(repo, job, force);
+      if (outcome.kind === 'unchanged') unchanged++;
+      else {
+        archived++;
+        io.stdout(`archived ${id} ${outcome.commit.slice(0, 7)}`);
+      }
+    } catch (e) {
+      failed++;
+      io.stderr((e instanceof Error ? e.message : String(e)).split('\n')[0] ?? '');
+    }
+  }
+  io.stdout(`archive --all: archived ${archived}, unchanged ${unchanged}, skipped ${skipped} (not merged or abandoned), failed ${failed}`);
+  return failed === 0 ? 0 : 1;
 }
 
 // Runs `body` and returns its exit code; any thrown error becomes exit 1 with one stderr line.

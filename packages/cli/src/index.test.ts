@@ -132,6 +132,7 @@ describe('usage and show (AC3)', () => {
       rebuild: 'usage: rebuild <id> | --all',
       show: 'usage: show <id>',
       abandon: 'usage: abandon <id> "<reason>" [--force] [--delete-branch]',
+      archive: 'usage: archive <id> | --all [--force]',
       all: 'usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id>',
       init: 'usage: init [--force]',
       upgrade: 'usage: upgrade [--force]',

@@ -294,6 +294,11 @@ as `'\''` (as for board values), so `$` and backticks in it are never expanded.
   shell commands run in order from the repo root, and it is green only when every command
   exits 0. If `config.json` has no `gate`, no gate is configured: tell the user so instead of
   running anything, and never invent a command.
+- Then **archive** the job, before bookkeeping: run `bun factory/cli.ts archive <id>` from `<R>`.
+  It copies the job's record to the `factory/jobs` branch with git plumbing and never touches
+  the checkout. If it fails, or says archiving is disabled, report its line to the user in one
+  line and carry on: a failed or disabled archive never fails or undoes the merge (the local
+  job dir stays, and `archive --all` catches it up later). Never push `factory/jobs`.
 - Then **bookkeeping**, so every job leaves `<target>` clean. First run **the backlog check**.
   If `factory/backlog.md` already has uncommitted changes, the merge stands (`job.merged` is
   logged) and only the bookkeeping waits: release the lock and tell the user "commit or discard
@@ -422,7 +427,10 @@ what to remove by hand. Never write the event yourself to get around a refusal.
 Before running the CLI (after both answers), run **the backlog check**: if
 `factory/backlog.md` already has uncommitted changes, stop with "commit or discard your backlog
 edits first"; nothing is abandoned and nothing changes. Once the job is abandoned (the CLI
-printed `abandoned`, or named what it left behind), take `factory/.lock`, run the backlog check
+printed `abandoned`, or named what it left behind), run `bun factory/cli.ts archive <id>` from
+`<R>` to copy its record to the `factory/jobs` branch. If it fails, or says archiving is
+disabled, report its line in one line and carry on: a failed or disabled archive never fails the
+abandon. Never push `factory/jobs`. Then take `factory/.lock`, run the backlog check
 again (if it stops you now, the job stays abandoned and only this bookkeeping waits: name it to
 the user), and then:
 - Remove the job's line (`- [x] … → <id>`) from `factory/backlog.md`, so a later
@@ -465,10 +473,15 @@ are facts; which of them gate a merge is a decision). Cover only the v1 overlay,
 6. `merge.target` — the branch jobs are based on and merge into: `current` (the default: the
    branch the main checkout is on when a job is claimed) or a branch name such as `develop`.
    No `merge` key keeps `current`.
-7. `roles` — for any role that should not run on the default model (`opus`): its runner
+7. `archive.enabled` — whether a finished job (`merged` or `abandoned`) is copied to the
+   `factory/jobs` branch by `factory archive`, so its record travels with `git clone` and
+   `git fetch`. Recommend off unless the user wants the history kept in the repo: job files can
+   hold paths, notes, and pasted material, and pushing the branch publishes them (archiving never
+   pushes). No `archive` key keeps it off.
+8. `roles` — for any role that should not run on the default model (`opus`): its runner
    (`claude`, the only runner in v1) and, optionally, the harness model name (e.g. a cheaper
    model for a narrow reviewer). No entry, or no `roles` key at all, keeps the default.
-8. `factory/roles/<role>.md` — for `spec-writer`, `builder`, `approver`, and each configured
+9. `factory/roles/<role>.md` — for `spec-writer`, `builder`, `approver`, and each configured
    reviewer key: the project's own rules for that role, or no file (the managed defaults apply).
 
 Anything else (a runner other than `claude`, per-role tools or effort, a tracker, any merge policy
@@ -477,7 +490,8 @@ beyond `merge.target` such as squashing, PRs, or pushing, conditional reviewers)
 **Refusal rules.** Check every change against these before anything is written. A change that
 breaks one is refused: tell the user which rule and why, and ask again. Nothing is written for it.
 - No key outside v1. `config.json` holds only `schema` (`"factory/v1"`), `name`, `reviewers`,
-  `maxRound`, `dashboard` (only `settleAfterHours`), `gate`, `merge` (only `target`), and `roles`.
+  `maxRound`, `dashboard` (only `settleAfterHours`), `gate`, `merge` (only `target`), `archive`
+  (only `enabled`), and `roles`.
 - `name`, when present, is a string of 1–64 characters (Unicode code points) with no leading or
   trailing whitespace and no control characters; spaces, punctuation, and non-ASCII are fine.
   No name means leaving the key out, never an empty string.
@@ -496,6 +510,8 @@ breaks one is refused: tell the user which rule and why, and ask again. Nothing 
   with no `..` and no `.lock` suffix. No `merge` key (or no `target`) means
   `current`. A branch literally named `current` can't be targeted. The branch has to exist when
   a job is claimed, or the claim is refused.
+- `archive`, when present, is an object holding only `enabled`, which is required and is `true`
+  or `false`. Off means `enabled: false` or leaving the key out, never an empty object.
 - A role file exists only for a fixed role or a configured reviewer key. Dropping a reviewer
   whose role file exists means deleting that file too, or keeping the reviewer; ask which.
 - Role rules add rules only. They never change which file an agent writes, its path, or its
@@ -527,6 +543,10 @@ agreed to drop. Write nothing else.
 
 **When `merge.target` changed.** No re-render is needed: the CLI reads it at each claim. Live
 jobs keep the target they recorded at claim.
+
+**When `archive` changed.** No re-render is needed: `factory archive` reads it at each run.
+Turning it on copies nothing by itself; `bun factory/cli.ts archive --all` backfills the jobs
+that are already `merged` or `abandoned`, and is the user's call.
 
 **When `reviewers` or `roles` changed.** A new reviewer key has no agent, and a new model
 takes no effect, until the managed files are re-rendered. Tell the user to run `factory upgrade` before the next job; never run it yourself,

@@ -56,6 +56,17 @@ export interface Config {
   gate?: string[]; // shell commands run in order from the worktree root; green only when all exit 0
   roles?: Record<string, RoleRunner>; // keyed by a fixed role or a configured reviewer key
   merge?: MergePolicy;
+  archive?: ArchivePolicy; // absent: archiving is off
+}
+
+/** Whether `factory archive` copies terminal jobs to the `factory/jobs` branch. Off unless `enabled`. */
+export interface ArchivePolicy {
+  enabled: boolean;
+}
+
+/** True only when `config.archive.enabled` is `true`; no `archive` key means off. */
+export function archiveEnabled(config: Config): boolean {
+  return config.archive?.enabled === true;
 }
 
 /** How a job lands. `target` is `"current"` (the main checkout's branch at claim time) or a branch name. */
@@ -176,7 +187,7 @@ function noExtraKeys(obj: Record<string, unknown>, allowed: readonly string[], w
 
 export function parseConfig(raw: unknown): Config {
   if (!isRecord(raw)) throw new Error('config: must be a JSON object');
-  noExtraKeys(raw, ['schema', 'name', 'reviewers', 'maxRound', 'dashboard', 'gate', 'roles', 'merge'], 'config');
+  noExtraKeys(raw, ['schema', 'name', 'reviewers', 'maxRound', 'dashboard', 'gate', 'roles', 'merge', 'archive'], 'config');
   if (raw.schema !== SCHEMA) throw new Error(`config: schema must be "${SCHEMA}"`);
   const { reviewers, maxRound, dashboard } = raw;
   if (!Array.isArray(reviewers) || reviewers.length === 0) throw new Error('config: reviewers must be a non-empty array');
@@ -197,7 +208,16 @@ export function parseConfig(raw: unknown): Config {
   if (raw.gate !== undefined) config.gate = parseGate(raw.gate);
   if (raw.roles !== undefined) config.roles = parseRoles(raw.roles, keys);
   if (raw.merge !== undefined) config.merge = parseMerge(raw.merge);
+  if (raw.archive !== undefined) config.archive = parseArchive(raw.archive);
   return config;
+}
+
+// Optional `archive`: only `enabled`, a required boolean.
+function parseArchive(archive: unknown): ArchivePolicy {
+  if (!isRecord(archive)) throw new Error('config: archive must be an object { enabled }');
+  noExtraKeys(archive, ['enabled'], 'config.archive');
+  if (typeof archive.enabled !== 'boolean') throw new Error('config: archive.enabled must be true or false');
+  return { enabled: archive.enabled };
 }
 
 // Optional `merge`: only `target`, a non-empty branch name or "current" (the default).

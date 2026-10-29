@@ -542,7 +542,7 @@ describe('the customize interview in SKILL.md', () => {
     const raw = section();
     const s = flat(raw);
     expect(raw).toMatch(/\n\d\. `roles` — /);
-    expect(s).toContain('`dashboard` (only `settleAfterHours`), `gate`, `merge` (only `target`), and `roles`');
+    expect(s).toContain('`dashboard` (only `settleAfterHours`), `gate`, `merge` (only `target`), `archive` (only `enabled`), and `roles`');
     expect(s).toContain('`roles`, when present, is an object');
     expect(s).toContain('a fixed role (`spec-writer`, `builder`, `approver`) or a configured reviewer key');
     expect(s).toContain('holds only `runner` and `model`');
@@ -1280,5 +1280,71 @@ describe('the backlog holds only open work, every edit committed at once (job 04
         expect(s).not.toMatch(/\{\{[^}]*\}\}/);
       }
     }
+  });
+});
+
+describe('the job archive in SKILL.md (job 045, AC8)', () => {
+  const flat = (s: string): string => s.replace(/\s+/g, ' ');
+  const configs = [config(), config({ reviewers: ['q'] }), config({ merge: { target: 'develop' }, archive: { enabled: true } })];
+  const skill = (c: Config = config()): string => flat(at(renderClaudeCode({ config: c }).files, SKILL));
+  const section = (text: string, heading: string): string => {
+    const start = text.indexOf(`## ${heading}`);
+    if (start < 0) throw new Error(`no section ${heading}`);
+    const end = text.indexOf(' ## ', start + 3);
+    return end < 0 ? text.slice(start) : text.slice(start, end);
+  };
+  const ARCHIVE = '`bun factory/cli.ts archive <id>`';
+
+  test('Merge archives after job.merged and before bookkeeping, carries on after a failure, and never pushes', () => {
+    for (const c of configs) {
+      const merge = section(skill(c), 'Merge');
+      const merged = merge.indexOf('board: `job.merged sha=<short sha>` **immediately**');
+      const archive = merge.indexOf(`- Then **archive** the job, before bookkeeping: run ${ARCHIVE} from \`<R>\`.`);
+      const bookkeeping = merge.indexOf('- Then **bookkeeping**');
+      for (const i of [merged, archive, bookkeeping]) expect(i).toBeGreaterThanOrEqual(0);
+      expect(merged).toBeLessThan(archive);
+      expect(archive).toBeLessThan(bookkeeping);
+      const step = merge.slice(archive, bookkeeping);
+      expect(step).toContain('If it fails, or says archiving is disabled, report its line to the user in one line and carry on: a failed or disabled archive never fails or undoes the merge');
+      expect(step).toContain('Never push `factory/jobs`.');
+      expect(step).toContain('never touches the checkout');
+    }
+  });
+
+  test('/factory abandon archives after the CLI abandons the job, carries on after a failure, and never pushes', () => {
+    for (const c of configs) {
+      const commands = section(skill(c), 'Commands');
+      const entry = commands.slice(commands.indexOf('**`/factory abandon <id> <reason>`**'));
+      const cli = entry.indexOf("bun factory/cli.ts abandon <id> '<reason>'");
+      const done = entry.indexOf('Once the job is abandoned (the CLI printed `abandoned`, or named what it left behind), run `bun factory/cli.ts archive <id>` from `<R>`');
+      const lock = entry.indexOf('Then take `factory/.lock`');
+      for (const i of [cli, done, lock]) expect(i).toBeGreaterThanOrEqual(0);
+      expect(cli).toBeLessThan(done);
+      expect(done).toBeLessThan(lock);
+      const step = entry.slice(done, lock);
+      expect(step).toContain('If it fails, or says archiving is disabled, report its line in one line and carry on: a failed or disabled archive never fails the abandon.');
+      expect(step).toContain('Never push `factory/jobs`.');
+    }
+  });
+
+  test('Customize asks about archive right after merge.target and its refusal rules know the key', () => {
+    const custom = section(skill(), 'Customize');
+    const target = custom.indexOf('6. `merge.target` —');
+    const archive = custom.indexOf('7. `archive.enabled` —');
+    const roles = custom.indexOf('8. `roles` —');
+    for (const i of [target, archive, roles]) expect(i).toBeGreaterThanOrEqual(0);
+    expect(target).toBeLessThan(archive);
+    expect(archive).toBeLessThan(roles);
+    expect(custom).toContain('No `archive` key keeps it off.');
+    expect(custom).toContain('`merge` (only `target`), `archive` (only `enabled`), and `roles`');
+    expect(custom).toContain('- `archive`, when present, is an object holding only `enabled`, which is required and is `true` or `false`.');
+    expect(custom).toContain('**When `archive` changed.** No re-render is needed');
+  });
+
+  test('the archive step is not in the skill before this job (the pins fail on the old text)', () => {
+    const old = TEMPLATES.skill.replace(/- Then \*\*archive\*\* the job[\s\S]*?Never push `factory\/jobs`\.\n/, '');
+    expect(old).not.toBe(TEMPLATES.skill);
+    const text = flat(at(renderClaudeCode({ config: config(), templates: { ...TEMPLATES, skill: old } }).files, SKILL));
+    expect(section(text, 'Merge')).not.toContain(ARCHIVE);
   });
 });
