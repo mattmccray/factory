@@ -3,9 +3,8 @@
 // `@factory/contract` (`isSettled`, `isEpicSettled`), never copied here. An epic settles like a job
 // (`landed`: once its `endedAt` is more than `settleAfterHours` old; `abandoned`: at once); a job
 // with no `epic` settles as it always has; a job with an `epic` settles with its epic, never on its
-// own, and an epic the board doesn't hold counts as unknown (so not terminal). The one view rule on
-// top (brief andon-epics-service decision 2): an `abandoned` job leaves the board at once, even in
-// a live epic (its epic page still shows it `abandoned`). Pure functions over board records
+// own, and an epic the board doesn't hold counts as unknown (so not terminal); an `abandoned` job
+// settles at once, whatever its epic's state. Pure functions over board records
 // (`job.json` and `epic.json`, read tolerantly), unit-testable with a fixed `now`.
 import { isEpicSettled, isSettled as settleRule } from '@factory/contract';
 import type { SettleEpic, SettleJob } from '@factory/contract';
@@ -48,7 +47,6 @@ export function isEpicSnapshotSettled(epic: Rec, hours: number, now: number): bo
 
 /** Whether a board job is settled at `now` (ms since the epoch), its epic looked up in `epics`. */
 export function isSettled(job: Rec, epics: Epics, hours: number, now: number): boolean {
-  if (job.stage === 'abandoned') return true; // the view rule above: it leaves the lanes at once
   const slug = str(job.epic);
   const epic = slug === null ? undefined : epics.get(slug);
   return settleRule(jobFacts(job), hours, now, epic === undefined ? null : epicFacts(epic));

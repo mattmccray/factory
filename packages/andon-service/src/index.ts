@@ -98,6 +98,7 @@ interface Project {
   archiveTask: Promise<void>; // the archive's setup or latest refresh; readers wait on it
   refs: { common: FSWatcher | null; heads: FSWatcher | null; factory: FSWatcher | null }; // the archive ref watches, in the git common dir
   log: (line: string) => void; // the service's diagnostics
+  epicFailures: Set<string>; // `<tip> <slug>`: archived epics already logged as unprojectable at that tip
 }
 
 export const HOSTNAME = '127.0.0.1';
@@ -178,7 +179,12 @@ async function board(p: Project): Promise<Board> {
     try {
       epicRead.push({ id: slug, epic: projectArchivedEpic(a, jobs) });
     } catch (e) {
-      p.log(`andon: ${p.info.root}: factory/archive epics/${slug}: ${message(e)}; left out`);
+      // Logged once per archive tip, not on every board build.
+      const key = `${p.archive.tip ?? ''} ${slug}`;
+      if (!p.epicFailures.has(key)) {
+        p.epicFailures.add(key);
+        p.log(`andon: ${p.info.root}: factory/archive epics/${slug}: ${message(e)}; left out`);
+      }
     }
   }
   epicRead.sort(bySlugOrId);
@@ -461,7 +467,10 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       const tip = await archiveTip(git, p.info.root);
       if (tip === p.archive.tip || p.closed) return;
       const next = tip === null ? EMPTY_ARCHIVE : await readArchive(git, p.info.root, tip, log);
-      if (!p.closed) p.archive = next;
+      if (!p.closed) {
+        p.archive = next;
+        p.epicFailures.clear();
+      }
     } catch (e) {
       if (!p.closed) log(`andon: ${p.info.root}: reading factory/archive: ${message(e)}`);
     }
@@ -600,6 +609,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       archiveTask: Promise.resolve(),
       refs: { common: null, heads: null, factory: null },
       log,
+      epicFailures: new Set(),
     };
     p.archiveTask = openArchive(p);
     try {
@@ -780,8 +790,13 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       const p = projects.get(e[1] ?? '');
       const slug = e[2] ?? '';
       if (p === undefined || !isEpicSlug(slug)) return notFound(); // checked before any path is built
-      await archiveReady(p);
-      return (await epicDocs(p, slug).then((d) => (d === null ? null : json(d)))) ?? notFound();
+      try {
+        await archiveReady(p);
+        const docs = await epicDocs(p, slug);
+        return docs === null ? notFound() : json(docs);
+      } catch (e) {
+        return text(`epic docs: ${message(e)}`, 500);
+      }
     }
     if (opts.uiDir !== undefined) return (await uiFile(opts.uiDir, pathname)) ?? notFound();
     return notFound();

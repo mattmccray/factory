@@ -129,5 +129,7 @@ describe('one settle rule', () => {
     expect(text).toMatch(/isEpicSettled\(/);
     expect(text).toMatch(/settleRule\(/);
     expect(text).not.toMatch(/now - \w+ > hours \* HOUR_MS/);
+    // No rule of its own on top: abandoned jobs settle by the contract rule too.
+    expect(text).not.toMatch(/stage === 'abandoned'/);
   });
 });
