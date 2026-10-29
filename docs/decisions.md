@@ -51,7 +51,10 @@ contract is `docs/contract/v1.md`.
      managed hashes and validates config. `factory upgrade` replaces managed files and leaves
      the overlay alone.
    - Fixed: the lifecycle stages, event types, file layout and CLI. Configurable: reviewers,
-     rules, models, gates, tracker and merge policy.
+     rules, models, gates, tracker and merge policy. Decision 13 (epics, 2026-10-29) added to
+     what is fixed: the epic events and `epic.json`, the plan file and `jobs/epics/<slug>/` in
+     the file layout, and the `epic` commands and `claim`'s `epic=`/`kind=` in the CLI; and to
+     what is configurable: `epic.maxParallel`.
    - Required roles: spec-writer, builder, approver, and at least one reviewer.
 9. **Harnesses:**
    - v1 targets Claude Code only (Matt uses it for about 99% of his work).
@@ -95,6 +98,22 @@ contract is `docs/contract/v1.md`.
     - **security** (the Andon service serves HTTP, and the CLI writes files);
     - **contract**, which checks every change against the schema and versioning rules;
     - **ui**, for Andon changes; it simply PASSes when Andon isn't touched.
+
+13. **Epics** (2026-10-29, accepted by Matt): the design is `docs/design/epics/design.md`, and
+    it binds the briefs that build it.
+    - An epic is a new first-class thing, kept thin: a tracked plan, `factory/epics/<slug>.md`,
+      listing member briefs and their `after:` edges; its own CLI-written log and derived
+      `epic.json` under `factory/jobs/epics/<slug>/`; and member jobs that stay ordinary jobs,
+      tied to it only by `epic` and `kind` on `job.claimed`. One run per plan.
+    - An epic has its own integration branch, `factory/epic/<slug>`, and worktree; members
+      branch from it and merge into it, and the epic lands on its target with one merge.
+    - The CLI owns the epic's setup and teardown and all of its scheduling (`epic next`, and the
+      checks `claim … epic=` makes, including `epic.maxParallel`); every merge stays with the
+      orchestrator.
+    - It extends decisions 3 and 4 across files: the epic's log is the truth, `epic.json` is a
+      disposable projection over the log, the plan, and the epic's jobs, and the CLI is its only
+      writer. It amends decision 8's fixed list (above). The contract is `docs/contract/v1.md`,
+      "Epics".
 
 ## Invariants
 
