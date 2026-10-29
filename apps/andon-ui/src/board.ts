@@ -2,7 +2,7 @@
 // the five station columns, and the held jobs that have settled. Pure: `now` drives settling.
 // A narrow board holds only unsettled jobs; the rest of a project's settled jobs are its summary's
 // count and, once a view fetched them, its cached settled list (`settledCount`, `settledJobs`).
-import type { Job } from './job';
+import type { Epic, Job } from './job';
 import { time } from './time';
 
 /** A job on the board, tagged with its project. `key` is unique across projects. */
@@ -12,6 +12,29 @@ export interface BoardJob {
   settleAfterHours: number; // the job's own project's setting
   reviewers: string[]; // the job's own project's reviewers, for chip order
   job: Job;
+  epic?: Epic; // the epic the job's `epic` names, when its project has it (on the board or settled); absent: standalone, or unknown
+}
+
+/** An epic on the board or in a settled list, tagged with its project. `key` is unique across projects. */
+export interface BoardEpic {
+  key: string; // `<pid>/<slug>`
+  project: { id: string; name: string };
+  settleAfterHours: number; // its project's setting
+  epic: Epic;
+}
+
+/** The epic states an epic never leaves. */
+export const isEpicTerminal = (e: Pick<Epic, 'state'>): boolean => e.state === 'landed' || e.state === 'abandoned';
+
+/**
+ * The epic-aware settle rule for an epic (docs/contract/v1.md "Epics in the service"): `abandoned`
+ * at once, `landed` once its `endedAt` is more than `hours` old; never otherwise.
+ */
+export function isEpicSettled(e: Pick<Epic, 'state' | 'endedAt'>, hours: number, now: number): boolean {
+  if (e.state === 'abandoned') return true;
+  if (e.state !== 'landed' || e.endedAt === null) return false;
+  const ended = Date.parse(e.endedAt);
+  return !Number.isNaN(ended) && now - ended > hours * 3_600_000;
 }
 
 export interface Station {
@@ -46,10 +69,16 @@ export const mergedAt = (j: Job): number => time(j.endedAt ?? j.updated);
 
 /**
  * A merged job settles once its merge is older than its project's `settleAfterHours`; an abandoned
- * job is always settled (never on the board, the andon row, or the counts).
+ * job is always settled (never on the board, the andon row, or the counts). A merged job in an epic
+ * never settles while its epic isn't `landed` or `abandoned` (an unknown epic counts as not
+ * terminal); once it is, it settles when its epic does.
  */
-export const isSettled = (b: BoardJob, now: number): boolean =>
-  b.job.stage === 'abandoned' || (b.job.stage === 'merged' && now - mergedAt(b.job) > b.settleAfterHours * 3_600_000);
+export function isSettled(b: BoardJob, now: number): boolean {
+  if (b.job.stage === 'abandoned') return true;
+  if (b.job.stage !== 'merged') return false;
+  if (b.job.epic === null) return now - mergedAt(b.job) > b.settleAfterHours * 3_600_000;
+  return b.epic !== undefined && isEpicTerminal(b.epic) && isEpicSettled(b.epic, b.settleAfterHours, now);
+}
 
 const stationOf = (stage: string): string => (stage === 'claimed' ? 'spec' : stage);
 

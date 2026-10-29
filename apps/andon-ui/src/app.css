@@ -449,6 +449,98 @@ dialog.sheet::backdrop { background: var(--scrim); }
 .hud svg.i { color: var(--green-ink); }
 .hud.fail { color: var(--orange-ink); font-family: var(--sys); }
 
+/* ── epics (docs/design/epics/: the accepted mock-ups) ───────────── */
+/* A project lane with epics: a faint separator to its sub-lanes. */
+.row.has-sub { border-bottom-color: color-mix(in srgb, var(--sep) 40%, transparent); }
+/* The epic sub-lane: an indented gutter, an elbow from the project, and a quiet tint. */
+.row.sub { background: color-mix(in srgb, var(--label) 2%, transparent); }
+.row.sub > .gut { position: relative; padding-left: 30px !important; background: color-mix(in srgb, var(--label) 2%, var(--canvas)); }
+.row.sub > .gut::before { content: ""; position: absolute; left: 17px; top: -1px; height: 14px; width: 8px; border-left: 1px solid var(--label4); border-bottom: 1px solid var(--label4); border-bottom-left-radius: 5px; }
+.row.sub:not(.last) > .gut::after { content: ""; position: absolute; left: 17px; top: 0; bottom: -1px; border-left: 1px solid var(--label4); }
+/* an epic waiting on you: its gutter turns red */
+.row.sub.hotgut > .gut { background: color-mix(in srgb, var(--red) 7.5%, var(--canvas)); box-shadow: inset 2px 0 0 color-mix(in srgb, var(--red) 55%, transparent); }
+.en { border: 0; background: none; padding: 0; text-align: left; font-size: 12px; font-weight: 600; color: var(--label); display: flex; align-items: flex-start; gap: 6px; line-height: 1.3; min-width: 0; }
+.en .ename { min-width: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.en:hover .ename { text-decoration: underline; text-decoration-color: var(--label3); text-underline-offset: 2px; }
+.en.sel .ename, .en.hit .ename { color: var(--blue-ink); }
+.edot { width: 7px; height: 7px; border-radius: 50%; flex: none; margin-top: 4.5px; background: var(--label4); }
+.edot.blue { background: var(--blue); }
+.edot.orange { background: var(--orange); }
+.edot.red { background: var(--red); box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 18%, transparent); }
+.edot.green { background: var(--green); }
+.egut .meta.wrap { white-space: normal; }
+.egut .nw { white-space: nowrap; }
+.t-green { color: var(--green-ink); }
+/* a generated job's tag */
+.htag { flex: none; align-self: center; font: 600 9px/13px var(--mono); padding: 0 4px; border-radius: 3px; background: var(--ctl-h); color: var(--label); letter-spacing: .02em; }
+.k-approve .htag { background: var(--on-accent); color: #fff; }
+/* a member merged into its epic's branch: a dashed green edge and the branch-merge icon before its time */
+.tok.ie::before { background: repeating-linear-gradient(180deg, var(--green) 0 3px, transparent 3px 5px); }
+.tok.ie { border-style: dashed; }
+.iem { display: inline-flex; align-self: center; flex: none; color: var(--green-ink); margin-left: auto; }
+.iem svg.i { width: 11px; height: 11px; }
+.tok .l1 .iem + .age { margin-left: 0; padding-left: 0; }
+.sw.ie { --kc: var(--green); background: var(--tint-green); border-style: dashed; border-color: var(--green); }
+.key .iem { margin-left: -2px; }
+
+/* the epic page in the inspector: one scroll for its header, members, documents, and the document */
+.ins-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.ins-scroll .files { max-height: none; overflow: visible; }
+.ins-scroll .doc { overflow: visible; }
+.sp-epic { color: var(--label3); }
+.sp-e-running { color: var(--blue-ink); box-shadow: inset 0 0 0 .5px var(--blue); }
+.sp-e-waiting { background: var(--tint-red); color: var(--red-ink); box-shadow: inset 0 0 0 .5px var(--red); }
+.sp-e-landing, .sp-e-landed { background: var(--tint-green); color: var(--green-ink); box-shadow: inset 0 0 0 .5px var(--green); }
+.sp-e-abandoned { color: var(--gray-ink); box-shadow: inset 0 0 0 .5px var(--gray); }
+.eprog { display: flex; gap: 2px; margin-top: 9px; height: 5px; }
+.eprog i { flex: 1; border-radius: 2px; background: var(--label4); }
+.eprog i.merged { background: var(--green); }
+.eprog i.needs-human { background: var(--red); }
+.eprog i.blocked { background: none; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 55%, transparent); }
+.eprog i.queued { background: none; box-shadow: inset 0 0 0 1px var(--label4); }
+.eprog i.abandoned { background: var(--gray); opacity: .5; }
+.eprog i.p-build { background: var(--indigo); } .eprog i.p-reviewing { background: var(--purple); } .eprog i.p-review-failed { background: var(--orange); }
+.eprog i.p-approve { background: var(--blue); } .eprog i.p-spec { background: var(--teal); } .eprog i.p-claimed { background: var(--gray); }
+.eprog i.p-needs-human, .eprog i.p-merge-failed { background: var(--red); } .eprog i.p-merged { background: var(--green); }
+.eacts { margin-top: 10px; }
+.callout .why b { font-weight: 600; }
+.callout .sub { font-size: 11px; color: var(--label2); margin: -4px 0 9px 21px; }
+.members { padding: 6px 8px 8px; border-bottom: .5px solid var(--sep); }
+.members h3 { display: flex; justify-content: space-between; margin: 8px 8px 3px; font-size: 10.5px; font-weight: 600; color: var(--label3); }
+.members ul { list-style: none; margin: 0; padding: 0; }
+.mem { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 1px 8px; align-items: center; padding: 5px 8px; border-radius: 6px; }
+.mem + .mem { box-shadow: 0 -.5px 0 var(--sep); }
+.mem .mi { font: 10.5px var(--mono); color: var(--label3); text-align: right; }
+.mem .mt { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mem .mt .htag { display: inline-block; margin-right: 4px; }
+.mem .ms { font: 10.5px var(--mono); color: var(--label3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.mem .ms b { font-weight: 400; color: var(--label2); }
+.mem .mr { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.mst { font-size: 10.5px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; padding: 0 5px; height: 16px; border-radius: 4px; color: var(--label2); background: var(--ctl); }
+.mst i { width: 6px; height: 6px; border-radius: 1.5px; background: var(--kc, var(--gray)); }
+.mst.merged { color: var(--green-ink); background: var(--tint-green); }
+.mst.needs-human { color: #fff; background: var(--badge-red); font-weight: 600; }
+.mst.blocked { color: var(--red-ink); background: none; box-shadow: inset 0 0 0 .5px var(--red); }
+.mst.queued, .mst.abandoned { color: var(--label3); background: none; box-shadow: inset 0 0 0 .5px var(--sep2); }
+.mk-build { --kc: var(--indigo); } .mk-reviewing { --kc: var(--purple); } .mk-review-failed { --kc: var(--orange); }
+.mk-approve { --kc: var(--blue); } .mk-spec { --kc: var(--teal); } .mk-claimed { --kc: var(--gray); }
+.jid { border: 0; background: none; padding: 0 2px; font: 11px var(--mono); color: var(--label3); border-radius: 3px; white-space: nowrap; }
+.jid b { font-weight: 600; color: var(--blue-ink); }
+button.jid:hover b { text-decoration: underline; text-underline-offset: 2px; }
+.jid.none { color: var(--label3); }
+.elink { border: 0; background: none; padding: 0; margin-top: 6px; font-size: 11px; color: var(--label2); display: inline-flex; align-items: center; gap: 5px; max-width: 100%; }
+.elink svg.i { width: 12px; height: 12px; color: var(--label3); }
+.elink b { font-weight: 600; color: var(--blue-ink); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.elink:hover b { text-decoration: underline; text-underline-offset: 2px; }
+
+/* the Settled sheet: an epic's row, with its jobs grouped under it */
+.etag { display: inline-block; margin-right: 7px; padding: 1px 5px; border-radius: 4px; font: 600 10px/1.3 var(--sys); color: var(--label2); background: var(--ctl-h); vertical-align: 1px; }
+.atag.landed { color: var(--green-ink); box-shadow: inset 0 0 0 .5px var(--green); }
+.srow .mono { font-family: var(--mono); }
+.sjobs { list-style: none; margin: 0; padding: 0 0 0 18px; border-bottom: .5px solid var(--sep); }
+.sjobs .srow { padding-top: 5px; padding-bottom: 5px; }
+.sjobs li:last-child .srow { border-bottom: 0; }
+
 @media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important; transition: none !important; } }
 
 /* the shortcut sheet (§10) */

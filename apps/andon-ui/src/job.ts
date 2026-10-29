@@ -4,7 +4,7 @@
 // It imports `@factory/contract` with `import type` only (erased under `verbatimModuleSyntax`), to
 // check its shapes against the contract's at compile time; it never runs contract code, so it
 // runs in a browser (and later under txiki.js).
-import type { AgentSpan as ContractAgentSpan, Config, JobSnapshot, StageSpan as ContractStageSpan } from '@factory/contract';
+import type { AgentSpan as ContractAgentSpan, Config, EpicSnapshot, JobSnapshot, StageSpan as ContractStageSpan } from '@factory/contract';
 
 export type ReviewState = string; // 'PASS' | 'CHANGES' | 'pending', or a value a later v1 adds
 
@@ -30,6 +30,8 @@ export interface AgentSpan {
 export type StoppedBy = 'escalated' | 'merge-failed';
 /** The stages a job does its work in, before it stops for a human. */
 export type WorkingStage = 'claimed' | 'spec' | 'build' | 'review' | 'approve';
+/** What a job is to its epic (docs/contract/v1.md "Epic membership"): a plan member, or a generated sync or fix job. */
+export type EpicJobKind = 'member' | 'sync' | 'fix';
 
 export interface Job {
   id: string;
@@ -50,6 +52,46 @@ export interface Job {
   endedAt: string | null;
   updated: string | null;
   timing: { stages: StageSpan[]; agents: AgentSpan[] } | null;
+  epic: string | null; // the slug of the epic the job was claimed into; null: a standalone job (or a snapshot from before epics)
+  kind: EpicJobKind | null; // what the job is to its epic; null exactly when `epic` is
+}
+
+/** One plan member of an epic, as `epic.json` lists it. */
+export interface EpicMember {
+  slug: string;
+  after: string[];
+  state: string; // queued, blocked, running, merged, needs-human, abandoned, or a state a later v1 adds
+  job: string | null; // its newest job's id
+  stage: string | null; // that job's stage
+  blockedOn: Array<{ member: string; job: string | null }>;
+}
+
+/** The epic fields the UI reads (docs/contract/v1.md "`epic.json` — the derived snapshot"). */
+export interface EpicCore {
+  slug: string;
+  branch: string;
+  target: string;
+  plan: string;
+  planError: string | null;
+  state: string; // running, waiting, landing, landed, abandoned, or a state a later v1 adds
+  waitingOn: string | null; // 'you', 'members', or null
+  note: string;
+  sha: string | null;
+  members: EpicMember[];
+  generated: Array<{ id: string; kind: string; stage: string }>;
+  counts: Record<string, number>;
+  startedAt: string | null;
+  endedAt: string | null;
+  updated: string | null;
+}
+
+/**
+ * An epic, plus its `title`: `epic.json` has none, so it is a non-empty string `title` when the
+ * payload carries one (the service passes unknown fields through), else null. Its display name is
+ * `epicName`.
+ */
+export interface Epic extends EpicCore {
+  title: string | null;
 }
 
 export interface BoardConfig {
@@ -68,6 +110,9 @@ export type ContractShapesChecked = [
   Expect<Assignable<ContractAgentSpan, AgentSpan>>,
   Expect<Assignable<JobSnapshot['stoppedBy'], Job['stoppedBy']>>,
   Expect<Assignable<JobSnapshot['stoppedFrom'], Job['stoppedFrom']>>,
+  Expect<Assignable<JobSnapshot['epic'], Job['epic']>>,
+  Expect<Assignable<JobSnapshot['kind'], Job['kind']>>,
+  Expect<Assignable<EpicSnapshot, EpicCore>>,
   Expect<Assignable<Config['reviewers'], BoardConfig['reviewers']>>,
   Expect<Assignable<Config['dashboard']['settleAfterHours'], BoardConfig['settleAfterHours']>>,
 ];
@@ -109,6 +154,7 @@ function agentSpan(v: unknown): AgentSpan | null {
 }
 
 const STOPPED_BY: readonly StoppedBy[] = ['escalated', 'merge-failed'];
+const EPIC_KINDS: readonly EpicJobKind[] = ['member', 'sync', 'fix'];
 const WORKING: readonly WorkingStage[] = ['claimed', 'spec', 'build', 'review', 'approve'];
 /** One of `allowed`, or null for a missing key or any other value. */
 const oneOf = <T extends string>(allowed: readonly T[], v: unknown): T | null => allowed.find((a) => a === v) ?? null;
@@ -121,6 +167,7 @@ export function toJob(v: unknown): Job | null {
   const id = str(v.id);
   if (id === null || id === '') return null;
   const t = v.timing;
+  const epic = str(v.epic) || null;
   return {
     id,
     title: str(v.title) ?? id,
@@ -142,6 +189,9 @@ export function toJob(v: unknown): Job | null {
     endedAt: str(v.endedAt),
     updated: str(v.updated),
     timing: isRecord(t) ? { stages: list(t.stages).map(stageSpan).filter(present), agents: list(t.agents).map(agentSpan).filter(present) } : null,
+    epic,
+    // a job in an epic with no readable kind is a member, as the contract reads one
+    kind: epic === null ? null : (oneOf(EPIC_KINDS, v.kind) ?? 'member'),
   };
 }
 
@@ -152,6 +202,73 @@ export function landing(job: Job): string | null {
 }
 
 export const toJobs = (v: unknown): Job[] => list(v).map(toJob).filter(present);
+
+const strings = (v: unknown): string[] => list(v).filter((x): x is string => typeof x === 'string');
+
+function epicMember(v: unknown): EpicMember | null {
+  if (!isRecord(v)) return null;
+  const slug = str(v.slug);
+  if (slug === null || slug === '') return null;
+  return {
+    slug,
+    after: strings(v.after),
+    state: str(v.state) ?? 'queued',
+    job: str(v.job) || null,
+    stage: str(v.stage),
+    blockedOn: list(v.blockedOn)
+      .filter(isRecord)
+      .map((b) => ({ member: str(b.member) ?? '', job: str(b.job) || null }))
+      .filter((b) => b.member !== ''),
+  };
+}
+
+function generatedJob(v: unknown): { id: string; kind: string; stage: string } | null {
+  if (!isRecord(v)) return null;
+  const id = str(v.id);
+  return id === null || id === '' ? null : { id, kind: str(v.kind) ?? 'sync', stage: str(v.stage) ?? 'claimed' };
+}
+
+function counts(v: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!isRecord(v)) return out;
+  for (const [k, n] of Object.entries(v)) if (typeof n === 'number' && Number.isInteger(n) && n >= 0) out[k] = n;
+  return out;
+}
+
+/** Narrows one `epic.json` value. Anything without a non-empty string `slug` is dropped; unknown fields are ignored (but `title`). */
+export function toEpic(v: unknown): Epic | null {
+  if (!isRecord(v)) return null;
+  const slug = str(v.slug);
+  if (slug === null || slug === '') return null;
+  return {
+    slug,
+    title: str(v.title)?.trim() || null,
+    branch: str(v.branch) || `factory/epic/${slug}`,
+    target: str(v.target) ?? '',
+    plan: str(v.plan) ?? `factory/epics/${slug}.md`,
+    planError: str(v.planError),
+    state: str(v.state) ?? 'running',
+    waitingOn: str(v.waitingOn),
+    note: str(v.note) ?? '',
+    sha: str(v.sha) || null,
+    members: list(v.members).map(epicMember).filter(present),
+    generated: list(v.generated).map(generatedJob).filter(present),
+    counts: counts(v.counts),
+    startedAt: str(v.startedAt),
+    endedAt: str(v.endedAt),
+    updated: str(v.updated),
+  };
+}
+
+/** A payload's `epics`: a missing or malformed list is `[]`, and a malformed entry (or a second one with the same slug) is skipped. */
+export function toEpics(v: unknown): Epic[] {
+  const out: Epic[] = [];
+  for (const e of list(v).map(toEpic).filter(present)) if (!out.some((x) => x.slug === e.slug)) out.push(e);
+  return out;
+}
+
+/** An epic's display name: its `title` when the payload carries one, else its slug. */
+export const epicName = (e: Pick<Epic, 'slug' | 'title'>): string => e.title ?? e.slug;
 
 /** The parts of `config.json` the board reads. A missing `settleAfterHours` is 24. */
 export function toConfig(v: unknown): BoardConfig {

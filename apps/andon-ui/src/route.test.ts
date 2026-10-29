@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { TIMING } from './docs';
-import { defaultView, entryOf, formatHash, historyStep, initialView, jobKey, parseHash, readEntry, viewKey, viewOf } from './route';
+import { defaultView, entryOf, epicKey, formatHash, historyStep, initialView, jobKey, parseHash, readEntry, viewKey, viewOf } from './route';
 import type { View } from './route';
 
 const v = (fields: Partial<View>): View => {
@@ -137,5 +137,44 @@ describe('push or replace (AC6)', () => {
 
   test('no change, no step', () => {
     expect(historyStep(ins, { ...ins }, null)).toBe('none');
+  });
+});
+
+describe('the epic= hash form (056 AC6)', () => {
+  const E = { project: 'p1', slug: 'auth' };
+  const ev = (fields: Partial<View>): View => ({ ...v(fields), inspector: true });
+
+  test('round-trips through formatHash and parseHash, with a file and with the other forms', () => {
+    for (const view of [
+      ev({ epic: E }),
+      ev({ epic: E, file: 'epics/auth.md' }),
+      ev({ epic: { project: 'a/b c', slug: 'x&y' }, file: 'briefs/a b.md' }),
+      ev({ project: 'p1', epic: E, settled: { project: null }, needs: true }),
+    ]) {
+      expect(parseHash(formatHash(view))).toEqual(view);
+    }
+    expect(formatHash(ev({ epic: E, file: 'epics/auth.md' }))).toBe('#epic=p1/auth&file=epics%2Fauth.md');
+    expect(epicKey(E)).toBe('p1/auth');
+  });
+
+  test('malformed forms are ignored, and an epic wins over a job', () => {
+    for (const h of ['#epic=', '#epic', '#epic=p1', '#epic=p1/', '#epic=/auth', '#epic=%E0%A4%A/auth', '#epic=p1/%zz']) {
+      expect({ h, view: parseHash(h) }).toEqual({ h, view: defaultView() });
+    }
+    expect(parseHash('#epic=p1/auth&job=p1/001-a')).toEqual(ev({ epic: E }));
+    expect(parseHash('#job=p1/001-a&epic=p1/auth&file=x.md')).toEqual(ev({ epic: E, file: 'x.md' }));
+    expect(parseHash('#file=x.md')).toEqual(defaultView()); // a file needs a job or an epic
+  });
+
+  test('an open epic is a layer: opening it pushes, and its Abandon… sheet rides in history.state', () => {
+    const board = v({});
+    const page = ev({ epic: E });
+    expect(historyStep(board, page, null)).toBe('push');
+    expect(entryOf(page, null)).toEqual({ andon: { inspector: false, sheet: null, under: null } });
+    const sheet = { ...page, sheet: 'epic-abandon' as const };
+    expect(historyStep(page, sheet, null)).toBe('push');
+    expect(viewOf(formatHash(sheet), entryOf(sheet, viewKey(page)))).toEqual(sheet);
+    expect(readEntry({ andon: { sheet: 'epic-abandon' } }).sheet).toBe('epic-abandon');
+    expect(viewKey(page)).not.toBe(viewKey({ ...board, inspector: true }));
   });
 });

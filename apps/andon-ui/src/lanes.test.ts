@@ -2,8 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BoardJob } from './board';
-import { HOUR, MINUTE, NOW, before, fleetJobs, job, narrowBoard, reviewerSpan, stageSpans, stopped, tag } from './fixtures';
-import { COLUMNS, activity, age, buildLanes, columnOf, ghostOf, headerOf, isReviewFailed, kindOf, orderLanes, popoverOf, tagOf, tokenOf } from './lanes';
+import { HOUR, MINUTE, NOW, before, epic, fleetJobs, inEpic, job, narrowBoard, reviewerSpan, stageSpans, stopped, tag, tagEpic } from './fixtures';
+import { COLUMNS, activity, age, buildLanes, columnOf, epicGutter, ghostOf, headerOf, isReviewFailed, kindOf, orderLanes, popoverOf, tagOf, tokenOf } from './lanes';
+import { MARK_LEGEND } from './sidebar';
 import type { Kind, Lane } from './lanes';
 import { ALL, withSettled } from './projects';
 import { applyEvent, applySettled, emptyState, startSettled } from './state';
@@ -615,5 +616,197 @@ describe('the settled link and the Settled sheet markup (050 AC3, AC5)', () => {
     expect(sheet).toMatch(/\{#if status\.loading\}\s*<li class="empty" role="status">Loading settled jobs…<\/li>\s*\{:else if status\.failures\.length === 0\}\s*<li class="empty">Nothing has settled\.<\/li>/);
     const token = readFileSync(join(import.meta.dir, 'Token.svelte'), 'utf8');
     expect(token).not.toContain('t.dimmed');
+  });
+});
+
+// ---- epics (056) ----
+
+
+const member = (slug: string, state: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({ slug, after: [], state, job: null, stage: null, blockedOn: [], ...extra });
+
+describe('epic sub-lanes (056 AC2)', () => {
+  const auth = epic({ slug: 'auth', startedAt: before(3 * HOUR), members: [member('a', 'merged', { job: '051-a', stage: 'merged' }), member('b', 'running', { job: '052-b', stage: 'review' }), member('c', 'queued'), member('d', 'blocked', { blockedOn: [{ member: 'b', job: '052-b' }] })] });
+  const older = epic({ slug: 'billing', startedAt: before(9 * HOUR), members: [member('x', 'running', { job: '060-x', stage: 'build' })] });
+  const jobs: BoardJob[] = [
+    at({ id: '040-solo', stage: 'build', stageEnteredAt: before(HOUR) }),
+    inEpic({ id: '051-a', stage: 'merged', endedAt: before(30 * HOUR) }, auth), // older than settleAfterHours: still on the line
+    inEpic({ id: '052-b', stage: 'review', round: 1, reviews: { code: 'pending' }, stageEnteredAt: before(20 * MINUTE) }, auth),
+    inEpic({ id: '053-sync-main', stage: 'build', kind: 'sync', stageEnteredAt: before(5 * MINUTE) }, auth),
+    inEpic({ id: '054-fix-gate', stage: 'spec', kind: 'fix', stageEnteredAt: before(4 * MINUTE) }, auth),
+    inEpic({ id: '060-x', stage: 'build', stageEnteredAt: before(2 * HOUR) }, older),
+  ];
+  const epics = [tagEpic(auth), tagEpic(older)];
+  const lane = (): Lane => {
+    const l = buildLanes([P1], jobs, NOW, false, {}, epics)[0];
+    if (l === undefined) throw new Error('no lane');
+    return l;
+  };
+  const keysIn = (cells: Lane['cells']): string[] => cells.flatMap((c) => c.tokens.map((t) => `${c.column}:${t.num}`));
+
+  test("each epic has a sub-lane in the same six columns, holding only its jobs; the project lane keeps the rest", () => {
+    const l = lane();
+    expect(keysIn(l.cells)).toEqual(['build:040']);
+    expect(l.subs.map((s) => s.key)).toEqual(['p1/billing', 'p1/auth']); // oldest start first
+    const sub = l.subs[1];
+    expect(sub?.cells.map((c) => c.column)).toEqual(COLUMNS.map((c) => c.key));
+    expect(keysIn(sub?.cells ?? []).sort()).toEqual(['build:053', 'merged:051', 'review:052', 'spec:054']);
+    expect(keysIn(l.subs[0]?.cells ?? [])).toEqual(['build:060']);
+  });
+
+  test('generated jobs are tagged sync or fix; members and standalone jobs are not', () => {
+    const tokens = [...lane().cells, ...lane().subs.flatMap((s) => s.cells)].flatMap((c) => c.tokens);
+    expect(Object.fromEntries(tokens.map((t) => [t.num, t.helper]))).toEqual({ '040': null, '051': null, '052': null, '053': 'sync', '054': 'fix', '060': null });
+  });
+
+  test('queued and blocked members never become tokens: only jobs do', () => {
+    const sub = lane().subs[1];
+    expect(sub?.cells.flatMap((c) => c.tokens).length).toBe(4);
+    expect(sub?.cells.flatMap((c) => c.tokens.map((t) => t.title))).not.toContain('c');
+  });
+
+  test('a job whose epic is missing from epics falls back to the project lane', () => {
+    const lost = { ...at({ id: '070-lost', stage: 'build', epic: 'gone', kind: 'member', stageEnteredAt: before(MINUTE) }) };
+    const l = buildLanes([P1], [...jobs, lost], NOW, false, {}, epics)[0];
+    expect(keysIn(l?.cells ?? []).sort()).toEqual(['build:040', 'build:070']);
+  });
+
+  test('the per-cell cap applies to each sub-lane cell; focused, it is uncapped', () => {
+    const many = [1, 2, 3, 4, 5].map((n) => inEpic({ id: `08${n}-m`, stage: 'build', stageEnteredAt: before(n * MINUTE) }, auth));
+    const capped = buildLanes([P1], many, NOW, false, {}, [tagEpic(auth)])[0]?.subs[0];
+    const build = capped?.cells.find((c) => c.column === 'build');
+    expect([build?.tokens.length, build?.more, capped?.rows]).toEqual([3, 2, 4]);
+    const open = buildLanes([P1], many, NOW, true, {}, [tagEpic(auth)])[0]?.subs[0];
+    expect([open?.cells.find((c) => c.column === 'build')?.tokens.length, open?.cells.find((c) => c.column === 'build')?.more]).toEqual([5, 0]);
+  });
+
+  test('"+N more" in a sub-lane focuses the project (Lane.svelte)', () => {
+    const src = readFileSync(join(import.meta.dir, 'Lane.svelte'), 'utf8');
+    expect(src).toMatch(/\{#if cell\.more > 0\}\s*<button class="more" type="button" onclick=\{\(\) => onfocus\(lane\.project\.id\)\}>/);
+    // the sub-lanes render with the same cell snippet, inside the lane's own slot, so they move with it
+    expect(src).toMatch(/\{#each sub\.cells as cell \(cell\.column\)\}\s*\{@render cellOf\(/);
+  });
+
+  test("a sub-lane never reorders apart from its project lane: lanes order by project, sub-lanes ride inside", () => {
+    const P2 = { id: 'p2', name: 'two' };
+    const hot = epic({ slug: 'hot', waitingOn: 'you', state: 'waiting', note: 'checkout is on dev' });
+    const lanes = buildLanes([P1, P2], [at({ id: '001-a', stage: 'build' }), at({ id: '002-b', stage: 'build' }, P2)], NOW, false, {}, [tagEpic(hot, P2)]);
+    const ordered = orderLanes(lanes, null).lanes;
+    expect(ordered.map((l) => [l.project.id, l.subs.map((s) => s.key)])).toEqual([
+      ['p2', ['p2/hot']], // its waiting epic sorts the project up
+      ['p1', []],
+    ]);
+  });
+
+  test('a landed epic keeps its sub-lane until it settles; then its sub-lane and its merged jobs leave the board', () => {
+    const landed = epic({ slug: 'auth', state: 'landed', sha: 'abc1234', endedAt: before(2 * HOUR), members: [member('a', 'merged', { job: '051-a', stage: 'merged' })] });
+    const merged = inEpic({ id: '051-a', stage: 'merged', endedAt: before(30 * HOUR) }, landed);
+    const fresh = buildLanes([P1], [merged], NOW, false, {}, [tagEpic(landed)])[0];
+    expect(fresh?.subs.map((s) => s.key)).toEqual(['p1/auth']);
+    expect(keysIn(fresh?.subs[0]?.cells ?? [])).toEqual(['merged:051']);
+    const old = epic({ ...landed, endedAt: before(25 * HOUR) });
+    const settled = buildLanes([P1], [{ ...merged, epic: old }], NOW, false, {}, [tagEpic(old)])[0];
+    expect([settled?.subs.length, settled?.idle]).toEqual([0, true]);
+  });
+});
+
+describe('the sub-lane gutter (056 AC3)', () => {
+  const gutter = (fields: Record<string, unknown>, jobs: BoardJob[] = []) => epicGutter(epic(fields), jobs, NOW);
+  const members = [member('a', 'merged'), member('b', 'merged'), member('c', 'merged'), member('d', 'running'), member('e', 'running'), member('f', 'blocked', { blockedOn: [{ member: 'd', job: '052-d' }] }), member('g', 'queued')];
+
+  test('three lines: the name and dot; N/M merged · K running · elapsed; and what it waits on', () => {
+    const g = gutter({ members });
+    expect(g).toEqual({ name: 'auth', dot: 'blue', state: 'Running', progress: '3/7 merged · 2 running · 11h 40m', waiting: { tone: null, text: '1 blocked on 052 · 1 queued' } });
+    expect(gutter({ members, title: 'Auth rewrite' }).name).toBe('Auth rewrite');
+    expect(gutter({ members: [member('a', 'running')] }).waiting).toBeNull();
+    // several blocked on one job, and one blocked on a member with no job yet
+    expect(gutter({ members: [member('a', 'blocked', { blockedOn: [{ member: 'x', job: '052-x' }] }), member('b', 'blocked', { blockedOn: [{ member: 'x', job: '052-x' }] }), member('c', 'blocked', { blockedOn: [{ member: 'y', job: null }] })] }).waiting?.text).toBe('2 blocked on 052 · 1 blocked on y');
+  });
+
+  test('Landing… while landing; red "Waiting on you: <note>" when waitingOn is "you", which turns the dot red', () => {
+    expect(gutter({ members, state: 'landing' })).toMatchObject({ dot: 'green', state: 'Landing', waiting: { tone: 'green', text: 'Landing…' } });
+    expect(gutter({ members, state: 'waiting', waitingOn: 'you', note: 'checkout is on dev' })).toMatchObject({ dot: 'red', state: 'Waiting on you', waiting: { tone: 'red', text: 'Waiting on you: checkout is on dev' } });
+    // a derived wait (an escalated member): the member is the needs-human token; the gutter shows what's blocked
+    const auth = epic({ members });
+    const derived = gutter({ members, state: 'waiting', waitingOn: 'members' }, [inEpic({ id: '052-d', stage: 'needs-human', ...stopped('escalated', 'review') }, auth)]);
+    expect(derived).toMatchObject({ dot: 'red', state: 'Waiting on members', waiting: { tone: null, text: '1 blocked on 052 · 1 queued' } });
+  });
+
+  test('elapsed runs to endedAt once the epic ended', () => {
+    expect(gutter({ members: [member('a', 'merged')], state: 'landed', sha: 'abc1234', startedAt: before(5 * HOUR), endedAt: before(HOUR) })).toMatchObject({ progress: '1/1 merged · 0 running · 4h 0m', waiting: { tone: 'green', text: 'Landed abc1234' } });
+  });
+
+  test('the gutter markup: indented with an elbow and a tint, the name opens the epic page, a waiting epic turns it red (Lane.svelte, app.css)', () => {
+    const src = readFileSync(join(import.meta.dir, 'Lane.svelte'), 'utf8');
+    expect(src).toContain('class="row lane sub" class:last={i === lane.subs.length - 1} class:hotgut={sub.hot}');
+    expect(src).toContain('onclick={() => onopenepic(sub.key)}');
+    const css = readFileSync(join(import.meta.dir, 'app.css'), 'utf8');
+    for (const rule of ['.row.sub > .gut {', '.row.sub > .gut::before {', '.row.sub.hotgut > .gut {', '.row.sub {']) expect(css).toContain(rule);
+  });
+});
+
+describe('the "in epic" merged token (056 AC4)', () => {
+  const auth = epic({ slug: 'auth', target: 'main' });
+  const merged = inEpic({ id: '051-a', title: 'Session store', stage: 'merged', endedAt: before(HOUR), note: 'merged 3c9e01a' }, auth);
+
+  test('a member merged into a running epic is the compact one-line merged token, marked in epic', () => {
+    const t = tokenOf(merged, NOW);
+    expect([t.kind, t.round, t.tag, t.chips, t.time]).toEqual(['merged', null, null, [], '1h']);
+    expect(t.inEpic).toBe('Merged into factory/epic/auth · lands on main with the epic');
+    const pop = popoverOf(merged, NOW);
+    expect([pop.epic, pop.stage, pop.note]).toEqual(['auth', 'Merged into the epic', 'merged 3c9e01a · Merged into factory/epic/auth · lands on main with the epic']);
+  });
+
+  test('no mark once the epic is terminal, for a standalone merged job, or for an unmerged member', () => {
+    expect(tokenOf({ ...merged, epic: epic({ slug: 'auth', state: 'landed', endedAt: before(MINUTE) }) }, NOW).inEpic).toBeNull();
+    expect(tokenOf(at({ id: '039-x', stage: 'merged', endedAt: before(HOUR) }), NOW).inEpic).toBeNull();
+    expect(tokenOf(inEpic({ id: '052-b', stage: 'build' }, auth), NOW).inEpic).toBeNull();
+    // a job whose epic is unknown: never settled, and no mark (nothing says where it lands)
+    const unknown = at({ id: '053-c', stage: 'merged', epic: 'gone', kind: 'member', endedAt: before(48 * HOUR) });
+    expect([kindOf(unknown, NOW), tokenOf(unknown, NOW).inEpic]).toEqual(['merged', null]);
+  });
+
+  test('the markup: a dashed green edge and the branch-merge icon before the time, its tooltip and label the mark; the legend has its entry', () => {
+    const token = readFileSync(join(import.meta.dir, 'Token.svelte'), 'utf8');
+    expect(token).toContain('class:ie={t.inEpic !== null}');
+    expect(token).toMatch(/\{#if oneLine && t\.inEpic !== null\}<span class="iem" role="img" title=\{t\.inEpic\} aria-label=\{t\.inEpic\}><svg[\s\S]*?<\/span>\{\/if\}\{#if oneLine && t\.time !== null\}<span class="age">/);
+    const css = readFileSync(join(import.meta.dir, 'app.css'), 'utf8');
+    expect(css).toMatch(/\.tok\.ie::before \{[^}]*repeating-linear-gradient\(180deg, var\(--green\)/);
+    expect(css).toMatch(/\.tok\.ie \{[^}]*border-style: dashed/);
+    expect(MARK_LEGEND).toEqual([{ key: 'in-epic', label: 'In epic' }]);
+    const bar = readFileSync(join(import.meta.dir, 'StatusBar.svelte'), 'utf8');
+    expect(bar).toContain('{#each MARK_LEGEND as l (l.key)}');
+    expect(bar).toContain('class="iem"');
+  });
+});
+
+describe('epics and trouble first in the lanes (056 AC5)', () => {
+  const hot = epic({ slug: 'hot', state: 'waiting', waitingOn: 'you', note: 'checkout is on dev' });
+  const auth = epic({ slug: 'auth' });
+
+  test("a project's tier counts its epics' jobs and each epic waiting on you; one whose only activity is a waiting epic is needs-human", () => {
+    const only = buildLanes([P1], [], NOW, false, {}, [tagEpic(hot)])[0];
+    expect([only?.idle, only?.state, only?.dot, only?.counts]).toEqual([false, 'needs-human', 'red', { human: 1, failed: 0, active: 0 }]);
+    const escalated = inEpic({ id: '052-b', stage: 'needs-human', ...stopped('escalated', 'review') }, auth);
+    const working = inEpic({ id: '053-c', stage: 'build' }, auth);
+    const l = buildLanes([P1], [escalated, working], NOW, false, {}, [tagEpic(auth)])[0];
+    expect([l?.state, l?.counts, l?.tier]).toEqual(['needs-human', { human: 1, failed: 0, active: 2 }, 'live|1|0']); // the escalated member counts once
+    expect(l?.meta.trouble).toBeNull(); // the project's own gutter counts its own cells only
+    expect(l?.subs[0]?.cells.find((c) => c.column === 'andon')?.tokens.map((t) => t.num)).toEqual(['052']);
+  });
+
+  test('the header counts sub-lane jobs, and the Andon count adds each epic waiting on you', () => {
+    const lanes = buildLanes([P1], [at({ id: '001-a', stage: 'needs-human', ...stopped('escalated', 'build') }), inEpic({ id: '052-b', stage: 'build' }, auth)], NOW, false, {}, [tagEpic(auth), tagEpic(hot)]);
+    const h = headerOf(lanes, [24]);
+    expect(h.columns.map((c) => [c.key, c.count])).toEqual([['andon', 2], ['spec', 0], ['build', 1], ['review', 0], ['approve', 0], ['merged', 0]]);
+  });
+
+  test('Needs Me: a lane shown only for its sub-lanes collapses to a one-line header; focus shows every sub-lane expanded', () => {
+    const header = buildLanes([P1], [], NOW, false, {}, [tagEpic(hot)], true)[0];
+    expect([header?.header, header?.rows, header?.subs.map((s) => [s.key, s.rows])]).toEqual([true, 0, [['p1/hot', 1]]]);
+    const own = buildLanes([P1], [at({ id: '001-a', stage: 'needs-human', ...stopped('escalated', 'build') })], NOW, false, {}, [tagEpic(hot)], true)[0];
+    expect(own?.header).toBe(false);
+    expect(buildLanes([P1], [], NOW, false, {}, [tagEpic(hot)], false)[0]?.header).toBe(false); // only under Needs Me
+    const focused = buildLanes([P1], [inEpic({ id: '052-b', stage: 'build' }, auth)], NOW, true, {}, [tagEpic(auth), tagEpic(hot)])[0];
+    expect([focused?.idle, focused?.header, focused?.subs.map((s) => s.key)]).toEqual([false, false, ['p1/auth', 'p1/hot']]);
   });
 });

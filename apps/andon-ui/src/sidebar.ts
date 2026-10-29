@@ -4,7 +4,7 @@
 // and the Mac app's status bar event.
 // Nothing here touches the DOM; App.svelte and the frame components only lay it out.
 import { isRecord } from './job';
-import type { Job } from './job';
+import type { Epic, Job } from './job';
 import { isReviewFailed } from './lanes';
 import type { Status } from './live';
 import { ALL, needsHuman } from './projects';
@@ -55,9 +55,13 @@ const plural = (n: number, one: string, many: string): string => `${n} ${n === 1
 const redBadge = (n: number): Badge => ({ tone: 'red', count: n, label: plural(n, 'needs a human', 'need a human') });
 const grayBadge = (n: number): Badge => ({ tone: 'gray', count: n, label: `${n} active` });
 
-/** One project's state, dot, and badge (red needs-human count, else gray active count, else none). */
-export function projectStatus(jobs: readonly Job[]): { state: ProjectState; badge: Badge | null } {
-  const human = jobs.filter((j) => j.stage === 'needs-human').length;
+/**
+ * One project's state, dot, and badge (red needs-human count, else gray active count, else none).
+ * `jobs` are every job on its board, its epics' included; each epic waiting on you (`epics`, its
+ * board's) is one more needs-human item, so a project whose only trouble is a waiting epic isn't idle.
+ */
+export function projectStatus(jobs: readonly Job[], epics: readonly Pick<Epic, 'waitingOn'>[] = []): { state: ProjectState; badge: Badge | null } {
+  const human = jobs.filter((j) => j.stage === 'needs-human').length + epics.filter((e) => e.waitingOn === 'you').length;
   const active = jobs.filter(isActive);
   const state: ProjectState = human > 0 ? 'needs-human' : active.some(reviewFailed) ? 'review-failed' : active.length > 0 ? 'active' : 'idle';
   const badge = human > 0 ? redBadge(human) : active.length > 0 ? grayBadge(active.length) : null;
@@ -72,7 +76,7 @@ export function sidebarModel(s: UiState, sel: Selection): SidebarModel {
   const total = needsHuman(s).total;
   const projects = s.projects
     .map((p): SidebarRow => {
-      const { state, badge } = projectStatus(s.boards[p.id]?.jobs ?? []);
+      const { state, badge } = projectStatus(s.boards[p.id]?.jobs ?? [], s.boards[p.id]?.epics ?? []);
       return { id: p.id, name: p.name, title: p.root, state, dot: DOTS[state], badge, selected: sel === p.id };
     })
     .sort(byName);
@@ -139,6 +143,9 @@ export const LEGEND: readonly LegendEntry[] = [
   { key: 'approve', label: 'At approver' },
   { key: 'merged', label: 'Merged' },
 ];
+
+/** The legend's mark entries, after the swatches: the branch-merge icon on a member merged into its epic's branch. */
+export const MARK_LEGEND: readonly LegendEntry[] = [{ key: 'in-epic', label: 'In epic' }];
 
 /** "Settle after 24h", or each distinct setting in the selection ("Settle after 2h / 24h"). */
 export function settleText(hours: readonly number[]): string {

@@ -163,3 +163,78 @@ describe('the settled summary and the settled cache (050 AC1)', () => {
     expect(applySettled(dropped, P1.id, second.rev, { ok: true, data: { jobs: [] } })).toBe(dropped);
   });
 });
+
+describe('epics in the UI state (056 AC1)', () => {
+  const E1 = { slug: 'auth', branch: 'factory/epic/auth', target: 'main', state: 'running', waitingOn: null, note: '', members: [{ slug: 'a', after: [], state: 'running', job: '001-a', stage: 'build', blockedOn: [] }], generated: [], counts: { running: 1 }, startedAt: '2026-10-22T00:00:00.000Z', endedAt: null, updated: '2026-10-22T01:00:00.000Z', extra: 1 };
+  const E2 = { slug: 'billing', state: 'waiting', waitingOn: 'you', note: 'checkout is on dev', members: [], title: 'Billing rewrite' };
+  const board = (epics: unknown, settled: unknown = { count: 0, lastMergedAt: null, epics: 0 }) => ({ project: P1.id, jobs: [{ id: '001-a', stage: 'build', epic: 'auth', kind: 'member' }], config: config(['code']), settled, epics });
+
+  test('a board, a board event, and a fetched board hold their epics; malformed entries are skipped; a missing epics reads as []', () => {
+    const s = applyEvent(twoProjects(), 'board', board([E1, 'junk', null, { state: 'running' }, { slug: '' }, E2, { ...E1, state: 'landed' }]));
+    expect(s.boards[P1.id]?.epics.map((e) => e.slug)).toEqual(['auth', 'billing']); // a second entry with a slug already seen is skipped
+    expect(s.boards[P1.id]?.epics[0]).toMatchObject({ slug: 'auth', title: null, branch: 'factory/epic/auth', target: 'main', state: 'running', waitingOn: null, members: [{ slug: 'a', job: '001-a' }] });
+    expect(s.boards[P1.id]?.epics[1]).toMatchObject({ slug: 'billing', title: 'Billing rewrite', branch: 'factory/epic/billing', waitingOn: 'you', note: 'checkout is on dev' });
+    expect(s.boards[P1.id]?.jobs[0]).toMatchObject({ id: '001-a', epic: 'auth', kind: 'member' });
+    for (const missing of [undefined, null, 'x', {}, 3]) expect(applyEvent(s, 'board', board(missing)).boards[P1.id]?.epics).toEqual([]);
+    expect(s.boards[P2.id]?.epics).toEqual([]); // a project whose board sent none
+    const rev = revOf(s, P1.id);
+    expect(applyFetched(s, P1.id, rev, { ok: true, data: board([E2]) }).boards[P1.id]?.epics.map((e) => e.slug)).toEqual(['billing']);
+    expect(applyFetched(s, P1.id, rev, { ok: true, data: { jobs: [], config: config([]) } }).boards[P1.id]?.epics).toEqual([]);
+    // an error keeps the last board's epics
+    expect(applyEvent(s, 'error', { project: P1.id, reason: 'config.json: bad' }).boards[P1.id]?.epics.map((e) => e.slug)).toEqual(['auth', 'billing']);
+  });
+
+  test("a job's epic and kind: a standalone job has neither; a job in an epic with no readable kind is a member", () => {
+    const s = applyEvent(twoProjects(), 'board', {
+      project: P1.id,
+      config: config([]),
+      jobs: [{ id: '001-a', stage: 'spec' }, { id: '002-b', stage: 'spec', epic: 'auth', kind: 'sync' }, { id: '003-c', stage: 'spec', epic: 'auth', kind: 'odd' }, { id: '004-d', stage: 'spec', epic: '', kind: 'fix' }, { id: '005-e', stage: 'spec', epic: 7 }],
+    });
+    expect(s.boards[P1.id]?.jobs.map((j) => [j.id, j.epic, j.kind])).toEqual([
+      ['001-a', null, null],
+      ['002-b', 'auth', 'sync'],
+      ['003-c', 'auth', 'member'],
+      ['004-d', null, null],
+      ['005-e', null, null],
+    ]);
+  });
+
+  test("/settled's epics are cached with its jobs; a missing epics is []", () => {
+    const s = applyEvent(twoProjects(), 'board', board([], { count: 1, lastMergedAt: null, epics: 1 }));
+    const st = startSettled(s, P1.id);
+    expect(st.state.settled[P1.id]?.epics).toBeNull();
+    const loaded = applySettled(st.state, P1.id, st.rev, { ok: true, data: { jobs: [{ id: '000-old', stage: 'merged', epic: 'old' }], epics: [{ slug: 'old', state: 'landed', sha: 'abc1234' }, 'junk'] } });
+    expect(loaded.settled[P1.id]?.epics?.map((e) => [e.slug, e.state, e.sha])).toEqual([['old', 'landed', 'abc1234']]);
+    const again = startSettled(loaded, P1.id);
+    expect(again.state.settled[P1.id]?.epics?.map((e) => e.slug)).toEqual(['old']); // kept while it reloads
+    expect(applySettled(again.state, P1.id, again.rev, { ok: true, data: { jobs: [] } }).settled[P1.id]?.epics).toEqual([]);
+  });
+
+  test("the summary keeps its epics count, and a change in it alone triggers a settled refetch", () => {
+    expect(toSummary({ count: 2, lastMergedAt: null, epics: 1 })).toEqual({ count: 2, lastMergedAt: null, epics: 1 });
+    for (const bad of [-1, 1.5, '1', null]) expect(toSummary({ count: 2, lastMergedAt: null, epics: bad })).toEqual({ count: 2, lastMergedAt: null });
+    let s = applyEvent(twoProjects(), 'board', board([], { count: 1, lastMergedAt: null, epics: 0 }));
+    const st = startSettled(s, P1.id);
+    s = applySettled(st.state, P1.id, st.rev, { ok: true, data: { jobs: [], epics: [] } });
+    expect(wantsSettled(s, P1.id)).toBe(false);
+    expect(settledCurrent(s, P1.id)).toBe(true);
+    // a summary without `epics` (an older service) reads as 0: no refetch
+    expect(wantsSettled(applyEvent(s, 'board', board([], { count: 1, lastMergedAt: null })), P1.id)).toBe(false);
+    const landed = applyEvent(s, 'board', board([], { count: 1, lastMergedAt: null, epics: 1 }));
+    expect(settledCurrent(landed, P1.id)).toBe(false);
+    expect(wantsSettled(landed, P1.id)).toBe(true);
+  });
+
+  test('a project with no epics builds the same lanes, sidebar, counts, and search as before epics', () => {
+    const plain = twoProjects();
+    const withEmpty = applyEvent(applyEvent(plain, 'board', { project: P1.id, jobs: [{ id: '001-a', stage: 'spec' }], config: config(['code']), epics: [] }), 'board', { project: P2.id, jobs: [{ id: '001-a', stage: 'build' }], config: config(['security'], 6), epics: [] });
+    const now = Date.parse('2026-10-22T12:00:00.000Z');
+    const lanes = (s: UiState) => buildLanes(s.projects, boardJobs(s, ALL), now, false);
+    expect(lanes(withEmpty)).toEqual(lanes(plain));
+    expect(lanes(withEmpty).every((l) => l.subs.length === 0 && !l.header)).toBe(true);
+    expect(sidebarModel(withEmpty, ALL)).toEqual(sidebarModel(plain, ALL));
+    expect(subtitle(withEmpty, P1.id, 1, 0)).toEqual(subtitle(plain, P1.id, 1, 0));
+    expect(find(withEmpty.projects, boardJobs(withEmpty, ALL), 'one', now)).toEqual(find(plain.projects, boardJobs(plain, ALL), 'one', now));
+    expect(boardJobs(withEmpty, ALL).every((b) => b.epic === undefined)).toBe(true);
+  });
+});

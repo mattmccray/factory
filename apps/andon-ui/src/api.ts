@@ -1,7 +1,7 @@
 // Reads from the Andon service. The fetch function is passed in, so tests can fake the service.
 import type { BoardJob } from './board';
 import { isRecord } from './job';
-import { boardPath, docsPath, settledPath } from './projects';
+import { boardPath, docsPath, epicDocsPath, settledPath } from './projects';
 
 export interface FetchResponse {
   ok: boolean;
@@ -33,7 +33,7 @@ async function fetchJson(fetcher: Fetcher, path: string): Promise<Fetched> {
 /** One project's narrow board (`?settled=summary`), or the reason it couldn't be read. */
 export const fetchBoard = (fetcher: Fetcher, pid: string): Promise<Fetched> => fetchJson(fetcher, boardPath(pid));
 
-/** One project's settled jobs (`{ jobs }`), or the reason they couldn't be read (the first line of the error body). */
+/** One project's settled jobs and epics (`{ jobs, epics }`), or the reason they couldn't be read (the first line of the error body). */
 export const fetchSettled = (fetcher: Fetcher, pid: string): Promise<Fetched> => fetchJson(fetcher, settledPath(pid));
 
 export interface DocFile {
@@ -41,11 +41,16 @@ export interface DocFile {
   text: string;
 }
 
-/** A job's docs, from its own project's `/projects/<pid>/jobs/<id>/docs`. */
-export async function fetchDocs(fetcher: Fetcher, b: Pick<BoardJob, 'project' | 'job'>): Promise<DocFile[]> {
-  const data = await getJson(fetcher, docsPath(b));
+/** A `{ files: [{ path, text }] }` payload's files; a malformed entry is skipped. */
+function toFiles(data: unknown): DocFile[] {
   const files = isRecord(data) && Array.isArray(data.files) ? data.files : [];
   const out: DocFile[] = [];
   for (const f of files) if (isRecord(f) && typeof f.path === 'string' && typeof f.text === 'string') out.push({ path: f.path, text: f.text });
   return out;
 }
+
+/** A job's docs, from its own project's `/projects/<pid>/jobs/<id>/docs`. */
+export const fetchDocs = async (fetcher: Fetcher, b: Pick<BoardJob, 'project' | 'job'>): Promise<DocFile[]> => toFiles(await getJson(fetcher, docsPath(b)));
+
+/** An epic's docs (its plan, then its members' briefs), from its own project's `/projects/<pid>/epics/<slug>/docs`. */
+export const fetchEpicDocs = async (fetcher: Fetcher, pid: string, slug: string): Promise<DocFile[]> => toFiles(await getJson(fetcher, epicDocsPath(pid, slug)));

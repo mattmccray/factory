@@ -1,16 +1,21 @@
 import { describe, expect, test } from 'bun:test';
 import { fetchDocs } from './api';
 import type { Fetcher } from './api';
-import { buildBoard } from './board';
-import { HOUR, NOW, before, narrowBoard } from './fixtures';
+import { buildBoard, isSettled } from './board';
+import { HOUR, MINUTE, NOW, before, epic, narrowBoard } from './fixtures';
 import { settledRows, settledTitle } from './inspector';
 import {
   ALL,
   SELECTION_KEY,
+  boardEpics,
   boardJobs,
   boardPath,
   docsPath,
+  epicDocsPath,
+  epicJobs,
+  isEpicHeld,
   isHeld,
+  lookupEpic,
   loadSelection,
   lookupJob,
   needsHuman,
@@ -18,11 +23,13 @@ import {
   resolveSelection,
   reviewersFor,
   saveSelection,
+  settledEpicsFor,
   settledFor,
   settledPath,
   settledStatus,
   settledTotal,
   sheetProjects,
+  withSettled,
 } from './projects';
 import { applyEvent, applySettled, emptyState, startSettled } from './state';
 import type { UiState } from './state';
@@ -239,5 +246,81 @@ describe('the narrow board and the settled cache', () => {
     // a list fetched for an older summary isn't trusted to be complete
     const moved = applyEvent(l, 'board', { project: P1.id, jobs: n1.jobs, config: config(24), settled: { count: 4, lastMergedAt: n1.settled.lastMergedAt } });
     expect(lookupJob(moved, never)).toEqual({ state: 'waiting' });
+  });
+});
+
+describe('epics across the projects (056 AC1, AC5, AC6, AC7)', () => {
+  const auth = { slug: 'auth', target: 'main', state: 'running', waitingOn: null, members: [{ slug: 'a', after: [], state: 'merged', job: '010-a', stage: 'merged', blockedOn: [] }], startedAt: before(5 * HOUR), endedAt: null };
+  const hot = { slug: 'billing', state: 'waiting', waitingOn: 'you', note: 'checkout is on dev', members: [] };
+  function epicState(): UiState {
+    let s = state();
+    s = applyEvent(s, 'board', {
+      project: P2.id,
+      config: { reviewers: ['security', 'ui'] },
+      jobs: [
+        { id: '001-same-id', stage: 'needs-human', updated: before(2 * HOUR) },
+        { id: '010-a', stage: 'merged', epic: 'auth', kind: 'member', endedAt: before(30 * HOUR) },
+        { id: '011-b', stage: 'needs-human', epic: 'auth', kind: 'member' },
+        { id: '012-c', stage: 'build', epic: 'nowhere', kind: 'member' },
+      ],
+      settled: { count: 1, lastMergedAt: null, epics: 1 },
+      epics: [auth, hot],
+    });
+    return s;
+  }
+  const withSettledList = (s: UiState): UiState => {
+    const st = startSettled(s, P2.id);
+    return applySettled(st.state, P2.id, st.rev, {
+      ok: true,
+      data: { jobs: [{ id: '005-old', stage: 'merged', epic: 'old', kind: 'member', endedAt: before(60 * HOUR) }], epics: [{ slug: 'old', state: 'landed', sha: 'abc1234', endedAt: before(50 * HOUR), members: [{ slug: 'x' }] }] },
+    });
+  };
+
+  test("needs-human counts add each epic waiting on you; an escalated member counts once", () => {
+    expect(needsHuman(epicState())).toEqual({ byProject: { [P1.id]: 2, [P2.id]: 3 }, total: 5 });
+  });
+
+  test("a job is tagged with its epic when its project has it, on the board or settled; an unknown epic tags nothing", () => {
+    const s = withSettledList(epicState());
+    const by = (key: string) => [...boardJobs(s, ALL), ...withSettled(s, ALL)].find((b) => b.key === key);
+    expect(by(`${P2.id}/010-a`)?.epic?.slug).toBe('auth');
+    expect(by(`${P2.id}/012-c`)?.epic).toBeUndefined();
+    expect(by(`${P2.id}/005-old`)?.epic?.slug).toBe('old');
+    expect(by(`${P1.id}/001-same-id`)?.epic).toBeUndefined();
+    expect(boardEpics(s, ALL).map((e) => e.key)).toEqual([`${P2.id}/auth`, `${P2.id}/billing`]);
+    expect(boardEpics(s, P1.id)).toEqual([]);
+  });
+
+  test("a merged member of a running epic never settles, however old; a landed epic's members settle with it", () => {
+    const s = withSettledList(epicState());
+    const merged = boardJobs(s, P2.id).find((b) => b.job.id === '010-a');
+    expect(merged !== undefined && isSettled(merged, NOW)).toBe(false);
+    expect(merged !== undefined && isSettled({ ...merged, epic: { ...(merged.epic ?? epic({})), state: 'landed', endedAt: before(23 * HOUR) } }, NOW)).toBe(false);
+    expect(merged !== undefined && isSettled({ ...merged, epic: { ...(merged.epic ?? epic({})), state: 'landed', endedAt: before(25 * HOUR) } }, NOW)).toBe(true);
+    expect(merged !== undefined && isSettled({ ...merged, epic: { ...(merged.epic ?? epic({})), state: 'abandoned', endedAt: before(MINUTE) } }, NOW)).toBe(true);
+    const unknown = boardJobs(s, P2.id).find((b) => b.job.id === '012-c');
+    expect(unknown !== undefined && isSettled({ ...unknown, job: { ...unknown.job, stage: 'merged', endedAt: before(99 * HOUR) } }, NOW)).toBe(false);
+  });
+
+  test('the epic page finds its epic on the board or in the settled list, waiting until that list loads, and lists its jobs', () => {
+    const s = epicState();
+    expect(lookupEpic(s, { project: P2.id, slug: 'auth' })).toMatchObject({ state: 'found', item: { key: `${P2.id}/auth`, project: { id: P2.id, name: 'two' }, settleAfterHours: 24 } });
+    expect(lookupEpic(s, { project: P2.id, slug: 'old' })).toEqual({ state: 'waiting' });
+    const loaded = withSettledList(s);
+    expect(lookupEpic(loaded, { project: P2.id, slug: 'old' })).toMatchObject({ state: 'found', item: { key: `${P2.id}/old` } });
+    expect(lookupEpic(loaded, { project: P2.id, slug: 'gone' })).toEqual({ state: 'missing' });
+    expect(lookupEpic(loaded, { project: 'ffffffffffff', slug: 'auth' })).toEqual({ state: 'missing' });
+    expect([isEpicHeld(loaded, { project: P2.id, slug: 'auth' }), isEpicHeld(loaded, { project: P2.id, slug: 'old' })]).toEqual([true, false]);
+    expect(epicJobs(loaded, { project: P2.id, slug: 'auth' }).map((b) => b.job.id)).toEqual(['010-a', '011-b']);
+    expect(epicJobs(loaded, { project: P2.id, slug: 'old' }).map((b) => b.job.id)).toEqual(['005-old']);
+    expect(epicDocsPath('a b', 'auth')).toBe('/projects/a%20b/epics/auth/docs');
+  });
+
+  test("the Settled sheet's epics: held ones that settled on screen and the fetched ones, newest end first", () => {
+    const s = withSettledList(epicState());
+    expect(settledEpicsFor(s, ALL, NOW).map((e) => e.key)).toEqual([`${P2.id}/old`]);
+    const later = applyEvent(s, 'board', { project: P2.id, config: {}, jobs: [], epics: [{ ...auth, state: 'landed', endedAt: before(25 * HOUR) }] });
+    expect(settledEpicsFor(later, ALL, NOW).map((e) => e.key)).toEqual([`${P2.id}/auth`, `${P2.id}/old`]);
+    expect(settledEpicsFor(later, P1.id, NOW)).toEqual([]);
   });
 });

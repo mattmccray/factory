@@ -1,20 +1,29 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { TIMING, groupsOf, pickFile } from './docs';
-import { HOUR, NOW, before, job, tag } from './fixtures';
+import { HOUR, NOW, before, epic, inEpic, job, tag, tagEpic } from './fixtures';
 import {
   AUTO_HIDE_BELOW,
   INSPECTOR_DEFAULT,
   INSPECTOR_MAX,
   INSPECTOR_MIN,
   abandonCommand,
+  abandonEpicCommand,
   approveCommand,
   autoHides,
   clampWidth,
   copiedText,
   currentRound,
+  epicCommand,
+  epicFileModel,
+  epicLinkOf,
+  epicPage,
   fileModel,
   quoteArg,
   reworkCommand,
+  settledEpicRows,
+  settledItems,
   settledRows,
   settledTitle,
   sidebarShown,
@@ -196,5 +205,137 @@ describe('the Settled sheet (AC4)', () => {
     expect(settledTitle(settled)).toBe('Settled · merged more than 24h ago');
     expect(settledTitle([...settled, tag(job({ id: '9', stage: 'merged' }), a, 2)])).toBe('Settled · merged more than 2h / 24h ago');
     expect(settledTitle([])).toBe('Settled · merged more than 24h ago');
+  });
+});
+
+describe('the epic page (056 AC6)', () => {
+  const P = { id: 'p1', name: 'one' };
+  const auth = epic({
+    slug: 'auth',
+    target: 'main',
+    startedAt: before(11 * HOUR + 40 * 60_000),
+    members: [
+      { slug: 'a', after: [], state: 'merged', job: '051-a', stage: 'merged', blockedOn: [] },
+      { slug: 'b', after: ['a'], state: 'running', job: '052-b', stage: 'review', blockedOn: [] },
+      { slug: 'c', after: ['b'], state: 'blocked', job: null, stage: null, blockedOn: [{ member: 'b', job: '052-b' }] },
+      { slug: 'd', after: [], state: 'queued', job: null, stage: null, blockedOn: [] },
+      { slug: 'e', after: ['a', 'd'], state: 'needs-human', job: '053-e', stage: 'needs-human', blockedOn: [] },
+    ],
+    generated: [{ id: '054-sync-main', kind: 'sync', stage: 'merged' }, { id: '055-fix-gate', kind: 'fix', stage: 'build' }],
+  });
+  const jobs = [
+    inEpic({ id: '051-a', title: 'Session store', stage: 'merged', endedAt: before(HOUR) }, auth, P),
+    inEpic({ id: '052-b', title: 'Token refresh', stage: 'review', round: 1, reviews: { code: 'CHANGES' } }, auth, P),
+    inEpic({ id: '053-e', title: 'Login page', stage: 'needs-human' }, auth, P),
+    inEpic({ id: '054-sync-main', title: 'Merge main into the epic', stage: 'merged', kind: 'sync', endedAt: before(HOUR) }, auth, P),
+    inEpic({ id: '055-fix-gate', title: 'Make the gate green', stage: 'build', kind: 'fix', round: 1 }, auth, P),
+  ];
+
+  test('its pill, branch → target, timing, and progress split by member state', () => {
+    const page = epicPage(tagEpic(auth, P), jobs, NOW);
+    expect([page.name, page.project, page.state, page.stateLabel, page.lands, page.merged]).toEqual(['auth', 'one', 'running', 'Running', 'factory/epic/auth → main', '1/5 merged']);
+    expect(page.timing).toContain('started ');
+    expect(page.timing).toEndWith(' · 11h 40m running');
+    expect(page.progress.map((s) => s.cls)).toEqual(['merged', 'p-review-failed', 'blocked', 'queued', 'needs-human', 'merged', 'p-build']);
+    expect(page.waiting).toBeNull();
+    const landed = epicPage(tagEpic(epic({ ...auth, state: 'landed', sha: 'abc1234', endedAt: before(HOUR) }), P), jobs, NOW);
+    expect([landed.state, landed.timing.endsWith(' · landed after 10h 40m')]).toEqual(['landed', true]);
+  });
+
+  test('Members in plan order, each with its after: edges, state, and job link; then the Generated sync and fix jobs', () => {
+    const page = epicPage(tagEpic(auth, P), jobs, NOW);
+    expect(page.members.map((m) => [m.n, m.slug, m.title, m.after, m.tone, m.text, m.job?.key ?? null])).toEqual([
+      [1, 'a', 'Session store', 'after: none', 'merged', 'merged in epic', 'p1/051-a'],
+      [2, 'b', 'Token refresh', 'after: a', 'running', 'running · Review R1 · changes', 'p1/052-b'],
+      [3, 'c', 'c', 'after: b', 'blocked', 'blocked on 052', null],
+      [4, 'd', 'd', 'after: none', 'queued', 'queued', null],
+      [5, 'e', 'Login page', 'after: a, d', 'needs-human', 'needs you', 'p1/053-e'],
+    ]);
+    expect(page.generated.map((g) => [g.kind, g.title, g.tone, g.text, g.job.num])).toEqual([
+      ['sync', 'Merge main into the epic', 'merged', 'merged in epic', '054'],
+      ['fix', 'Make the gate green', 'running', 'running · Build R1', '055'],
+    ]);
+  });
+
+  test('waiting on you: the red box carries the note and /factory epic <slug> to copy', () => {
+    const page = epicPage(tagEpic(epic({ ...auth, state: 'waiting', waitingOn: 'you', note: 'checkout is on dev' }), P), jobs, NOW);
+    expect([page.state, page.stateLabel, page.waiting]).toEqual(['waiting', 'Waiting on you', { note: 'checkout is on dev', command: '/factory epic auth' }]);
+    expect(epicPage(tagEpic(epic({ ...auth, state: 'waiting', waitingOn: 'members' }), P), jobs, NOW).waiting).toBeNull();
+    expect(epicCommand('auth')).toBe('/factory epic auth');
+  });
+
+  test('the Abandon… sheet copies /factory epic abandon <slug> "<reason>", quoted as the job sheets quote it, and never with an empty reason', () => {
+    const messy = '  drop the "auth" plan\\now\nfor good  ';
+    expect(abandonEpicCommand('auth', messy)).toEqual({ text: `/factory epic abandon auth ${quoteArg(messy)}`, copyable: true });
+    expect(abandonEpicCommand('auth', 'superseded')).toEqual({ text: '/factory epic abandon auth "superseded"', copyable: true });
+    for (const blank of ['', '   ', '\n']) expect(abandonEpicCommand('auth', blank).copyable).toBe(false);
+    const sheet = readFileSync(join(import.meta.dir, 'CommandSheet.svelte'), 'utf8');
+    expect(sheet).toContain("kind === 'epic-abandon' ? abandonEpicCommand(id, text)");
+    expect(sheet).toContain('disabled={!cmd.copyable}');
+    expect(sheet).toContain("if (kind === 'epic-abandon') oncopy(cmd.text);");
+  });
+
+  test("a member job's page links to its epic; a standalone job's does not", () => {
+    expect(epicLinkOf(jobs[0] ?? tag(job({ id: 'x' })))).toEqual({ key: 'p1/auth', text: 'Member of epic', name: 'auth' });
+    expect(epicLinkOf(jobs[4] ?? tag(job({ id: 'x' })))).toEqual({ key: 'p1/auth', text: 'Generated fix job in epic', name: 'auth' });
+    expect(epicLinkOf(tag(job({ id: '001-a' }), P))).toBeNull();
+    expect(epicLinkOf(tag(job({ id: '001-a', epic: 'gone' }), P))).toBeNull(); // an epic Andon doesn't know: no link to a page that can't open
+  });
+
+  test('its documents: the plan, then the member briefs, the plan selected first', () => {
+    const files = [
+      { path: 'epics/auth.md', text: '# Auth' },
+      { path: 'briefs/a.md', text: 'a' },
+      { path: 'briefs/b.md', text: 'b' },
+    ];
+    const m = epicFileModel(files, null);
+    expect(m.groups.map((g) => [g.name, g.rows.map((r) => r.label)])).toEqual([
+      ['Plan', ['plan']],
+      ['Member briefs', ['a.md', 'b.md']],
+    ]);
+    expect(m.selected).toBe('epics/auth.md');
+    expect(epicFileModel(files, 'briefs/b.md').selected).toBe('briefs/b.md');
+    expect(epicFileModel(files, 'briefs/gone.md').selected).toBe('epics/auth.md');
+    expect(epicFileModel([], null)).toEqual({ groups: [], order: [], selected: null });
+    const ins = readFileSync(join(import.meta.dir, 'Inspector.svelte'), 'utf8');
+    expect(ins).toContain('fetchEpicDocs(fetcher, ep.project.id, ep.epic.slug)');
+  });
+});
+
+describe('settled epics in the Settled sheet (056 AC7)', () => {
+  const P = { id: 'p1', name: 'one' };
+  const Q = { id: 'p2', name: 'two' };
+  const old = epic({ slug: 'old', title: 'Old auth', state: 'landed', sha: 'abc1234', endedAt: before(30 * HOUR), members: [{ slug: 'a' }, { slug: 'b' }] });
+  const gone = epic({ slug: 'gone', state: 'abandoned', note: 'superseded', endedAt: before(2 * HOUR), members: [{ slug: 'x' }] });
+  const settled = [
+    inEpic({ id: '010-a', title: 'A', stage: 'merged', endedAt: before(40 * HOUR) }, old, P),
+    inEpic({ id: '011-b', title: 'B', stage: 'merged', endedAt: before(35 * HOUR) }, old, P),
+    tag(job({ id: '020-solo', title: 'Solo', stage: 'merged', endedAt: before(32 * HOUR) }), P),
+    inEpic({ id: '030-x', title: 'X', stage: 'abandoned', note: 'superseded', endedAt: before(3 * HOUR) }, gone, Q),
+  ];
+  const epics = [tagEpic(old, P), tagEpic(gone, Q)];
+
+  test('each epic is one row with its name, outcome, landing short sha, and member count, its jobs grouped under it', () => {
+    const rows = settledEpicRows(settled, epics, null);
+    expect(rows.map((r) => [r.key, r.name, r.outcome, r.sha, r.members, r.reason, r.jobs.map((j) => j.id)])).toEqual([
+      ['p2/gone', 'gone', 'Abandoned', null, '1 member', 'superseded', ['030-x']],
+      ['p1/old', 'Old auth', 'Landed', 'abc1234', '2 members', null, ['011-b', '010-a']],
+    ]);
+    expect(settledEpicRows(settled, epics, 'p1').map((r) => r.key)).toEqual(['p1/old']);
+  });
+
+  test('the list: epic rows and loose jobs by end, newest first; an epic\'s jobs are never loose', () => {
+    expect(settledItems(settled, epics, null).map((i) => `${i.kind}:${i.row.key}`)).toEqual(['epic:p2/gone', 'epic:p1/old', 'job:p1/020-solo']);
+    expect(settledItems(settled, epics, 'p2').map((i) => `${i.kind}:${i.row.key}`)).toEqual(['epic:p2/gone']);
+    // with no epics, the list is the jobs' rows, as before
+    expect(settledItems(settled, [], null).map((i) => i.row.key)).toEqual(settledRows(settled, null).map((r) => r.key));
+  });
+
+  test("opening an epic row opens the epic page", () => {
+    const sheet = readFileSync(join(import.meta.dir, 'SettledSheet.svelte'), 'utf8');
+    expect(sheet).toContain('onclick={() => onopenepic(e.key)}');
+    expect(sheet).toContain('settledItems(settled, epics, project?.id ?? null)');
+    const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
+    expect(app).toMatch(/<SettledSheet[\s\S]*?onopenepic=\{openEpicPage\}/);
   });
 });

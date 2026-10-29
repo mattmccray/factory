@@ -6,7 +6,9 @@
   // wires the browser (EventSource, fetch, localStorage, the URL and its history, a 1 s clock) to
   // the plain modules that hold the logic; the components below only lay out what those modules return.
   // Boards are narrow (unsettled jobs and a settled summary); a project's settled jobs are fetched
-  // only while a view needs them: the Settled sheet, a settled job in the inspector, or a focused project.
+  // only while a view needs them: the Settled sheet, a settled job or epic in the inspector, or a focused project.
+  // Epics (docs/design/epics/design.md decision 9) ride on the boards: each gets a sub-lane under its
+  // project's lane, its name opens the epic page, and an epic waiting on you counts as needs-human.
   import { onMount, untrack } from 'svelte';
   import type { Fetcher } from './api';
   import { buildBoard, movement } from './board';
@@ -24,28 +26,36 @@
   import Lines from './Lines.svelte';
   import { jobMenuCaller } from './jobmenu';
   import { menuArmer, projectMenuCaller, swallowsClick } from './projectmenu';
-  import { entryOf, formatHash, historyStep, initialView, jobKey, readEntry, viewKey, viewOf } from './route';
-  import type { JobRef, View } from './route';
+  import { entryOf, epicKey, formatHash, historyStep, initialView, jobKey, readEntry, viewKey, viewOf } from './route';
+  import type { EpicRef, JobRef, View } from './route';
   import { startLive } from './live';
   import type { Live, Status } from './live';
   import {
     ALL,
+    boardEpics,
     boardJobs,
+    epicJobs,
     fetchedSettled,
+    fetchedSettledEpics,
+    isEpicHeld,
     isHeld,
+    hotEpics,
+    lookupEpic,
     loadSelection,
     lookupJob,
     projectErrors,
     resolveSelection,
     reviewersFor,
     saveSelection,
+    settledEpicsFor,
     settledFor,
     settledStatus,
     settledTotal,
     sheetProjects,
     withSettled,
   } from './projects';
-  import type { BoardJob } from './board';
+  import type { BoardEpic, BoardJob } from './board';
+  import { epicName } from './job';
   import type { Selection } from './projects';
   import SettledSheet from './SettledSheet.svelte';
   import ShortcutSheet from './ShortcutSheet.svelte';
@@ -74,19 +84,21 @@
   if (window.location.hash.replace(/^#/, '') !== '') saveSelection(storage(), start.project ?? ALL);
   let selection = $state<Selection>(start.project ?? ALL);
   let openRef = $state<JobRef | null>(start.job);
+  let openEpic = $state<EpicRef | null>(start.epic ?? null); // the epic page, instead of a job
   let openFile = $state<string | null>(start.file); // the inspector's chosen file; null: it picks
   let settledOpen = $state(start.settled !== null);
   let settledProject = $state<string | null>(start.settled?.project ?? null); // a lane's "N settled" link filters the sheet
   let sidebar = $state<SidebarChoice>({ user: true, override: false });
   let inspectorOpen = $state(start.inspector); // open with no job: "Nothing selected"
   let inspectorWidth = $state(INSPECTOR_DEFAULT); // not kept across reloads
-  let sheet = $state<SheetKind | null>(start.sheet === 'rework' || start.sheet === 'abandon' ? start.sheet : null); // the open Rework… or Abandon… sheet
+  let sheet = $state<SheetKind | null>(start.sheet === 'rework' || start.sheet === 'abandon' || start.sheet === 'epic-abandon' ? start.sheet : null); // the open Rework… or Abandon… sheet (a job's or an epic's)
   let keysOpen = $state(start.sheet === 'keys'); // the shortcut sheet
   let needs = $state(start.needs); // Needs Me
   let query = $state(''); // search; not kept in the hash
   let searchEl = $state<HTMLInputElement>();
   let searchFocused = $state(false);
   const openKey = $derived(openRef === null ? null : jobKey(openRef));
+  const openEpicKey = $derived(openEpic === null ? null : epicKey(openEpic));
   let innerWidth = $state(window.innerWidth);
   const mode = shellMode(window.location.search);
   // The Mac app's View menu hides the status bar and tells the page; a browser always shows it.
@@ -147,9 +159,12 @@
 
   const sel = $derived(ui.projects.length > 0 ? resolveSelection(ui, selection) : selection);
   const allJobs = $derived(boardJobs(ui, sel));
-  // Needs Me keeps only the jobs that need a human, and the lanes that have any (find.ts).
-  const needed = $derived(needs ? needsFilter(ui.projects, allJobs) : null);
+  const allEpics = $derived(boardEpics(ui, sel));
+  // Needs Me keeps only the jobs that need a human, the epics waiting on you or with such a job, and
+  // the lanes that have any (find.ts).
+  const needed = $derived(needs ? needsFilter(ui.projects, allJobs, allEpics) : null);
   const jobs = $derived(needed?.jobs ?? allJobs);
+  const epics = $derived(needed?.epics ?? allEpics);
   const board = $derived(buildBoard(allJobs, now, reviewersFor(ui, sel)));
   const errors = $derived(projectErrors(ui, sel));
   const loaded = $derived(ui.projects.length > 0 && ui.projects.every((p) => ui.boards[p.id]?.loaded === true));
@@ -161,12 +176,12 @@
   const shownProjects = $derived((needed?.projects ?? ui.projects).filter((p) => !focused || p.id === sel));
   let laneOrder: LaneOrder | null = null;
   const summaries = $derived(Object.fromEntries(ui.projects.map((p): [string, SettledSummary] => [p.id, ui.boards[p.id]?.settled ?? NO_SETTLED])));
-  const lines = $derived(orderLanes(buildLanes(shownProjects, jobs, now, focused, summaries), loaded && !focused && !needs ? laneOrder : null));
+  const lines = $derived(orderLanes(buildLanes(shownProjects, jobs, now, focused, summaries, epics, needs), loaded && !focused && !needs ? laneOrder : null));
   $effect(() => {
     if (loaded && !focused && !needs) laneOrder = lines.order;
   });
   // Search dims the tokens and lanes that don't match; it hides nothing.
-  const found = $derived(find(shownProjects, jobs, query, now));
+  const found = $derived(find(shownProjects, jobs, query, now, epics));
   const header = $derived(headerOf(lines.lanes, settleHours(ui, sel)));
   // Recent activity draws on the focused project's settled jobs too, once its list has loaded.
   const recent = $derived(focused ? activity(needs ? jobs : withSettled(ui, sel)) : []);
@@ -183,7 +198,8 @@
   const win = $derived(frame(mode, sidebarOpen));
   const side = $derived(sidebarModel(ui, sel));
   const foot = $derived(footer(status, ui.projects.length));
-  const sub = $derived(subtitle(ui, sel, board.running, board.waiting));
+  // "M waiting on you" counts each epic waiting on you too.
+  const sub = $derived(subtitle(ui, sel, board.running, board.waiting + hotEpics(ui, sel)));
   const settle = $derived(settleText(settleHours(ui, sel)));
 
   // The inspector finds its job on every board and in every cached settled list, so it stays open
@@ -208,22 +224,54 @@
     }
   });
 
-  // Settled lists on demand: the open sheet's projects, an open job that isn't on its board, and a
-  // focused project. Only these are fetched, and refetched when their summaries change (live.ts).
+  // The epic page finds its epic on its board or in its cached settled list, as the job page does.
+  const epicLookup = $derived(openEpic === null ? null : lookupEpic(ui, openEpic));
+  let lastEpic = $state.raw<BoardEpic | null>(null);
+  const openEpicItem = $derived(
+    epicLookup?.state === 'found' ? epicLookup.item : epicLookup?.state === 'waiting' && lastEpic !== null && lastEpic.key === openEpicKey ? lastEpic : null,
+  );
+  const openEpicJobs = $derived(openEpic === null ? [] : epicJobs(ui, openEpic));
+  let shownEpicKey: string | null = null;
+  $effect(() => {
+    if (epicLookup?.state === 'found') {
+      shownEpicKey = epicLookup.item.key;
+      lastEpic = epicLookup.item;
+    } else if (epicLookup?.state === 'missing' && openEpic !== null) {
+      if (shownEpicKey === epicKey(openEpic)) {
+        openEpic = null;
+        openFile = null;
+      } else closeInspector();
+    }
+  });
+
+  // Settled lists on demand: the open sheet's projects, an open job or epic that isn't on its board,
+  // and a focused project. Only these are fetched, and refetched when their summaries change (live.ts).
+  // An open epic's settled list also brings its members' settled jobs.
   const sheetPids = $derived(settledOpen ? sheetProjects(ui, settledProject) : []);
-  const watched = $derived([...new Set([...sheetPids, ...(openRef !== null && !isHeld(ui, openRef) ? [openRef.project] : []), ...(focused ? [sel] : [])])]);
+  const watched = $derived([
+    ...new Set([
+      ...sheetPids,
+      ...(openRef !== null && !isHeld(ui, openRef) ? [openRef.project] : []),
+      ...(openEpic !== null ? [openEpic.project] : []),
+      ...(focused ? [sel] : []),
+    ]),
+  ]);
   $effect(() => {
     live?.watch(watched);
   });
   const settledJobs = $derived(settledOpen ? settledFor(ui, ALL, now) : []);
+  const settledEpics = $derived(settledOpen ? settledEpicsFor(ui, ALL, now) : []);
   const settledState = $derived(settledStatus(ui, sheetPids));
   $effect(() => {
-    if (sheet !== null && loaded && openItem?.job.stage !== 'needs-human') sheet = null; // the job moved on
+    if (sheet === 'epic-abandon') {
+      if (loaded && (openEpicItem === null || openEpicItem.epic.state === 'landed' || openEpicItem.epic.state === 'abandoned')) sheet = null; // the epic closed
+    } else if (sheet !== null && loaded && openItem?.job.stage !== 'needs-human') sheet = null; // the job moved on
   });
   // An empty Settled sheet closes itself, but only once its lists are loaded and current: never
   // while they load, and never over a failed fetch's reason.
   $effect(() => {
-    if (settledOpen && loaded && settledState.current && settledState.failures.length === 0 && !settledJobs.some((b) => settledProject === null || b.project.id === settledProject)) settledOpen = false;
+    const shown = (b: { project: { id: string } }): boolean => settledProject === null || b.project.id === settledProject;
+    if (settledOpen && loaded && settledState.current && settledState.failures.length === 0 && !settledJobs.some(shown) && !settledEpics.some(shown)) settledOpen = false;
   });
 
   function select(next: Selection): void {
@@ -239,12 +287,25 @@
     if (b === undefined) return;
     settledOpen = false;
     if (openKey !== key) openFile = null;
+    openEpic = null;
+    if (sheet === 'epic-abandon') sheet = null;
     openRef = { project: b.project.id, id: b.job.id };
+    inspectorOpen = true;
+  }
+  function openEpicPage(key: string): void {
+    const e = boardEpics(ui, ALL).find((x) => x.key === key) ?? fetchedSettledEpics(ui, ALL).find((x) => x.key === key);
+    if (e === undefined) return;
+    settledOpen = false;
+    if (openEpicKey !== key) openFile = null;
+    openRef = null;
+    sheet = null;
+    openEpic = { project: e.project.id, slug: e.epic.slug };
     inspectorOpen = true;
   }
   function closeInspector(): void {
     inspectorOpen = false;
     openRef = null;
+    openEpic = null;
     openFile = null;
     sheet = null;
     sidebar = { user: sidebar.user, override: false };
@@ -293,8 +354,9 @@
   const view = $derived<View>({
     project: sel === ALL ? null : sel,
     inspector: inspectorOpen,
-    job: openRef,
-    file: openRef === null ? null : openFile,
+    job: openEpic === null ? openRef : null,
+    epic: openEpic ?? undefined,
+    file: openRef === null && openEpic === null ? null : openFile,
     settled: settledOpen ? { project: settledProject } : null,
     sheet: keysOpen ? 'keys' : sheet,
     needs,
@@ -303,12 +365,13 @@
   function applyView(v: View): void {
     if ((v.project ?? ALL) !== selection) select(v.project ?? ALL);
     openRef = v.job;
+    openEpic = v.epic ?? null;
     openFile = v.file;
     inspectorOpen = v.inspector;
     if (!v.inspector) sidebar = { user: sidebar.user, override: false };
     settledOpen = v.settled !== null;
     settledProject = v.settled?.project ?? null;
-    sheet = v.sheet === 'rework' || v.sheet === 'abandon' ? v.sheet : null;
+    sheet = v.sheet === 'rework' || v.sheet === 'abandon' || v.sheet === 'epic-abandon' ? v.sheet : null;
     keysOpen = v.sheet === 'keys';
     needs = v.needs;
   }
@@ -400,7 +463,7 @@
       settled={settledTotal(ui, sel, now)}
       {sidebarOpen}
       {inspectorOpen}
-      selected={openItem === null ? null : `${openItem.project.name} / ${openItem.job.id}`}
+      selected={openItem !== null ? `${openItem.project.name} / ${openItem.job.id}` : openEpicItem !== null ? `${openEpicItem.project.name} / epic ${epicName(openEpicItem.epic)}` : null}
       drag={win.drag}
       bind:query
       bind:searchEl
@@ -427,7 +490,23 @@
           <div class="nothing">Connecting to the Andon service…</div>
         {/if}
       {:else}
-        <Lines lanes={lines.lanes} {header} {jobs} {focused} {recent} {now} {found} selectedKey={openKey} fresh={marks.fresh} moved={marks.moved} onopen={openJob} onfocus={select} onsettled={openSettled} />
+        <Lines
+          lanes={lines.lanes}
+          {header}
+          {jobs}
+          {focused}
+          {recent}
+          {now}
+          {found}
+          selectedKey={openKey}
+          selectedEpic={openEpicKey}
+          fresh={marks.fresh}
+          moved={marks.moved}
+          onopen={openJob}
+          onopenepic={openEpicPage}
+          onfocus={select}
+          onsettled={openSettled}
+        />
         {#if needs && lines.lanes.length === 0}
           <div class="quiet">Nothing needs you{focused ? ' in this project' : ''}. Press <kbd>n</kbd> to show everything.</div>
         {:else if board.shown === 0 && !focused}
@@ -438,7 +517,9 @@
     {#if !statusBarOff}<StatusBar {settle} {now} />{/if}
   </div>
   <Inspector
-    item={openItem}
+    item={openEpic === null ? openItem : null}
+    epic={openEpicItem}
+    epicJobs={openEpicJobs}
     open={inspectorOpen}
     width={inspectorWidth}
     {now}
@@ -450,18 +531,30 @@
     oncopy={copy}
     onhandoff={copyAndHandOff}
     onsheet={(k) => (sheet = k)}
+    onopenjob={openJob}
+    onopenepic={openEpicPage}
   />
 </div>
 <SettledSheet
   settled={settledJobs}
+  epics={settledEpics}
   status={settledState}
   open={settledOpen}
   project={settledProject === null ? null : (ui.projects.find((p) => p.id === settledProject) ?? null)}
   onclearfilter={() => (settledProject = null)}
   onclose={() => (settledOpen = false)}
   onopen={openJob}
+  onopenepic={openEpicPage}
 />
-<CommandSheet kind={sheet} id={openItem?.job.id ?? ''} project={openItem?.project.id ?? ''} handsOff={handOff !== null} onhandoff={copyAndHandOff} onclose={() => (sheet = null)} />
+<CommandSheet
+  kind={sheet}
+  id={sheet === 'epic-abandon' ? (openEpicItem?.epic.slug ?? '') : (openItem?.job.id ?? '')}
+  project={sheet === 'epic-abandon' ? (openEpicItem?.project.id ?? '') : (openItem?.project.id ?? '')}
+  handsOff={handOff !== null}
+  onhandoff={copyAndHandOff}
+  oncopy={copy}
+  onclose={() => (sheet = null)}
+/>
 <ShortcutSheet open={keysOpen} onclose={() => (keysOpen = false)} />
 <div class="hud" class:on={toast !== null} class:fail={toast !== null && !toast.ok} role="status" aria-live="polite">
   {#if toast !== null}

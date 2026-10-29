@@ -3,18 +3,25 @@
 // `GET /projects/<pid>/board?settled=summary` per project when the project list arrives. A board
 // is narrow: its unsettled jobs, its config, and a settled summary. A project's settled jobs are
 // fetched only when a view needs them (`GET /projects/<pid>/settled`) and cached per project.
+// Epics ride along: a board's `epics` are its unsettled epics, and `/settled` returns `{ jobs, epics }`.
 // Every update returns a new state; nothing here touches the DOM.
-import { isRecord, toConfig, toJobs, toProjects } from './job';
-import type { BoardConfig, Job, ProjectInfo } from './job';
+import { isRecord, toConfig, toEpics, toJobs, toProjects } from './job';
+import type { BoardConfig, Epic, Job, ProjectInfo } from './job';
 
-/** A narrow board's settled summary: how many jobs settled, and the newest settled merge's `endedAt`. */
+/**
+ * A narrow board's settled summary: how many jobs settled, the newest settled merge's `endedAt`,
+ * and how many epics settled. `epics` is absent when the service sent none (one from before
+ * epics): it reads as 0.
+ */
 export interface SettledSummary {
   count: number;
   lastMergedAt: string | null;
+  epics?: number;
 }
 
 export interface ProjectBoard {
   jobs: Job[];
+  epics: Epic[]; // its epics on the board (unsettled); [] when the board has none
   config: BoardConfig;
   settled: SettledSummary;
   error: string | null; // `config.json: <reason>` while the project's config is bad
@@ -26,6 +33,7 @@ export interface ProjectBoard {
 export interface SettledList {
   status: 'loading' | 'loaded' | 'failed';
   jobs: Job[] | null; // the last list that arrived; null until one has
+  epics: Epic[] | null; // the settled epics that came with it; null until a list has arrived
   reason: string | null; // why the last fetch failed
   summary: SettledSummary; // the board's summary when the last fetch was sent
   rev: number; // bumped by every fetch, so only the newest one applies
@@ -40,20 +48,28 @@ export interface UiState {
 export const NO_SETTLED: SettledSummary = { count: 0, lastMergedAt: null };
 
 export const emptyState = (): UiState => ({ projects: [], boards: {}, settled: {} });
-const emptyBoard = (): ProjectBoard => ({ jobs: [], config: toConfig(null), settled: NO_SETTLED, error: null, loaded: false, rev: 0 });
+const emptyBoard = (): ProjectBoard => ({ jobs: [], epics: [], config: toConfig(null), settled: NO_SETTLED, error: null, loaded: false, rev: 0 });
 const known = (s: UiState, pid: string): boolean => s.projects.some((p) => p.id === pid);
 const boardOf = (s: UiState, pid: string): ProjectBoard => s.boards[pid] ?? emptyBoard();
 
-/** A board's `settled` summary; anything but `{ count: <non-negative integer>, lastMergedAt: <string | null> }` (an older service) is none. */
+const isCount = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0;
+
+/**
+ * A board's `settled` summary; anything but `{ count: <non-negative integer>, lastMergedAt: <string | null> }`
+ * (an older service) is none. Its `epics` is kept when it is a non-negative integer, and left out otherwise.
+ */
 export function toSummary(v: unknown): SettledSummary {
   if (!isRecord(v)) return NO_SETTLED;
-  const { count, lastMergedAt } = v;
-  if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) return NO_SETTLED;
+  const { count, lastMergedAt, epics } = v;
+  if (!isCount(count)) return NO_SETTLED;
   if (lastMergedAt !== null && typeof lastMergedAt !== 'string') return NO_SETTLED;
-  return { count, lastMergedAt };
+  return isCount(epics) ? { count, lastMergedAt, epics } : { count, lastMergedAt };
 }
 
-export const sameSummary = (a: SettledSummary, b: SettledSummary): boolean => a.count === b.count && a.lastMergedAt === b.lastMergedAt;
+/** A summary's settled epics: its `epics`, or 0 when it has none. */
+export const settledEpicCount = (s: SettledSummary): number => s.epics ?? 0;
+
+export const sameSummary = (a: SettledSummary, b: SettledSummary): boolean => a.count === b.count && a.lastMergedAt === b.lastMergedAt && settledEpicCount(a) === settledEpicCount(b);
 
 function withBoard(s: UiState, pid: string, next: (b: ProjectBoard) => ProjectBoard): UiState {
   if (!known(s, pid)) return s; // a board for a project that isn't listed is ignored
@@ -72,10 +88,11 @@ export function setProjects(s: UiState, projects: ProjectInfo[]): UiState {
   return { projects, boards, settled };
 }
 
-/** A project's new board: its jobs, config, and settled summary change, and any config error clears. */
+/** A project's new board: its jobs, epics, config, and settled summary change, and any config error clears. */
 export const setBoard = (s: UiState, pid: string, data: unknown): UiState =>
   withBoard(s, pid, (b) => ({
     jobs: toJobs(isRecord(data) ? data.jobs : null),
+    epics: toEpics(isRecord(data) ? data.epics : null),
     config: toConfig(isRecord(data) ? data.config : null),
     settled: toSummary(isRecord(data) ? data.settled : null),
     error: null,
@@ -124,16 +141,16 @@ export function wantsSettled(s: UiState, pid: string, retry = false): boolean {
 export function startSettled(s: UiState, pid: string): { state: UiState; rev: number } {
   const prev = s.settled[pid];
   const rev = (prev?.rev ?? 0) + 1;
-  const list: SettledList = { status: 'loading', jobs: prev?.jobs ?? null, reason: null, summary: boardOf(s, pid).settled, rev };
+  const list: SettledList = { status: 'loading', jobs: prev?.jobs ?? null, epics: prev?.epics ?? null, reason: null, summary: boardOf(s, pid).settled, rev };
   return { state: { ...s, settled: { ...s.settled, [pid]: list } }, rev };
 }
 
-/** Applies a fetched settled list (`{ jobs }`) or its error, unless a newer fetch was sent since `rev` or the project is gone. */
+/** Applies a fetched settled list (`{ jobs, epics }`; a missing `epics` is `[]`) or its error, unless a newer fetch was sent since `rev` or the project is gone. */
 export function applySettled(s: UiState, pid: string, rev: number, result: { ok: true; data: unknown } | { ok: false; reason: string }): UiState {
   const list = s.settled[pid];
   if (list === undefined || list.rev !== rev || !known(s, pid)) return s;
   const next: SettledList = result.ok
-    ? { ...list, status: 'loaded', jobs: toJobs(isRecord(result.data) ? result.data.jobs : null), reason: null }
+    ? { ...list, status: 'loaded', jobs: toJobs(isRecord(result.data) ? result.data.jobs : null), epics: toEpics(isRecord(result.data) ? result.data.epics : null), reason: null }
     : { ...list, status: 'failed', reason: result.reason };
   return { ...s, settled: { ...s.settled, [pid]: next } };
 }

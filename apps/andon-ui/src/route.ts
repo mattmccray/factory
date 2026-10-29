@@ -2,7 +2,8 @@
 // restores it. The hash is a list of forms joined with `&`, each value URI-encoded:
 //   project=<id>                    the focused project (absent: All Projects)
 //   job=<project>/<job id>          the open inspector's job
-//   file=<path|timing>              its selected file (only with job=)
+//   epic=<project>/<slug>           the open inspector's epic page (instead of a job; it wins over job=)
+//   file=<path|timing>              its selected file (only with job= or epic=)
 //   settled  or  settled=<project>  the Settled sheet, optionally filtered to one project
 //   needs                           the Needs Me filter
 // The Rework, Abandon, and shortcut sheets, and an inspector open with nothing selected, have no
@@ -18,14 +19,21 @@ export interface JobRef {
   id: string;
 }
 
+/** An epic, by its project's id and its slug. */
+export interface EpicRef {
+  project: string;
+  slug: string;
+}
+
 /** The sheets with no hash form. */
-export type SheetName = 'rework' | 'abandon' | 'keys';
+export type SheetName = 'rework' | 'abandon' | 'epic-abandon' | 'keys';
 
 /** Everything the URL and its history entry restore. */
 export interface View {
   project: string | null; // the focused project; null: All Projects
-  inspector: boolean; // the inspector is open (with `job`, or "Nothing selected")
+  inspector: boolean; // the inspector is open (with `job` or `epic`, or "Nothing selected")
   job: JobRef | null;
+  epic?: EpicRef | undefined; // the epic page; absent (or undefined): none. Never set together with `job`.
   file: string | null; // a doc path, or TIMING; null: the inspector picks
   settled: { project: string | null } | null; // the Settled sheet and its project filter
   sheet: SheetName | null;
@@ -37,6 +45,12 @@ export const defaultView = (): View => ({ project: null, inspector: false, job: 
 
 /** The board's key for a job (`projects.ts` `boardJobs`). */
 export const jobKey = (ref: JobRef): string => `${ref.project}/${ref.id}`;
+
+/** The board's key for an epic (`projects.ts` `boardEpics`). */
+export const epicKey = (ref: EpicRef): string => `${ref.project}/${ref.slug}`;
+
+/** Whether a view's inspector shows something: a job or an epic. */
+const named = (v: View): boolean => v.job !== null || v.epic !== undefined;
 
 const enc = encodeURIComponent;
 
@@ -52,32 +66,43 @@ function dec(s: string): string | null {
 export function formatHash(v: View): string {
   const parts: string[] = [];
   if (v.project !== null) parts.push(`project=${enc(v.project)}`);
-  if (v.job !== null) {
-    parts.push(`job=${enc(v.job.project)}/${enc(v.job.id)}`);
-    if (v.file !== null) parts.push(`file=${v.file === TIMING ? 'timing' : enc(v.file)}`);
-  }
+  if (v.epic !== undefined) parts.push(`epic=${enc(v.epic.project)}/${enc(v.epic.slug)}`);
+  else if (v.job !== null) parts.push(`job=${enc(v.job.project)}/${enc(v.job.id)}`);
+  if (named(v) && v.file !== null) parts.push(`file=${v.file === TIMING ? 'timing' : enc(v.file)}`);
   if (v.settled !== null) parts.push(v.settled.project === null ? 'settled' : `settled=${enc(v.settled.project)}`);
   if (v.needs) parts.push('needs');
   return parts.length > 0 ? `#${parts.join('&')}` : '';
 }
 
-function parseJob(value: string): JobRef | null {
-  const slash = value.indexOf('/'); // each half is encoded, so the first raw `/` is the separator
+/** `<project>/<rest>`, each half encoded: the first raw `/` is the separator. Null when either half is missing or malformed. */
+function parsePair(value: string): [string, string] | null {
+  const slash = value.indexOf('/');
   if (slash <= 0 || slash === value.length - 1) return null;
   const project = dec(value.slice(0, slash));
-  const id = dec(value.slice(slash + 1));
-  return project === null || id === null || project === '' || id === '' ? null : { project, id };
+  const rest = dec(value.slice(slash + 1));
+  return project === null || rest === null || project === '' || rest === '' ? null : [project, rest];
+}
+
+function parseJob(value: string): JobRef | null {
+  const pair = parsePair(value);
+  return pair === null ? null : { project: pair[0], id: pair[1] };
+}
+
+function parseEpic(value: string): EpicRef | null {
+  const pair = parsePair(value);
+  return pair === null ? null : { project: pair[0], slug: pair[1] };
 }
 
 /**
  * The view a hash names (with or without its `#`). Unknown keys and malformed values are ignored,
- * so an empty or broken hash is the default view; it never throws. A file needs a job. The
- * inspector is open exactly when a job is named.
+ * so an empty or broken hash is the default view; it never throws. A file needs a job or an epic.
+ * The inspector is open exactly when a job or an epic is named; an epic wins over a job.
  */
 export function parseHash(hash: string): View {
   const v = defaultView();
   const body = hash.startsWith('#') ? hash.slice(1) : hash;
   let file: string | null = null;
+  let epic: EpicRef | null = null;
   for (const part of body.split('&')) {
     if (part === '') continue;
     const eq = part.indexOf('=');
@@ -88,6 +113,8 @@ export function parseHash(hash: string): View {
       if (p !== null && p !== '') v.project = p;
     } else if (key === 'job' && raw !== null) {
       v.job = parseJob(raw) ?? v.job;
+    } else if (key === 'epic' && raw !== null) {
+      epic = parseEpic(raw) ?? epic;
     } else if (key === 'file' && raw !== null) {
       const f = raw === 'timing' ? TIMING : dec(raw);
       if (f !== null && f !== '') file = f;
@@ -98,8 +125,12 @@ export function parseHash(hash: string): View {
       v.needs = true;
     }
   }
-  v.inspector = v.job !== null;
-  v.file = v.job !== null ? file : null;
+  if (epic !== null) {
+    v.epic = epic;
+    v.job = null;
+  }
+  v.inspector = named(v);
+  v.file = named(v) ? file : null;
   return v;
 }
 
@@ -112,7 +143,7 @@ export interface EntryState {
   under: string | null; // viewKey of the entry this one was pushed over
 }
 
-const SHEETS: readonly SheetName[] = ['rework', 'abandon', 'keys'];
+const SHEETS: readonly SheetName[] = ['rework', 'abandon', 'epic-abandon', 'keys'];
 
 /** Narrows `history.state`; anything else (another app's state, or null) is no state. */
 export function readEntry(state: unknown): EntryState {
@@ -122,7 +153,7 @@ export function readEntry(state: unknown): EntryState {
 }
 
 /** The `history.state` for a view and the view it was pushed over. */
-export const entryOf = (v: View, under: string | null): { andon: EntryState } => ({ andon: { inspector: v.inspector && v.job === null, sheet: v.sheet, under } });
+export const entryOf = (v: View, under: string | null): { andon: EntryState } => ({ andon: { inspector: v.inspector && !named(v), sheet: v.sheet, under } });
 
 /** The view of a history entry: its hash, plus what its state carries. */
 export function viewOf(hash: string, state: unknown): View {
@@ -132,7 +163,7 @@ export function viewOf(hash: string, state: unknown): View {
 }
 
 /** A view as one comparable string: two views are the same exactly when their keys are. */
-export const viewKey = (v: View): string => `${formatHash(v)}|${v.inspector && v.job === null ? 'i' : ''}|${v.sheet ?? ''}`;
+export const viewKey = (v: View): string => `${formatHash(v)}|${v.inspector && !named(v) ? 'i' : ''}|${v.sheet ?? ''}`;
 
 /**
  * The view on load: a present hash wins over the stored `andon.project` selection (`stored`, a

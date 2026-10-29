@@ -2,7 +2,7 @@
   // The Assembly Lines matrix (design §3, §5–§7): a 148px project gutter and six station columns,
   // under a sticky, blurred header (each column's square, name, count badge, and role, and the
   // gutter's "N active · M idle"). One lane per project, in the order lanes.ts gives; a lane that
-  // changes place slides there in 250ms. A focused project adds its Recent activity list. The
+  // changes place slides there in 250ms, its epics' sub-lanes with it. A focused project adds its Recent activity list. The
   // hover popover is shared by every token. Search (`found`, find.ts) dims what doesn't match.
   import { flip } from 'svelte/animate';
   import type { BoardJob } from './board';
@@ -23,13 +23,15 @@
     now: number;
     found: Find;
     selectedKey: string | null;
+    selectedEpic: string | null;
     fresh: ReadonlySet<string>;
     moved: ReadonlySet<string>;
     onopen: (key: string) => void;
+    onopenepic: (key: string) => void;
     onfocus: (pid: string) => void;
     onsettled: (pid: string) => void;
   }
-  let { lanes, header, jobs, focused, recent, now, found, selectedKey, fresh, moved, onopen, onfocus, onsettled }: Props = $props();
+  let { lanes, header, jobs, focused, recent, now, found, selectedKey, selectedEpic, fresh, moved, onopen, onopenepic, onfocus, onsettled }: Props = $props();
 
   // The popover opens after 350ms over (or focused on) a token, and closes when it leaves.
   const HOVER_MS = 350;
@@ -57,6 +59,10 @@
     onhover(null, null);
     onopen(key);
   };
+  const openEpic = (key: string): void => {
+    onhover(null, null);
+    onopenepic(key);
+  };
   const projectName = $derived(lanes[0]?.project.name ?? '');
 </script>
 
@@ -77,7 +83,7 @@
     </div>
     {#each lanes as lane (lane.project.id)}
       <div class="lane-slot" animate:flip={{ duration: motionMs(250) }}>
-        <Lane {lane} {focused} {found} {selectedKey} {fresh} {moved} onopen={open} {onfocus} {onsettled} {onhover} />
+        <Lane {lane} {focused} {found} {selectedKey} {selectedEpic} {fresh} {moved} onopen={open} onopenepic={openEpic} {onfocus} {onsettled} {onhover} />
       </div>
     {/each}
   </div>

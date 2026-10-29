@@ -1,6 +1,6 @@
 <script lang="ts">
   // The token hover popover (design §6), shown after 350ms of hover or focus: the title, project ·
-  // id, stage, time in stage, round, each round's verdicts, and the note. It sits beside the
+  // id, its epic (if any), stage, time in stage, round, each round's verdicts, and the note. It sits beside the
   // token, on the right unless that would leave the window. The model comes from `popoverOf`.
   import type { Popover } from './lanes';
 
@@ -25,6 +25,7 @@
   <div class="pid">{model.where}</div>
   <div class="pt">{model.title}</div>
   <dl>
+    {#if model.epic !== undefined}<dt>Epic</dt><dd>{model.epic}</dd>{/if}
     <dt>Stage</dt><dd>{model.stage}</dd>
     {#if model.time !== null}<dt>{model.timeLabel}</dt><dd>{model.time}</dd>{/if}
     <dt>Round</dt><dd>{model.round}</dd>

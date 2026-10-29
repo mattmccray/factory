@@ -7,10 +7,15 @@
   // search, a lane with no match dims to 25% whole; in a lit lane, each token that misses dims.
   // The gutter carries the project's id for the Mac app's right-click menu (projectmenu.ts), and each
   // board token its job's ids for the job menu (jobmenu.ts); the ghosts carry neither.
+  // Its epics (docs/design/epics/design.md decision 9) follow as sub-lanes, oldest start first, and
+  // move with it: an indented gutter with an elbow from the project and a faint tint, whose name
+  // opens the epic page, then the same six cells holding only the epic's jobs ("+N more" focuses the
+  // project). An epic waiting on you turns its gutter red. Under Needs Me, a lane shown only for its
+  // sub-lanes collapses to a one-line header.
   import { cubicOut } from 'svelte/easing';
   import { crossfade } from 'svelte/transition';
   import type { Find } from './find';
-  import type { Lane } from './lanes';
+  import type { Cell, Lane } from './lanes';
   import { motionMs } from './motion';
   import Token from './Token.svelte';
 
@@ -19,36 +24,42 @@
     focused: boolean;
     found: Find;
     selectedKey: string | null;
+    selectedEpic: string | null;
     fresh: ReadonlySet<string>;
     moved: ReadonlySet<string>;
     onopen: (key: string) => void;
+    onopenepic: (key: string) => void;
     onfocus: (pid: string) => void;
     onsettled: (pid: string) => void;
     onhover: (key: string | null, el: HTMLElement | null) => void;
   }
-  let { lane, focused, found, selectedKey, fresh, moved, onopen, onfocus, onsettled, onhover }: Props = $props();
+  let { lane, focused, found, selectedKey, selectedEpic, fresh, moved, onopen, onopenepic, onfocus, onsettled, onhover }: Props = $props();
 
   // Only a token that moves between two cells animates; one that appears or leaves has no partner and doesn't.
   const [send, receive] = crossfade({ duration: () => motionMs(250), easing: cubicOut, fallback: () => ({ duration: 0 }) });
   const name = $derived(lane.project.name);
   const laneMiss = $derived(found.dimLanes.has(lane.project.id));
+  const subMiss = (key: string): boolean => laneMiss || found.dimSubs.has(key);
   const miss = (key: string): boolean => found.active && !laneMiss && !found.keys.has(key);
+  const missIn = (sub: string, key: string): boolean => found.active && !subMiss(sub) && !found.keys.has(key);
+  const headerText = $derived(lane.subs.length === 1 ? 'Its epic needs you' : 'Its epics need you');
 </script>
 
-{#if lane.idle && !focused}
-  <div class="row lane idle" class:miss={laneMiss} role="row" aria-label="{name}, idle">
+{#if lane.header || (lane.idle && !focused)}
+  <div class="row lane idle" class:has-sub={lane.subs.length > 0} class:miss={laneMiss} role="row" aria-label="{name}, {lane.header ? headerText : 'idle'}">
     <div class="gut" role="rowheader" data-project-menu={lane.project.id}>
-      <button class="pn" type="button" title="Focus {name}" onclick={() => onfocus(lane.project.id)}><span class="dot gray" aria-hidden="true"></span><span class="pname">{name}</span></button>
+      <button class="pn" type="button" title="Focus {name}" onclick={() => onfocus(lane.project.id)}><span class="dot {lane.header ? lane.dot : 'gray'}" aria-hidden="true"></span><span class="pname">{name}</span></button>
     </div>
     <div class="span" role="cell">
-      <span>{lane.idleText}</span>
+      <span>{lane.header ? headerText : lane.idleText}</span>
       {#if lane.meta.settled > 0}
         <button class="settled-pill" type="button" aria-haspopup="dialog" onclick={() => onsettled(lane.project.id)}>Settled <b>{lane.meta.settled}</b></button>
       {/if}
     </div>
   </div>
+  {@render subRows()}
 {:else}
-  <div class="row lane" class:miss={laneMiss} role="row" data-rows={lane.rows}>
+  <div class="row lane" class:has-sub={lane.subs.length > 0} class:miss={laneMiss} role="row" data-rows={lane.rows}>
     <div class="gut" role="rowheader" data-project-menu={lane.project.id}>
       <button class="pn" type="button" title={focused ? name : `Focus ${name}`} onclick={() => onfocus(lane.project.id)}>
         <span class="dot {lane.dot}" aria-hidden="true"></span><span class="pname">{name}</span>
@@ -63,20 +74,51 @@
       {/if}
     </div>
     {#each lane.cells as cell (cell.column)}
-      <div class="cell c-{cell.column}" role="cell">
-        {#each cell.tokens as t (t.key)}
-          <div class="slot" in:receive={{ key: t.key }} out:send={{ key: t.key }}>
-            <Token token={t} project={lane.project.id} miss={miss(t.key)} selected={selectedKey === t.key} fresh={fresh.has(t.key)} moved={moved.has(t.key)} {onopen} {onhover} />
-          </div>
-        {/each}
-        {#if cell.more > 0}
-          <button class="more" type="button" onclick={() => onfocus(lane.project.id)}>+{cell.more} more</button>
-        {/if}
-        {#each cell.ghosts as g (g.key)}
-          <button class="ghost" class:miss={miss(g.key)} type="button" aria-haspopup="dialog" aria-label={g.label} onclick={() => onopen(g.key)}><span class="num">{g.num}</span>{g.text}</button>
-        {/each}
-        {#if cell.tokens.length === 0 && cell.more === 0 && cell.ghosts.length === 0}<span class="none" aria-hidden="true">—</span>{/if}
-      </div>
+      {@render cellOf(cell, miss)}
     {/each}
   </div>
+  {@render subRows()}
 {/if}
+
+{#snippet cellOf(cell: Cell, dim: (key: string) => boolean)}
+  <div class="cell c-{cell.column}" role="cell">
+    {#each cell.tokens as t (t.key)}
+      <div class="slot" in:receive={{ key: t.key }} out:send={{ key: t.key }}>
+        <Token token={t} project={lane.project.id} miss={dim(t.key)} selected={selectedKey === t.key} fresh={fresh.has(t.key)} moved={moved.has(t.key)} {onopen} {onhover} />
+      </div>
+    {/each}
+    {#if cell.more > 0}
+      <button class="more" type="button" onclick={() => onfocus(lane.project.id)}>+{cell.more} more</button>
+    {/if}
+    {#each cell.ghosts as g (g.key)}
+      <button class="ghost" class:miss={dim(g.key)} type="button" aria-haspopup="dialog" aria-label={g.label} onclick={() => onopen(g.key)}><span class="num">{g.num}</span>{g.text}</button>
+    {/each}
+    {#if cell.tokens.length === 0 && cell.more === 0 && cell.ghosts.length === 0}<span class="none" aria-hidden="true">—</span>{/if}
+  </div>
+{/snippet}
+
+{#snippet subRows()}
+  {#each lane.subs as sub, i (sub.key)}
+    <div class="row lane sub" class:last={i === lane.subs.length - 1} class:hotgut={sub.hot} class:miss={subMiss(sub.key)} role="row" data-rows={sub.rows} aria-label="{sub.gutter.name}, an epic in {name}">
+      <div class="gut egut" role="rowheader">
+        <button class="en" class:sel={selectedEpic === sub.key} class:hit={found.epics.has(sub.key)} type="button" aria-haspopup="dialog" title="Open epic {sub.gutter.name} · {sub.gutter.state}" onclick={() => onopenepic(sub.key)}>
+          <span class="edot {sub.gutter.dot}" aria-hidden="true"></span><span class="ename">{sub.gutter.name}</span><span class="sr-only">, epic, {sub.gutter.state}</span>
+        </button>
+        <span class="meta wrap" title="members merged into the epic branch · running · since the epic started">{@render parts(sub.gutter.progress)}</span>
+        {#if sub.gutter.waiting !== null}
+          <span class="meta wrap">
+            {#if sub.gutter.waiting.tone === null}{@render parts(sub.gutter.waiting.text)}{:else}<span class="t-{sub.gutter.waiting.tone}">{sub.gutter.waiting.text}</span>{/if}
+          </span>
+        {/if}
+      </div>
+      {#each sub.cells as cell (cell.column)}
+        {@render cellOf(cell, (key) => missIn(sub.key, key))}
+      {/each}
+    </div>
+  {/each}
+{/snippet}
+
+<!-- A gutter line's " · "-separated parts, each kept whole when the line wraps. -->
+{#snippet parts(text: string)}
+  {#each text.split(' · ') as part, i (i)}{#if i > 0}{' · '}{/if}<span class="nw">{part}</span>{/each}
+{/snippet}

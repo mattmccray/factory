@@ -5,7 +5,7 @@ import { buildBoard } from './board';
 import { HOUR, NOW, before, job, tag } from './fixtures';
 import { kindOf } from './lanes';
 import type { Status } from './live';
-import { ALL, SELECTION_KEY, boardJobs, loadSelection, resolveSelection, saveSelection } from './projects';
+import { ALL, SELECTION_KEY, boardJobs, hotEpics, loadSelection, resolveSelection, saveSelection } from './projects';
 import { LEGEND, MAC_INSET, STATUS_BAR_EVENT, footer, frame, isActive, projectStatus, pushSubscriber, reviewFailed, settleHours, settleText, shellMode, sidebarModel, statusBarHidden, subtitle, subtitleText, title } from './sidebar';
 import { applyEvent, emptyState } from './state';
 import type { UiState } from './state';
@@ -320,5 +320,50 @@ describe("the Mac app's status bar event (032 AC5)", () => {
     for (const d of [undefined, null, true, 'hidden', [], {}, { hidden: 'true' }, { hidden: 1 }, { shown: true }]) {
       expect({ d, hidden: statusBarHidden(d) }).toEqual({ d, hidden: null });
     }
+  });
+});
+
+describe('epics in the sidebar and the toolbar (056 AC5)', () => {
+  const EPICS = { id: 'eeeeeeeeeeee', name: 'epics', root: '/r/epics' };
+  const waiting = { slug: 'billing', state: 'waiting', waitingOn: 'you', note: 'checkout is on dev', members: [] };
+  function withEpics(): UiState {
+    let s = applyEvent(state(), 'projects', { projects: [ZED, ALPHA, MID, BETA, NEW, EPICS] });
+    s = applyEvent(s, 'board', {
+      project: EPICS.id,
+      config: {},
+      jobs: [
+        { id: '010-a', stage: 'needs-human', epic: 'auth', kind: 'member' }, // an escalated member counts once, as any job
+        { id: '011-b', stage: 'build', epic: 'auth', kind: 'member' },
+        { id: '012-c', stage: 'review', epic: 'auth', kind: 'sync', round: 1, reviews: { code: 'pending' } },
+        { id: '013-d', stage: 'merged', epic: 'auth', kind: 'member', endedAt: before(HOUR) },
+      ],
+      epics: [{ slug: 'auth', state: 'waiting', waitingOn: 'members', members: [] }, waiting],
+    });
+    return s;
+  }
+
+  test("a waiting epic adds one to its project's red badge and the All Projects badge; its jobs in working stages add to the gray count", () => {
+    const s = withEpics();
+    const row = sidebarModel(s, ALL).projects.find((p) => p.id === EPICS.id);
+    expect([row?.state, row?.dot, row?.badge]).toEqual(['needs-human', 'red', { tone: 'red', count: 2, label: '2 need a human' }]);
+    expect(sidebarModel(s, ALL).all.badge).toEqual({ tone: 'red', count: 4, label: '4 need a human' }); // zed's 2, the member, and the waiting epic
+    expect(projectStatus(s.boards[EPICS.id]?.jobs.filter((j) => j.stage !== 'needs-human') ?? [], [])).toEqual({ state: 'active', badge: { tone: 'gray', count: 2, label: '2 active' } });
+  });
+
+  test('a project whose only activity is a waiting epic is needs-human, not idle', () => {
+    expect(projectStatus([], [{ waitingOn: 'you' }])).toEqual({ state: 'needs-human', badge: { tone: 'red', count: 1, label: '1 needs a human' } });
+    expect(projectStatus([], [{ waitingOn: 'members' }, { waitingOn: null }])).toEqual({ state: 'idle', badge: null });
+  });
+
+  test('the toolbar: the waiting epic adds to "M waiting on you", and to "K waiting elsewhere" from another project', () => {
+    const s = withEpics();
+    const board = buildBoard(boardJobs(s, EPICS.id), NOW);
+    expect(board.waiting + hotEpics(s, EPICS.id)).toBe(2);
+    expect(hotEpics(s, ALL)).toBe(1);
+    expect(hotEpics(s, MID.id)).toBe(0);
+    expect(subtitle(s, MID.id, 3, 0).elsewhere).toBe('4 waiting elsewhere');
+    expect(subtitle(s, EPICS.id, board.running, board.waiting + hotEpics(s, EPICS.id))).toMatchObject({ waiting: '2 waiting on you', elsewhere: '2 waiting elsewhere' });
+    const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
+    expect(app).toContain('subtitle(ui, sel, board.running, board.waiting + hotEpics(ui, sel))');
   });
 });

@@ -1,9 +1,10 @@
 // The project switcher: one project's board, or **All projects** merged into one board with
 // every card tagged by its project. The selection persists in localStorage.
-import { settledCount, settledJobs } from './board';
-import type { BoardJob } from './board';
-import type { Job, ProjectInfo } from './job';
+import { isEpicSettled, settledCount, settledJobs } from './board';
+import type { BoardEpic, BoardJob } from './board';
+import type { Epic, Job, ProjectInfo } from './job';
 import { settledCurrent } from './state';
+import { time } from './time';
 import type { ProjectBoard, UiState } from './state';
 
 export const ALL = 'all';
@@ -36,13 +37,28 @@ export function saveSelection(store: KeyValueStore | null, sel: Selection): void
 /** The selection to show: a stored project that is no longer registered falls back to All projects. */
 export const resolveSelection = (s: UiState, sel: Selection): Selection => (s.projects.some((p) => p.id === sel) ? sel : ALL);
 
-const tagged = (p: ProjectInfo, b: ProjectBoard, job: Job): BoardJob => ({
-  key: `${p.id}/${job.id}`,
-  project: { id: p.id, name: p.name },
-  settleAfterHours: b.config.settleAfterHours,
-  reviewers: b.config.reviewers,
-  job,
-});
+/** A project's epics: those on its board, then its cached settled ones that aren't (a board epic wins). */
+export function projectEpics(s: UiState, pid: string): Epic[] {
+  const held = s.boards[pid]?.epics ?? [];
+  const slugs = new Set(held.map((e) => e.slug));
+  return [...held, ...(s.settled[pid]?.epics ?? []).filter((e) => !slugs.has(e.slug))];
+}
+
+/** A job tagged with its project and that project's settings, and with its epic when the project has it. */
+function tagged(s: UiState, p: ProjectInfo, b: ProjectBoard, job: Job): BoardJob {
+  const out: BoardJob = {
+    key: `${p.id}/${job.id}`,
+    project: { id: p.id, name: p.name },
+    settleAfterHours: b.config.settleAfterHours,
+    reviewers: b.config.reviewers,
+    job,
+  };
+  const epic = job.epic === null ? undefined : projectEpics(s, p.id).find((e) => e.slug === job.epic);
+  if (epic !== undefined) out.epic = epic;
+  return out;
+}
+
+const taggedEpic = (p: ProjectInfo, b: ProjectBoard, epic: Epic): BoardEpic => ({ key: `${p.id}/${epic.slug}`, project: { id: p.id, name: p.name }, settleAfterHours: b.config.settleAfterHours, epic });
 
 /** The jobs on the board for a selection, each tagged with its project and that project's settings. */
 export function boardJobs(s: UiState, sel: Selection): BoardJob[] {
@@ -51,10 +67,48 @@ export function boardJobs(s: UiState, sel: Selection): BoardJob[] {
     if (sel !== ALL && sel !== p.id) continue;
     const b = s.boards[p.id];
     if (b === undefined) continue;
-    for (const job of b.jobs) out.push(tagged(p, b, job));
+    for (const job of b.jobs) out.push(tagged(s, p, b, job));
   }
   return out;
 }
+
+/** The epics on the board for a selection (the projects' unsettled epics), each tagged with its project. */
+export function boardEpics(s: UiState, sel: Selection): BoardEpic[] {
+  const out: BoardEpic[] = [];
+  for (const p of s.projects) {
+    if (sel !== ALL && sel !== p.id) continue;
+    const b = s.boards[p.id];
+    if (b === undefined) continue;
+    for (const e of b.epics) out.push(taggedEpic(p, b, e));
+  }
+  return out;
+}
+
+/** The selection's cached settled epics (fetched on demand with its settled jobs), tagged as board epics are. */
+export function fetchedSettledEpics(s: UiState, sel: Selection): BoardEpic[] {
+  const out: BoardEpic[] = [];
+  for (const p of s.projects) {
+    if (sel !== ALL && sel !== p.id) continue;
+    const b = s.boards[p.id];
+    if (b === undefined) continue;
+    for (const e of s.settled[p.id]?.epics ?? []) out.push(taggedEpic(p, b, e));
+  }
+  return out;
+}
+
+/** The selection's settled epics to list: held epics that settled on screen, and every fetched one that isn't held. Newest end first. */
+export function settledEpicsFor(s: UiState, sel: Selection, now: number): BoardEpic[] {
+  const held = boardEpics(s, sel);
+  const keys = new Set(held.map((e) => e.key));
+  const end = (e: BoardEpic): number => time(e.epic.endedAt ?? e.epic.updated);
+  return [...held.filter((e) => isEpicSettled(e.epic, e.settleAfterHours, now)), ...fetchedSettledEpics(s, sel).filter((e) => !keys.has(e.key))].sort((a, b) => end(b) - end(a) || a.key.localeCompare(b.key));
+}
+
+/** An epic that waits on Matt for an epic-level reason (`waitingOn: "you"`): one more needs-human item. */
+export const isHotEpic = (e: Pick<Epic, 'waitingOn'>): boolean => e.waitingOn === 'you';
+
+/** How many of the selection's epics wait on you: the toolbar's "M waiting on you" adds them to its needs-human jobs. */
+export const hotEpics = (s: UiState, sel: Selection): number => boardEpics(s, sel).filter((e) => isHotEpic(e.epic)).length;
 
 /** The selection's cached settled jobs (fetched on demand), tagged as board jobs are. */
 export function fetchedSettled(s: UiState, sel: Selection): BoardJob[] {
@@ -63,7 +117,7 @@ export function fetchedSettled(s: UiState, sel: Selection): BoardJob[] {
     if (sel !== ALL && sel !== p.id) continue;
     const b = s.boards[p.id];
     if (b === undefined) continue;
-    for (const job of s.settled[p.id]?.jobs ?? []) out.push(tagged(p, b, job));
+    for (const job of s.settled[p.id]?.jobs ?? []) out.push(tagged(s, p, b, job));
   }
   return out;
 }
@@ -128,10 +182,33 @@ export function lookupJob(s: UiState, ref: { project: string; id: string }): Loo
   const b = s.boards[ref.project];
   if (p === undefined || b === undefined) return s.projects.length > 0 ? { state: 'missing' } : { state: 'waiting' };
   const held = b.jobs.find((j) => j.id === ref.id);
-  if (held !== undefined) return { state: 'found', item: tagged(p, b, held) };
+  if (held !== undefined) return { state: 'found', item: tagged(s, p, b, held) };
   const fetched = s.settled[ref.project]?.jobs?.find((j) => j.id === ref.id);
-  if (fetched !== undefined) return { state: 'found', item: tagged(p, b, fetched) };
+  if (fetched !== undefined) return { state: 'found', item: tagged(s, p, b, fetched) };
   return settledCurrent(s, ref.project) ? { state: 'missing' } : { state: 'waiting' };
+}
+
+/** An epic the inspector names, as `lookupJob` finds a job. */
+export type EpicLookup = { state: 'found'; item: BoardEpic } | { state: 'waiting' } | { state: 'missing' };
+
+/** Finds an epic on its project's board or in its cached settled list; `missing` and `waiting` as for `lookupJob`. */
+export function lookupEpic(s: UiState, ref: { project: string; slug: string }): EpicLookup {
+  const p = s.projects.find((x) => x.id === ref.project);
+  const b = s.boards[ref.project];
+  if (p === undefined || b === undefined) return s.projects.length > 0 ? { state: 'missing' } : { state: 'waiting' };
+  const epic = projectEpics(s, ref.project).find((e) => e.slug === ref.slug);
+  if (epic !== undefined) return { state: 'found', item: taggedEpic(p, b, epic) };
+  return settledCurrent(s, ref.project) ? { state: 'missing' } : { state: 'waiting' };
+}
+
+/** Whether an epic is on its project's board (held), so the inspector needs no settled list for it. */
+export const isEpicHeld = (s: UiState, ref: { project: string; slug: string }): boolean => s.boards[ref.project]?.epics.some((e) => e.slug === ref.slug) === true;
+
+/** An epic's jobs, on the board or in the cached settled list (a held job wins), each tagged, in id order. */
+export function epicJobs(s: UiState, ref: { project: string; slug: string }): BoardJob[] {
+  const held = boardJobs(s, ref.project);
+  const keys = new Set(held.map((b) => b.key));
+  return [...held, ...fetchedSettled(s, ref.project).filter((b) => !keys.has(b.key))].filter((b) => b.job.epic === ref.slug).sort((a, b) => a.job.id.localeCompare(b.job.id));
 }
 
 /** Whether a job is on its project's board (held), so the inspector needs no settled list for it. */
@@ -147,12 +224,12 @@ export function reviewersFor(s: UiState, sel: Selection): string[] {
   return out;
 }
 
-/** The switcher's needs-human counts, per project and in total. */
+/** The switcher's needs-human counts, per project and in total: needs-human jobs, plus each epic waiting on you. */
 export function needsHuman(s: UiState): { byProject: Record<string, number>; total: number } {
   const byProject: Record<string, number> = {};
   let total = 0;
   for (const p of s.projects) {
-    const n = (s.boards[p.id]?.jobs ?? []).filter((j) => j.stage === 'needs-human').length;
+    const n = (s.boards[p.id]?.jobs ?? []).filter((j) => j.stage === 'needs-human').length + (s.boards[p.id]?.epics ?? []).filter(isHotEpic).length;
     byProject[p.id] = n;
     total += n;
   }
@@ -168,6 +245,9 @@ export function projectErrors(s: UiState, sel: Selection): Array<{ id: string; n
   }
   return out;
 }
+
+/** The service path of an epic's docs (its plan, then its members' briefs), in that epic's own project. */
+export const epicDocsPath = (pid: string, slug: string): string => `/projects/${encodeURIComponent(pid)}/epics/${encodeURIComponent(slug)}/docs`;
 
 /** The service path of a job's docs, in that job's own project. */
 export const docsPath = (b: Pick<BoardJob, 'project' | 'job'>): string => `/projects/${encodeURIComponent(b.project.id)}/jobs/${encodeURIComponent(b.job.id)}/docs`;
