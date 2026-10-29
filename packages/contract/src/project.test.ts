@@ -430,3 +430,55 @@ describe('session (latest wins)', () => {
     expect(project([...log([{ ...claimed, session: A }, ...toNeedsHuman]), { type: 'job.human-approved', session: { ...B, thread: '../x' }, ts: tsAt(9) }]).session).toEqual(A);
   });
 });
+
+describe('merge.conflicted and conflicts (job 051)', () => {
+  const conflicted = (reason = 'conflict in a.ts'): EventInput => ({ type: 'merge.conflicted', reason });
+  const A: Session = { app: 't3code', environment: 'env-1', thread: 'thread-A' };
+
+  test('a log without the event projects conflicts 0, and JobSnapshot always has the key', () => {
+    for (const s of [project(log([claimed])), project(log(twoRound)), project(log(toApprove))]) {
+      expect(s.conflicts).toBe(0);
+      expect(Object.keys(s)).toContain('conflicts');
+    }
+  });
+
+  test('from approve at round r: build, maxRound r + 2, conflicts + 1, note, decision null; the rest unchanged', () => {
+    const before = project(log([...toApprove, { type: 'agent.started', role: 'approver' }, { type: 'agent.finished', role: 'approver', verdict: 'APPROVE' }]));
+    expect(before.decision).toBe('APPROVE');
+    const events = log([...toApprove, { type: 'agent.started', role: 'approver' }, { type: 'agent.finished', role: 'approver', verdict: 'APPROVE' }, conflicted('x')]);
+    const s = project(events);
+    const at = tsAt(events.length - 1);
+    expect(s).toMatchObject({
+      stage: 'build', round: 1, maxRound: 3, conflicts: 1, note: 'x', decision: null,
+      stoppedBy: before.stoppedBy, stoppedFrom: before.stoppedFrom, reworks: before.reworks, session: before.session,
+      stageEnteredAt: at, updated: at,
+    });
+    expect(s.timing.stages.map((x) => x.stage).slice(-2)).toEqual(['approve', 'build']);
+    expect(s.timing.agents).toEqual(before.timing.agents); // no span opened or closed
+  });
+
+  test('from needs-human after a human approval: stoppedBy, stoppedFrom, reworks, session unchanged', () => {
+    const prior: EventInput[] = [{ ...claimed, session: A }, ...toApprove.slice(1), { type: 'job.escalated', reason: 'r' }, { type: 'job.human-approved' }];
+    const before = project(log(prior));
+    const s = project(log([...prior, conflicted('y')]));
+    expect(before).toMatchObject({ stage: 'needs-human', decision: 'APPROVE (human)', stoppedBy: 'escalated', stoppedFrom: 'approve', session: A });
+    expect(s).toMatchObject({ stage: 'build', maxRound: 3, conflicts: 1, note: 'y', decision: null, stoppedBy: 'escalated', stoppedFrom: 'approve', reworks: 0, session: A });
+    expect(s.timing.stages.map((x) => x.stage).slice(-2)).toEqual(['needs-human', 'build']);
+  });
+
+  test('keeps an open agent span open (no agent runs during a merge)', () => {
+    const s = project(log([...toApprove, { type: 'agent.started', role: 'builder', name: 'builder-019' }, conflicted()]));
+    expect(s.timing.agents.at(-1)).toMatchObject({ role: 'builder', finishedAt: null, ms: null });
+  });
+
+  test('counts every merge.conflicted: a second one from round r + 2 gives maxRound r + 4', () => {
+    const again: EventInput[] = [
+      ...toApprove, conflicted('one'),
+      { type: 'round.started', round: 2, reviewers: ['code'] }, ...reviewer('code', 2, 'CHANGES'), { type: 'stage.entered', stage: 'build' },
+      { type: 'round.started', round: 3, reviewers: ['code'] }, ...reviewer('code', 3, 'PASS'), { type: 'stage.entered', stage: 'approve' },
+      conflicted('two'),
+    ];
+    expect(project(log(again))).toMatchObject({ stage: 'build', round: 3, maxRound: 5, conflicts: 2, note: 'two' });
+    expect(project(log([...again, { type: 'job.escalated', reason: 'r' }, { type: 'job.reworked', k: 1, maxRound: 6 }]))).toMatchObject({ conflicts: 2, reworks: 1 });
+  });
+});

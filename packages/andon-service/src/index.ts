@@ -160,7 +160,8 @@ const num = (name: string): number => Number(name.match(/\d+/)?.[0] ?? 0);
 // `rounds` maps each `round-<N>` dir to the `.md` file names in it.
 function readingOrder(top: readonly string[], rounds: ReadonlyMap<string, string[]>, reviewers: readonly string[]): string[] {
   const reworks = top.filter((f) => /^rework-\d+\.md$/.test(f)).sort((a, b) => num(a) - num(b));
-  const paths = ['feature.md', 'spec.md', 'build.md', ...reworks, 'decision.md'].filter((f) => top.includes(f));
+  const conflicts = top.filter((f) => /^conflict-\d+\.md$/.test(f)).sort((a, b) => num(a) - num(b));
+  const paths = ['feature.md', 'spec.md', 'build.md', ...reworks, ...conflicts, 'decision.md'].filter((f) => top.includes(f));
   const rank = (f: string): number => {
     const i = reviewers.indexOf(f.replace(/^review-|\.md$/g, ''));
     return i === -1 ? reviewers.length : i;

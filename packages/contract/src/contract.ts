@@ -42,6 +42,8 @@ export type EventInput =
   | { type: 'job.reworked'; k: number; maxRound: number; session?: Session }
   | { type: 'job.human-approved'; session?: Session }
   | { type: 'merge.failed'; reason: string }
+  // A merge into the target conflicted: the job goes back to its builder (see CONFLICT_LIMIT).
+  | { type: 'merge.conflicted'; reason: string }
   | { type: 'job.merged'; sha: string }
   | { type: 'job.abandoned'; reason: string };
 
@@ -400,6 +402,9 @@ export function parseEventInput(
     case 'merge.failed':
       allow('reason');
       return { type, reason: str(fields, 'reason') };
+    case 'merge.conflicted':
+      allow('reason');
+      return { type, reason: str(fields, 'reason') };
     case 'job.merged':
       allow('sha');
       return { type, sha: str(fields, 'sha') };
@@ -413,6 +418,12 @@ export function parseEventInput(
 
 // ---- transitions ----
 
+/**
+ * How many `merge.conflicted` events one job may log. The next conflict is refused, and the
+ * orchestrator logs `merge.failed` instead. Fixed in the contract, not a config key.
+ */
+export const CONFLICT_LIMIT = 2;
+
 interface State {
   stage: Stage | null; // null = no log yet
   round: number;
@@ -420,10 +431,11 @@ interface State {
   reviewers: string[]; // current round's list
   finished: Set<string>; // reviewers with a verdict in the current round
   humanApproved: boolean;
+  conflicts: number; // merge.conflicted events so far
 }
 
 function derive(prior: FactoryEvent[]): State {
-  const s: State = { stage: null, round: 0, maxRound: 0, reviewers: [], finished: new Set(), humanApproved: false };
+  const s: State = { stage: null, round: 0, maxRound: 0, reviewers: [], finished: new Set(), humanApproved: false, conflicts: 0 };
   for (const e of prior) {
     switch (e.type) {
       case 'job.claimed': s.stage = 'claimed'; s.maxRound = e.maxRound; break;
@@ -436,6 +448,9 @@ function derive(prior: FactoryEvent[]): State {
       case 'job.reworked': s.stage = 'build'; s.maxRound = e.maxRound; s.humanApproved = false; break;
       case 'job.human-approved': s.humanApproved = true; break;
       case 'merge.failed': s.stage = 'needs-human'; s.humanApproved = false; break;
+      // Back to build with a two-round budget past the current round; any human approval was of
+      // the work before the resolution, so it no longer counts.
+      case 'merge.conflicted': s.stage = 'build'; s.maxRound = s.round + 2; s.humanApproved = false; s.conflicts += 1; break;
       case 'job.merged': s.stage = 'merged'; break;
       case 'job.abandoned': s.stage = 'abandoned'; break;
       default: break;
@@ -496,6 +511,12 @@ export function checkTransition(prior: FactoryEvent[], next: EventInput, opts: T
       if (stage === 'approve') return;
       if (stage === 'needs-human' && s.humanApproved) return;
       return bad();
+    case 'merge.conflicted':
+      if (stage !== 'approve' && !(stage === 'needs-human' && s.humanApproved)) return bad();
+      if (s.conflicts >= CONFLICT_LIMIT) {
+        fail(`merge.conflicted refused: this job has already conflicted ${s.conflicts} times (the limit is ${CONFLICT_LIMIT}); log merge.failed instead`);
+      }
+      return;
     case 'job.merged':
       if (stage === 'approve' || (stage === 'needs-human' && s.humanApproved)) return;
       return stage === 'needs-human' ? fail('job.merged from needs-human requires job.human-approved first') : bad();

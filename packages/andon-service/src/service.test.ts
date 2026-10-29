@@ -132,7 +132,7 @@ describe('HTTP endpoints (AC3)', () => {
     await addRoot(registry, a);
     await addRoot(registry, b);
     const job = join(a, 'factory', 'jobs', '001-first-job');
-    for (const f of ['decision.md', 'build.md', 'spec.md', 'feature.md', 'rework-2.md', 'rework-1.md', 'notes.txt']) await writeFile(join(job, f), `# ${f}\n`);
+    for (const f of ['decision.md', 'conflict-10.md', 'build.md', 'conflict-2.md', 'spec.md', 'feature.md', 'rework-2.md', 'conflict-1.md', 'rework-1.md', 'notes.txt', 'conflict-x.md']) await writeFile(join(job, f), `# ${f}\n`);
     for (const f of ['review-code.md', 'review-security.md', 'review-zeta.md']) await writeAt(join(job, 'round-1', f), `# r1 ${f}\n`);
     await writeAt(join(job, 'round-2', 'review-code.md'), '# r2\n');
     await writeAt(join(job, 'round-1', 'code', 'shot.png'), 'png');
@@ -168,6 +168,9 @@ describe('HTTP endpoints (AC3)', () => {
       'jobs/001-first-job/build.md',
       'jobs/001-first-job/rework-1.md',
       'jobs/001-first-job/rework-2.md',
+      'jobs/001-first-job/conflict-1.md',
+      'jobs/001-first-job/conflict-2.md',
+      'jobs/001-first-job/conflict-10.md',
       'jobs/001-first-job/decision.md',
       'jobs/001-first-job/round-1/review-security.md',
       'jobs/001-first-job/round-1/review-code.md',
@@ -704,6 +707,7 @@ describe('archived jobs (job 047)', () => {
     const config = parseConfig(CONFIG);
     await appendEvent(factory, '002-archived-job', parseEventInput('job.claimed', { brief: 'factory/briefs/two.md' }, { id: '002-archived-job', config }));
     await fleshOut(root, '002-archived-job', 'factory/briefs/two.md');
+    for (const f of ['conflict-2.md', 'conflict-1.md']) await writeFile(join(factory, 'jobs', '002-archived-job', f), `# ${f}\n`);
     await symlink(join(factory, 'jobs', '002-archived-job', 'spec.md'), join(factory, 'jobs', '002-archived-job', 'round-1', 'review-link.md'));
     // A legacy job: job.json only.
     const legacy = { schema: 'factory/v1', id: '003-legacy-job', title: 'Legacy', stage: 'merged', round: 1, extra: { kept: true } };
@@ -756,6 +760,8 @@ describe('archived jobs (job 047)', () => {
       'jobs/002-archived-job/spec.md',
       'jobs/002-archived-job/build.md',
       'jobs/002-archived-job/rework-1.md',
+      'jobs/002-archived-job/conflict-1.md',
+      'jobs/002-archived-job/conflict-2.md',
       'jobs/002-archived-job/decision.md',
       'jobs/002-archived-job/round-1/review-security.md',
       'jobs/002-archived-job/round-1/review-code.md',

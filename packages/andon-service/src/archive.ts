@@ -60,7 +60,7 @@ export interface ArchiveCache {
 export const EMPTY_ARCHIVE: ArchiveCache = { tip: null, jobs: new Map() };
 
 const HEX_SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
-const TOP_MD = /^(feature|spec|build|decision|rework-\d+)\.md$/;
+const TOP_MD = /^(feature|spec|build|decision|rework-\d+|conflict-\d+)\.md$/;
 const ROUND_MD = /^round-\d+\/[^/]+\.md$/;
 // Mode 100644 or 100755: a regular file. A symlink (120000) or a submodule (160000) is never read.
 const REGULAR = /^100(644|755)$/;
