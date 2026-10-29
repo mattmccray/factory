@@ -115,7 +115,7 @@ These bind every brief below. Each brief cites them by number and records only i
    under review; and the target never says "done" for work it doesn't have yet.
 8. Where does the plan live, and how is an epic produced and started? → **A tracked markdown
    plan file in its own folder, `factory/epics/<slug>.md`,
-   with `Status: draft | ready | done`, a `- Landed: <short sha> (<YYYY-MM-DD>)` line written
+   with `Status: draft | ready | done | abandoned` (`abandoned` added in brief `epic-skill`, decision 5), a `- Landed: <short sha> (<YYYY-MM-DD>)` line written
    only at landing, an Intent, and a `## Members` list of brief slugs, each with optional
    `after: <slug>[, <slug>]` and `maxRound: <n>`.** Members with no path between them may run in
    parallel. Live state (running, blocked, waiting) is never written to the file; it comes from the

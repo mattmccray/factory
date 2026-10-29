@@ -57,8 +57,9 @@ the bookkeeping (`doctor`, `archive`, `prune`) that keeps epics as safe as jobs.
    every member has merged and no sync or fix job is live; nothing when the epic must wait
    (`epic show` says why). `claim` refuses (writing nothing) a member whose `after:` members
    haven't all merged, a member that already has a job that isn't abandoned, and a member claim
-   past the cap. The cap counts working members only (a member in `needs-human` holds no slot);
-   sync and fix jobs bypass it. An abandoned member is `abandoned` in `epic.json`, blocks its
+   past the cap, and any member while a sync job is live (`epic next` prints no `claim` lines
+   then; amended 2026-10-29 from factory/briefs/epic-skill.md decision 2). The cap counts working
+   members only (a member in `needs-human` holds no slot); sync and fix jobs bypass it. An abandoned member is `abandoned` in `epic.json`, blocks its
    dependents, and is never reclaimed by `epic next` (the decision 6 point where the orchestrator
    asks Matt). Why: the CLI defends the plan as it defends WAIT FOR ALL, so an orchestrator
    juggling several jobs, after a compaction or a resume, can't start a member early or twice;
@@ -83,7 +84,10 @@ the bookkeeping (`doctor`, `archive`, `prune`) that keeps epics as safe as jobs.
    `epic next`, `doctor`, and the projection.** `doctor` checks each `factory/epics/*.md`: a
    `ready` plan that `epic start` would refuse (a missing or non-ready brief, an `after:` naming a
    non-member, a cycle, a malformed `## Members` line) is a `FAIL` with the same one-line reason; a
-   `draft` plan is checked for parse errors only, as a `note`; a `done` plan isn't checked. Why:
+   `draft` plan is checked for parse errors only, as a `note`; a `done` or `abandoned` plan isn't
+   checked. Plan statuses are `draft | ready | done | abandoned` (`abandoned` amended 2026-10-29
+   from factory/briefs/epic-skill.md decision 5: a plan has one run, so an abandoned plan can't
+   stay `ready`). Why:
    one parser means `doctor` and `epic start` never disagree; a ready plan that can't run is a
    defect like a bad `config.json`, while a draft is mid-interview; the key follows the shape of
    `merge` and `archive`.
@@ -128,7 +132,8 @@ the bookkeeping (`doctor`, `archive`, `prune`) that keeps epics as safe as jobs.
   `epic` and `kind`; it refuses an epic that isn't running, a member not in the plan or without
   `brief=`, a member whose `after:` members haven't all merged, a member that already has a
   non-abandoned job, a member past `epic.maxParallel` (members in `needs-human` hold no slot; sync
-  and fix bypass), `kind` without `epic`, and a brief on a sync or fix job.
+  and fix bypass), any member while a sync job is live, `kind` without `epic`, and a brief on a
+  sync or fix job.
 - `epic next <slug>` prints `claim <member>` lines, `land`, or nothing, matching the rules above;
   `epic show <slug>` prints the epic's state, each member's state, and why it waits.
 - `epic.json` is rebuilt after every epic event and every event on a member job, and by `rebuild`;
@@ -142,7 +147,8 @@ the bookkeeping (`doctor`, `archive`, `prune`) that keeps epics as safe as jobs.
 - `config.json` accepts `epic.maxParallel` (positive integer; default 3) and rejects any other key
   under `epic`.
 - `doctor` FAILs a ready plan `epic start` would refuse, with the same reason; notes a draft plan's
-  parse errors; skips done plans.
+  parse errors; skips done and abandoned plans. The plan parser accepts the statuses `draft`,
+  `ready`, `done`, and `abandoned`, and `epic start` refuses any plan that isn't `ready`.
 - `archive` copies terminal epics under `epics/<slug>/` on `factory/archive` (with
   `Factory-Epic` and, when landed, `Landed-As`), and `archive --all` includes them; `prune`
   removes archived, settled epic dirs and never prunes a job whose epic isn't terminal.
