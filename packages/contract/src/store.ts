@@ -251,7 +251,7 @@ async function isLive(root: string, id: string): Promise<boolean> {
 /** How `claimJob` learns of job ids used outside `jobs/`. */
 export interface ClaimOptions {
   /**
-   * The job ids archived on the `factory/jobs` branch (its top-level entries; none when the
+   * The job ids archived on the `factory/archive` branch (its top-level entries; none when the
    * branch is missing). Read under `jobs/.claim.lock`, whatever the config says, so a number on
    * the archive is never handed out again. Absent: only the job dirs count.
    */

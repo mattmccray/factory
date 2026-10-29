@@ -1306,7 +1306,8 @@ describe('the job archive in SKILL.md (job 045, AC8)', () => {
       expect(archive).toBeLessThan(bookkeeping);
       const step = merge.slice(archive, bookkeeping);
       expect(step).toContain('If it fails, or says archiving is disabled, report its line to the user in one line and carry on: a failed or disabled archive never fails or undoes the merge');
-      expect(step).toContain('Never push `factory/jobs`.');
+      expect(step).toContain('It copies the job\'s record to the `factory/archive` branch with git plumbing');
+      expect(step).toContain('Never push `factory/archive`.');
       expect(step).toContain('never touches the checkout');
     }
   });
@@ -1323,7 +1324,19 @@ describe('the job archive in SKILL.md (job 045, AC8)', () => {
       expect(done).toBeLessThan(lock);
       const step = entry.slice(done, lock);
       expect(step).toContain('If it fails, or says archiving is disabled, report its line in one line and carry on: a failed or disabled archive never fails the abandon.');
-      expect(step).toContain('Never push `factory/jobs`.');
+      expect(step).toContain('to copy its record to the `factory/archive` branch.');
+      expect(step).toContain('Never push `factory/archive`.');
+    }
+  });
+
+  test('job 046 AC5: no rendered file names factory/jobs as a branch; the job record names factory/archive', () => {
+    // A branch mention: `factory/jobs` with no path after it, "the factory/jobs branch", or its ref.
+    const asBranch = /`factory\/jobs`|factory\/jobs branch|refs\/heads\/factory\/jobs/;
+    for (const c of configs) {
+      for (const [path, text] of Object.entries(renderClaudeCode({ config: c }).files)) {
+        expect({ path, found: asBranch.test(flat(text)) }).toEqual({ path, found: false });
+      }
+      expect(skill(c)).toContain('`factory/archive` branch by `factory archive`');
     }
   });
 
@@ -1342,7 +1355,7 @@ describe('the job archive in SKILL.md (job 045, AC8)', () => {
   });
 
   test('the archive step is not in the skill before this job (the pins fail on the old text)', () => {
-    const old = TEMPLATES.skill.replace(/- Then \*\*archive\*\* the job[\s\S]*?Never push `factory\/jobs`\.\n/, '');
+    const old = TEMPLATES.skill.replace(/- Then \*\*archive\*\* the job[\s\S]*?Never push `factory\/archive`\.\n/, '');
     expect(old).not.toBe(TEMPLATES.skill);
     const text = flat(at(renderClaudeCode({ config: config(), templates: { ...TEMPLATES, skill: old } }).files, SKILL));
     expect(section(text, 'Merge')).not.toContain(ARCHIVE);
