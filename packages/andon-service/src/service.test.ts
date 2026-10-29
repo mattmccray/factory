@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { connect as tcp } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { addRoot, appendEvent, parseConfig, parseEventInput, registryPath } from '@factory/contract';
+import { spawnGit } from './archive';
 import { projectId, startService } from './index';
-import type { Service } from './index';
+import type { GitRunner, Service } from './index';
 
 const CONFIG = { schema: 'factory/v1', reviewers: ['security', 'code'], maxRound: 2, dashboard: { settleAfterHours: 24 } };
 
@@ -599,5 +600,366 @@ describe('abandoned jobs (AC5)', () => {
     expect(typeof field(abandoned, 'endedAt')).toBe('string');
     const other = Array.isArray(jobs) ? jobs.find((j) => field(j, 'id') === '002-second-job') : undefined;
     expect(other).toMatchObject({ stage: 'claimed', stoppedBy: null, stoppedFrom: null });
+  });
+});
+
+// --- Jobs found only on `factory/archive` (job 047) ---
+
+const testEnv = (extra: Record<string, string> = {}): Record<string, string> => {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith('GIT_')) env[k] = v;
+  return { ...env, ...extra };
+};
+
+// Runs git for a fixture (never the service's runner); throws on a non-zero exit.
+function gitFx(cwd: string, args: string[], env: Record<string, string> = {}): string {
+  const p = Bun.spawnSync(['git', '-c', 'user.name=andon-test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', ...args], {
+    cwd,
+    env: testEnv(env),
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  if (p.exitCode !== 0) throw new Error(`git ${args.join(' ')}: ${p.stderr.toString().trim()}`);
+  return p.stdout.toString().trim();
+}
+
+// A project root that is a git repo on `main` with one commit, factory/config.json, and claimed jobs.
+async function makeRepoProject(name: string, ids: string[]): Promise<string> {
+  const root = await makeProject(name, ids);
+  gitFx(root, ['init', '--quiet', '--initial-branch=main']);
+  gitFx(root, ['commit', '--quiet', '--allow-empty', '-m', 'init']);
+  return root;
+}
+
+// Archives jobs the way `factory archive` lays them out: `<id>/` holds every file of `jobs/<id>/`
+// but `job.json` (kept for a legacy job), one commit on top of the current tip. `stage` holds
+// every job archived so far. `extra` runs on the staged index before the tree is written.
+async function archiveJobs(repo: string, stage: string, ids: string[], extra?: (env: Record<string, string>) => void): Promise<string> {
+  const gitDir = gitFx(repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  for (const id of ids) {
+    const dir = join(repo, 'factory', 'jobs', id);
+    const legacy = !(await Bun.file(join(dir, 'events.jsonl')).exists());
+    await cp(dir, join(stage, id), { recursive: true, verbatimSymlinks: true, filter: (src) => legacy || basename(src) !== 'job.json' });
+  }
+  const idx = join(tmp, `index-${Math.random().toString(16).slice(2)}`);
+  const env = { GIT_DIR: gitDir, GIT_WORK_TREE: stage, GIT_INDEX_FILE: idx };
+  gitFx(stage, ['add', '-A', '-f', '.'], env);
+  extra?.(env);
+  const tree = gitFx(stage, ['write-tree'], env);
+  const tip = Bun.spawnSync(['git', 'rev-parse', '--verify', '--quiet', 'refs/heads/factory/archive^{commit}'], { cwd: repo, env: testEnv(), stdout: 'pipe' }).stdout.toString().trim();
+  const commit = gitFx(repo, ['commit-tree', tree, ...(tip === '' ? [] : ['-p', tip]), '-m', `chore(factory): archive job ${ids.join(' ')}`]);
+  gitFx(repo, ['update-ref', 'refs/heads/factory/archive', commit, ...(tip === '' ? [''] : [tip])]);
+  await rm(idx, { force: true });
+  return commit;
+}
+
+const idsOf = (body: unknown): unknown[] => {
+  const jobs = field(body, 'jobs');
+  return Array.isArray(jobs) ? jobs.map((j) => field(j, 'id')) : [];
+};
+const jobOf = (body: unknown, id: string): unknown => {
+  const jobs = field(body, 'jobs');
+  return Array.isArray(jobs) ? jobs.find((j) => field(j, 'id') === id) : undefined;
+};
+const readJson = async (path: string): Promise<unknown> => JSON.parse(await readFile(path, 'utf8'));
+
+interface GitCall {
+  args: string[];
+  cwd: string;
+}
+// The real runner, recording every invocation.
+const recording = (calls: GitCall[]): GitRunner => async (args, opts) => {
+  calls.push({ args: [...args], cwd: opts.cwd });
+  return spawnGit(args, opts);
+};
+const startWith = async (git: GitRunner): Promise<Service> => {
+  service = await startService({ port: 0, registryPath: registry, log: (l) => logs.push(l), git });
+  return service;
+};
+// Waits until no event has arrived for `quiet` ms (late fs events from the fixture setup).
+async function quiet(client: { seen: Sse[] }, calls: GitCall[] = [], ms = 300): Promise<void> {
+  let n = -1;
+  for (let i = 0; i < 20 && n !== client.seen.length + calls.length; i++) {
+    n = client.seen.length + calls.length;
+    await settle(ms);
+  }
+}
+
+// Gives a job real history and docs: spec, build, a review round, a rework, and a supporting file.
+async function fleshOut(root: string, id: string, brief?: string): Promise<void> {
+  const factory = join(root, 'factory');
+  const dir = join(factory, 'jobs', id);
+  for (const stage of ['spec', 'build']) await appendEvent(factory, id, parseEventInput('stage.entered', { stage }));
+  for (const f of ['spec.md', 'build.md', 'feature.md', 'rework-1.md', 'decision.md']) await writeFile(join(dir, f), `# ${id} ${f}\n\nCafé — ✓\n`);
+  await writeAt(join(dir, 'round-1', 'review-code.md'), '# code\n');
+  await writeAt(join(dir, 'round-1', 'review-security.md'), '# security\n');
+  await writeAt(join(dir, 'round-1', 'code', 'shot.png'), 'png');
+  if (brief !== undefined) await writeAt(join(factory, brief.replace(/^factory\//, '')), '# the brief\n');
+}
+
+describe('archived jobs (job 047)', () => {
+  test('AC1/AC2/AC6: an archived-only job is on the board and its docs match the local copy; bad entries are ignored', async () => {
+    const root = await makeRepoProject('alpha', ['001-local-job']);
+    const factory = join(root, 'factory');
+    const config = parseConfig(CONFIG);
+    await appendEvent(factory, '002-archived-job', parseEventInput('job.claimed', { brief: 'factory/briefs/two.md' }, { id: '002-archived-job', config }));
+    await fleshOut(root, '002-archived-job', 'factory/briefs/two.md');
+    await symlink(join(factory, 'jobs', '002-archived-job', 'spec.md'), join(factory, 'jobs', '002-archived-job', 'round-1', 'review-link.md'));
+    // A legacy job: job.json only.
+    const legacy = { schema: 'factory/v1', id: '003-legacy-job', title: 'Legacy', stage: 'merged', round: 1, extra: { kept: true } };
+    await writeAt(join(factory, 'jobs', '003-legacy-job', 'job.json'), JSON.stringify(legacy));
+    await writeFile(join(factory, 'jobs', '003-legacy-job', 'spec.md'), '# legacy spec\n');
+    await appendEvent(factory, '004-later-local', parseEventInput('job.claimed', {}, { id: '004-later-local', config }));
+    await addRoot(registry, root);
+
+    // The local copies, before their dirs are removed.
+    const before = await start();
+    const docsBefore = async (id: string): Promise<unknown> => (await getJson(`${before.url}/projects/${projectId(root)}/jobs/${id}/docs`)).body;
+    const docs2 = await docsBefore('002-archived-job');
+    const docs3 = await docsBefore('003-legacy-job');
+    await before.stop();
+    service = null;
+    const job2 = await readJson(join(factory, 'jobs', '002-archived-job', 'job.json'));
+    expect(field(job2, 'stage')).toBe('build');
+
+    const stage = join(tmp, 'stage');
+    // Bad entries: a torn log, a log not starting with job.claimed, a legacy job.json that's an
+    // array, a non-job top-level dir and file, and a submodule entry.
+    await writeAt(join(stage, '005-torn-job', 'events.jsonl'), `${JSON.stringify({ ts: '2026-01-01T00:00:00.000Z', type: 'job.claimed', schema: 'factory/v1', id: '005-torn-job', maxRound: 2, reviewers: [] })}\n{"ts":"2026-`);
+    await writeAt(join(stage, '006-headless-job', 'events.jsonl'), `${JSON.stringify({ ts: '2026-01-01T00:00:00.000Z', type: 'stage.entered', stage: 'spec' })}\n`);
+    await writeAt(join(stage, '007-array-job', 'job.json'), '[1, 2]');
+    await writeAt(join(stage, '008-empty-log', 'events.jsonl'), '');
+    await writeAt(join(stage, 'Bad_Id', 'job.json'), JSON.stringify({ ...legacy, id: 'Bad_Id' }));
+    await writeAt(join(stage, 'README.md'), '# not a job\n');
+    const head = gitFx(root, ['rev-parse', 'HEAD']);
+    await archiveJobs(root, stage, ['002-archived-job', '003-legacy-job'], (env) => {
+      gitFx(stage, ['update-index', '--add', '--cacheinfo', `160000,${head},009-submodule/job.json`], env);
+    });
+    await rm(join(factory, 'jobs', '002-archived-job'), { recursive: true });
+    await rm(join(factory, 'jobs', '003-legacy-job'), { recursive: true });
+
+    const { url } = await start();
+    const board = await getJson(`${url}/projects/${projectId(root)}/board`);
+    expect(board.status).toBe(200);
+    expect(Object.keys(isRec(board.body) ? board.body : {}).sort()).toEqual(['config', 'jobs']);
+    expect(field(board.body, 'config')).toEqual(parseConfig(CONFIG));
+    expect(idsOf(board.body)).toEqual(['001-local-job', '002-archived-job', '003-legacy-job', '004-later-local']);
+    expect(jobOf(board.body, '002-archived-job')).toEqual(job2);
+    expect(jobOf(board.body, '003-legacy-job')).toEqual(legacy);
+
+    const docs = async (id: string): Promise<unknown> => (await getJson(`${url}/projects/${projectId(root)}/jobs/${id}/docs`)).body;
+    expect(await docs('002-archived-job')).toEqual(docs2);
+    const paths = field(docs2, 'files');
+    expect(Array.isArray(paths) ? paths.map((f) => field(f, 'path')) : null).toEqual([
+      'briefs/two.md',
+      'jobs/002-archived-job/feature.md',
+      'jobs/002-archived-job/spec.md',
+      'jobs/002-archived-job/build.md',
+      'jobs/002-archived-job/rework-1.md',
+      'jobs/002-archived-job/decision.md',
+      'jobs/002-archived-job/round-1/review-security.md',
+      'jobs/002-archived-job/round-1/review-code.md',
+    ]);
+    expect(await docs('003-legacy-job')).toEqual(docs3);
+    for (const id of ['005-torn-job', '006-headless-job', '007-array-job', '008-empty-log', '009-submodule']) expect({ id, docs: await docs(id) }).toEqual({ id, docs: { files: [] } });
+    for (const id of ['005-torn-job', '006-headless-job', '007-array-job', '008-empty-log']) expect({ id, logged: logs.some((l) => l.includes(id)) }).toEqual({ id, logged: true });
+
+    // Without the brief locally, the archived job's docs simply omit it.
+    await rm(join(factory, 'briefs'), { recursive: true });
+    const noBrief = field(await docs('002-archived-job'), 'files');
+    expect(Array.isArray(noBrief) ? noBrief.map((f) => field(f, 'path'))[0] : null).toBe('jobs/002-archived-job/feature.md');
+  });
+
+  test('AC3: a job both local and archived is served from the local copy only', async () => {
+    const root = await makeRepoProject('alpha', ['001-both-job']);
+    const factory = join(root, 'factory');
+    const dir = join(factory, 'jobs', '001-both-job');
+    await writeFile(join(dir, 'spec.md'), '# archived spec\n');
+    const stage = join(tmp, 'stage');
+    await archiveJobs(root, stage, ['001-both-job']);
+    await appendEvent(factory, '001-both-job', parseEventInput('stage.entered', { stage: 'spec' }));
+    await writeFile(join(dir, 'spec.md'), '# local spec\n');
+    await writeFile(join(dir, 'build.md'), '# local build\n');
+    await addRoot(registry, root);
+
+    const { url } = await start();
+    const pid = projectId(root);
+    const board = await getJson(`${url}/projects/${pid}/board`);
+    expect(idsOf(board.body)).toEqual(['001-both-job']);
+    expect(jobOf(board.body, '001-both-job')).toEqual(await readJson(join(dir, 'job.json')));
+    expect(field(jobOf(board.body, '001-both-job'), 'stage')).toBe('spec');
+    expect((await getJson(`${url}/projects/${pid}/jobs/001-both-job/docs`)).body).toEqual({
+      files: [
+        { path: 'jobs/001-both-job/spec.md', text: '# local spec\n' },
+        { path: 'jobs/001-both-job/build.md', text: '# local build\n' },
+      ],
+    });
+    // The last-good rule: a job.json mid-write keeps the last local read, never the archived copy.
+    await writeFile(join(dir, 'job.json'), '{"id": "001-bo');
+    expect(stagesOf((await getJson(`${url}/projects/${pid}/board`)).body)).toEqual(['spec']);
+  });
+
+  test('AC4: a board event follows the archive branch being created, moved, and repacked', async () => {
+    const root = await makeRepoProject('alpha', ['001-first-job', '002-second-job', '003-third-job']);
+    await addRoot(registry, root);
+    const { url } = await start();
+    const pid = projectId(root);
+    const client = await connect(url);
+    await client.next((e) => e.event === 'projects');
+    await quiet(client);
+    const stage = join(tmp, 'stage');
+    const factory = join(root, 'factory');
+    const boardWith = (id: string, from: number) => client.next((e) => client.seen.indexOf(e) >= from && e.event === 'board' && field(e.data, 'project') === pid && idsOf(e.data).includes(id));
+
+    // Created after startup (no refs/heads/factory/ yet), as a loose ref.
+    let from = client.seen.length;
+    await archiveJobs(root, stage, ['001-first-job']);
+    await rm(join(factory, 'jobs', '001-first-job'), { recursive: true });
+    await boardWith('001-first-job', from);
+    await quiet(client);
+
+    // Moved by a new archive commit.
+    from = client.seen.length;
+    await archiveJobs(root, stage, ['002-second-job']);
+    await rm(join(factory, 'jobs', '002-second-job'), { recursive: true });
+    await boardWith('002-second-job', from);
+    await quiet(client);
+
+    // Packed, then moved in packed-refs only (no loose ref): only the packed-refs watch can see it.
+    gitFx(root, ['pack-refs', '--all']);
+    await quiet(client);
+    const prev = gitFx(root, ['rev-parse', 'refs/heads/factory/archive']);
+    await cp(join(factory, 'jobs', '003-third-job'), join(stage, '003-third-job'), { recursive: true, filter: (src) => basename(src) !== 'job.json' });
+    const gitDir = gitFx(root, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+    const idx = join(tmp, 'index-packed');
+    const env = { GIT_DIR: gitDir, GIT_WORK_TREE: stage, GIT_INDEX_FILE: idx };
+    gitFx(stage, ['add', '-A', '-f', '.'], env);
+    const commit = gitFx(root, ['commit-tree', gitFx(stage, ['write-tree'], env), '-p', prev, '-m', 'archive 003']);
+    await rm(join(factory, 'jobs', '003-third-job'), { recursive: true });
+    await quiet(client);
+    const packed = join(gitDir, 'packed-refs');
+    const text = await readFile(packed, 'utf8');
+    expect(text).toContain(`${prev} refs/heads/factory/archive`);
+    from = client.seen.length;
+    await writeFile(`${packed}.lock`, text.replace(`${prev} refs/heads/factory/archive`, `${commit} refs/heads/factory/archive`));
+    await rename(`${packed}.lock`, packed);
+    const ev = await boardWith('003-third-job', from);
+    expect(idsOf(ev.data)).toEqual(['001-first-job', '002-second-job', '003-third-job']);
+    client.close();
+  });
+
+  test('AC4: a linked worktree project sees archive moves made in the main repo', async () => {
+    const main = await makeRepoProject('main-repo', ['001-first-job']);
+    const linked = join(tmp, 'linked');
+    gitFx(main, ['worktree', 'add', '--quiet', '-b', 'side', linked]);
+    await writeAt(join(linked, 'factory', 'config.json'), JSON.stringify(CONFIG));
+    await addRoot(registry, linked);
+    const { url } = await start();
+    const pid = projectId(linked);
+    const client = await connect(url);
+    await client.next((e) => e.event === 'projects');
+    await quiet(client);
+    const from = client.seen.length;
+    await archiveJobs(main, join(tmp, 'stage'), ['001-first-job']);
+    await client.next((e) => client.seen.indexOf(e) >= from && e.event === 'board' && field(e.data, 'project') === pid && idsOf(e.data).includes('001-first-job'));
+    expect(idsOf((await getJson(`${url}/projects/${pid}/board`)).body)).toEqual(['001-first-job']);
+    client.close();
+  });
+
+  test('AC5/AC6: jobs/ changes run no git; an archive move runs one ls-tree and one cat-file --batch; argv is fixed and read-only', async () => {
+    const root = await makeRepoProject('alpha', ['001-first-job', '002-second-job', '003-third-job', '004-live-job']);
+    const stage = join(tmp, 'stage');
+    await fleshOut(root, '001-first-job');
+    await archiveJobs(root, stage, ['001-first-job', '002-second-job']);
+    await addRoot(registry, root);
+    const calls: GitCall[] = [];
+    const { url } = await startWith(recording(calls));
+    const pid = projectId(root);
+    const client = await connect(url);
+    await client.next((e) => e.event === 'projects');
+    await quiet(client, calls);
+    const count = (cmd: string, list = calls): number => list.filter((c) => c.args[0] === cmd).length;
+    // Startup: the common dir and the tip once each, then one ls-tree and one cat-file for every file.
+    expect(count('ls-tree')).toBe(1);
+    expect(count('cat-file')).toBe(1);
+    expect(calls.slice(0, 2).map((c) => c.args)).toEqual([
+      ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+      ['rev-parse', '--verify', '--quiet', 'refs/heads/factory/archive^{commit}'],
+    ]);
+
+    // A change under factory/jobs/: a board event, and no git at all.
+    let mark = calls.length;
+    let from = client.seen.length;
+    await appendEvent(join(root, 'factory'), '004-live-job', parseEventInput('stage.entered', { stage: 'spec' }));
+    await client.next((e) => client.seen.indexOf(e) >= from && e.event === 'board' && field(jobOf(e.data, '004-live-job'), 'stage') === 'spec');
+    await getJson(`${url}/projects/${pid}/board`);
+    await getJson(`${url}/projects/${pid}/jobs/001-first-job/docs`);
+    await settle(200);
+    expect(calls.slice(mark)).toEqual([]);
+
+    // A job branch moving re-reads the tip only.
+    await quiet(client, calls);
+    mark = calls.length;
+    from = client.seen.length;
+    gitFx(root, ['branch', 'factory/004-live-job']);
+    await client.next((e) => client.seen.indexOf(e) >= from && e.event === 'board');
+    await quiet(client, calls);
+    expect(calls.slice(mark).length).toBeGreaterThan(0);
+    expect(calls.slice(mark).map((c) => c.args[0])).toEqual(calls.slice(mark).map(() => 'rev-parse'));
+
+    // The archive tip moving: exactly one ls-tree and one cat-file --batch.
+    mark = calls.length;
+    from = client.seen.length;
+    await archiveJobs(root, stage, ['003-third-job']);
+    await rm(join(root, 'factory', 'jobs', '003-third-job'), { recursive: true });
+    await rm(join(root, 'factory', 'jobs', '002-second-job'), { recursive: true });
+    await client.next((e) => client.seen.indexOf(e) >= from && e.event === 'board' && idsOf(e.data).includes('003-third-job') && idsOf(e.data).includes('002-second-job'));
+    await quiet(client, calls);
+    const moved = calls.slice(mark);
+    expect(count('ls-tree', moved)).toBe(1);
+    expect(count('cat-file', moved)).toBe(1);
+
+    // Every invocation: read-only, a fixed argv, run in the project root.
+    const tips = new Set(calls.filter((c) => c.args[0] === 'ls-tree').map((c) => c.args[4]));
+    for (const c of calls) {
+      expect(c.cwd).toBe(root);
+      const fixed = [
+        ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+        ['rev-parse', '--verify', '--quiet', 'refs/heads/factory/archive^{commit}'],
+        ['cat-file', '--batch'],
+      ];
+      const ok = fixed.some((f) => JSON.stringify(f) === JSON.stringify(c.args)) || (c.args.length === 5 && JSON.stringify(c.args.slice(0, 4)) === JSON.stringify(['ls-tree', '-r', '-z', '--full-tree']) && /^[0-9a-f]{40}$/.test(c.args[4] ?? ''));
+      expect({ args: c.args, ok }).toEqual({ args: c.args, ok: true });
+    }
+    expect(tips.size).toBe(2);
+    expect(count('rev-parse', calls.filter((c) => c.args[1] === '--path-format=absolute'))).toBe(1); // the common dir, once
+    client.close();
+  });
+
+  test('AC7: no archive branch, or no git repo: responses as before, nothing logged', async () => {
+    const repo = await makeRepoProject('repo', ['001-first-job']);
+    const plain = await makeProject('plain', ['001-first-job']);
+    await addRoot(registry, repo);
+    await addRoot(registry, plain);
+    const calls: GitCall[] = [];
+    const { url } = await startWith(recording(calls));
+    const client = await connect(url);
+    await client.next((e) => e.event === 'projects');
+    for (const root of [repo, plain]) {
+      const board = await getJson(`${url}/projects/${projectId(root)}/board`);
+      expect(board.status).toBe(200);
+      expect(board.body).toEqual({ jobs: [await readJson(join(root, 'factory', 'jobs', '001-first-job', 'job.json'))], config: parseConfig(CONFIG) });
+      expect((await getJson(`${url}/projects/${projectId(root)}/jobs/001-first-job/docs`)).body).toEqual({ files: [] });
+      expect((await getJson(`${url}/projects/${projectId(root)}/jobs/002-not-there/docs`)).body).toEqual({ files: [] });
+    }
+    await quiet(client, calls);
+    const from = client.seen.length;
+    await appendEvent(join(plain, 'factory'), '001-first-job', parseEventInput('stage.entered', { stage: 'spec' }));
+    const ev = await client.next((e) => client.seen.indexOf(e) >= from && e.event === 'board' && field(e.data, 'project') === projectId(plain));
+    expect(stagesOf(ev.data)).toEqual(['spec']);
+    expect(logs).toEqual([]);
+    expect(calls.filter((c) => c.cwd === plain).map((c) => c.args)).toEqual([['rev-parse', '--path-format=absolute', '--git-common-dir']]);
+    expect(calls.some((c) => c.args[0] === 'ls-tree' || c.args[0] === 'cat-file')).toBe(false);
+    client.close();
   });
 });

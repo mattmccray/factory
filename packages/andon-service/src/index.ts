@@ -6,9 +6,18 @@
 //   GET /projects/<pid>/jobs/<id>/docs   → { files: [{ path, text }] }, that job's markdown in reading order
 //   GET /events                          → text/event-stream of `projects`, `board`, and `error` events
 //   GET /, GET /<asset>                  → the built Andon UI (`uiDir`), read-only; a path outside it is a 404
+// `board` (endpoint and event) and `docs` also serve jobs found only on the project's
+// `factory/archive` branch, in the same shapes: re-projected from the archived `events.jsonl` (a
+// legacy job keeps its archived `job.json`); a local `factory/jobs/<id>/` always wins. The archive
+// is read from git (`rev-parse`, `ls-tree`, `cat-file` only; see archive.ts) into a cache keyed by
+// the branch's tip sha, so a `jobs/` change runs no git and an archive move runs one `ls-tree` and
+// one `cat-file --batch`.
 // Changes are found with fs.watch, never by polling: one recursive watch on each project's
 // `factory/jobs/`, one non-recursive watch on its `factory/` (for `config.json`), and one on the
-// registry file's directory. `.worktrees/` and `.lock/` are never watched or served.
+// registry file's directory. The archive ref is watched in the git common dir (so a linked
+// worktree's project works too): non-recursive watches on `refs/heads/factory/`, on `refs/heads/`
+// (for `factory/` appearing), and on the common dir itself for `packed-refs` only.
+// `.worktrees/` and `.lock/` are never watched or served.
 // A project's name is resolved from its config.json on every GET /projects and on connect, and
 // `projects` is re-sent whenever a resolved name changes (or the registry's list does).
 // The board and docs readers are ported from the vendored `factory/serve.ts` (not imported).
@@ -19,6 +28,10 @@ import { lstat, mkdir, readFile, readdir, realpath, stat } from 'node:fs/promise
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { parseConfig, readRegistry } from '@factory/contract';
 import type { Config } from '@factory/contract';
+import { EMPTY_ARCHIVE, archiveTip, gitCommonDir, readArchive, spawnGit } from './archive';
+import type { ArchiveCache, GitRunner } from './archive';
+
+export type { GitRunner } from './archive';
 
 export interface ServiceOptions {
   port: number; // 0 picks a free port
@@ -26,6 +39,7 @@ export interface ServiceOptions {
   debounceMs?: number; // the burst window before one `board` event per project (default 50)
   log?: (line: string) => void; // diagnostics (default: stderr)
   uiDir?: string; // the Andon UI build (`apps/andon/dist`), served at `/`; absent or unbuilt: `/` is a 404
+  git?: GitRunner; // how git is run to read `factory/archive` (default: spawned without a shell)
 }
 
 export interface Service {
@@ -49,6 +63,10 @@ interface Project {
   jobsWatcher: FSWatcher | null;
   timer: ReturnType<typeof setTimeout> | null;
   closed: boolean;
+  archive: ArchiveCache; // `factory/archive` as last read, keyed by its tip
+  archiveDirty: boolean; // the archive ref may have moved since it was read
+  archiveTask: Promise<void>; // the archive's setup or latest refresh; readers wait on it
+  refs: { common: FSWatcher | null; heads: FSWatcher | null; factory: FSWatcher | null }; // the archive ref watches, in the git common dir
 }
 
 export const HOSTNAME = '127.0.0.1';
@@ -92,45 +110,80 @@ async function resolveName(p: Project): Promise<string> {
   }
 }
 
+// Local jobs, then the archived jobs that have no local dir, sorted by id together.
 async function board(p: Project): Promise<{ jobs: Job[]; config: Config }> {
   const config = await readConfig(p);
+  await p.archiveTask;
   const ids = (await entries(join(p.factory, 'jobs')))
     .filter((d) => d.isDirectory() && JOB_ID.test(d.name))
-    .map((d) => d.name)
-    .sort();
-  const jobs = await Promise.all(ids.map((id) => readJob(p, id)));
-  return { jobs: jobs.filter((j) => j !== undefined), config };
+    .map((d) => d.name);
+  const local = new Set(ids);
+  const read = await Promise.all(ids.map(async (id) => ({ id, job: await readJob(p, id) })));
+  for (const [id, a] of p.archive.jobs) if (!local.has(id)) read.push({ id, job: { ...a.job } });
+  read.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return { jobs: read.map((r) => r.job).filter((j) => j !== undefined), config };
 }
 
 const num = (name: string): number => Number(name.match(/\d+/)?.[0] ?? 0);
 
-// `id` is already checked against JOB_ID. Paths in `files` are relative to factory/.
+// A job's docs in reading order, as paths inside its dir: `top` is its top-level file names,
+// `rounds` maps each `round-<N>` dir to the `.md` file names in it.
+function readingOrder(top: readonly string[], rounds: ReadonlyMap<string, string[]>, reviewers: readonly string[]): string[] {
+  const reworks = top.filter((f) => /^rework-\d+\.md$/.test(f)).sort((a, b) => num(a) - num(b));
+  const paths = ['feature.md', 'spec.md', 'build.md', ...reworks, 'decision.md'].filter((f) => top.includes(f));
+  const rank = (f: string): number => {
+    const i = reviewers.indexOf(f.replace(/^review-|\.md$/g, ''));
+    return i === -1 ? reviewers.length : i;
+  };
+  for (const round of [...rounds.keys()].filter((r) => /^round-\d+$/.test(r)).sort((a, b) => num(a) - num(b))) {
+    const files = [...(rounds.get(round) ?? [])].filter((f) => f.endsWith('.md'));
+    files.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+    paths.push(...files.map((f) => `${round}/${f}`));
+  }
+  return paths;
+}
+
+// The brief the job names, relative to factory/, when it exists locally as a regular file.
+async function briefPath(p: Project, job: Job | undefined): Promise<string | null> {
+  const brief = job?.brief;
+  if (typeof brief !== 'string' || !BRIEF.test(brief)) return null;
+  const rel = brief.replace(/^factory\//, '');
+  const info = await lstat(join(p.factory, rel)).catch(() => null);
+  return info?.isFile() === true ? rel : null;
+}
+
+// `id` is already checked against JOB_ID. Paths in `files` are relative to factory/. A local job
+// dir is read from disk; with none, an archived job is served from the cache (no git per request).
 async function docs(p: Project, id: string): Promise<{ files: Array<{ path: string; text: string }> }> {
   const { reviewers } = await readConfig(p);
   const dir = join(p.factory, 'jobs', id);
-  if ((await lstat(dir).catch(() => null))?.isDirectory() !== true) return { files: [] }; // never through a symlinked job dir
+  const info = await lstat(dir).catch(() => null);
+  if (info === null || !info.isDirectory()) {
+    await p.archiveTask;
+    const archived = info === null || !info.isSymbolicLink() ? p.archive.jobs.get(id) : undefined;
+    if (archived === undefined) return { files: [] }; // never through a symlinked job dir
+    const top: string[] = [];
+    const rounds = new Map<string, string[]>();
+    for (const rel of archived.files.keys()) {
+      const [head, name, ...rest] = rel.split('/');
+      if (head === undefined) continue;
+      if (name === undefined) top.push(head);
+      else if (rest.length === 0) rounds.set(head, [...(rounds.get(head) ?? []), name]);
+    }
+    const files = readingOrder(top, rounds, reviewers).map((rel) => ({ path: `jobs/${id}/${rel}`, text: archived.files.get(rel) ?? '' }));
+    const brief = await briefPath(p, archived.job);
+    if (brief !== null) files.unshift({ path: brief, text: await readFile(join(p.factory, brief), 'utf8') });
+    return { files };
+  }
   const top = (await entries(dir)).filter((d) => d.isFile()).map((d) => d.name);
-  const reworks = top.filter((f) => /^rework-\d+\.md$/.test(f)).sort((a, b) => num(a) - num(b));
-  const paths = ['feature.md', 'spec.md', 'build.md', ...reworks, 'decision.md'].filter((f) => top.includes(f)).map((f) => `jobs/${id}/${f}`);
-
-  const brief = (await readJob(p, id))?.brief;
-  if (typeof brief === 'string' && BRIEF.test(brief)) {
-    const rel = brief.replace(/^factory\//, '');
-    const info = await lstat(join(p.factory, rel)).catch(() => null);
-    if (info?.isFile()) paths.unshift(rel);
+  const rounds = new Map<string, string[]>();
+  for (const d of await entries(dir)) {
+    if (!d.isDirectory() || !/^round-\d+$/.test(d.name)) continue;
+    rounds.set(d.name, (await entries(join(dir, d.name))).filter((f) => f.isFile()).map((f) => f.name));
   }
-
-  const rounds = (await entries(dir)).filter((d) => d.isDirectory() && /^round-\d+$/.test(d.name)).map((d) => d.name);
-  for (const round of rounds.sort((a, b) => num(a) - num(b))) {
-    const files = (await entries(join(dir, round))).filter((d) => d.isFile() && d.name.endsWith('.md')).map((d) => d.name);
-    const rank = (f: string): number => {
-      const i = reviewers.indexOf(f.replace(/^review-|\.md$/g, ''));
-      return i === -1 ? reviewers.length : i;
-    };
-    files.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
-    paths.push(...files.map((f) => `jobs/${id}/${round}/${f}`));
-  }
-
+  const paths = readingOrder(top, rounds, reviewers).map((rel) => `jobs/${id}/${rel}`);
+  const brief = await briefPath(p, await readJob(p, id));
+  if (brief !== null) paths.unshift(brief);
   const files = await Promise.all(paths.map(async (path) => ({ path, text: await readFile(join(p.factory, path), 'utf8') })));
   return { files };
 }
@@ -175,6 +228,7 @@ const frame = (event: string, data: unknown): Uint8Array => encoder.encode(`even
 export async function startService(opts: ServiceOptions): Promise<Service> {
   const debounceMs = opts.debounceMs ?? 50;
   const log = opts.log ?? ((line: string) => console.error(line));
+  const git = opts.git ?? spawnGit;
   const clients = new Set<Client>();
   let projects = new Map<string, Project>();
   let stopped = false;
@@ -216,9 +270,32 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     }
   }
 
+  // Re-reads the archive tip, and the archive itself only when the tip moved. A git failure keeps
+  // the last read (and is logged); a missing branch is no archived jobs, and is not an error.
+  async function readArchiveOf(p: Project): Promise<void> {
+    if (p.closed) return;
+    try {
+      const tip = await archiveTip(git, p.info.root);
+      if (tip === p.archive.tip || p.closed) return;
+      const next = tip === null ? EMPTY_ARCHIVE : await readArchive(git, p.info.root, tip, log);
+      if (!p.closed) p.archive = next;
+    } catch (e) {
+      if (!p.closed) log(`andon: ${p.info.root}: reading factory/archive: ${message(e)}`);
+    }
+  }
+
+  // One refresh at a time per project; `board` and `docs` wait on the latest.
+  function refreshArchive(p: Project): Promise<void> {
+    p.archiveDirty = false;
+    p.archiveTask = p.archiveTask.then(() => readArchiveOf(p));
+    return p.archiveTask;
+  }
+  const archiveReady = (p: Project): Promise<void> => (p.archiveDirty ? refreshArchive(p) : p.archiveTask);
+
   async function emitBoard(p: Project): Promise<void> {
     if (p.closed || clients.size === 0) return;
     try {
+      await archiveReady(p);
       const b = await board(p);
       if (!p.closed) broadcast('board', { project: p.info.id, ...b });
     } catch (e) {
@@ -251,6 +328,62 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     }
   }
 
+  // The archive ref may have moved: the next `board` (event or request) re-reads the tip first.
+  function refMoved(p: Project): void {
+    p.archiveDirty = true;
+    schedule(p);
+  }
+
+  // A non-recursive watch on `dir`, calling `on` with each changed entry's name (null: unknown).
+  // A missing dir is no watch (null).
+  function watchDir(dir: string, on: (name: string | null) => void, drop: (w: FSWatcher) => void): FSWatcher | null {
+    try {
+      const w = watch(dir, (_event, name) => on(name));
+      w.on('error', () => {
+        w.close();
+        drop(w);
+      });
+      return w;
+    } catch {
+      return null;
+    }
+  }
+
+  // `refs/heads/factory/` holds the loose archive ref (and job branches, whose moves re-read only
+  // the tip). It is re-attached whenever `refs/heads/` sees `factory` appear or be replaced.
+  function watchFactoryRefs(p: Project, common: string): void {
+    if (p.closed) return;
+    p.refs.factory?.close();
+    p.refs.factory = watchDir(join(common, 'refs', 'heads', 'factory'), () => refMoved(p), (w) => {
+      if (p.refs.factory === w) p.refs.factory = null;
+    });
+  }
+
+  function watchRefs(p: Project, common: string): void {
+    p.refs.common = watchDir(common, (name) => {
+      if (name === null || name === 'packed-refs') refMoved(p);
+    }, (w) => {
+      if (p.refs.common === w) p.refs.common = null;
+    });
+    p.refs.heads = watchDir(join(common, 'refs', 'heads'), (name) => {
+      if (name !== null && name !== 'factory') return;
+      watchFactoryRefs(p, common);
+      refMoved(p);
+    }, (w) => {
+      if (p.refs.heads === w) p.refs.heads = null;
+    });
+    watchFactoryRefs(p, common);
+  }
+
+  // Finds the git common dir once, starts the ref watches, then reads the archive. Not a git repo
+  // (or no git): no archive, no watches, and nothing logged.
+  async function openArchive(p: Project): Promise<void> {
+    const common = await gitCommonDir(git, p.info.root);
+    if (common === null || p.closed) return;
+    watchRefs(p, common);
+    await readArchiveOf(p);
+  }
+
   function openProject(root: string): Project {
     const p: Project = {
       info: { id: projectId(root), name: basename(root), root },
@@ -260,7 +393,12 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       jobsWatcher: null,
       timer: null,
       closed: false,
+      archive: EMPTY_ARCHIVE,
+      archiveDirty: false,
+      archiveTask: Promise.resolve(),
+      refs: { common: null, heads: null, factory: null },
     };
+    p.archiveTask = openArchive(p);
     try {
       // Non-recursive: sees config.json and jobs/ appearing, never anything inside .worktrees/ or
       // .lock/. Dot-named entries (those two, and temp files) are ignored.
@@ -287,6 +425,8 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     p.jobsWatcher?.close();
     p.factoryWatcher = null;
     p.jobsWatcher = null;
+    for (const w of [p.refs.common, p.refs.heads, p.refs.factory]) w?.close();
+    p.refs = { common: null, heads: null, factory: null };
     if (p.timer !== null) clearTimeout(p.timer);
     p.timer = null;
   }
@@ -389,6 +529,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       const p = projects.get(b[1] ?? '');
       if (p === undefined) return notFound();
       try {
+        await archiveReady(p);
         return json(await board(p));
       } catch (e) {
         return text(`config.json: ${message(e)}`, 500);
@@ -401,6 +542,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       const id = d[2] ?? '';
       if (p === undefined || !JOB_ID.test(id)) return notFound(); // checked before any path is built
       try {
+        await archiveReady(p);
         return json(await docs(p, id));
       } catch (e) {
         return text(`config.json: ${message(e)}`, 500);
@@ -424,7 +566,9 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       stopped = true;
       if (registryTimer !== null) clearTimeout(registryTimer);
       registryWatcher?.close();
-      for (const p of projects.values()) closeProject(p);
+      const open = [...projects.values()];
+      for (const p of open) closeProject(p);
+      await Promise.all(open.map((p) => p.archiveTask)); // no git process outlives the service
       for (const c of clients) {
         try {
           c.close();

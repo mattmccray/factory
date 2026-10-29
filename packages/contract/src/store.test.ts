@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { parseEventInput, parseConfig } from './contract';
 import type { EventInput } from './contract';
 import { project } from './project';
-import { appendEvent, claimJob, readLog, readVerdict, rebuild } from './store';
+import { appendEvent, claimJob, parseLog, readLog, readVerdict, rebuild } from './store';
 
 let root: string;
 const ID = '019-example';
@@ -367,5 +367,21 @@ describe('claimJob counts the archive (job 045, AC7)', () => {
     };
     await expect(claimJob(root, 'f', { fields: {}, config, target: 'main' }, undefined, { archived })).rejects.toThrow('archive: git failed');
     expect(await readdir(join(root, 'jobs'))).toEqual([]);
+  });
+});
+
+describe('parseLog', () => {
+  test('parses log text exactly as readLog reads the file', async () => {
+    await claim();
+    await appendEvent(root, ID, ev('stage.entered', { stage: 'spec' }));
+    const text = await readFile(join(jobDir(), 'events.jsonl'), 'utf8');
+    expect(parseLog(text)).toEqual(await readLog(root, ID));
+    expect(parseLog(text.slice(0, -1))).toEqual(await readLog(root, ID)); // no trailing newline
+  });
+
+  test('an empty text is no events; a torn or foreign line throws, naming the line', () => {
+    expect(parseLog('')).toEqual([]);
+    expect(() => parseLog('{"ts":"2026-01-01T00:00:00.000Z","type":"job.claimed"}\n{"ts":')).toThrow('events.jsonl line 2 is not valid JSON');
+    expect(() => parseLog('{"a":1}\n')).toThrow('events.jsonl line 1 is not a factory event');
   });
 });

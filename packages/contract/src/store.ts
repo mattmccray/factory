@@ -48,6 +48,15 @@ export async function readLog(root: string, id: string): Promise<FactoryEvent[]>
     if (isNotFound(e)) return [];
     throw e;
   }
+  return parseLog(text);
+}
+
+/**
+ * Parses an `events.jsonl` text into its events, exactly as `readLog` does for a file (so a log
+ * read from elsewhere, such as the `factory/archive` branch, re-projects the same). An empty text
+ * is no events; a line that is not a factory event throws, naming the line.
+ */
+export function parseLog(text: string): FactoryEvent[] {
   const lines = text.split('\n');
   if (lines[lines.length - 1] === '') lines.pop();
   return lines.map((line, i) => parseLine(line, i + 1));

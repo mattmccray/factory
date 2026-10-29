@@ -4,7 +4,7 @@ export { BRANCH_PATTERN, CURRENT_TARGET, DEFAULT_MODEL, JOB_NUMBER_MAX, MODEL_PA
 export type { AgentSpan, Decision, JobSnapshot, ReviewState, StageSpan, StoppedBy } from './project';
 export { project } from './project';
 export type { ClaimInput, ClaimOptions } from './store';
-export { appendEvent, checkClaim, claimJob, readLog, readVerdict, rebuild } from './store';
+export { appendEvent, checkClaim, claimJob, parseLog, readLog, readVerdict, rebuild } from './store';
 export { parseFields } from './fields';
 export { formatShow } from './show';
 export type { Manifest } from './manifest';
