@@ -12,7 +12,9 @@ questions on decisions, not on facts.
   thinking (a backlog line, a design note, a plan doc), read that too. Decisions already made
   there are starting points to *confirm*, not questions to re-ask.
 - **An existing brief's slug** → resume it. Re-read it, summarize where it stands in a few
-  lines, and pick up at its first open question. If its `Status:` is `done`, don't reopen it,
+  lines, and pick up at its first open question. If it has `- Abandoned:` lines, show its
+  abandoned attempts in that summary (each job id, date, and reason), so the next attempt
+  doesn't repeat what went wrong. If its `Status:` is `done`, don't reopen it,
   since a job already carried it out: name the job that carried it out (its `- Job:` line),
   and offer a new brief that lists the old one under `Sources:`.
 
@@ -49,13 +51,15 @@ split with the user, then interview them one at a time.
 Create `factory/briefs/<slug>.md` after the first answer, and update it after every decision.
 That way an interrupted session can resume. While questions remain it says `Status: draft`.
 Only the factory's Merge step writes the `- Job:` line, and sets `Status: done`, when the job
-that carried the brief out merges. Never write either one here.
+that carried the brief out merges. Only `/factory abandon` writes an `- Abandoned:` line, one
+per abandoned attempt, and the status stays `ready`. Never write any of them here.
 
 ```
 # <Title>
 
 - Status: draft | ready | done
 - Job: <id> (merged <short sha>, <YYYY-MM-DD>)   (written only at merge)
+- Abandoned: <id> (<YYYY-MM-DD>): <reason>   (optional; written only by /factory abandon, one per attempt)
 - Sources: <earlier thinking you read, e.g. a plan doc's path> | —
 - Date: <YYYY-MM-DD>
 
@@ -85,9 +89,17 @@ None. A ready brief has none.
 
 1. Play the brief back to the user in a few lines and ask whether you've got it right. Don't
    mark it ready until they confirm.
-2. Set `Status: ready`. Append a backlog line:
+2. Take `factory/.lock`, the shared mutex (the `mkdir` loop under **Running jobs side by
+   side** in SKILL.md), since other sessions may be editing the backlog. Run SKILL.md's
+   **backlog check** first: if `git status --porcelain -- factory/backlog.md` prints anything,
+   `factory/backlog.md` already has uncommitted changes, so release the lock and stop with the
+   one line "commit or discard your backlog edits first" (the brief stays as it is, not ready).
+3. Set `Status: ready`. Append a backlog line:
    `- [ ] Title — <one line on what done looks like> — brief: factory/briefs/<slug>.md`
-3. Commit the brief and the backlog line together by pathspec:
-   `specs(factory): add brief <slug>` (+ the Co-Authored-By trailer).
-4. Ask whether to run it now. If yes, continue as `/factory next <the brief's title>`,
-   which picks that line even if it isn't first.
+4. Commit the brief and the backlog line together by pathspec, still under the lock:
+   `git add -- factory/backlog.md factory/briefs/<slug>.md`, then
+   `git commit -m "specs(factory): add brief <slug>"` (+ the Co-Authored-By trailer)
+   `-- factory/backlog.md factory/briefs/<slug>.md`. Then release the lock
+   (`rmdir factory/.lock`).
+5. Only after the release, ask whether to run it now. If yes, continue as
+   `/factory next <the brief's title>`, which picks that line even if it isn't first.
