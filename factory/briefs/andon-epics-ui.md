@@ -1,6 +1,7 @@
 # The Andon UI shows epics
 
-- Status: ready
+- Status: done
+- Job: 056-andon-epics-ui (merged 4c17b05, 2026-10-29)
 - Sources: docs/design/epics/design.md (decision 9; brief 5 of 5) and its mock-ups
   (`epics-overview.html`, `overview.png`, `panels.png`, `panel-board.html`,
   `panel-inspector.html`); factory/briefs/andon-epics-service.md (the payloads) and epic-cli.md

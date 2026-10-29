@@ -9,4 +9,3 @@ One feature per line — what "done" looks like, not the history. Add lines with
 
 Lines are in dependency order. Fuzzy ones should go through `/factory explore` first.
 
-- [x] The Andon UI shows epics — sub-lanes with the epic gutter, compact "in epic" merged tokens with the branch-merge icon, the epic inspector page, epic-level waits in every needs-human count, settled epics, search, `#epic=` deep links, and the Mac app's badge and two epic notifications, per docs/design/epics/ — brief: factory/briefs/andon-epics-ui.md → 056-andon-epics-ui
