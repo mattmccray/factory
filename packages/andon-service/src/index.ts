@@ -3,8 +3,13 @@
 // loopback:
 //   GET /projects                        → { projects: [{ id, name, root }] } (name: config.json's `name`, else basename(root))
 //   GET /projects/<pid>/board            → { jobs, config } (a bad config is a 500 carrying the reason)
+//   GET /projects/<pid>/board?settled=summary → { jobs, config, settled }: unsettled jobs only, plus
+//                                          settled: { count, lastMergedAt } (only the exact value `summary` opts in)
+//   GET /projects/<pid>/settled          → { jobs }, the project's settled jobs only (errors as for board)
 //   GET /projects/<pid>/jobs/<id>/docs   → { files: [{ path, text }] }, that job's markdown in reading order
 //   GET /events                          → text/event-stream of `projects`, `board`, and `error` events
+//   GET /events?settled=summary          → the same stream, with each `board` event narrow
+//                                          ({ project, jobs, config, settled }, as for the narrow board)
 //   GET /, GET /<asset>                  → the built Andon UI (`uiDir`), read-only; a path outside it is a 404
 // `board` (endpoint and event) and `docs` also serve jobs found only on the project's
 // `factory/archive` branch, in the same shapes: re-projected from the archived `events.jsonl` (a
@@ -18,6 +23,11 @@
 // worktree's project works too): non-recursive watches on `refs/heads/factory/`, on `refs/heads/`
 // (for `factory/` appearing), and on the common dir itself for `packed-refs` only.
 // `.worktrees/` and `.lock/` are never watched or served.
+// "Settled" is the contract's rule (settled.ts). A merged job settles with no file change, so
+// while any narrow `/events` client is connected each project has at most one one-shot settle
+// timer, armed for its next unsettled merged job's crossing and re-armed after every build; it
+// sends a narrow `board` event to narrow clients only. It is not polling: with no narrow client,
+// or no unsettled merged job, no timer is armed.
 // A project's name is resolved from its config.json on every GET /projects and on connect, and
 // `projects` is re-sent whenever a resolved name changes (or the registry's list does).
 // The board and docs readers are ported from the vendored `factory/serve.ts` (not imported).
@@ -30,6 +40,8 @@ import { parseConfig, readRegistry } from '@factory/contract';
 import type { Config } from '@factory/contract';
 import { EMPTY_ARCHIVE, archiveTip, gitCommonDir, readArchive, spawnGit } from './archive';
 import type { ArchiveCache, GitRunner } from './archive';
+import { MAX_DELAY_MS, nextSettle, partition, summarize } from './settled';
+import type { SettledSummary } from './settled';
 
 export type { GitRunner } from './archive';
 
@@ -40,6 +52,13 @@ export interface ServiceOptions {
   log?: (line: string) => void; // diagnostics (default: stderr)
   uiDir?: string; // the Andon UI build (`apps/andon/dist`), served at `/`; absent or unbuilt: `/` is a 404
   git?: GitRunner; // how git is run to read `factory/archive` (default: spawned without a shell)
+  settleTimers?: SettleTimers; // how the per-project settle timers are set and cleared (default: setTimeout)
+}
+
+/** Sets and clears the one-shot settle timers (injectable so a test can see what is pending). */
+export interface SettleTimers {
+  set: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  clear: (t: ReturnType<typeof setTimeout>) => void;
 }
 
 export interface Service {
@@ -62,6 +81,8 @@ interface Project {
   factoryWatcher: FSWatcher | null;
   jobsWatcher: FSWatcher | null;
   timer: ReturnType<typeof setTimeout> | null;
+  settleTimer: ReturnType<typeof setTimeout> | null; // armed only while a narrow `/events` client is connected
+  settleDue: number; // when the settle timer's job crosses the line (ms since the epoch)
   closed: boolean;
   archive: ArchiveCache; // `factory/archive` as last read, keyed by its tip
   archiveDirty: boolean; // the archive ref may have moved since it was read
@@ -111,7 +132,7 @@ async function resolveName(p: Project): Promise<string> {
 }
 
 // Local jobs, then the archived jobs that have no local dir, sorted by id together.
-async function board(p: Project): Promise<{ jobs: Job[]; config: Config }> {
+async function board(p: Project): Promise<Board> {
   const config = await readConfig(p);
   await p.archiveTask;
   const ids = (await entries(join(p.factory, 'jobs')))
@@ -122,6 +143,15 @@ async function board(p: Project): Promise<{ jobs: Job[]; config: Config }> {
   for (const [id, a] of p.archive.jobs) if (!local.has(id)) read.push({ id, job: { ...a.job } });
   read.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return { jobs: read.map((r) => r.job).filter((j) => j !== undefined), config };
+}
+
+type Board = { jobs: Job[]; config: Config };
+
+// The narrow form of a board: its unsettled jobs, its config, and the settled summary, by the
+// system clock.
+function narrow(b: Board, now: number): Board & { settled: SettledSummary } {
+  const { unsettled, settled } = partition(b.jobs, b.config.dashboard.settleAfterHours, now);
+  return { jobs: unsettled, config: b.config, settled: summarize(settled) };
 }
 
 const num = (name: string): number => Number(name.match(/\d+/)?.[0] ?? 0);
@@ -221,6 +251,7 @@ async function uiFile(uiDir: string, pathname: string): Promise<Response | null>
 }
 
 type Client = ReadableStreamDefaultController<Uint8Array>;
+type Form = 'plain' | 'narrow'; // a `/events` client's `board` form: every job, or `?settled=summary`
 const encoder = new TextEncoder();
 const frame = (event: string, data: unknown): Uint8Array => encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
@@ -229,7 +260,8 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
   const debounceMs = opts.debounceMs ?? 50;
   const log = opts.log ?? ((line: string) => console.error(line));
   const git = opts.git ?? spawnGit;
-  const clients = new Set<Client>();
+  const timers: SettleTimers = opts.settleTimers ?? { set: (fn, ms) => setTimeout(fn, ms), clear: (t) => clearTimeout(t) };
+  const clients = new Map<Client, Form>();
   let projects = new Map<string, Project>();
   let stopped = false;
 
@@ -259,14 +291,73 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     return run;
   }
 
-  function broadcast(event: string, data: unknown): void {
+  const hasForm = (form: Form): boolean => [...clients.values()].includes(form);
+
+  // Removes a client; when it was the last narrow one, every settle timer is cleared.
+  function removeClient(c: Client): void {
+    if (!clients.delete(c)) return;
+    if (!hasForm('narrow')) for (const p of projects.values()) clearSettle(p);
+  }
+
+  // Sends to every client, or only to those of one form.
+  function broadcast(event: string, data: unknown, form?: Form): void {
     const bytes = frame(event, data);
-    for (const c of clients) {
+    for (const [c, f] of [...clients]) {
+      if (form !== undefined && f !== form) continue;
       try {
         c.enqueue(bytes);
       } catch {
-        clients.delete(c);
+        removeClient(c);
       }
+    }
+  }
+
+  function clearSettle(p: Project): void {
+    if (p.settleTimer !== null) timers.clear(p.settleTimer);
+    p.settleTimer = null;
+  }
+
+  // Re-arms the project's settle timer from a fresh build: one one-shot deadline, for its next
+  // unsettled merged job, and only while a narrow client is connected. A longer delay than
+  // setTimeout accepts is clamped; firing early just rebuilds and re-arms.
+  function armSettle(p: Project, b: Board): void {
+    clearSettle(p);
+    if (p.closed || stopped || !hasForm('narrow')) return;
+    const now = Date.now();
+    const delay = nextSettle(b.jobs, b.config.dashboard.settleAfterHours, now);
+    if (delay === null) return;
+    p.settleDue = now + delay;
+    p.settleTimer = timers.set(() => {
+      p.settleTimer = null;
+      void settleFired(p);
+    }, Math.min(delay, MAX_DELAY_MS));
+  }
+
+  // A build for arming only (a narrow client's first connect, a project opened while one is
+  // connected). A bad config arms nothing: its error event comes from the config change itself.
+  async function armFromBuild(p: Project): Promise<void> {
+    try {
+      await archiveReady(p);
+      const b = await board(p);
+      if (!p.closed) armSettle(p, b);
+    } catch {
+      clearSettle(p);
+    }
+  }
+
+  // The settle timer fired: narrow clients get a fresh narrow `board` event (plain clients none),
+  // unless it fired early (a clamped delay), and the timer is re-armed from the same build.
+  async function settleFired(p: Project): Promise<void> {
+    if (p.closed || !hasForm('narrow')) return;
+    try {
+      await archiveReady(p);
+      const b = await board(p);
+      if (p.closed) return;
+      const now = Date.now();
+      if (now >= p.settleDue) broadcast('board', { project: p.info.id, ...narrow(b, now) }, 'narrow');
+      armSettle(p, b);
+    } catch {
+      clearSettle(p);
     }
   }
 
@@ -297,8 +388,14 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     try {
       await archiveReady(p);
       const b = await board(p);
-      if (!p.closed) broadcast('board', { project: p.info.id, ...b });
+      if (!p.closed) {
+        // Each form is built only when a client of that form is connected.
+        if (hasForm('plain')) broadcast('board', { project: p.info.id, ...b }, 'plain');
+        if (hasForm('narrow')) broadcast('board', { project: p.info.id, ...narrow(b, Date.now()) }, 'narrow');
+        armSettle(p, b);
+      }
     } catch (e) {
+      clearSettle(p);
       if (!p.closed) broadcast('error', { project: p.info.id, reason: `config.json: ${message(e)}` });
     }
     // A config.json edit may have changed the project's resolved name.
@@ -392,6 +489,8 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       factoryWatcher: null,
       jobsWatcher: null,
       timer: null,
+      settleTimer: null,
+      settleDue: 0,
       closed: false,
       archive: EMPTY_ARCHIVE,
       archiveDirty: false,
@@ -429,6 +528,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     p.refs = { common: null, heads: null, factory: null };
     if (p.timer !== null) clearTimeout(p.timer);
     p.timer = null;
+    clearSettle(p);
   }
 
   // Re-reads the registry. An unreadable or invalid registry keeps the current list.
@@ -444,12 +544,21 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     if (stopped) return;
     const before = [...projects.keys()].join(',');
     const next = new Map<string, Project>();
+    const opened: Project[] = [];
     for (const root of roots) {
       const id = projectId(root);
-      next.set(id, projects.get(id) ?? openProject(root));
+      const known = projects.get(id);
+      if (known !== undefined) next.set(id, known);
+      else {
+        const p = openProject(root);
+        opened.push(p);
+        next.set(id, p);
+      }
     }
     for (const [id, p] of projects) if (!next.has(id)) closeProject(p);
     projects = next;
+    // A project opened while a narrow client is connected gets its settle timer now.
+    if (hasForm('narrow')) for (const p of opened) void armFromBuild(p);
     if ([...projects.keys()].join(',') !== before) await announce(true);
   }
 
@@ -480,12 +589,12 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
   await reload();
 
   // The connecting client gets the freshly resolved list (any change is first sent to the others).
-  async function events(req: Request): Promise<Response> {
+  async function events(req: Request, form: Form): Promise<Response> {
     const list = await announce(false);
     let self: Client | null = null;
     const drop = (): void => {
       if (self === null) return;
-      clients.delete(self);
+      removeClient(self);
       try {
         self.close();
       } catch {
@@ -495,11 +604,14 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     const stream = new ReadableStream<Uint8Array>({
       start(c) {
         self = c;
-        clients.add(c);
+        const first = form === 'narrow' && !hasForm('narrow');
+        clients.set(c, form);
         c.enqueue(frame('projects', { projects: list }));
+        // The first narrow client arms every project's settle timer (later ones find them armed).
+        if (first) for (const p of projects.values()) void armFromBuild(p);
       },
       cancel() {
-        if (self !== null) clients.delete(self);
+        if (self !== null) removeClient(self);
       },
     });
     req.signal.addEventListener('abort', drop);
@@ -520,17 +632,22 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
   async function handle(req: Request): Promise<Response> {
     if (!trusted(req)) return text('Forbidden', 403);
     if (req.method !== 'GET') return text('Method not allowed', 405);
-    const { pathname } = new URL(req.url);
+    const url = new URL(req.url);
+    const { pathname } = url;
+    // Only the exact value `summary` opts in; no parameter, or any other value, is the plain form.
+    const summary = url.searchParams.get('settled') === 'summary';
     if (pathname === '/projects') return json({ projects: await announce(false) });
-    if (pathname === '/events') return events(req);
+    if (pathname === '/events') return events(req, summary ? 'narrow' : 'plain');
 
-    const b = pathname.match(/^\/projects\/([^/]+)\/board$/);
+    const b = pathname.match(/^\/projects\/([^/]+)\/(board|settled)$/);
     if (b !== null) {
       const p = projects.get(b[1] ?? '');
       if (p === undefined) return notFound();
       try {
         await archiveReady(p);
-        return json(await board(p));
+        const full = await board(p);
+        if (b[2] === 'settled') return json({ jobs: partition(full.jobs, full.config.dashboard.settleAfterHours, Date.now()).settled });
+        return json(summary ? narrow(full, Date.now()) : full);
       } catch (e) {
         return text(`config.json: ${message(e)}`, 500);
       }
@@ -569,7 +686,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       const open = [...projects.values()];
       for (const p of open) closeProject(p);
       await Promise.all(open.map((p) => p.archiveTask)); // no git process outlives the service
-      for (const c of clients) {
+      for (const c of clients.keys()) {
         try {
           c.close();
         } catch {
