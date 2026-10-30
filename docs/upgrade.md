@@ -137,6 +137,7 @@ Then cut the release, upgrade, and push:
 
 ```sh
 cd /path/to/factory          # this repo's root, on main, clean, with no job running
+bun install                  # refreshes the workspace links the release borrows
 bun run release --dry-run    # optional: runs the gate, prints the next vX.Y.Z and its CHANGELOG.md section
 bun run release              # runs the gate, builds the bundle, then: the version and CHANGELOG.md,
                              # chore(release): vX.Y.Z, tag vX.Y.Z, the bundle committed onto release,
@@ -159,6 +160,15 @@ and every workspace `package.json`, and prepends the release's section to `CHANG
 no `v*` tag yet, it cuts `v0.1.0`, the version already stamped, with no bump. It refuses, writing
 nothing, off `main`, on a dirty tree, when nothing user-facing merged since the tag, or when
 `vX.Y.Z` or `release-vX.Y.Z` already exists.
+
+Right after the `main` and clean-tree checks, before it computes the version, runs the gate, or
+builds anything (on `--dry-run` too, gate or no gate), it checks this checkout's workspace links:
+every `workspace:*` dependency of the root and each workspace `package.json` must be a symlink, in
+the depending package's own `node_modules` or else the root's, that resolves to that workspace
+package. A missing link, one that points elsewhere, or a `workspace:*` name no workspace package
+declares refuses with ``workspace links are stale: run `bun install`, then retry``, names each
+stale link on the lines after, and writes nothing. The script never runs an install itself: run
+`bun install`, then retry.
 
 After those checks, and before it writes anything, it stages the tree it is about to commit:
 `HEAD` plus the new versions and changelog, in a temp directory that borrows this checkout's

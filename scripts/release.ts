@@ -13,7 +13,15 @@
 // `--dry-run` stops after the gate: it builds no bundle and writes nothing. With no `gate` in
 // `factory/config.json`, it says so and goes on; an unreadable or invalid config refuses. It never
 // pushes (`bun run release:push` does) and never runs `factory upgrade`.
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+//
+// Right after the off-`main` and dirty-tree refusals, before anything else (dry run or not, gate or
+// no gate), it checks the workspace links in the checkout whose `node_modules` it borrows: every
+// `workspace:*` dependency of the root and each workspace `package.json` must be a symlink, in the
+// depending package's own `node_modules` or else the root's, that resolves to that workspace
+// package. A missing or misdirected link refuses with `workspace links are stale: run `bun
+// install`, then retry` and writes nothing. It never runs an install itself: run `bun install`
+// first.
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { parseConfig } from '../packages/contract/src/contract';
@@ -218,6 +226,91 @@ function packageFiles(repo: string): string[] {
   return out;
 }
 
+/** One stale workspace link: the depending package, the dependency, and why. */
+export interface StaleLink {
+  pkg: string;
+  dep: string;
+  why: 'missing' | 'points elsewhere' | 'no workspace package has that name';
+}
+
+const DEP_FIELDS: readonly string[] = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'];
+
+function readJson(path: string): unknown {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch (e) {
+    throw new Error(`${path}: ${firstLine(e instanceof Error ? e.message : String(e))}`);
+  }
+}
+
+/** The `workspace:*` dependency names of a parsed `package.json`, across its dependency fields. */
+function workspaceDeps(json: unknown): string[] {
+  const out = new Set<string>();
+  if (typeof json !== 'object' || json === null) return [];
+  for (const field of DEP_FIELDS) {
+    const deps: unknown = field in json ? Reflect.get(json, field) : undefined;
+    if (typeof deps !== 'object' || deps === null) continue;
+    for (const [name, spec] of Object.entries(deps)) if (spec === 'workspace:*') out.add(name);
+  }
+  return [...out].sort();
+}
+
+const realOrNull = (path: string): string | null => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
+};
+
+const lexists = (path: string): boolean => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The stale `workspace:*` links of `repo`'s root and workspace packages, as installed in
+ * `modules` (the checkout whose `node_modules` the release borrows). A dependency is linked when
+ * `<its package>/node_modules/<name>`, or failing that the root's `node_modules/<name>`, is a
+ * symlink whose real path is the directory of the workspace package named `<name>`. Reads only.
+ */
+export function staleLinks(repo: string, modules: string): StaleLink[] {
+  const files = packageFiles(repo);
+  const dirOf = new Map<string, string>(); // workspace package name -> repo-relative directory
+  const parsed = files.map((path): [string, unknown] => [path, readJson(join(repo, path))]);
+  for (const [path, json] of parsed) {
+    if (path === 'package.json') continue;
+    const name: unknown = typeof json === 'object' && json !== null && 'name' in json ? json.name : undefined;
+    if (typeof name === 'string' && !dirOf.has(name)) dirOf.set(name, dirname(path));
+  }
+  const out: StaleLink[] = [];
+  for (const [path, json] of parsed) {
+    const own = dirname(path);
+    const name: unknown = typeof json === 'object' && json !== null && 'name' in json ? json.name : undefined;
+    const pkg = typeof name === 'string' ? name : path;
+    for (const dep of workspaceDeps(json)) {
+      const target = dirOf.get(dep);
+      if (target === undefined) {
+        out.push({ pkg, dep, why: 'no workspace package has that name' });
+        continue;
+      }
+      const link = [join(modules, own, 'node_modules', dep), join(modules, 'node_modules', dep)].find(lexists);
+      if (link === undefined) {
+        out.push({ pkg, dep, why: 'missing' });
+        continue;
+      }
+      const want = realOrNull(join(modules, target));
+      const got = lstatSync(link).isSymbolicLink() ? realOrNull(link) : null;
+      if (want === null || got !== want) out.push({ pkg, dep, why: 'points elsewhere' });
+    }
+  }
+  return out;
+}
+
 function templatesVersion(repo: string): string {
   const json: unknown = JSON.parse(readFileSync(join(repo, 'packages/templates/package.json'), 'utf8'));
   const v = typeof json === 'object' && json !== null && 'version' in json ? json.version : undefined;
@@ -391,6 +484,8 @@ export function release(repo: string, opts: ReleaseOptions): { code: number; out
     const on = branch.exitCode === 0 ? branch.stdout.toString().trim() : 'detached HEAD';
     if (on !== 'main') return refuse(`not on main (on ${on})`);
     if (git(repo, 'status', '--porcelain').trim() !== '') return refuse('working tree is dirty (git status --porcelain is not empty)');
+    const stale = staleLinks(repo, opts.modules ?? repo);
+    if (stale.length > 0) return { code: 1, out: `release refused: workspace links are stale: run \`bun install\`, then retry\n${stale.map((l) => `  ${l.pkg} -> ${l.dep}: ${l.why}\n`).join('')}` };
 
     const base = baseTag(repo);
     const { entries, skipped } = collect(repo, base === null ? null : base.tag);

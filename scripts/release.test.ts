@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { gitIn } from '../packages/cli/src/gitrepo';
@@ -65,6 +65,7 @@ const PACKAGES: Record<string, string> = {
   'package.json': '{\n  "name": "factory",\n  "version": "0.0.0",\n  "private": true,\n  "workspaces": [\n    "packages/*",\n    "apps/*"\n  ]\n}\n',
   'packages/templates/package.json':
     '{\n  "name": "@factory/templates",\n  "version": "0.1.0",\n  "private": true,\n  "dependencies": {\n    "@factory/contract": "workspace:*"\n  }\n}\n',
+  'packages/contract/package.json': '{\n  "name": "@factory/contract",\n  "version": "0.0.0",\n  "private": true\n}\n',
   'packages/cli/package.json': '{\n  "name": "@factory/cli",\n  "version": "0.0.0",\n  "bin": { "factory": "src/main.ts" }\n}\n',
   'apps/andon/package.json': '{\n  "name": "@factory/andon",\n  "version": "0.0.0",\n  "nested": {\n    "version": "9.9.9"\n  }\n}\n',
 };
@@ -74,13 +75,30 @@ const CONFIG = 'factory/config.json';
 const configText = (extra: Record<string, unknown> = {}): string =>
   `${JSON.stringify({ schema: 'factory/v1', reviewers: ['code'], maxRound: 2, dashboard: { settleAfterHours: 24 }, ...extra }, null, 2)}\n`;
 
-/** Writes the package.json files and the gate-less config, and commits them as the first commit. */
+// The one `workspace:*` link the seeded packages need, laid out as Bun does in this repo: in the
+// depending package's own `node_modules`, relative, pointing at the workspace package.
+const LINK = 'packages/templates/node_modules/@factory/contract';
+const LINK_TARGET = '../../../contract';
+
+/**
+ * Writes the package.json files and the gate-less config, commits them as the first commit, and
+ * installs the workspace link (`node_modules` ignored through `.git/info/exclude`, so the tree
+ * stays clean and the committed files are unchanged).
+ */
 async function seed(subject = 'chore: seed'): Promise<void> {
   initMain();
   for (const [path, text] of Object.entries(PACKAGES)) await put(path, text);
   await put(CONFIG, configText());
   gitIn(repo, 'add', '-A');
   gitIn(repo, 'commit', '--quiet', '-m', subject);
+  await installLink();
+}
+
+/** Installs the seeded workspace link, as `bun install` would, and keeps `node_modules` out of git status. */
+async function installLink(): Promise<void> {
+  await writeFile(join(repo, '.git', 'info', 'exclude'), 'node_modules/\n', { flag: 'a' });
+  await mkdir(dirname(join(repo, LINK)), { recursive: true });
+  await symlink(LINK_TARGET, join(repo, LINK));
 }
 
 /** Everything the release could change: HEAD, tags, status, and each file's bytes. */
@@ -235,9 +253,11 @@ describe('entry selection and formatting (AC2)', () => {
     // run stages the tree it would commit, so it needs the package.json files and the config.
     await put('package.json', PACKAGES['package.json'] ?? '');
     await put('packages/templates/package.json', PACKAGES['packages/templates/package.json'] ?? '');
+    await put('packages/contract/package.json', PACKAGES['packages/contract/package.json'] ?? '');
     await put(CONFIG, configText());
     gitIn(repo, 'add', '-A');
     gitIn(repo, 'commit', '--quiet', '-m', 'chore: add templates');
+    await installLink();
     const r = run(true);
     expect(r.code).toBe(0);
     expect(r.out).toContain('Initial import');
@@ -799,6 +819,122 @@ describe('the gate on the staged release tree (064)', () => {
     expect(readGate(repo)).toEqual(['a', 'b c']);
     await put(CONFIG, configText());
     expect(readGate(repo)).toBeNull();
+  });
+});
+
+describe('stale workspace links refuse before anything else (069)', () => {
+  const STALE = 'release refused: workspace links are stale: run `bun install`, then retry';
+  let gates = 0;
+  let builds = 0;
+  const countingGate: RunGate = () => {
+    gates += 1;
+    return 0;
+  };
+  const countingBuild: BuildBundle = (tree, out) => {
+    builds += 1;
+    fakeBuild(tree, out);
+  };
+  beforeEach(() => {
+    gates = 0;
+    builds = 0;
+  });
+  const go = (dryRun: boolean, modules?: string) =>
+    release(repo, { dryRun, today: TODAY, build: countingBuild, gate: countingGate, ...(modules === undefined ? {} : { modules }) });
+
+  /** v0.1.0, then a releasable feat; with `gate`, a committed config that configures it. */
+  async function releasable(gate?: string[]): Promise<void> {
+    await seed();
+    gitIn(repo, 'tag', '-a', 'v0.1.0', '-m', 'factory v0.1.0');
+    await jobMerge('feat(cli): add c', '060-c');
+    if (gate !== undefined) {
+      await put(CONFIG, configText({ gate }));
+      gitIn(repo, 'add', '-A');
+      gitIn(repo, 'commit', '--quiet', '-m', 'chore(factory): the gate');
+    }
+  }
+
+  /** Runs the release and checks it refused as stale, naming `detail`, having run and written nothing. */
+  async function refusesStale(dryRun: boolean, detail: string): Promise<void> {
+    const before = await snapshot();
+    const r = go(dryRun);
+    expect(r.code).toBe(1);
+    expect(r.out).toStartWith(`${STALE}\n`);
+    expect(r.out).toContain(`@factory/templates -> @factory/contract: ${detail}`);
+    expect(await snapshot()).toEqual(before);
+    expect(refOf('refs/heads/release')).toBeNull();
+    expect(gates).toBe(0);
+    expect(builds).toBe(0);
+  }
+
+  test('AC1: correct links release as before, real and dry run; a link in the root node_modules counts too', async () => {
+    await releasable(['true']);
+    expect(go(true).code).toBe(0);
+    expect(gates).toBe(1);
+    await rm(join(repo, 'packages/templates/node_modules'), { recursive: true });
+    await mkdir(join(repo, 'node_modules/@factory'), { recursive: true });
+    await symlink('../../packages/contract', join(repo, 'node_modules/@factory/contract'));
+    const r = go(false);
+    expect(r.out).toContain('tagged v0.2.0');
+    expect(r.code).toBe(0);
+    expect(builds).toBe(1);
+  });
+
+  test('AC2: a missing link refuses a real run, writing nothing, before the gate and the build', async () => {
+    await releasable(['true']);
+    await rm(join(repo, LINK));
+    await refusesStale(false, 'missing');
+  });
+
+  test('AC3: a missing link refuses a dry run, with a gate configured and with none', async () => {
+    await releasable(['true']);
+    await rm(join(repo, LINK));
+    await refusesStale(true, 'missing');
+    await put(CONFIG, configText());
+    gitIn(repo, 'add', '-A');
+    gitIn(repo, 'commit', '--quiet', '-m', 'chore(factory): no gate');
+    expect(readGate(repo)).toBeNull();
+    await refusesStale(true, 'missing');
+  });
+
+  test('AC4: a link to another package\'s directory, or a plain directory copy, points elsewhere', async () => {
+    await releasable(['true']);
+    await rm(join(repo, LINK));
+    await symlink('../../../cli', join(repo, LINK));
+    for (const dryRun of [false, true]) await refusesStale(dryRun, 'points elsewhere');
+    await rm(join(repo, LINK));
+    await cp(join(repo, 'packages/contract'), join(repo, LINK), { recursive: true });
+    for (const dryRun of [false, true]) await refusesStale(dryRun, 'points elsewhere');
+  });
+
+  test('AC4: a workspace:* name no workspace package declares is stale', async () => {
+    await releasable();
+    await rm(join(repo, 'packages/contract'), { recursive: true });
+    gitIn(repo, 'add', '-A');
+    gitIn(repo, 'commit', '--quiet', '-m', 'chore: drop contract');
+    for (const dryRun of [false, true]) await refusesStale(dryRun, 'no workspace package has that name');
+  });
+
+  test('the links are checked in the modules checkout the release borrows', async () => {
+    await releasable();
+    await rm(join(repo, LINK));
+    const modules = join(root, 'modules');
+    await mkdir(join(modules, 'packages/contract'), { recursive: true });
+    await mkdir(dirname(join(modules, LINK)), { recursive: true });
+    await symlink(LINK_TARGET, join(modules, LINK));
+    expect(go(true, modules).code).toBe(0);
+    expect(go(true).code).toBe(1);
+  });
+
+  test('AC5: the refusal installs nothing, and the script spawns no install', async () => {
+    await releasable();
+    await rm(join(repo, LINK));
+    await refusesStale(false, 'missing');
+    await refusesStale(true, 'missing');
+    await expect(lstat(join(repo, LINK))).rejects.toThrow();
+    expect(existsSync(join(repo, 'node_modules'))).toBe(false);
+    const source = await readFile(join(import.meta.dir, 'release.ts'), 'utf8');
+    expect(source).not.toMatch(/['"`](install|i|ci)['"`]\s*[,\]]/);
+    expect(source).not.toMatch(/spawn(Sync)?\(\s*\[[^\]]*install/);
   });
 });
 
