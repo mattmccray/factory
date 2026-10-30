@@ -3,7 +3,7 @@
 // `app.badge`, `app.notify`, `app.menu`, `app.store`, `app.push`, `app.shell`, `app.clipboard`,
 // `app.thumbnail` (the Open in apps' icons), `app.reload` (the no-service page: see noservice.ts), the
 // `app.win.open` and `app.windows` (the Settings and About windows), the `onTray`, `onMenu`, `onNavigate`, and
-// `onContextMenu` hooks, and the nine custom `api` methods, and to
+// `onContextMenu` hooks, and the ten custom `api` methods, and to
 // txiki's `tjs.spawn`, `tjs.stat`, and `tjs.remove` (for curl: see curl.ts, for a project's
 // right-click menu: see projectmenu.ts, for a job's: see jobmenu.ts, for the T3 Code hand-off:
 // see handoff.ts, and for starting work in T3 Code: see startwork.ts). `bun run
@@ -23,7 +23,9 @@
 // About window, and `startWork` (see startwork.ts), which takes a project id, an action, and a slug,
 // a free-text line's title, or an idea, and answers only when the meta names the main window, and
 // the About window's `closeAbout` (Escape), which takes no params and closes only the About window
-// when the meta names it: tinyjs.json's `api` gate denies the rest.
+// when the meta names it, and `epicMenu` (see epicmenu.ts), which takes a project id and an epic
+// slug and nothing else, and answers only when the meta names the main window: tinyjs.json's `api`
+// gate denies the rest.
 /// <reference path="../types/tiny.d.ts" />
 /// <reference path="../types/tjs.d.ts" />
 import { QUIT_ID, SHOW_ID, trayNotice } from './badge';
@@ -33,6 +35,7 @@ import { curlArgv, responseFromCurl } from './curl';
 import { getJson, reason as errorReason } from './http';
 import type { Http } from './http';
 import { boardPath } from './follow';
+import { EPIC_NOT_ON_BOARD, EPIC_NO_SESSION, boardEpic, epicCopyFailureText, epicMenuItems, epicMenuRequest, epicOpenFailureText, epicSession, isEpicItemId, parseEpicItemId } from './epicmenu';
 import { NOT_ON_BOARD, NO_SESSION, boardJob, copyFailureText, isJobItemId, jobMenuItems, jobMenuRequest, jobSession, openFailureText, parseJobItemId, threadLink } from './jobmenu';
 import type { DockLook } from './lantern';
 import { startApp } from './app';
@@ -546,11 +549,14 @@ const listedProjects = (): readonly MenuProject[] => andon?.state().projects ?? 
 let apps: Availability | null = null;
 /** The project menu set now (its project id and the request that set it), or null when another menu (or none) is. */
 let armedProject: { pid: string; seq: number } | null = null;
-/** Bumped by every request (project or job), so a slower app check or board fetch can't set an older menu. */
+/** Bumped by every request (project, job, or epic), so a slower app check or board fetch can't set an older menu. */
 let menuSeq = 0;
 /** The job menu set now (its `<pid>/<job id>` and whether Open in T3 Code is enabled), or null when
  *  another menu (or none) is. */
 let armedJob: { key: string; canOpen: boolean } | null = null;
+/** The epic menu set now (its `<pid>/<slug>` and whether Open in T3 Code is enabled), or null when
+ *  another menu (or none) is. */
+let armedEpic: { key: string; canOpen: boolean } | null = null;
 
 export interface RunResult {
   ok: boolean;
@@ -759,6 +765,7 @@ export async function showProjectMenu(params: unknown, app: MacApp, projects: re
   if (req === null) return;
   const seq = ++menuSeq;
   armedJob = null;
+  armedEpic = null;
   armedProject = null;
   const p = req.project === null ? null : menuProject(projects, req.project);
   if (p === null) {
@@ -1037,6 +1044,7 @@ const isListedProject = (projects: readonly MenuProject[], pid: string): boolean
 export async function showJobMenu(params: unknown, app: MacApp, host: JobMenuHost = hostJobMenu): Promise<void> {
   const seq = ++menuSeq;
   armedProject = null;
+  armedEpic = null;
   const req = jobMenuRequest(params);
   if (req === null || !isListedProject(host.projects(), req.project)) {
     armedJob = null;
@@ -1121,6 +1129,111 @@ export async function runJobItem(id: unknown, app: MacApp, host: JobMenuHost = h
   if (failed !== null) await notifyFailure(app, openFailureText(job, failed));
 }
 
+// ---- an epic's right-click menu (076) ----
+// The job menu's twin, on an epic's name in its sub-lane: the page names the epic by its project id
+// and slug (`epicMenu({ project, epic })`), and nothing else, and only the main window is answered.
+// The epic and its `session` come from the project's board (its `epics`, each the epic's
+// `epic.json`), fetched from the service as the job menu does, and the link is built only from that
+// `session`, by the job menu's own check and `threadLink`. A click fetches the board again and
+// checks everything again.
+
+/**
+ * The main window's epic menu ask: for a listed project and an epic slug of the contract's form, the
+ * menu (Open in T3 Code grayed out until the board and the `t3` lookup say it can open), then, once
+ * the board is fetched, Open in T3 Code enabled only when `t3` is found and the epic's `session`
+ * passes the check. An epic missing from the board, a malformed request, or an unknown project
+ * restores WebKit's menu; a failed fetch keeps the menu grayed. Any other window (or no meta) is not
+ * answered at all. A newer ask (of any menu) wins over a slower fetch.
+ */
+export async function showEpicMenu(params: unknown, app: MacApp, meta: unknown, host: JobMenuHost = hostJobMenu): Promise<void> {
+  if (!fromMainWindow(meta)) return;
+  const seq = ++menuSeq;
+  armedProject = null;
+  armedJob = null;
+  const req = epicMenuRequest(params);
+  if (req === null || !isListedProject(host.projects(), req.project)) {
+    armedEpic = null;
+    app.menu.setContext(null);
+    return;
+  }
+  const key = `${req.project}/${req.epic}`;
+  // The same epic asked again (the opening press): keep its menu as it is until the fresh answer.
+  if (armedEpic?.key !== key) setEpicMenu(app, req.project, req.epic, false);
+  const [fetched, t3] = await Promise.all([
+    host.board(req.project).then(
+      (board): { ok: true; board: unknown } => ({ ok: true, board }),
+      (err: unknown): { ok: false } => {
+        console.log(`andon: could not fetch the board for the epic menu of ${req.epic} (${errorReason(err)})`);
+        return { ok: false };
+      },
+    ),
+    host.findT3().catch(() => null),
+  ]);
+  if (seq !== menuSeq) return;
+  // A board that answered without the epic: no such epic to name, so WebKit's menu. A failed fetch
+  // keeps the menu, grayed out (Copy Epic Name still works).
+  const epic = fetched.ok ? boardEpic(fetched.board, req.epic) : null;
+  if (fetched.ok && epic === null) {
+    armedEpic = null;
+    app.menu.setContext(null);
+    return;
+  }
+  const canOpen = t3 !== null && epic !== null && epicSession(epic) !== null;
+  if (armedEpic?.key !== key || armedEpic.canOpen !== canOpen) setEpicMenu(app, req.project, req.epic, canOpen);
+}
+
+function setEpicMenu(app: MacApp, pid: string, epic: string, canOpen: boolean): void {
+  armedEpic = { key: `${pid}/${epic}`, canOpen };
+  app.menu.setContext(epicMenuItems(pid, epic, canOpen));
+}
+
+/** The thread link for an epic, from a freshly fetched board, or the reason there is none. */
+async function freshEpicLink(host: JobMenuHost, pid: string, slug: string): Promise<{ link: string } | { reason: string }> {
+  let board: unknown;
+  try {
+    board = await host.board(pid);
+  } catch (err) {
+    return { reason: errorReason(err) };
+  }
+  const e = boardEpic(board, slug);
+  if (e === null) return { reason: EPIC_NOT_ON_BOARD };
+  const session = epicSession(e);
+  if (session === null) return { reason: EPIC_NO_SESSION };
+  return { link: threadLink(session) };
+}
+
+/**
+ * A clicked epic menu item. Its id is checked (ours, a listed project, an epic slug of the contract's
+ * form), then Copy Epic Name writes that slug, and Open in T3 Code, with `t3` found, fetches the board
+ * again, checks the epic's `session` again, and opens the link built from it. A failure shows one
+ * notification and logs a line; an id that resolves to nothing, or no `t3` found, does nothing.
+ */
+export async function runEpicItem(id: unknown, app: MacApp, host: JobMenuHost = hostJobMenu): Promise<void> {
+  const parsed = parseEpicItemId(id);
+  if (parsed === null || !isListedProject(host.projects(), parsed.pid)) return;
+  const { item, pid, epic } = parsed;
+  if (item === 'copy') {
+    let failed: string | null;
+    try {
+      failed = app.clipboard.write({ text: epic }) ? null : 'the clipboard refused the write';
+    } catch (err) {
+      failed = errorReason(err);
+    }
+    if (failed !== null) await notifyFailure(app, epicCopyFailureText(epic, failed));
+    return;
+  }
+  if ((await host.findT3().catch(() => null)) === null) return;
+  const found = await freshEpicLink(host, pid, epic);
+  if ('reason' in found) return notifyFailure(app, epicOpenFailureText(epic, found.reason));
+  let failed: string | null;
+  try {
+    failed = (await app.shell.open(found.link)) === true ? null : 'T3 Code did not open the link';
+  } catch (err) {
+    failed = errorReason(err);
+  }
+  if (failed !== null) await notifyFailure(app, epicOpenFailureText(epic, failed));
+}
+
 // ---- the About window's two methods ----
 
 /** The Mac app's version and the GitHub URL; null for any window but About. */
@@ -1138,7 +1251,7 @@ export async function closeAbout(params: unknown, app: MacApp, meta: unknown): P
   return true;
 }
 
-/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, `handOff`, `jobMenu`, `setViewState`, `getAbout`, `startWork`, and `closeAbout` (tinyjs.json's gate enables each by name). */
+/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, `handOff`, `jobMenu`, `setViewState`, `getAbout`, `startWork`, `closeAbout`, and `epicMenu` (tinyjs.json's gate enables each by name). */
 export const api = {
   projectMenu: (params: unknown, app: MacApp): Promise<void> => showProjectMenu(params, app, listedProjects()),
   getSettings: (_params: unknown, app: MacApp, meta: unknown): Promise<Settings | null> => getSettings(app, meta),
@@ -1149,10 +1262,13 @@ export const api = {
   getAbout: (_params: unknown, _app: MacApp, meta: unknown): Promise<About | null> => getAbout(meta),
   startWork: (params: unknown, app: MacApp, meta: unknown): Promise<HandoffOutcome | null> => startWork(params, app, meta),
   closeAbout: (params: unknown, app: MacApp, meta: unknown): Promise<boolean> => closeAbout(params, app, meta),
+  epicMenu: (params: unknown, app: MacApp, meta: unknown): Promise<void> => showEpicMenu(params, app, meta),
 };
 
-/** A click in the right-click menu: a `job-menu:` id goes to the job menu, every other id to the project menu. */
+/** A click in the right-click menu: an `epic-menu:` id goes to the epic menu, a `job-menu:` id to the
+ *  job menu, every other id to the project menu. */
 export async function onContextMenu(id: string, app: MacApp): Promise<void> {
+  if (isEpicItemId(id)) return runEpicItem(id, app);
   if (isJobItemId(id)) return runJobItem(id, app);
   await runProjectItem(id, app, listedProjects(), apps?.t3 ?? null);
 }

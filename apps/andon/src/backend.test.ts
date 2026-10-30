@@ -3,10 +3,11 @@
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { closeAbout, getAbout, api, startWork, assetPath, checkApps, checkFound, dockIcon, findAppBundle, findT3, lookupIcon, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runJobItem, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, setViewState, showProjectMenu, trayIcon } from './backend';
+import { closeAbout, getAbout, api, startWork, assetPath, checkApps, checkFound, dockIcon, findAppBundle, findT3, lookupIcon, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runEpicItem, runJobItem, showEpicMenu, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, setViewState, showProjectMenu, trayIcon } from './backend';
 import type { HandoffHost, JobMenuHost, StartWorkHost, MacApp, MacNavEvent, MacTraySpec, MacWinState, RunResult } from './backend';
 import { itemId, projectMenuItems } from './projectmenu';
-import { jobItemId, jobMenuItems } from './jobmenu';
+import { epicItemId, epicMenuItems } from './epicmenu';
+import { jobItemId, jobMenuItems, threadLink } from './jobmenu';
 import type { Availability, MenuProject } from './projectmenu';
 import type { HandoffMode, Settings } from './settings';
 import { ABOUT_ID, ABOUT_SIZE, CLOSE_WINDOW_ID, NEW_EXPLORATION_ID, GITHUB_URL, aboutWindow, DEFAULT_VIEW, GITHUB_ID, INSPECTOR_ID, MERGED_ID, MINIMIZE_ID, NEEDS_ME_ID, SETTINGS_ID, SETTINGS_SIZE, SETTLED_ID, SHOW_MAIN_ID, SIDEBAR_ID, STATUS_BAR_ID, WHATS_NEW_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
@@ -1369,7 +1370,7 @@ test("AC2: a newer request wins over an older one's slower app check", async () 
 });
 
 test('AC2: the api names its methods, and with the app not following the service it lists no project', async () => {
-  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout', 'startWork', 'closeAbout']);
+  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout', 'startWork', 'closeAbout', 'epicMenu']);
   fakeMachine([], []);
   const { app, log } = contextApp();
   await api.projectMenu({ project: PID }, app);
@@ -2131,6 +2132,219 @@ test('040: a newer ask of either menu wins over a slower board fetch', async () 
   release();
   await slow;
   expect(contexts(log)).toEqual([jobMenuItems(PID, MENU_JOB, false), null]);
+});
+
+// ---- an epic's right-click menu (076) ----
+
+const MENU_EPIC = 'andon-window-polish';
+const EPIC_SESSION = { app: 't3code', environment: 'env-1', thread: 'thread-E' };
+const EPIC_LINK = 't3code://threads/env-1/thread-E';
+const MAIN = { window: 'main' };
+
+/** A fake epic menu host (the job menu's host shape): a board whose `epics` hold the epic's `epic.json`. */
+function epicHost(opts: { board?: unknown; boardError?: Error; t3?: string | null } = {}): { host: JobMenuHost; fetched: string[] } {
+  const fetched: string[] = [];
+  const host: JobMenuHost = {
+    projects: () => PROJECTS,
+    board: async (pid) => {
+      fetched.push(pid);
+      if (opts.boardError !== undefined) throw opts.boardError;
+      return opts.board === undefined
+        ? { jobs: [{ id: '076-epic-context-menu', epic: MENU_EPIC, session: GOOD_SESSION }], epics: [{ slug: 'other-epic', session: { app: 't3code', environment: 'env-9', thread: 'other' } }, { slug: MENU_EPIC, state: 'running', session: EPIC_SESSION }] }
+        : opts.board;
+    },
+    findT3: async () => (opts.t3 === undefined ? T3 : opts.t3),
+  };
+  return { host, fetched };
+}
+
+test('076 AC1: an epic with a session and t3 found gets Open in T3 Code (enabled), a separator, and Copy Epic Name', async () => {
+  const { app, log } = jobApp();
+  const h = epicHost();
+  await showEpicMenu({ project: PID, epic: MENU_EPIC }, app, MAIN, h.host);
+  expect(h.fetched).toEqual([PID]);
+  expect(contexts(log)).toEqual([epicMenuItems(PID, MENU_EPIC, false), epicMenuItems(PID, MENU_EPIC, true)]);
+  expect(contexts(log).at(-1)).toEqual([
+    { id: `epic-menu:t3:${PID}:${MENU_EPIC}`, label: 'Open in T3 Code', enabled: true },
+    { separator: true },
+    { id: `epic-menu:copy:${PID}:${MENU_EPIC}`, label: 'Copy Epic Name' },
+  ]);
+  // the opening press asks again: the menu stays as it is
+  log.length = 0;
+  await showEpicMenu({ project: PID, epic: MENU_EPIC }, app, MAIN, h.host);
+  expect(contexts(log)).toEqual([]);
+});
+
+test('076 AC1: a null, missing, or malformed session, or no t3, grays Open in T3 Code out; Copy Epic Name stays; the grayed item opens nothing', async () => {
+  const sessions: unknown[] = [undefined, null, { ...EPIC_SESSION, app: 'codex' }, { ...EPIC_SESSION, extra: 'x' }, { ...EPIC_SESSION, thread: 'thread/E' }, { ...EPIC_SESSION, environment: '' }, { app: 't3code', environment: 'env-1' }, 't3code:env-1/thread-E'];
+  const cases: { label: string; h: ReturnType<typeof epicHost> }[] = sessions.map((session) => ({
+    label: JSON.stringify(session) ?? 'undefined',
+    h: epicHost({ board: { jobs: [], epics: [session === undefined ? { slug: MENU_EPIC } : { slug: MENU_EPIC, session }] } }),
+  }));
+  cases.push({ label: 'no t3', h: epicHost({ t3: null }) });
+  for (const c of cases) {
+    const { app, log } = jobApp();
+    await quietly(async () => {
+      await showEpicMenu(null, app, MAIN, c.h.host); // disarm: the last case armed this same epic
+      log.length = 0;
+      await showEpicMenu({ project: PID, epic: MENU_EPIC }, app, MAIN, c.h.host);
+      expect({ c: c.label, menu: contexts(log).at(-1) }).toEqual({ c: c.label, menu: epicMenuItems(PID, MENU_EPIC, false) });
+      await runEpicItem(epicItemId('t3', PID, MENU_EPIC), app, c.h.host);
+      expect({ c: c.label, opened: opened(log) }).toEqual({ c: c.label, opened: [] });
+      await runEpicItem(epicItemId('copy', PID, MENU_EPIC), app, c.h.host);
+    });
+    expect(log.filter((e) => e[0] === 'clipboard.write')).toEqual([['clipboard.write', { text: MENU_EPIC }]]);
+  }
+});
+
+test("076 AC1: a failed board fetch keeps the menu with Open grayed out", async () => {
+  const { app, log } = jobApp();
+  await showEpicMenu(null, app, MAIN, epicHost().host); // disarm: an earlier test armed this same epic
+  log.length = 0;
+  const logged = await quietly(() => showEpicMenu({ project: PID, epic: MENU_EPIC }, app, MAIN, epicHost({ boardError: new Error('connection refused') }).host));
+  expect(contexts(log)).toEqual([epicMenuItems(PID, MENU_EPIC, false)]);
+  expect(logged).toEqual([`andon: could not fetch the board for the epic menu of ${MENU_EPIC} (connection refused)`]);
+});
+
+test('076 AC2: Open in T3 Code opens the link from a fresh board, built by threadLink; Copy Epic Name copies the slug', async () => {
+  const { app, log } = jobApp();
+  let board: unknown = { epics: [{ slug: MENU_EPIC, session: EPIC_SESSION }] };
+  const fetched: string[] = [];
+  const host: JobMenuHost = { projects: () => PROJECTS, board: async (pid) => (fetched.push(pid), board), findT3: async () => T3 };
+  await showEpicMenu({ project: PID, epic: MENU_EPIC }, app, MAIN, host);
+  log.length = 0;
+  fetched.length = 0;
+  await runEpicItem(epicItemId('t3', PID, MENU_EPIC), app, host);
+  await runEpicItem(epicItemId('copy', PID, MENU_EPIC), app, host);
+  expect(log).toEqual([
+    ['shell.open', EPIC_LINK],
+    ['clipboard.write', { text: MENU_EPIC }],
+  ]);
+  expect(EPIC_LINK).toBe(threadLink({ app: 't3code', environment: 'env-1', thread: 'thread-E' }));
+  expect(fetched).toEqual([PID]); // the click fetched the board again; the copy needs none
+  // the board changed since the menu: the click uses the fresh one
+  board = { epics: [{ slug: MENU_EPIC, session: { app: 't3code', environment: 'env-2', thread: 'thread-F' } }] };
+  log.length = 0;
+  await runEpicItem(epicItemId('t3', PID, MENU_EPIC), app, host);
+  expect(opened(log)).toEqual(['t3code://threads/env-2/thread-F']);
+});
+
+test('076 AC2: a missing epic, a missing or malformed session, a failed fetch, a failed open, or a refused copy each notifies once with its reason', async () => {
+  const cases: { c: ReturnType<typeof jobApp>; h: ReturnType<typeof epicHost>; item: 't3' | 'copy'; text: string }[] = [
+    { c: jobApp(), h: epicHost({ board: { epics: [] } }), item: 't3', text: `Couldn't open the epic ${MENU_EPIC} in T3 Code: the epic is not on its board` },
+    { c: jobApp(), h: epicHost({ board: { epics: [{ slug: MENU_EPIC, session: null }] } }), item: 't3', text: `Couldn't open the epic ${MENU_EPIC} in T3 Code: the epic has no T3 Code thread recorded` },
+    { c: jobApp(), h: epicHost({ board: { epics: [{ slug: MENU_EPIC }] } }), item: 't3', text: `Couldn't open the epic ${MENU_EPIC} in T3 Code: the epic has no T3 Code thread recorded` },
+    { c: jobApp(), h: epicHost({ board: { epics: [{ slug: MENU_EPIC, session: { ...EPIC_SESSION, thread: '../../evil' } }] } }), item: 't3', text: `Couldn't open the epic ${MENU_EPIC} in T3 Code: the epic has no T3 Code thread recorded` },
+    { c: jobApp(), h: epicHost({ boardError: new Error('HTTP 500') }), item: 't3', text: `Couldn't open the epic ${MENU_EPIC} in T3 Code: HTTP 500` },
+    { c: jobApp({ open: new Error('no application knows t3code:') }), h: epicHost(), item: 't3', text: `Couldn't open the epic ${MENU_EPIC} in T3 Code: no application knows t3code:` },
+    { c: jobApp({ open: 'false' }), h: epicHost(), item: 't3', text: `Couldn't open the epic ${MENU_EPIC} in T3 Code: T3 Code did not open the link` },
+    { c: jobApp({ clipboard: false }), h: epicHost(), item: 'copy', text: `Couldn't copy the epic name ${MENU_EPIC}: the clipboard refused the write` },
+    { c: jobApp({ clipboard: new Error('pasteboard busy') }), h: epicHost(), item: 'copy', text: `Couldn't copy the epic name ${MENU_EPIC}: pasteboard busy` },
+  ];
+  for (const { c, h, item, text } of cases) {
+    const logged = await quietly(() => runEpicItem(epicItemId(item, PID, MENU_EPIC), c.app, h.host));
+    expect({ text, notified: c.log.filter((e) => e[0] === 'notify') }).toEqual({ text, notified: [['notify', 'Andon', text]] });
+    expect(logged).toEqual([`andon: ${text}`]);
+    if (item === 't3' && !text.endsWith('did not open the link') && !text.includes('no application')) expect(opened(c.log)).toEqual([]);
+  }
+});
+
+test('076 AC3: another window, or no meta, is not answered: no menu set, nothing fetched', async () => {
+  for (const meta of [undefined, null, {}, { window: 'settings' }, { window: 'about' }, 'main', { window: 'Main' }]) {
+    const { app, log } = jobApp();
+    const h = epicHost();
+    await showEpicMenu({ project: PID, epic: MENU_EPIC }, app, meta, h.host);
+    expect({ meta, log }).toEqual({ meta, log: [] });
+    expect(h.fetched).toEqual([]);
+  }
+});
+
+test("076 AC3: extra fields, an unlisted project, or a malformed or over-long slug restore WebKit's menu and fetch nothing", async () => {
+  for (const params of [
+    { project: 'zzzzzzzzzzzz', epic: MENU_EPIC },
+    { project: PID, epic: 'Bad_Slug' },
+    { project: PID, epic: 'a'.repeat(41) },
+    { project: PID, epic: '../x' },
+    { project: PID, epic: '076-epic-context-menu' },
+    { project: PID, epic: MENU_EPIC, thread: 'thread-B' },
+    { project: PID, epic: MENU_EPIC, url: 't3code://threads/evil/x' },
+    { project: PID, epic: MENU_EPIC, session: EPIC_SESSION },
+    { project: PID },
+    { project: PID, job: '076-epic-context-menu' },
+    null,
+    'x',
+  ]) {
+    const { app, log } = jobApp();
+    const h = epicHost();
+    await showEpicMenu(params, app, MAIN, h.host);
+    expect({ params, log }).toEqual({ params, log: [['menu.setContext', null]] });
+    expect(h.fetched).toEqual([]);
+  }
+});
+
+test("076 AC3: a slug not in the board's epics restores WebKit's menu", async () => {
+  const { app, log } = jobApp();
+  // a job with that name on the board is not an epic
+  await showEpicMenu({ project: PID, epic: 'missing-epic' }, app, MAIN, epicHost({ board: { jobs: [{ id: 'missing-epic' }], epics: [{ slug: MENU_EPIC, session: EPIC_SESSION }] } }).host);
+  expect(contexts(log)).toEqual([epicMenuItems(PID, 'missing-epic', false), null]);
+});
+
+test('076 AC3: a forged or unresolvable item id does nothing', async () => {
+  for (const id of [epicItemId('t3', 'zzzzzzzzzzzz', MENU_EPIC), epicItemId('copy', 'zzzzzzzzzzzz', MENU_EPIC), `epic-menu:t3:${PID}:Bad`, `epic-menu:t3:${PID}:${MENU_EPIC}:${EPIC_LINK}`, `epic-menu:open:${PID}:${MENU_EPIC}`, `epic-menu:copy:${PID}:${'a'.repeat(41)}`, null, 7]) {
+    const { app, log } = jobApp();
+    const h = epicHost();
+    await runEpicItem(id, app, h.host);
+    expect({ id, log }).toEqual({ id, log: [] });
+    expect(h.fetched).toEqual([]);
+  }
+  // no t3 found: Open in T3 Code does nothing
+  const { app, log } = jobApp();
+  await runEpicItem(epicItemId('t3', PID, MENU_EPIC), app, epicHost({ t3: null }).host);
+  expect(log).toEqual([]);
+});
+
+test('076 AC4: onContextMenu sends epic-menu ids to the epic menu, job-menu ids to the job menu, and every other id to the project menu', async () => {
+  fakeMachine([], []);
+  const { app, log } = jobApp();
+  // with the app not following the service, no project is listed: no menu runs anything
+  await onContextMenu(epicItemId('copy', PID, MENU_EPIC), app);
+  await onContextMenu(jobItemId('copy', PID, MENU_JOB), app);
+  await onContextMenu(itemId('copy', PID), app);
+  expect(log).toEqual([]);
+  // the real api answers only the main window, and with no listed project sets WebKit's menu
+  await api.epicMenu({ project: PID, epic: MENU_EPIC }, app, { window: 'settings' });
+  expect(log).toEqual([]);
+  await api.epicMenu({ project: PID, epic: MENU_EPIC }, app, MAIN);
+  expect(log).toEqual([['menu.setContext', null]]);
+  const src = await Bun.file(join(import.meta.dir, 'backend.ts')).text();
+  const body = /export async function onContextMenu\([^)]*\)[^{]*\{\n([\s\S]*?)\n\}/.exec(src)?.[1]?.split('\n').map((l) => l.trim());
+  expect(body).toEqual(['if (isEpicItemId(id)) return runEpicItem(id, app);', 'if (isJobItemId(id)) return runJobItem(id, app);', 'await runProjectItem(id, app, listedProjects(), apps?.t3 ?? null);']);
+});
+
+test('076: a newer ask of any menu wins over a slower epic board fetch, and an epic ask wins over a slower job fetch', async () => {
+  const { app, log } = jobApp();
+  let release: () => void = () => undefined;
+  const host: JobMenuHost = {
+    projects: () => PROJECTS,
+    board: () => new Promise((r) => (release = () => r({ jobs: [{ id: MENU_JOB, session: GOOD_SESSION }], epics: [{ slug: MENU_EPIC, session: EPIC_SESSION }] }))),
+    findT3: async () => T3,
+  };
+  fakeMachine([], []);
+  const slow = showEpicMenu({ project: PID, epic: MENU_EPIC }, app, MAIN, host);
+  await showProjectMenu({ project: null }, app, PROJECTS);
+  release();
+  await slow;
+  expect(contexts(log)).toEqual([epicMenuItems(PID, MENU_EPIC, false), null]);
+  log.length = 0;
+  const slowJob = showJobMenu({ project: PID, job: MENU_JOB }, app, host);
+  const releaseJob = release;
+  const epicAsk = showEpicMenu({ project: PID, epic: MENU_EPIC }, app, MAIN, host);
+  const releaseEpic = release;
+  releaseJob();
+  releaseEpic();
+  await slowJob;
+  await epicAsk;
+  expect(contexts(log)).toEqual([jobMenuItems(PID, MENU_JOB, false), epicMenuItems(PID, MENU_EPIC, false), epicMenuItems(PID, MENU_EPIC, true)]);
 });
 
 // ---- the Open in apps' own icons (043) ----
