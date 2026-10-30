@@ -7,7 +7,8 @@
   // changes column slides there in 250ms (a crossfade between the cells), then highlights. Under a
   // search, a lane with no match dims to 25% whole; in a lit lane, each token that misses dims.
   // The gutter carries the project's id for the Mac app's right-click menu (projectmenu.ts), and each
-  // board token its job's ids for the job menu (jobmenu.ts); the ghosts carry neither.
+  // board token its job's ids for the job menu (jobmenu.ts), and each epic's name its slug and project
+  // id for the epic menu (epicmenu.ts); the ghosts carry none.
   // Its epics (docs/design/epics/design.md decision 9) follow as sub-lanes, oldest start first, and
   // move with it: an indented gutter with an elbow from the project and a faint tint, whose name
   // opens the epic page, then the same six cells holding only the epic's jobs ("+N more" focuses the
@@ -107,7 +108,7 @@
   {#each lane.subs as sub, i (sub.key)}
     <div class="row lane sub" class:last={i === lane.subs.length - 1} class:hotgut={sub.hot} class:miss={subMiss(sub.key)} role="row" data-rows={sub.rows} aria-label="{sub.gutter.name}, an epic in {name}">
       <div class="gut egut" role="rowheader">
-        <button class="en" class:sel={selectedEpic === sub.key} class:hit={found.epics.has(sub.key)} type="button" aria-haspopup="dialog" title="Open epic {sub.gutter.name} · {sub.gutter.state}" onclick={() => onopenepic(sub.key)}>
+        <button class="en" class:sel={selectedEpic === sub.key} class:hit={found.epics.has(sub.key)} type="button" data-epic-menu={sub.slug} data-epic-menu-project={lane.project.id} aria-haspopup="dialog" title="Open epic {sub.gutter.name} · {sub.gutter.state}" onclick={() => onopenepic(sub.key)}>
           <span class="edot {sub.gutter.dot}" aria-hidden="true"></span><span class="ename">{sub.gutter.name}</span><span class="sr-only">, epic, {sub.gutter.state}</span>
         </button>
         <span class="meta wrap" title="members merged into the epic branch · running · since the epic started">{@render parts(sub.gutter.progress)}</span>
