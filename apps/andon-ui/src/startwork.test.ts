@@ -25,6 +25,12 @@ import {
   runCommand,
   startEpicCommand,
   startWorkCaller,
+  LAST_EXPLORED_KEY,
+  exploreOpen,
+  loadLastExplored,
+  pickerStart,
+  saveLastExplored,
+  startWorkPush,
 } from './startwork';
 import type { StartItem, StartWorkRequest } from './startwork';
 
@@ -161,5 +167,153 @@ describe('068 AC5: the caller, and copy first, then start, then the toast', () =
     const items = [nextStart(PID), ...toBacklog(backlogBody()).queued.map((i) => queuedStart(PID, i))].filter((x): x is StartItem => x !== null);
     for (const i of items) expect(await copyThenStart(write, start, i.req, i.command)).toEqual({ text: `Copied ${i.command}`, ok: true });
     expect(copied).toEqual(items.map((i) => i.command));
+  });
+});
+
+// ---- 075: the startwork event ----
+
+describe('075 AC5: the startwork payload check', () => {
+  const LISTED = [
+    { id: PID, name: 'factory' },
+    { id: 'bbbbbbbbbbbb', name: 'notes' },
+  ];
+
+  test('accepts next with a listed id, and new-exploration with a listed id or null', () => {
+    expect(startWorkPush({ action: 'next', project: PID }, LISTED)).toEqual({ action: 'next', project: PID });
+    expect(startWorkPush({ action: 'new-exploration', project: 'bbbbbbbbbbbb' }, LISTED)).toEqual({ action: 'new-exploration', project: 'bbbbbbbbbbbb' });
+    expect(startWorkPush({ action: 'new-exploration', project: null }, LISTED)).toEqual({ action: 'new-exploration', project: null });
+    expect(startWorkPush({ project: null, action: 'new-exploration' }, LISTED)).toEqual({ action: 'new-exploration', project: null });
+  });
+
+  test('everything else does nothing', () => {
+    const bad: unknown[] = [
+      undefined,
+      null,
+      'next',
+      42,
+      [],
+      [{ action: 'next', project: PID }],
+      {},
+      { action: 'next' },
+      { project: PID },
+      { action: 'run', project: PID },
+      { action: 'explore', project: PID },
+      { action: 'epic', project: PID },
+      { action: 'NEXT', project: PID },
+      { action: 'next', project: PID, command: '/factory next' },
+      { action: 'new-exploration', project: null, idea: 'x' },
+      { action: 'next', project: 42 },
+      { action: 'next', project: '' },
+      { action: 'new-exploration', project: '' },
+      { action: 'new-exploration', project: ['x'] },
+      { action: 'new-exploration', project: { id: PID } },
+      { action: 'next', project: 'zzzzzzzzzzzz' },
+      { action: 'new-exploration', project: 'zzzzzzzzzzzz' },
+      { action: 'next', project: null },
+      { action: 'new-exploration' },
+      { action: 'new-exploration', project: undefined },
+    ];
+    for (const data of bad) expect({ data, push: startWorkPush(data, LISTED) }).toEqual({ data, push: null });
+    expect(startWorkPush({ action: 'next', project: PID }, [])).toBeNull();
+  });
+
+  test('an accepted next is the Backlog sheet\'s Run next: copy, then startWork with { project, action: next }', async () => {
+    const push = startWorkPush({ action: 'next', project: PID }, LISTED);
+    expect(push).not.toBeNull();
+    if (push === null || push.action !== 'next') return;
+    const item = nextStart(push.project);
+    expect(item).toEqual({ label: 'Run next', req: { project: PID, action: 'next' }, command: '/factory next' });
+    const order: string[] = [];
+    const sent: StartWorkRequest[] = [];
+    const toast = await copyThenStart(
+      async (c) => {
+        order.push(`copy ${c}`);
+        return true;
+      },
+      async (req) => {
+        order.push('start');
+        sent.push(req);
+        return null;
+      },
+      item.req,
+      item.command,
+    );
+    expect(order).toEqual(['copy /factory next', 'start']);
+    expect(sent).toEqual([{ project: PID, action: 'next' }]);
+    expect(toast.ok).toBe(true);
+  });
+});
+
+describe('075 AC6: the project the New exploration sheet opens for', () => {
+  const A = { id: 'aaaaaaaaaaaa', name: 'zeta', root: '/r/zeta' };
+  const B = { id: 'bbbbbbbbbbbb', name: 'alpha', root: '/r/alpha' };
+  const C = { id: 'cccccccccccc', name: 'mid', root: '/r/mid' };
+  const ROOTLESS = { id: 'dddddddddddd', name: 'aaa-rootless', root: '' };
+  const NULL_ROOT = { id: 'eeeeeeeeeeee', name: 'aab-null', root: null };
+  const name = (p: { id: string; name: string }): { id: string; name: string } => ({ id: p.id, name: p.name });
+
+  test('a named project (right-click, Backlog sheet) opens for it with no picker', () => {
+    expect(exploreOpen(C.id, null, [A, B, C], B.id)).toEqual({ project: name(C), picker: null });
+    expect(exploreOpen(C.id, A.id, [A, B, C], null)).toEqual({ project: name(C), picker: null });
+    expect(exploreOpen('zzzzzzzzzzzz', null, [A, B, C], null)).toBeNull();
+    expect(exploreOpen(ROOTLESS.id, null, [A, ROOTLESS], null)).toBeNull();
+  });
+
+  test('null with one project selected opens for it with no picker', () => {
+    expect(exploreOpen(null, C.id, [A, B, C], B.id)).toEqual({ project: name(C), picker: null });
+  });
+
+  test('null under All Projects with exactly one listed project with a root opens for it with no picker', () => {
+    expect(exploreOpen(null, null, [A], null)).toEqual({ project: name(A), picker: null });
+    expect(exploreOpen(null, null, [ROOTLESS, A, NULL_ROOT], 'dddddddddddd')).toEqual({ project: name(A), picker: null });
+    // a stale selection falls back as All Projects does
+    expect(exploreOpen(null, 'zzzzzzzzzzzz', [A], null)).toEqual({ project: name(A), picker: null });
+  });
+
+  test('null under All Projects with several opens with a picker of only the rooted projects, by name', () => {
+    const open = exploreOpen(null, null, [A, ROOTLESS, B, NULL_ROOT, C], null);
+    expect(open).toEqual({ project: name(B), picker: [name(B), name(C), name(A)] });
+  });
+
+  test('the picker starts on the stored last-explored project when still listed with a root, else the first by name', () => {
+    expect(exploreOpen(null, null, [A, B, C], C.id)?.project).toEqual(name(C));
+    expect(exploreOpen(null, null, [A, B, C], 'zzzzzzzzzzzz')?.project).toEqual(name(B));
+    expect(exploreOpen(null, null, [A, B, C, ROOTLESS], ROOTLESS.id)?.project).toEqual(name(B));
+    expect(exploreOpen(null, null, [A, B, C], null)?.project).toEqual(name(B));
+    expect(exploreOpen(null, null, [], null)).toBeNull();
+    expect(exploreOpen(null, null, [ROOTLESS, NULL_ROOT], null)).toBeNull();
+  });
+
+  test('pickerStart: the last-explored choice, else the first by name, else null', () => {
+    const choices = [name(A), name(B), name(C)];
+    expect(pickerStart(choices, A.id)).toEqual(name(A));
+    expect(pickerStart(choices, null)).toEqual(name(B));
+    expect(pickerStart(choices, 'gone')).toEqual(name(B));
+    expect(pickerStart([], A.id)).toBeNull();
+    // a name tie falls back to the id
+    expect(pickerStart([{ id: 'b', name: 'x' }, { id: 'a', name: 'x' }], null)).toEqual({ id: 'a', name: 'x' });
+  });
+
+  test('the last-explored key reads and writes through storage, and a blocked store is no store', () => {
+    const map = new Map<string, string>();
+    const store = { getItem: (k: string): string | null => map.get(k) ?? null, setItem: (k: string, v: string): void => void map.set(k, v) };
+    expect(LAST_EXPLORED_KEY).toBe('andon.lastExplored');
+    expect(loadLastExplored(store)).toBeNull();
+    saveLastExplored(store, C.id);
+    expect(map.get(LAST_EXPLORED_KEY)).toBe(C.id);
+    expect(loadLastExplored(store)).toBe(C.id);
+    map.set(LAST_EXPLORED_KEY, '');
+    expect(loadLastExplored(store)).toBeNull();
+    const blocked = {
+      getItem: (): string | null => {
+        throw new Error('blocked');
+      },
+      setItem: (): void => {
+        throw new Error('blocked');
+      },
+    };
+    expect(loadLastExplored(blocked)).toBeNull();
+    expect(() => saveLastExplored(blocked, C.id)).not.toThrow();
+    expect(loadLastExplored(null)).toBeNull();
   });
 });

@@ -237,8 +237,11 @@ export const SETTLED_EVENT = 'settled';
 export const BACKLOG_EVENT = 'backlog'; // View → Show Backlog… (067): open the whole Backlog sheet
 export const SIDEBAR_EVENT = 'sidebar';
 export const INSPECTOR_EVENT = 'inspector';
+/** The event the Mac app pushes for File → New Exploration… and a project's right-click New
+ *  Exploration… and Run Next: `{ action, project }`, a request the page checks (startwork.ts `startWorkPush`). */
+export const START_WORK_EVENT = 'startwork';
 /** Every event the page subscribes to: tinyjs.json's api gate names each as `event.<name>`, in this order. */
-export const PUSHED_EVENTS: readonly string[] = [STATUS_BAR_EVENT, WHATS_NEW_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, BACKLOG_EVENT, SIDEBAR_EVENT, INSPECTOR_EVENT];
+export const PUSHED_EVENTS: readonly string[] = [STATUS_BAR_EVENT, WHATS_NEW_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, BACKLOG_EVENT, SIDEBAR_EVENT, INSPECTOR_EVENT, START_WORK_EVENT];
 
 /** What the page does for a View menu event. */
 export type MenuEventAction = 'toggle-needs' | 'open-settled' | 'open-backlog' | 'toggle-sidebar' | 'toggle-inspector';

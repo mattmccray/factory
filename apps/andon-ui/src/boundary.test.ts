@@ -7,7 +7,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import config from '../vite.config';
 import { isRecord } from './job';
-import { PUSHED_EVENTS, STATUS_BAR_EVENT, VIEW_STATE_METHOD, WHATS_NEW_EVENT } from './sidebar';
+import { PUSHED_EVENTS, START_WORK_EVENT, STATUS_BAR_EVENT, VIEW_STATE_METHOD, WHATS_NEW_EVENT } from './sidebar';
 
 const app = join(import.meta.dir, '..');
 
@@ -194,17 +194,18 @@ describe('Andon never writes job state (026 AC5)', () => {
     }
   });
 
-  test("the page hears exactly the Mac app's pushed events its api gate names: statusbar and whatsnew (059), the View menu's (063), and Show Backlog…'s (067)", () => {
+  test("the page hears exactly the Mac app's pushed events its api gate names: statusbar and whatsnew (059), the View menu's (063), Show Backlog…'s (067), and startwork (075)", () => {
     expect(STATUS_BAR_EVENT).toBe('statusbar');
     expect(WHATS_NEW_EVENT).toBe('whatsnew');
-    expect(PUSHED_EVENTS).toEqual(['statusbar', 'whatsnew', 'merged', 'needsme', 'settled', 'backlog', 'sidebar', 'inspector']);
+    expect(START_WORK_EVENT).toBe('startwork');
+    expect(PUSHED_EVENTS).toEqual(['statusbar', 'whatsnew', 'merged', 'needsme', 'settled', 'backlog', 'sidebar', 'inspector', 'startwork']);
     const tiny: unknown = JSON.parse(read(join(app, '..', 'andon', 'tinyjs.json')));
     const gate = isRecord(tiny) && isRecord(tiny.api) && Array.isArray(tiny.api.enable) ? tiny.api.enable : [];
     expect(gate.filter((e): e is string => typeof e === 'string' && e.startsWith('event.'))).toEqual(PUSHED_EVENTS.map((e) => `event.${e}`));
     expect(gate).toContain('event.whatsnew');
     // Every subscription goes through pushSubscriber with one of those names, in App.svelte only.
     const subs = [...read(join(import.meta.dir, 'App.svelte')).matchAll(/subscribe\?\.\((\w+),/g)].map((m) => m[1]);
-    expect(subs).toEqual(['STATUS_BAR_EVENT', 'WHATS_NEW_EVENT', 'MERGED_EVENT', 'NEEDS_ME_EVENT', 'SETTLED_EVENT', 'BACKLOG_EVENT', 'SIDEBAR_EVENT', 'INSPECTOR_EVENT']);
+    expect(subs).toEqual(['STATUS_BAR_EVENT', 'WHATS_NEW_EVENT', 'MERGED_EVENT', 'NEEDS_ME_EVENT', 'SETTLED_EVENT', 'BACKLOG_EVENT', 'SIDEBAR_EVENT', 'INSPECTOR_EVENT', 'START_WORK_EVENT']);
   });
 
   test('Fetcher stays path-only', () => {

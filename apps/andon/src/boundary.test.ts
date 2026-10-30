@@ -10,7 +10,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BACKEND_OUT, appVersion, bundleBackend } from '../build';
 import { CLOSE_ABOUT_METHOD, GET_ABOUT_METHOD } from './about';
-import { BACKLOG_EVENT, INSPECTOR_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, STATUS_BAR_EVENT, WHATS_NEW_EVENT } from './appmenu';
+import { BACKLOG_EVENT, INSPECTOR_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, START_WORK_EVENT, STATUS_BAR_EVENT, WHATS_NEW_EVENT } from './appmenu';
 import { DEFAULT_PORT, pageUrl } from './autostart';
 import { PROJECT_MENU_METHOD } from './projectmenu';
 import { GET_SETTINGS_METHOD, SET_SETTING_METHOD, VIEW_STATE_METHOD } from './settings';
@@ -270,6 +270,7 @@ describe('AC6: tinyjs.json', () => {
           'event.backlog',
           'event.sidebar',
           'event.inspector',
+          'event.startwork',
           'projectMenu',
           'getSettings',
           'setSetting',
@@ -313,7 +314,7 @@ describe('AC6: tinyjs.json', () => {
     expect(cfg.about).toBe('menu');
   });
 
-  test("the api gate denies every Tiny call for the page except its drag regions, the pushed events, projectMenu, the two settings methods, handOff, jobMenu, setViewState, getAbout, startWork, and closeAbout", () => {
+  test("the api gate denies every Tiny call for the page except its drag regions, the pushed events (startwork among them, 075), projectMenu, the two settings methods, handOff, jobMenu, setViewState, getAbout, startWork, and closeAbout", () => {
     // Tiny's page runtime turns a mousedown on [data-tiny-drag] into `win.startDrag` (a double-click
     // into `win.zoom`), and the backend's gate checks both: they are the narrowest exception. The one
     // event the page may receive is the status bar state the backend pushes (`event.<name>` is how
@@ -354,7 +355,14 @@ describe('AC6: tinyjs.json', () => {
     // main window it quits the app. No event is added.
     expect(CLOSE_ABOUT_METHOD).toBe('closeAbout');
     const after068 = [...after067, START_WORK_METHOD];
-    expect(cfg.api).toEqual({ disable: ['*'], enable: [...after068, CLOSE_ABOUT_METHOD] });
+    const after073 = [...after068, CLOSE_ABOUT_METHOD];
+    // New Exploration… and Run Next in the menus (075) add exactly one pushed event, `startwork`,
+    // right after the View menu's events, which the page only receives (a request it checks, never
+    // a command); no page-callable method is added or changed.
+    expect(START_WORK_EVENT).toBe('startwork');
+    const at = after073.indexOf(`event.${INSPECTOR_EVENT}`) + 1;
+    const after075 = [...after073.slice(0, at), `event.${START_WORK_EVENT}`, ...after073.slice(at)];
+    expect(cfg.api).toEqual({ disable: ['*'], enable: after075 });
     const enable = isRecord(cfg.api) && Array.isArray(cfg.api.enable) ? cfg.api.enable : [];
     const events = (list: readonly unknown[]): unknown[] => list.filter((e) => typeof e === 'string' && e.startsWith('event.'));
     const methods = (list: readonly unknown[]): unknown[] => list.filter((e) => typeof e === 'string' && !e.startsWith('event.') && !e.startsWith('win.'));
@@ -365,13 +373,15 @@ describe('AC6: tinyjs.json', () => {
     // 068: the 067 list plus exactly one method, startWork
     expect(after068.filter((e) => !after067.includes(String(e)))).toEqual([START_WORK_METHOD]);
     // 073: the 068 list plus exactly one method, closeAbout
-    expect(enable.filter((e) => !after068.includes(String(e)))).toEqual([CLOSE_ABOUT_METHOD]);
-    expect(after068.every((e) => enable.includes(e))).toBe(true);
-    expect(enable).toHaveLength(after068.length + 1);
+    expect(after073.filter((e) => !after068.includes(String(e)))).toEqual([CLOSE_ABOUT_METHOD]);
+    // 075: the 073 list plus exactly one event, startwork
+    expect(enable.filter((e) => !after073.includes(String(e)))).toEqual([`event.${START_WORK_EVENT}`]);
+    expect(after073.every((e) => enable.includes(e))).toBe(true);
+    expect(enable).toHaveLength(after073.length + 1);
     expect(enable).not.toContain('win.close');
     expect(enable.filter((e) => typeof e === 'string' && e.startsWith('win.'))).toEqual(['win.startDrag', 'win.zoom']);
     expect(methods(enable)).toEqual([...methods(after059), 'setViewState', 'getAbout', 'startWork', 'closeAbout']);
-    expect(events(enable)).toEqual(['event.statusbar', 'event.whatsnew', ...viewEvents]);
+    expect(events(enable)).toEqual(['event.statusbar', 'event.whatsnew', ...viewEvents, 'event.startwork']);
     expect(cfg.inject).toBeUndefined();
   });
 

@@ -13,8 +13,11 @@ const KINDS: ProjectItem[] = ['copy', 'reveal', 'vscode', 't3', 'ghostty'];
 const ALL_THERE: Availability = { vscode: true, ghostty: true, t3: '/home/me/.t3/bin/t3' };
 
 describe('AC1: the menu', () => {
-  test('Copy Project Path, Reveal in Finder, a separator, then Open in ▸ VS Code, T3 Code, Ghostty', () => {
+  test('New Exploration…, Run Next, a separator, Copy Project Path, Reveal in Finder, a separator, then Open in ▸ VS Code, T3 Code, Ghostty', () => {
     expect(projectMenuItems(PID, ALL_THERE)).toEqual([
+      { id: `project-menu:explore:${PID}`, label: 'New Exploration…' },
+      { id: `project-menu:next:${PID}`, label: 'Run Next' },
+      { separator: true },
       { id: `project-menu:copy:${PID}`, label: 'Copy Project Path' },
       { id: `project-menu:reveal:${PID}`, label: 'Reveal in Finder' },
       { separator: true },
@@ -31,13 +34,13 @@ describe('AC1: the menu', () => {
   });
 
   test('a missing app or t3 grays its item out, and only its item', () => {
-    const open = (a: Availability): (boolean | undefined)[] => projectMenuItems(PID, a)[3]?.submenu?.map((i) => i.enabled) ?? [];
+    const open = (a: Availability): (boolean | undefined)[] => projectMenuItems(PID, a)[6]?.submenu?.map((i) => i.enabled) ?? [];
     expect(open({ vscode: false, ghostty: true, t3: '/x/t3' })).toEqual([false, true, true]);
     expect(open({ vscode: true, ghostty: false, t3: '/x/t3' })).toEqual([true, true, false]);
     expect(open({ vscode: true, ghostty: true, t3: null })).toEqual([true, false, true]);
     expect(open({ vscode: false, ghostty: false, t3: null })).toEqual([false, false, false]);
-    // copy and reveal are never grayed out
-    for (const item of projectMenuItems(PID, { vscode: false, ghostty: false, t3: null }).slice(0, 2)) expect(item.enabled).toBeUndefined();
+    // New Exploration…, Run Next, copy, and reveal are never grayed out
+    for (const item of projectMenuItems(PID, { vscode: false, ghostty: false, t3: null }).slice(0, 5)) expect(item.enabled).toBeUndefined();
   });
 
   test('t3 is looked for at ~/.t3/bin/t3, then /opt/homebrew/bin/t3; the home one wins', () => {
@@ -102,7 +105,7 @@ describe('AC2: an action uses only the looked-up root', () => {
     }
     for (const item of KINDS) {
       const a = resolveAction(itemId(item, PID), PROJECTS, t3);
-      const strings = a === null ? [] : a.kind === 'spawn' ? a.argv : [a.root];
+      const strings = a === null ? [] : a.kind === 'spawn' ? a.argv : a.kind === 'push' ? [] : [a.root];
       for (const s of strings) expect([ROOT, t3, 'open', '-a', 'Visual Studio Code', 'Ghostty', 'app']).toContain(s);
     }
   });
@@ -140,7 +143,7 @@ describe('AC6: the failure text', () => {
 
 describe('043 AC1: an Open in item carries its app icon whenever one was found', () => {
   const ICONS: AppIcons = { vscode: '/tmp/vscode.png', t3: '/tmp/t3.png', ghostty: '/tmp/ghostty.png' };
-  const openIn = (items: ContextItem[]): ContextItem[] => items[3]?.submenu ?? [];
+  const openIn = (items: ContextItem[]): ContextItem[] => items[6]?.submenu ?? [];
 
   test('every item with an icon carries it; ids, labels, and enabled are as without icons', () => {
     for (const apps of [ALL_THERE, { vscode: false, ghostty: true, t3: null }, { vscode: false, ghostty: false, t3: null }]) {
@@ -163,9 +166,9 @@ describe('043 AC1: an Open in item carries its app icon whenever one was found',
     expect(openIn(projectMenuItems(PID, ALL_THERE, {})).some((i) => 'icon' in i)).toBe(false);
   });
 
-  test('Copy Project Path, Reveal in Finder, the separator, and the Open in parent never carry an icon', () => {
+  test('New Exploration…, Run Next, Copy Project Path, Reveal in Finder, the separators, and the Open in parent never carry an icon', () => {
     const items = projectMenuItems(PID, ALL_THERE, ICONS);
-    expect(items.slice(0, 4).map((i) => 'icon' in i)).toEqual([false, false, false, false]);
+    expect(items.slice(0, 7).map((i) => 'icon' in i)).toEqual([false, false, false, false, false, false, false]);
   });
 });
 
@@ -195,5 +198,42 @@ describe('043 AC2: where each app is looked for', () => {
     expect(pickAppPath('t3', '', '/Users/me', (p) => present.has(p))).toBe('/Applications/T3 Code (Beta).app');
     expect(pickAppPath('t3', null, '/Users/me', (p) => p === '/Users/me/Applications/T3 Code (Beta).app')).toBe('/Users/me/Applications/T3 Code (Beta).app');
     expect(pickAppPath('ghostty', null, '/Users/me', () => false)).toBeNull();
+  });
+});
+
+describe('075 AC2/AC3: New Exploration… and Run Next', () => {
+  const t3 = '/Users/me/.t3/bin/t3';
+
+  test('today\'s items are unchanged after the two new items and their separator', () => {
+    const items = projectMenuItems(PID, ALL_THERE);
+    expect(items.slice(0, 3)).toEqual([{ id: itemId('explore', PID), label: 'New Exploration…' }, { id: itemId('next', PID), label: 'Run Next' }, { separator: true }]);
+    expect(items.slice(3).map((i) => i.label ?? '—')).toEqual(['Copy Project Path', 'Reveal in Finder', '—', 'Open in']);
+  });
+
+  test('every clickable id round-trips through parseItemId', () => {
+    const ids = projectMenuItems(PID, ALL_THERE)
+      .flatMap((i) => [i, ...(i.submenu ?? [])])
+      .map((i) => i.id)
+      .filter((id): id is string => id !== undefined && id !== OPEN_IN_ID);
+    expect(ids.map((id) => parseItemId(id))).toEqual((['explore', 'next', 'copy', 'reveal', 'vscode', 't3', 'ghostty'] satisfies ProjectItem[]).map((item) => ({ item, pid: PID })));
+    expect(itemId('explore', PID)).toBe(`project-menu:explore:${PID}`);
+    expect(itemId('next', PID)).toBe(`project-menu:next:${PID}`);
+  });
+
+  test('New Exploration… on a listed project with a root shows the main window and pushes { action: new-exploration, project }', () => {
+    expect(resolveAction(itemId('explore', PID), PROJECTS, t3)).toEqual({ kind: 'push', payload: { action: 'new-exploration', project: PID }, show: true, project: 'factory' });
+    expect(resolveAction(itemId('explore', PID), PROJECTS, null)).toEqual({ kind: 'push', payload: { action: 'new-exploration', project: PID }, show: true, project: 'factory' });
+  });
+
+  test('Run Next on such a project pushes { action: next, project }', () => {
+    expect(resolveAction(itemId('next', PID), PROJECTS, t3)).toEqual({ kind: 'push', payload: { action: 'next', project: PID }, show: false, project: 'factory' });
+    expect(resolveAction(itemId('next', 'cccccccccccc'), PROJECTS, null)).toEqual({ kind: 'push', payload: { action: 'next', project: 'cccccccccccc' }, show: false, project: 'cccccccccccc' });
+  });
+
+  test('either one on an unlisted or rootless project does nothing', () => {
+    for (const item of ['explore', 'next'] satisfies ProjectItem[]) {
+      for (const pid of ['zzzzzzzzzzzz', 'bbbbbbbbbbbb', ROOT, '; rm -rf ~']) expect({ item, pid, action: resolveAction(itemId(item, pid), PROJECTS, t3) }).toEqual({ item, pid, action: null });
+      expect(resolveAction(itemId(item, PID), [], t3)).toBeNull();
+    }
   });
 });

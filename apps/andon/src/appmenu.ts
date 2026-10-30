@@ -4,6 +4,8 @@
 // View (the board's view toggles: Needs Me, the Settled and Backlog sheets, the sidebar, the inspector, the status
 // bar, and the Merged column; labels flip, Finder-style, to name what choosing them does), Window (Minimize, Zoom, Andon), and Help (What's New, which shows the
 // main window and asks the board to open its What's New sheet, and the project on GitHub).
+// File also leads with New Exploration… (⌘N), which shows the main window and asks its page to
+// open the New exploration sheet (the `startwork` event, a request only: the page checks it).
 // The menu spec, its ids, the label for a status bar state, what a click does, how the stored status
 // bar choice reads, and the Settings and About windows' ids, titles, sizes, pages, and chrome all live here,
 // runtime-neutral; backend.ts sets the menu, opens the window, and carries out the actions.
@@ -30,6 +32,16 @@ export const SETTLED_EVENT = 'settled';
 export const BACKLOG_EVENT = 'backlog';
 export const SIDEBAR_EVENT = 'sidebar';
 export const INSPECTOR_EVENT = 'inspector';
+/** The event the Mac app pushes to ask the main window's page to start work: File → New
+ *  Exploration… and a project's right-click New Exploration… and Run Next. Its payload is a request
+ *  only (`StartWorkPush`): the page checks it, and `startWork` stays the one path that builds a command. */
+export const START_WORK_EVENT = 'startwork';
+/** The startwork event's payload: open the New exploration sheet (for a project, or, with null, the
+ *  one the page picks), or Run next on a project. Nothing else is ever sent. */
+export type StartWorkPush = { action: 'new-exploration'; project: string | null } | { action: 'next'; project: string };
+/** The payload of the startwork event: exactly the action and the project, nothing else carried. */
+export const startWorkPayload = (push: StartWorkPush): StartWorkPush =>
+  push.action === 'next' ? { action: 'next', project: push.project } : { action: 'new-exploration', project: push.project };
 /** A View menu action the page carries out: one of the five events above. */
 export type PageEvent = typeof NEEDS_ME_EVENT | typeof SETTLED_EVENT | typeof BACKLOG_EVENT | typeof SIDEBAR_EVENT | typeof INSPECTOR_EVENT;
 
@@ -39,6 +51,7 @@ export type PageEvent = typeof NEEDS_ME_EVENT | typeof SETTLED_EVENT | typeof BA
 export const ABOUT_ID = 'about';
 export const SETTINGS_ID = 'settings';
 export const CLOSE_WINDOW_ID = 'closewindow';
+export const NEW_EXPLORATION_ID = 'newexploration';
 export const STATUS_BAR_ID = 'statusbar';
 export const NEEDS_ME_ID = 'needsme';
 export const SETTLED_ID = 'settled';
@@ -125,9 +138,12 @@ export function viewLabelUpdates(prev: ViewState, next: ViewState): Array<{ id: 
   return out;
 }
 
-/** The File menu, in order: Close Window (⌘W). New items go in this list (no other menu moves). */
+/** The File menu, in order: New Exploration… (⌘N), then Close Window (⌘W). New items go in this list (no other menu moves). */
 export function fileMenu(): MenuItem[] {
-  return [{ id: CLOSE_WINDOW_ID, label: 'Close Window', key: 'w' }];
+  return [
+    { id: NEW_EXPLORATION_ID, label: 'New Exploration…', key: 'n' },
+    { id: CLOSE_WINDOW_ID, label: 'Close Window', key: 'w' },
+  ];
 }
 
 /** The whole menu bar, in bar order, for a state. */
@@ -157,6 +173,7 @@ export type MenuAction =
   | { kind: 'zoom' }
   | { kind: 'show-main' }
   | { kind: 'whats-new' } // show the main window, then push WHATS_NEW_EVENT: the page routes itself
+  | { kind: 'start-work'; payload: StartWorkPush } // show the main window, then push START_WORK_EVENT with `payload`
   | { kind: 'open'; url: string };
 
 /** The action for a clicked id; null for any id that isn't ours. */
@@ -166,6 +183,8 @@ export function menuAction(id: string): MenuAction | null {
       return { kind: 'open-about' };
     case SETTINGS_ID:
       return { kind: 'open-settings' };
+    case NEW_EXPLORATION_ID:
+      return { kind: 'start-work', payload: startWorkPayload({ action: 'new-exploration', project: null }) }; // the page picks the project
     case CLOSE_WINDOW_ID:
       return { kind: 'close-window' };
     case STATUS_BAR_ID:

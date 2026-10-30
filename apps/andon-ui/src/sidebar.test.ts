@@ -537,7 +537,7 @@ describe("063: the Mac app's View menu events", () => {
     expect([MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, INSPECTOR_EVENT]).toEqual(['merged', 'needsme', 'settled', 'sidebar', 'inspector']);
     // 067 AC7: Show Backlog…'s `backlog` event, right after Settled's
     expect(BACKLOG_EVENT).toBe('backlog');
-    expect(PUSHED_EVENTS).toEqual(['statusbar', 'whatsnew', 'merged', 'needsme', 'settled', 'backlog', 'sidebar', 'inspector']);
+    expect(PUSHED_EVENTS).toEqual(['statusbar', 'whatsnew', 'merged', 'needsme', 'settled', 'backlog', 'sidebar', 'inspector', 'startwork']); // 075: startwork
     expect(MENU_EVENTS).toEqual(['needsme', 'settled', 'backlog', 'sidebar', 'inspector']);
     expect(MENU_EVENTS.map(menuEventAction)).toEqual(['toggle-needs', 'open-settled', 'open-backlog', 'toggle-sidebar', 'toggle-inspector']);
     for (const e of ['statusbar', 'whatsnew', 'merged', 'NEEDSME', 'needs-me', '', 'settle', 'Backlog', 'backlogs']) expect({ e, a: menuEventAction(e) }).toEqual({ e, a: null });

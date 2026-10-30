@@ -36,6 +36,9 @@ import {
   settingsWindow,
   ABOUT_ID,
   CLOSE_WINDOW_ID,
+  NEW_EXPLORATION_ID,
+  START_WORK_EVENT,
+  startWorkPayload,
   closeWindowStep,
   fileMenu,
   ABOUT_QUERY,
@@ -50,7 +53,7 @@ import {
   viewLabelUpdates,
   whatsNewPayload,
 } from './appmenu';
-import type { Menu, MenuItem, MenuState, ViewState } from './appmenu';
+import type { Menu, MenuItem, MenuState, StartWorkPush, ViewState } from './appmenu';
 
 /** A menu state: the defaults (everything shown, Needs Me off, no inspector), with `over` on top. */
 const ms = (over: Partial<Omit<MenuState, 'view'>> = {}, view: Partial<ViewState> = {}): MenuState => ({ statusBarHidden: false, mergedHidden: false, ...over, view: { ...DEFAULT_VIEW, ...view } });
@@ -70,7 +73,13 @@ const viewItems = (needs: string, sidebar: string, inspector: string, bar: strin
 
 const expected = (toggle: string): Menu[] => [
   { role: 'app', items: [{ id: SETTINGS_ID, label: 'Settings…', key: ',', enabled: true }] },
-  { title: 'File', items: [{ id: CLOSE_WINDOW_ID, label: 'Close Window', key: 'w' }] }, // 073 AC3
+  {
+    title: 'File',
+    items: [
+      { id: NEW_EXPLORATION_ID, label: 'New Exploration…', key: 'n' }, // 075 AC1
+      { id: CLOSE_WINDOW_ID, label: 'Close Window', key: 'w' }, // 073 AC3
+    ],
+  },
   { role: 'edit' },
   { title: 'View', items: viewItems('Show Only Needs Me', 'Hide Sidebar', 'Show Inspector', toggle, 'Hide Merged Column') },
   {
@@ -96,7 +105,7 @@ describe('AC1: the menu spec', () => {
     const ids = items.map((i) => i.id);
     expect(ids.every((id) => typeof id === 'string' && id.length > 0)).toBe(true);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).toHaveLength(14); // 067: Show Backlog…; 073: Close Window
+    expect(ids).toHaveLength(15); // 067: Show Backlog…; 073: Close Window; 075: New Exploration…
   });
 });
 
@@ -282,13 +291,13 @@ describe('065 AC2: the About window', () => {
 });
 
 describe('073 AC3: File → Close Window (⌘W)', () => {
-  test('the File menu comes right after the app menu and holds exactly Close Window, ⌘W', () => {
+  test('the File menu comes right after the app menu and ends with Close Window, ⌘W', () => {
     for (const hidden of [false, true]) {
       const bar = appMenu(ms({ statusBarHidden: hidden }));
       expect(bar.map((m) => m.title ?? m.role)).toEqual(['app', 'File', 'edit', 'View', 'Window', 'Help']);
-      expect(bar[1]).toEqual({ title: 'File', items: [{ id: CLOSE_WINDOW_ID, label: 'Close Window', key: 'w' }] });
+      expect(bar[1]).toEqual({ title: 'File', items: fileMenu() });
     }
-    expect(fileMenu()).toEqual([{ id: CLOSE_WINDOW_ID, label: 'Close Window', key: 'w' }]);
+    expect(fileMenu().at(-1)).toEqual({ id: CLOSE_WINDOW_ID, label: 'Close Window', key: 'w' });
   });
 
   test('its id maps to the close-window action; near misses do nothing', () => {
@@ -311,5 +320,38 @@ describe('073 AC4: what Close Window does to the focused window', () => {
     expect(closeWindowStep(['other', 'Settings', 'About', 'MAIN'])).toBeNull();
     expect(closeWindowStep(['main', 'settings'])).toBeNull();
     expect(closeWindowStep(['about', 'settings'])).toBeNull();
+  });
+});
+
+describe('075 AC1: File → New Exploration… (⌘N)', () => {
+  test('the File menu is exactly New Exploration… (⌘N), then Close Window (⌘W)', () => {
+    expect(NEW_EXPLORATION_ID).toBe('newexploration');
+    expect(fileMenu()).toEqual([
+      { id: NEW_EXPLORATION_ID, label: 'New Exploration…', key: 'n' },
+      { id: CLOSE_WINDOW_ID, label: 'Close Window', key: 'w' },
+    ]);
+  });
+
+  test('no other menu changes: ⌘N is free, the View menu keeps ⇧⌘N for Needs Me', () => {
+    const keys = appMenu(ms())
+      .flatMap((m) => m.items ?? [])
+      .map((i) => i.key)
+      .filter((k) => k !== undefined);
+    expect(keys.filter((k) => k === 'n')).toEqual(['n']);
+    expect(appMenu(ms())).toEqual(expected('Hide Status Bar'));
+  });
+
+  test('its click shows the main window, then pushes startwork with { action: new-exploration, project: null }', () => {
+    expect(START_WORK_EVENT).toBe('startwork');
+    expect(menuAction(NEW_EXPLORATION_ID)).toEqual({ kind: 'start-work', payload: { action: 'new-exploration', project: null } });
+    for (const id of ['new-exploration', 'NewExploration', 'n', 'explore', 'startwork']) expect({ id, action: menuAction(id) }).toEqual({ id, action: null });
+  });
+
+  test('the payload builder carries exactly the action and the project', () => {
+    expect(startWorkPayload({ action: 'new-exploration', project: null })).toEqual({ action: 'new-exploration', project: null });
+    expect(startWorkPayload({ action: 'new-exploration', project: 'aaaaaaaaaaaa' })).toEqual({ action: 'new-exploration', project: 'aaaaaaaaaaaa' });
+    expect(startWorkPayload({ action: 'next', project: 'aaaaaaaaaaaa' })).toEqual({ action: 'next', project: 'aaaaaaaaaaaa' });
+    const extra: StartWorkPush & { command: string } = { action: 'next', project: 'aaaaaaaaaaaa', command: '/factory next' };
+    expect(Object.keys(startWorkPayload(extra))).toEqual(['action', 'project']);
   });
 });

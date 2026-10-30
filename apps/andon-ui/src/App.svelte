@@ -23,6 +23,10 @@
   // rows and projects and the brief and plan pages offer Run, Start epic, Run next, Continue
   // exploring, and New exploration… (its own sheet); each copies its command first, then, in the Mac
   // app, asks it to start the work in T3 Code (startwork.ts), and the toast is the hand-off's.
+  // The Mac app's File → New Exploration… (⌘N) and a project's right-click New Exploration… and Run
+  // Next push `startwork`, a request the page checks (`startWorkPush`): Run next goes through the
+  // same copyAndStart, and New exploration opens the sheet, with a project picker from the File menu
+  // under All Projects (`exploreOpen`). The sheet remembers the project an exploration is started in.
   import { onMount, untrack } from 'svelte';
   import type { Fetcher } from './api';
   import { backlogProjects, backlogSheet } from './backlog';
@@ -43,8 +47,8 @@
   import type { LaneOrder } from './lanes';
   import Lines from './Lines.svelte';
   import NewExplorationSheet from './NewExplorationSheet.svelte';
-  import { copyThenStart, startWorkCaller } from './startwork';
-  import type { StartItem } from './startwork';
+  import { copyThenStart, exploreOpen, loadLastExplored, nextStart, saveLastExplored, startWorkCaller, startWorkPush } from './startwork';
+  import type { ExploreProject, StartItem } from './startwork';
   import { jobMenuCaller } from './jobmenu';
   import { menuArmer, projectMenuCaller, swallowsClick } from './projectmenu';
   import { entryOf, epicKey, formatHash, historyStep, initialView, jobKey, readEntry, viewKey, viewOf } from './route';
@@ -87,6 +91,7 @@
     BACKLOG_EVENT,
     INSPECTOR_EVENT,
     MERGED_EVENT,
+    START_WORK_EVENT,
     NEEDS_ME_EVENT,
     SETTLED_EVENT,
     SIDEBAR_EVENT,
@@ -160,6 +165,7 @@
   let sheet = $state<SheetKind | null>(start.sheet === 'rework' || start.sheet === 'abandon' || start.sheet === 'epic-abandon' ? start.sheet : null); // the open Rework… or Abandon… sheet (a job's or an epic's)
   let keysOpen = $state(start.sheet === 'keys'); // the shortcut sheet
   let exploreProject = $state<{ id: string; name: string } | null>(null); // the New exploration sheet's project (null: closed)
+  let explorePicker = $state<ExploreProject[] | null>(null); // its project picker (the File menu under All Projects), or null
   let whatsNewOpen = $state(start.whatsNew !== null); // the What's New sheet
   let whatsNewProject = $state<string | null>(start.whatsNew?.project ?? null); // its scope: a project id, or null for every release
   let needs = $state(start.needs); // Needs Me
@@ -205,6 +211,9 @@
     const offBacklog = subscribe?.(BACKLOG_EVENT, () => onmenu(BACKLOG_EVENT));
     const offSidebar = subscribe?.(SIDEBAR_EVENT, () => onmenu(SIDEBAR_EVENT));
     const offInspector = subscribe?.(INSPECTOR_EVENT, () => onmenu(INSPECTOR_EVENT));
+    // File → New Exploration… and a project's right-click New Exploration… and Run Next: a request,
+    // checked against the listed projects; anything else does nothing.
+    const offStartWork = subscribe?.(START_WORK_EVENT, (data) => onstartwork(data));
     // The Mac app's right-click menu on a project row or gutter, or on a board job token: armed for
     // the project or job under the pointer, and a control-click there doesn't click through
     // (projectmenu.ts, jobmenu.ts). A browser: nothing.
@@ -241,6 +250,7 @@
       offBacklog?.();
       offSidebar?.();
       offInspector?.();
+      offStartWork?.();
       started.stop();
       live = null;
       clearInterval(timer);
@@ -519,9 +529,30 @@
     const t = await copyThenStart(write, startWork, item.req, item.command);
     show(t.text, t.ok);
   }
-  function openNewExploration(project: { id: string; name: string }): void {
+  function openNewExploration(project: { id: string; name: string }, picker: ExploreProject[] | null = null): void {
     backlogOpen = false;
+    explorePicker = picker;
     exploreProject = project;
+  }
+  // Starting a New exploration from the sheet (any path) remembers its project for the picker.
+  function startExploration(item: StartItem): void {
+    saveLastExplored(storage(), item.req.project);
+    void copyAndStart(item);
+  }
+  function closeExploration(): void {
+    exploreProject = null;
+    explorePicker = null;
+  }
+  // The Mac app's startwork event: Run next as the Backlog sheet's, or the New exploration sheet.
+  function onstartwork(data: unknown): void {
+    const push = startWorkPush(data, ui.projects);
+    if (push === null) return;
+    if (push.action === 'next') {
+      void copyAndStart(nextStart(push.project));
+      return;
+    }
+    const open = exploreOpen(push.project, sel === ALL ? null : sel, ui.projects, loadLastExplored(storage()));
+    if (open !== null) openNewExploration(open.project, open.picker);
   }
   $effect(() => () => {
     if (toastTimer !== null) clearTimeout(toastTimer);
@@ -623,7 +654,7 @@
         // (which open over the Settled sheet's place), then the Settled sheet, then the Backlog sheet;
         // the New exploration sheet opens alone (the Backlog sheet closes for it), so it goes first
         if (exploreProject !== null) {
-          exploreProject = null;
+          closeExploration();
           return;
         }
         switch (topSheet({ whatsNew: whatsNewOpen, keys: keysOpen, command: sheet !== null, settled: settledOpen, backlog: backlogOpen })) {
@@ -775,7 +806,7 @@
   onstart={copyAndStart}
   onnewexploration={openNewExploration}
 />
-<NewExplorationSheet project={exploreProject} handsOff={startWork !== null} onstart={copyAndStart} onclose={() => (exploreProject = null)} />
+<NewExplorationSheet project={exploreProject} picker={explorePicker} handsOff={startWork !== null} onstart={startExploration} onclose={closeExploration} />
 <CommandSheet
   kind={sheet}
   id={sheet === 'epic-abandon' ? (openEpicItem?.epic.slug ?? '') : (openItem?.job.id ?? '')}

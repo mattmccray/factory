@@ -9,7 +9,7 @@ import { itemId, projectMenuItems } from './projectmenu';
 import { jobItemId, jobMenuItems } from './jobmenu';
 import type { Availability, MenuProject } from './projectmenu';
 import type { HandoffMode, Settings } from './settings';
-import { ABOUT_ID, ABOUT_SIZE, CLOSE_WINDOW_ID, GITHUB_URL, aboutWindow, DEFAULT_VIEW, GITHUB_ID, INSPECTOR_ID, MERGED_ID, MINIMIZE_ID, NEEDS_ME_ID, SETTINGS_ID, SETTINGS_SIZE, SETTLED_ID, SHOW_MAIN_ID, SIDEBAR_ID, STATUS_BAR_ID, WHATS_NEW_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
+import { ABOUT_ID, ABOUT_SIZE, CLOSE_WINDOW_ID, NEW_EXPLORATION_ID, GITHUB_URL, aboutWindow, DEFAULT_VIEW, GITHUB_ID, INSPECTOR_ID, MERGED_ID, MINIMIZE_ID, NEEDS_ME_ID, SETTINGS_ID, SETTINGS_SIZE, SETTLED_ID, SHOW_MAIN_ID, SIDEBAR_ID, STATUS_BAR_ID, WHATS_NEW_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
 import type { MenuState } from './appmenu';
 import { QUIT_ID, trayNotice, traySpec } from './badge';
 import { INSTALL_NOTICE, PROBE_MS } from './autostart';
@@ -588,6 +588,21 @@ test("059 AC8: Help → What's New shows the main window as the tray click does,
   m.log.length = 0;
   await onMenu(WHATS_NEW_ID, m.app);
   expect(m.log).toEqual([['main.allSpaces', true], ['main.show'], ['main.allSpaces', false], ['push', 'whatsnew', {}]]);
+});
+
+test('075 AC1: File → New Exploration… shows the main window as the tray click does, then pushes startwork { new-exploration, null }, and nothing else', async () => {
+  const m = await initMenu(null);
+  m.log.length = 0;
+  await onMenu(NEW_EXPLORATION_ID, m.app);
+  expect(m.log).toEqual([['main.allSpaces', true], ['main.show'], ['main.allSpaces', false], ['push', 'startwork', { action: 'new-exploration', project: null }]]);
+});
+
+test('075 AC1: with the main window minimized, New Exploration… restores it before the push', async () => {
+  const m = await initMenu(null);
+  m.main.current = st(true, false, false);
+  m.log.length = 0;
+  await onMenu(NEW_EXPLORATION_ID, m.app);
+  expect(m.log).toEqual([['main.allSpaces', true], ['main.restore'], ['main.show'], ['main.allSpaces', false], ['push', 'startwork', { action: 'new-exploration', project: null }]]);
 });
 
 test('AC3: unknown ids do nothing', async () => {
@@ -1383,6 +1398,33 @@ test('AC2: each item runs its action on the looked-up root, and a success shows 
     ['/Users/me/.t3/bin/t3', 'app', ROOT],
     ['open', '-a', 'Ghostty', ROOT],
   ]);
+});
+
+test('075 AC3: New Exploration… shows the main window, then pushes startwork for the project; Run Next only pushes; nothing runs or notifies', async () => {
+  const m = menuApp(null);
+  const ran: string[][] = [];
+  const runner = async (argv: string[]): Promise<RunResult> => {
+    ran.push(argv);
+    return ok();
+  };
+  await runProjectItem(itemId('explore', PID), m.app, PROJECTS, '/x/t3', runner);
+  expect(m.log).toEqual([['main.allSpaces', true], ['main.show'], ['main.allSpaces', false], ['push', 'startwork', { action: 'new-exploration', project: PID }]]);
+  m.log.length = 0;
+  m.main.current = st(true, false, false); // minimized: brought back before the push
+  await runProjectItem(itemId('explore', PID), m.app, PROJECTS, null, runner);
+  expect(m.log).toEqual([['main.allSpaces', true], ['main.restore'], ['main.show'], ['main.allSpaces', false], ['push', 'startwork', { action: 'new-exploration', project: PID }]]);
+  m.log.length = 0;
+  await runProjectItem(itemId('next', PID), m.app, PROJECTS, null, runner);
+  expect(m.log).toEqual([['push', 'startwork', { action: 'next', project: PID }]]);
+  expect(ran).toEqual([]);
+});
+
+test('075 AC3: New Exploration… or Run Next on an unlisted or rootless project does nothing', async () => {
+  const m = menuApp(null);
+  for (const item of ['explore', 'next'] satisfies Parameters<typeof itemId>[0][]) {
+    for (const pid of ['zzzzzzzzzzzz', 'bbbbbbbbbbbb']) await runProjectItem(itemId(item, pid), m.app, PROJECTS, '/x/t3');
+  }
+  expect(m.log).toEqual([]);
 });
 
 test('AC2: an unknown project, a rootless one, an unknown item, or a non-string id runs nothing', async () => {
