@@ -1,0 +1,8 @@
+# about.png
+
+The About window's header art, generated with Codex's image tool (gpt-6.1-sol) on 2026-10-30 and
+chosen by Matt from three candidates (this was candidate 3, the illustrated one). 1774 × 887 px, 2:1.
+
+## Prompt
+
+Use case: illustration-story. Create a finished header illustration for the About window of Andon, a small macOS dashboard app. Output PNG, exactly 2048×1024 pixels, wide 2:1 landscape, full bleed. Paper sky lanterns drifting upward over a calm river, warm amber light against cool deep blue and violet, with lantern reflections in the water. Quiet, contemplative, painterly rather than photographic. Visual affinity with the app icon: carefully crafted ivory paper, subtle paper fibers, restrained warm brown framing details, soft dimensional light, simple legible forms and understated macOS polish. Depict lightweight floating sky lanterns, not heavy wooden standing lamps. Keep the bottom 20 percent calm and uncluttered, mostly dark water and soft subdued reflections, suitable above an app name and version at 520px display width. No text, no people in the foreground, no logos, no watermarks, no borders, no UI mockup. Variation 3 — Stylized illustration: a deliberately simplified, graphic painterly interpretation using flatter shapes, crisp readable silhouettes, restrained soft shading, and a limited palette of midnight blue, muted violet, ivory, warm brown and amber. Several ivory paper sky lanterns, with simple brown rib details echoing the crafted paper-and-frame language of the icon, drift upward over a broad calm river. Layered simplified distant riverbanks and restrained geometric reflections. Gentle paper texture, elegant and calm, no photographic detail or busy brushwork.
