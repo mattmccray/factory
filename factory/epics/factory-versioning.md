@@ -14,4 +14,4 @@ one change.
 ## Members
 - `factory-release` — the `bun run release` script, `CHANGELOG.md` and its baseline, the versioning decision, and the promotion docs
 - `andon-version-service` — the service reports its running and on-disk release, each project's installed version and state, and the parsed changelog
-- `andon-version-ui` — the sidebar's quiet stale glyph, the footer's release and restart note, and the "What's new" sheet after: `andon-version-service`
+- `andon-version-ui` — the sidebar's quiet stale glyph, the footer's release and restart note, the "What's New" sheet, and Help → What's New after: `andon-version-service`
