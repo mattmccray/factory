@@ -468,3 +468,35 @@ test('AC7: the root package.json no longer has andon:service', async () => {
   const scripts = typeof pkg === 'object' && pkg !== null && 'scripts' in pkg ? pkg.scripts : null;
   expect(typeof scripts === 'object' && scripts !== null && 'andon:service' in scripts).toBe(false);
 });
+
+describe('AC8: the docs point to factory service, not bun run andon:service', () => {
+  const doc = (...p: string[]): Promise<string> => readFile(join(SOURCE_ROOT, ...p), 'utf8');
+  const section = (text: string, heading: string): string => {
+    const start = text.indexOf(`${heading}\n`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const next = text.indexOf('\n## ', start + heading.length);
+    return text.slice(start, next < 0 ? undefined : next);
+  };
+
+  test('README "Andon" and docs/upgrade.md name install, run, and restart', async () => {
+    const andon = section(await doc('README.md'), '## Andon');
+    const upgrade = await doc('docs', 'upgrade.md');
+    for (const text of [andon, upgrade]) {
+      for (const cmd of ['factory service install', 'factory service run', 'factory service restart']) expect({ cmd, found: text.includes(cmd) }).toEqual({ cmd, found: true });
+    }
+    expect(andon).not.toContain('bun run andon:service');
+    expect(upgrade).not.toMatch(/^bun run andon:service/m);
+  });
+
+  test('the contract: the CLI block lists the seven commands, "Andon service" names service run, and a dated changes entry', async () => {
+    const v1 = await doc('docs', 'contract', 'v1.md');
+    const cli = section(v1, '## CLI');
+    for (const sub of ['install', 'uninstall', 'start', 'stop', 'restart', 'status', 'run']) expect(cli).toMatch(new RegExp(`^factory service ${sub} +# \\(source or release bundle\\)`, 'm'));
+    expect(cli).toContain('### `service`');
+    expect(cli).toContain(SERVICE_USAGE);
+    const andon = section(v1, '## Andon service');
+    expect(andon).toContain('`factory service run`');
+    expect(andon).not.toContain('bun run andon:service');
+    expect(section(v1, '## Versioning')).toContain('- **2026-10-30: `service`.** Additive within v1');
+  });
+});

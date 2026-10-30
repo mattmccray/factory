@@ -46,7 +46,7 @@ feature → spec-writer → builder ⇄ [configured reviewers] → approver → 
 
 `jobs/`, `.lock/`, and `.worktrees/` are gitignored runtime state. Code lives on the
 branch; the main checkout stays on the job's target branch so your files never move under you.
-Dashboard: Andon, one service per machine. Run `bun run andon:service` in the factory clone (not in this project), then open http://127.0.0.1:8766/ (or `bun run andon` there opens the Mac app). `factory init` registers the project with Andon.
+Dashboard: Andon, one service per machine. Run `factory service install` once per machine (not per project) to keep it running, or `factory service run` in the foreground, then open http://127.0.0.1:8766/; when Andon says a restart is needed, run `factory service restart`. `factory init` registers the project with Andon.
 
 **The target branch.** Every job is based on and merges into its **target**: `target` in its
 `job.json`. The CLI resolves it once, at `claim`, from `merge.target` in

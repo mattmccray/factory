@@ -617,16 +617,18 @@ describe('the dashboard pointer in SKILL.md', () => {
   const flat = (s: string): string => s.replace(/\s+/g, ' ');
   const skillOf = (c: Config, templates = TEMPLATES): string => at(renderClaudeCode({ config: c, templates }).files, SKILL);
 
-  test('AC1: the skill points to the Andon service: `bun run andon:service` in the factory clone, at http://127.0.0.1:8766/', () => {
+  test('AC1: the skill points to the Andon service: `factory service install`, `run`, and `restart`, at http://127.0.0.1:8766/ (062 AC8)', () => {
     for (const c of configs) {
       const text = skillOf(c);
-      expect(text).toContain('`bun run andon:service`');
+      for (const cmd of ['`factory service install`', '`factory service run`', '`factory service restart`']) expect(text).toContain(cmd);
+      expect(text).not.toContain('andon:service');
       expect(text).toContain('http://127.0.0.1:8766/');
       expect(text).toContain('Andon');
-      const pointer = text.split('\n').find((line) => line.includes('bun run andon:service')) ?? '';
+      const pointer = text.split('\n').find((line) => line.includes('factory service install')) ?? '';
       expect(flat(pointer)).toContain('one service per machine');
-      expect(flat(pointer)).toContain('in the factory clone');
-      expect(flat(pointer)).toContain('(not in this project)');
+      expect(flat(pointer)).toContain('once per machine (not per project)');
+      expect(pointer).toContain('`factory service run`');
+      expect(pointer).toContain('`factory service restart`');
       expect(pointer).toContain('http://127.0.0.1:8766/');
       expect(pointer).not.toMatch(/\bagent\b/);
     }
@@ -638,7 +640,7 @@ describe('the dashboard pointer in SKILL.md', () => {
 
   test('AC3: the check reports the old pointer when a template regresses to it', () => {
     const lines = TEMPLATES.skill.split('\n');
-    const index = lines.findIndex((line) => line.includes('bun run andon:service'));
+    const index = lines.findIndex((line) => line.includes('factory service install'));
     expect(index).toBeGreaterThanOrEqual(0);
     const regressed = [...lines.slice(0, index), OLD_LINE, ...lines.slice(index + 1)].join('\n');
     expect(regressed).not.toBe(TEMPLATES.skill);

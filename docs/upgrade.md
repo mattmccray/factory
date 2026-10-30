@@ -17,7 +17,25 @@ factory --version                                # factory X.Y.Z (release)
 
 This installs the release bundle from this repo's `release` branch: a self-contained build (the
 CLI with the rendered installed CLI and the contract built in, the Andon service, and the built
-Andon UI) that needs only Bun. To take a newer release, run the same command again.
+Andon UI) that needs only Bun. To take a newer release, run the same command again, then
+`factory service restart` so the Andon service runs it.
+
+### The Andon service
+
+Once per machine, make the Andon service a per-user OS service (launchd on macOS, systemd
+`--user` on Linux; no `sudo`) that starts at login and restarts after a crash:
+
+```sh
+factory service install   # writes the unit, enables it, and starts it
+factory service status    # exits 0 only when it is running
+```
+
+The unit runs the `factory` that installed it, by its path, so run `factory service install`
+again after switching between the global install and `bun run cli:link` (it rewrites the unit and
+restarts it). After taking a new release, `factory service restart`. `factory service run` runs it
+in the foreground instead (it replaces `bun run andon:service`), and `factory service uninstall`
+removes the unit and keeps the registry in `~/.andon`. On Linux, `install` prints the
+`loginctl enable-linger` hint when lingering is off; run it yourself if the box is headless.
 
 ### Linking a clone instead (developing the factory)
 
@@ -31,7 +49,8 @@ factory --version            # factory X.Y.Z (source: /path/to/factory)
 ```
 
 After pulling a new release, run `bun install` again; the link follows the clone. Whichever ran
-last on a machine, the global install or `bun run cli:link`, owns `factory`.
+last on a machine, the global install or `bun run cli:link`, owns `factory`; rerun
+`factory service install` after switching, so the Andon service runs the new owner.
 
 ## Installing into a project
 
@@ -125,6 +144,7 @@ factory upgrade              # installs the release: the stamp and managed.json 
 bun factory/cli.ts doctor
 git add .claude factory && git commit -m "chore(factory): promote vX.Y.Z"
 bun run release:push         # pushes main, release, vX.Y.Z, and release-vX.Y.Z; prints the install line
+factory service restart      # the Andon service runs the new release
 ```
 
 Commit the upgrade's result as its own `chore(factory): promote …` commit, then push with
