@@ -603,3 +603,15 @@ kbd { display: inline-block; min-width: 18px; padding: 0 5px; text-align: center
 .settings .set-choices { display: grid; gap: 7px; }
 .settings .set-what { margin: 0 0 2px; font-size: 12px; color: var(--label2); }
 .settings .set-note { margin: 10px 0 0; font-size: 12px; color: var(--label2); }
+
+/* ── the About window (065): the art across the top, then the name, versions, link, and copyright ── */
+.about { position: fixed; inset: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--win); color: var(--label); text-align: center; }
+.about .about-art { display: block; width: 100%; aspect-ratio: 2 / 1; object-fit: cover; flex: none; border-bottom: .5px solid var(--sep); }
+.about .about-text { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 12px 24px 16px; }
+.about h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; color: var(--label); }
+.about p { margin: 0; }
+.about .about-ver { font-size: 12px; color: var(--label2); }
+.about .about-link { margin-top: 8px; font-size: 12px; }
+.about .about-link a { color: var(--blue-ink); text-decoration: none; }
+.about .about-link a:hover { text-decoration: underline; }
+.about .about-copy { margin-top: 6px; font-size: 11px; color: var(--label3); }

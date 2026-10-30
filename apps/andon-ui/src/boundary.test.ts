@@ -122,13 +122,14 @@ describe('Andon never writes job state (026 AC5)', () => {
     }
   });
 
-  test("the page calls the Mac app's backend in five places only, each with its own fixed method names (032, 033, 035, 036, 040, 063)", () => {
+  test("the page calls the Mac app's backend in six places only, each with its own fixed method names (032, 033, 035, 036, 040, 063, 065)", () => {
     // Every mention of Tiny's `api.call` (or a `'call'` key) across the page's sources.
     const hits: { file: string; hit: string }[] = [];
     for (const file of sources) {
       for (const m of read(file).matchAll(/\bapi\s*\.\s*call\b|['"]call['"]|\[\s*['"`]call/g)) hits.push({ file: file.slice(import.meta.dir.length + 1), hit: m[0] });
     }
     expect(hits.sort((a, b) => a.file.localeCompare(b.file))).toEqual([
+      { file: 'about.ts', hit: 'api.call' },
       { file: 'handoff.ts', hit: 'api.call' },
       { file: 'jobmenu.ts', hit: 'api.call' },
       { file: 'projectmenu.ts', hit: 'api.call' },
@@ -172,10 +173,14 @@ describe('Andon never writes job state (026 AC5)', () => {
     expect(jobmenu).toContain("export const JOB_MENU_METHOD = 'jobMenu';");
     expect([...jobmenu.matchAll(/Reflect\.apply\(([^;]*)\);/g)].map((m) => m[1])).toEqual(['call, api, [JOB_MENU_METHOD, { project, job }]', 'el.getAttribute, el, [name]']);
     expect(handoff).toContain("export type HandoffRequest = { project: string; job: string; action: 'approve' } | { project: string; job: string; action: 'rework' | 'abandon'; note: string };");
+    // The about caller (065): its one fixed method name, and the one call site passes it and no params.
+    const about = read(join(import.meta.dir, 'about.ts'));
+    expect(about).toContain("export const GET_ABOUT_METHOD = 'getAbout';");
+    expect([...about.matchAll(/Reflect\.apply\(([^;]*?)\);/g)].map((m) => m[1])).toEqual(['call, api, [GET_ABOUT_METHOD, null]']);
     // No other file reaches Tiny's api object: only sidebar.ts's push subscriber reads `api.on`.
     for (const file of sources) {
       const name = file.slice(import.meta.dir.length + 1);
-      if (name === 'projectmenu.ts' || name === 'jobmenu.ts' || name === 'sidebar.ts' || name === 'settings.ts' || name === 'handoff.ts') continue;
+      if (name === 'projectmenu.ts' || name === 'jobmenu.ts' || name === 'sidebar.ts' || name === 'settings.ts' || name === 'handoff.ts' || name === 'about.ts') continue;
       expect({ file: name, hit: /\bhost\.api\b|\btiny\.api\b|\bapi\.on\b/.exec(read(file))?.[0] ?? null }).toEqual({ file: name, hit: null });
     }
   });

@@ -1,9 +1,10 @@
-// The Mac app's menu bar: Andon (Settings…, which opens the Settings window), the stock Edit menu,
+// The Mac app's menu bar: Andon (About Andon, which opens the About window in place of the stock
+// About panel, and Settings…, which opens the Settings window), the stock Edit menu,
 // View (the board's view toggles: Needs Me, the Settled sheet, the sidebar, the inspector, the status
 // bar, and the Merged column; labels flip, Finder-style, to name what choosing them does), Window (Minimize, Zoom, Andon), and Help (What's New, which shows the
 // main window and asks the board to open its What's New sheet, and the project on GitHub).
 // The menu spec, its ids, the label for a status bar state, what a click does, how the stored status
-// bar choice reads, and the Settings window's id, title, size, page, and chrome all live here,
+// bar choice reads, and the Settings and About windows' ids, titles, sizes, pages, and chrome all live here,
 // runtime-neutral; backend.ts sets the menu, opens the window, and carries out the actions.
 import { serviceUrl } from './autostart';
 
@@ -30,6 +31,9 @@ export const INSPECTOR_EVENT = 'inspector';
 export type PageEvent = typeof NEEDS_ME_EVENT | typeof SETTLED_EVENT | typeof SIDEBAR_EVENT | typeof INSPECTOR_EVENT;
 
 // The ids of the clickable items.
+/** Tiny's reserved id for the app menu's About item: with tinyjs.json `"about": "menu"`, a click on
+ *  it fires here instead of showing the stock About panel. */
+export const ABOUT_ID = 'about';
 export const SETTINGS_ID = 'settings';
 export const STATUS_BAR_ID = 'statusbar';
 export const NEEDS_ME_ID = 'needsme';
@@ -129,6 +133,7 @@ export function appMenu(s: MenuState): Menu[] {
 
 /** What a menu click does. */
 export type MenuAction =
+  | { kind: 'open-about' }
   | { kind: 'open-settings' }
   | { kind: 'toggle-status-bar' }
   | { kind: 'toggle-merged' }
@@ -142,6 +147,8 @@ export type MenuAction =
 /** The action for a clicked id; null for any id that isn't ours. */
 export function menuAction(id: string): MenuAction | null {
   switch (id) {
+    case ABOUT_ID:
+      return { kind: 'open-about' };
     case SETTINGS_ID:
       return { kind: 'open-settings' };
     case STATUS_BAR_ID:
@@ -221,4 +228,37 @@ export const settingsWindow = (port: number): SettingsWindowOptions => ({
   minSize: SETTINGS_SIZE,
   chrome: { frame: true, windowControls: ['close'] },
   parent: 'main',
+});
+
+// ---- the About window ----
+
+/** The About window's id: Tiny's api meta names it, and only calls from it are answered (about.ts). */
+export const ABOUT_WINDOW_ID = 'about';
+export const ABOUT_TITLE = 'About Andon';
+/** Fixed: the window opens at this size and can't be resized. The art (2:1) spans its width. */
+export const ABOUT_SIZE = '440x400';
+/** The query that tells the page it is the about view (in the Mac app). */
+export const ABOUT_QUERY = '?shell=mac&view=about';
+
+/** The About page: the same index.html the service serves at `/`, in its about view. */
+export const aboutUrl = (port: number): string => `${serviceUrl(port)}/${ABOUT_QUERY}`;
+
+/** The About window's options: what `aboutWindow` returns. */
+export interface AboutWindowOptions {
+  page: string;
+  title: string;
+  size: string;
+  minSize: string;
+  chrome: { frame: true; windowControls: ['close'] };
+}
+
+/** How the About window opens: a standard titled frame with only the close button (nothing to
+ *  minimize or zoom in a fixed-size window), the about page on the service's port, at its fixed
+ *  size. Not a child of the main window: it stands on its own, and the main window is unaffected. */
+export const aboutWindow = (port: number): AboutWindowOptions => ({
+  page: aboutUrl(port),
+  title: ABOUT_TITLE,
+  size: ABOUT_SIZE,
+  minSize: ABOUT_SIZE,
+  chrome: { frame: true, windowControls: ['close'] },
 });

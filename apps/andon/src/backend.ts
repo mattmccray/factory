@@ -2,8 +2,8 @@
 // runtime-neutral logic (app.ts, autostart.ts, appmenu.ts) to Tiny's `app.tray`, `app.icon`,
 // `app.badge`, `app.notify`, `app.menu`, `app.store`, `app.push`, `app.shell`, `app.clipboard`,
 // `app.thumbnail` (the Open in apps' icons), the
-// `app.win.open` and `app.windows` (the Settings window), the `onTray`, `onMenu`, `onNavigate`, and
-// `onContextMenu` hooks, and the six custom `api` methods, and to
+// `app.win.open` and `app.windows` (the Settings and About windows), the `onTray`, `onMenu`, `onNavigate`, and
+// `onContextMenu` hooks, and the seven custom `api` methods, and to
 // txiki's `tjs.spawn`, `tjs.stat`, and `tjs.remove` (for curl: see curl.ts, for a project's
 // right-click menu: see projectmenu.ts, for a job's: see jobmenu.ts, and for the T3 Code hand-off:
 // see handoff.ts). `bun run
@@ -17,8 +17,9 @@
 // Settings window, and `handOff` (see handoff.ts), which takes a project id, a job id, an action, and
 // a note, and answers only when the meta names the main window, and `jobMenu` (see jobmenu.ts),
 // which takes a project id and a job id and nothing else, and `setViewState` (the main window's
-// page reporting its Needs Me, sidebar, and inspector booleans, answered only for the main window):
-// tinyjs.json's `api` gate denies the rest.
+// page reporting its Needs Me, sidebar, and inspector booleans, answered only for the main window),
+// and the About window's `getAbout` (see about.ts), which answers only when the meta names the
+// About window: tinyjs.json's `api` gate denies the rest.
 /// <reference path="../types/tiny.d.ts" />
 /// <reference path="../types/tjs.d.ts" />
 import { QUIT_ID, SHOW_ID, trayNotice } from './badge';
@@ -34,6 +35,7 @@ import { startApp } from './app';
 import type { App } from './app';
 import { bringBackAction, oneAtATime, trayClickAction } from './trayclick';
 import {
+  ABOUT_WINDOW_ID,
   DEFAULT_VIEW,
   MERGED_EVENT,
   MERGED_ID,
@@ -43,6 +45,7 @@ import {
   STATUS_BAR_ID,
   STATUS_BAR_KEY,
   WHATS_NEW_EVENT,
+  aboutWindow,
   appMenu,
   menuAction,
   mergedLabel,
@@ -55,7 +58,9 @@ import {
   viewLabelUpdates,
   whatsNewPayload,
 } from './appmenu';
-import type { SettingsWindowOptions, ViewState } from './appmenu';
+import type { AboutWindowOptions, SettingsWindowOptions, ViewState } from './appmenu';
+import { aboutAnswer, fromAboutWindow } from './about';
+import type { About } from './about';
 import { DEFAULT_HANDOFF_MODE, T3_HANDOFF_KEY, fromSettingsWindow, settingChange, settingsSnapshot, storedMode, viewStateParams } from './settings';
 import type { HandoffMode, Settings } from './settings';
 import { draftFailureText, draftLink, fromMainWindow, githubRepo, handoffRequest, originArgv, sendArgv, sendFailureText } from './handoff';
@@ -98,9 +103,13 @@ type Holds<T extends true> = T;
 type TinyAppIsMacApp = Holds<TinyApp extends MacApp ? true : false>;
 /** Compile-time proof that the Settings window's options are options Tiny's `win.open` takes. */
 type SettingsOptionsOpen = Holds<SettingsWindowOptions extends TinyOpenWindowOptions ? true : false>;
+/** Compile-time proof that the About window's options are options Tiny's `win.open` takes. */
+type AboutOptionsOpen = Holds<AboutWindowOptions extends TinyOpenWindowOptions ? true : false>;
 
 // Fixed at build time by build.ts (`Bun.build` `define`): the repo the lantern images are read from.
 declare const __ANDON_REPO__: string;
+// Fixed at build time by build.ts, too: the Mac app's version (apps/andon/package.json `version`).
+declare const __ANDON_VERSION__: string;
 
 // ---- the lantern images ----
 // By absolute path under the repo: Tiny doesn't ship `assets/` as runtime data, and the repo path
@@ -393,11 +402,32 @@ const openSettings = oneAtATime(async (app: MacApp): Promise<void> => {
   app.window(SETTINGS_WINDOW_ID).setResizable(false);
 });
 
+/** About Andon: open the About window, or, when it is already open, bring it forward and focus it.
+ *  One click at a time, so a quick second click can't open a second window. The main window is
+ *  left as it is. */
+const openAbout = oneAtATime(async (app: MacApp): Promise<void> => {
+  let open: string[];
+  try {
+    open = await app.windows();
+  } catch (err) {
+    console.log(`andon: could not list the windows (${String(err)})`);
+    open = [];
+  }
+  if (open.includes(ABOUT_WINDOW_ID)) {
+    app.window(ABOUT_WINDOW_ID).show();
+    return;
+  }
+  app.win.open(ABOUT_WINDOW_ID, aboutWindow(servicePort));
+  app.window(ABOUT_WINDOW_ID).setResizable(false);
+});
+
 /** A click in the menu bar. An id that isn't ours does nothing. */
 export async function onMenu(id: string, app: MacApp): Promise<void> {
   const action = menuAction(id);
   if (action === null) return;
   switch (action.kind) {
+    case 'open-about':
+      return openAbout(app);
     case 'open-settings':
       return openSettings(app);
     case 'toggle-status-bar':
@@ -948,7 +978,15 @@ export async function runJobItem(id: unknown, app: MacApp, host: JobMenuHost = h
   if (failed !== null) await notifyFailure(app, openFailureText(job, failed));
 }
 
-/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, `handOff`, `jobMenu`, and `setViewState` (tinyjs.json's gate enables each by name). */
+// ---- the About window's one method ----
+
+/** The Mac app's version and the GitHub URL; null for any window but About. */
+export async function getAbout(meta: unknown): Promise<About | null> {
+  if (!fromAboutWindow(meta)) return null;
+  return aboutAnswer(__ANDON_VERSION__);
+}
+
+/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, `handOff`, `jobMenu`, `setViewState`, and `getAbout` (tinyjs.json's gate enables each by name). */
 export const api = {
   projectMenu: (params: unknown, app: MacApp): Promise<void> => showProjectMenu(params, app, listedProjects()),
   getSettings: (_params: unknown, app: MacApp, meta: unknown): Promise<Settings | null> => getSettings(app, meta),
@@ -956,6 +994,7 @@ export const api = {
   handOff: (params: unknown, app: MacApp, meta: unknown): Promise<HandoffOutcome | null> => handOff(params, app, meta),
   jobMenu: (params: unknown, app: MacApp): Promise<void> => showJobMenu(params, app),
   setViewState: (params: unknown, app: MacApp, meta: unknown): Promise<ViewState | null> => setViewState(params, app, meta),
+  getAbout: (_params: unknown, _app: MacApp, meta: unknown): Promise<About | null> => getAbout(meta),
 };
 
 /** A click in the right-click menu: a `job-menu:` id goes to the job menu, every other id to the project menu. */

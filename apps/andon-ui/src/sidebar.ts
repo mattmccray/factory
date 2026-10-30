@@ -208,13 +208,15 @@ export function shellMode(search: string): ShellMode {
   return new URLSearchParams(search).get('shell') === 'mac' ? 'mac' : 'browser';
 }
 
-/** What the page shows: the board, or (in the Mac app's Settings window) the settings view. */
-export type AppView = 'board' | 'settings';
+/** What the page shows: the board, or (in the Mac app's Settings or About window) the settings or about view. */
+export type AppView = 'board' | 'settings' | 'about';
 
-/** `?shell=mac&view=settings` is the settings view; every other URL (a plain browser with
- *  `view=settings` too) is the board. */
+/** `?shell=mac&view=settings` is the settings view and `?shell=mac&view=about` the about view; every
+ *  other URL (a plain browser with `view=settings` or `view=about` too) is the board. */
 export function appView(search: string): AppView {
-  return shellMode(search) === 'mac' && new URLSearchParams(search).get('view') === 'settings' ? 'settings' : 'board';
+  if (shellMode(search) !== 'mac') return 'board';
+  const view = new URLSearchParams(search).get('view');
+  return view === 'settings' ? 'settings' : view === 'about' ? 'about' : 'board';
 }
 
 // ---- the Mac app's pushed events ----
