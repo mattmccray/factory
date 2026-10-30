@@ -1,10 +1,25 @@
 # Installing and upgrading the factory
 
-`factory init` and `factory upgrade` run from this repo's source CLI, linked onto your PATH as
-`factory`, with the target project's root as the working directory. What they write, refuse, and exit with
-is specified in [`docs/contract/v1.md`](contract/v1.md), "CLI" → "`init` and `upgrade`".
+`factory init` and `factory upgrade` run from the global `factory` command, with the target
+project's root as the working directory. That command is either the release bundle, installed
+from GitHub, or a clone's source CLI, linked for developing the factory; both install the same
+bytes for the same version. What they write, refuse, and exit with is specified in
+[`docs/contract/v1.md`](contract/v1.md), "CLI" → "`init` and `upgrade`".
 
-## Linking the `factory` command
+## Installing the `factory` command
+
+On each machine (macOS or Linux), with Bun installed:
+
+```sh
+bun add -g github:mattmccray/factory#release     # the newest release; #release-vX.Y.Z pins one
+factory --version                                # factory X.Y.Z (release)
+```
+
+This installs the release bundle from this repo's `release` branch: a self-contained build (the
+CLI with the rendered installed CLI and the contract built in, the Andon service, and the built
+Andon UI) that needs only Bun. To take a newer release, run the same command again.
+
+### Linking a clone instead (developing the factory)
 
 Once per clone of this repo:
 
@@ -12,9 +27,11 @@ Once per clone of this repo:
 cd /path/to/factory          # the clone's root
 bun install
 bun run cli:link             # puts `factory` on your PATH (~/.bun/bin), running this clone's source
+factory --version            # factory X.Y.Z (source: /path/to/factory)
 ```
 
-After pulling a new release, run `bun install` again; the link follows the clone.
+After pulling a new release, run `bun install` again; the link follows the clone. Whichever ran
+last on a machine, the global install or `bun run cli:link`, owns `factory`.
 
 ## Installing into a project
 
@@ -34,7 +51,7 @@ overlay, refuses changes that would break `factory/v1`, runs doctor, and commits
 
 ## Upgrading a project
 
-After pulling a new factory release, and after changing `reviewers` or `roles` in
+After installing or pulling a new factory release, and after changing `reviewers` or `roles` in
 `factory/config.json` (both are rendered into the managed agents, so a new reviewer has no agent
 and a new model takes no effect until you upgrade):
 
@@ -63,15 +80,14 @@ checkout, so the source it installs is the source on `main`.
 
 **First time (adopting the vendored v0).** The vendored v0 is unstamped (there is no
 `factory/managed.json`), and its files differ from the render, so plain `init` refuses and
-names them. Before promoting, check that `factory` is linked to this checkout:
+names them. Before promoting, check that `factory` runs this checkout's source:
 
 ```sh
-readlink -f "$(which factory)"   # must print a path inside this checkout: …/packages/cli/src/main.ts
+factory --version   # must print: factory X.Y.Z (source: /path/to/this/checkout)
 ```
 
-Use `-f`: plain `readlink` stops at Bun's global link (`../install/global/node_modules/…`)
-and never shows the clone. If it prints a path in another clone, or nothing, rerun
-`bun run cli:link` from this checkout's root, then check again.
+If it says `(release)` (the global install owns `factory`), names another clone, or `factory` is
+not found, rerun `bun run cli:link` from this checkout's root, then check again.
 
 Then adopt it with `--force`:
 
@@ -89,33 +105,54 @@ never managed, so they stay where they are as orphans. Nothing uses them any mor
 `factory/lib/`, `factory/serve.ts`, and `factory/dashboard.html` by hand. The root `tsconfig.json` excludes
 `factory/cli.ts`, since it is generated, untyped bundle output.
 
-**Later releases.** Before promoting, check that `factory` is linked to this checkout:
+**Later releases.** Before promoting, check that `factory` runs this checkout's source:
 
 ```sh
-readlink -f "$(which factory)"   # must print a path inside this checkout: …/packages/cli/src/main.ts
+factory --version   # must print: factory X.Y.Z (source: /path/to/this/checkout)
 ```
 
-Use `-f`: plain `readlink` stops at Bun's global link (`../install/global/node_modules/…`)
-and never shows the clone. If it prints a path in another clone, or nothing, rerun
-`bun run cli:link` from this checkout's root, then check again.
+If it says `(release)` (the global install owns `factory`), names another clone, or `factory` is
+not found, rerun `bun run cli:link` from this checkout's root, then check again.
 
-Then cut the release, and upgrade:
+Then cut the release, upgrade, and push:
 
 ```sh
 cd /path/to/factory          # this repo's root, on main, clean, with no job running
 bun run release --dry-run    # optional: prints the next vX.Y.Z and its CHANGELOG.md section
-bun run release              # writes the version and CHANGELOG.md, commits chore(release): vX.Y.Z, tags vX.Y.Z
+bun run release              # builds the bundle, then: the version and CHANGELOG.md, chore(release): vX.Y.Z,
+                             # tag vX.Y.Z, the bundle committed onto release, tag release-vX.Y.Z
 factory upgrade              # installs the release: the stamp and managed.json carry vX.Y.Z's version
 bun factory/cli.ts doctor
+git add .claude factory && git commit -m "chore(factory): promote vX.Y.Z"
+bun run release:push         # pushes main, release, vX.Y.Z, and release-vX.Y.Z; prints the install line
 ```
 
-Commit the upgrade's result as its own `chore(factory): promote …` commit.
+Commit the upgrade's result as its own `chore(factory): promote …` commit, then push with
+`bun run release:push` as the last step. Each machine then takes the release with
+`bun add -g github:mattmccray/factory#release` (or the pinned `#release-vX.Y.Z` line it prints).
 
 `bun run release` (decision 14 in `docs/decisions.md`) computes the bump from the Conventional
 Commits on `main`'s first-parent history since the newest `v*` tag (pre-1.0: `feat` or a `!`
 breaking change bumps the minor, `fix` or `perf` the patch), writes the version into the root
 and every workspace `package.json`, and prepends the release's section to `CHANGELOG.md`. With
 no `v*` tag yet, it cuts `v0.1.0`, the version already stamped, with no bump. It refuses, writing
-nothing, off `main`, on a dirty tree, or when nothing user-facing merged since the tag. It never
-pushes the commit or the tag (push them yourself when you choose to) and never runs
-`factory upgrade`.
+nothing, off `main`, on a dirty tree, when nothing user-facing merged since the tag, or when
+`vX.Y.Z` or `release-vX.Y.Z` already exists. `--dry-run` neither builds nor writes.
+
+Before it writes anything, it builds the release bundle (`scripts/bundle.ts`) from the tree it is
+about to commit: `HEAD` plus the new versions and changelog, staged in a temp directory that
+borrows this checkout's installed `node_modules`. If the build fails, it exits non-zero with a
+one-line reason and writes nothing: no commit, no tag, no `release` change. On success, after the
+`chore(release): vX.Y.Z` commit and the `vX.Y.Z` tag, it commits the bundle onto the `release`
+branch with git plumbing (the checkout, `HEAD`, and the working tree never move): each `release`
+commit's tree is exactly the bundle, its parent is the previous `release` commit (the first is a
+root commit), and its message names the `main` commit it was built from. That commit is tagged
+`release-vX.Y.Z`. It never pushes and never runs `factory upgrade`.
+
+`bun run release:push` pushes a cut release to `origin`: `main`, `release`, and the newest
+version's `vX.Y.Z` and `release-vX.Y.Z` tags, in one `git push --atomic`, never with a force and
+never a `factory/*` ref. It prints each ref pushed and that version's install line,
+`bun add -g github:mattmccray/factory#release-vX.Y.Z`. It refuses, pushing nothing, with a
+one-line reason: off `main` or detached, a dirty tree, the newest `v*` tag without its
+`release-v*` tag (no bundle), `origin/main` (or `origin/release`) holding commits the local
+branch lacks, or, when that version is already on `origin`, "nothing to push".

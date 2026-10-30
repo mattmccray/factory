@@ -57,16 +57,18 @@ The rules that hold it together, from the `factory/v1` contract:
 
 ## Install
 
-You need [Bun](https://bun.sh), git, and Claude Code. In a clone of this repo:
+You need [Bun](https://bun.sh), git, and Claude Code, on macOS or Linux. Install the `factory`
+command globally from GitHub:
 
 ```sh
-cd /path/to/factory      # the clone's root
-bun install
-bun run cli:link
+bun add -g github:mattmccray/factory#release     # or #release-vX.Y.Z to pin a version
+factory --version                                # factory X.Y.Z (release)
 ```
 
-`bun run cli:link` puts a `factory` command on your PATH (in `~/.bun/bin`) that runs this clone's source
-CLI. Then install the factory into a project from that project's root:
+This installs the release bundle, a self-contained build on this repo's `release` branch (the
+CLI with its installer, the Andon service, and the built Andon UI), and links `factory` into
+`~/.bun/bin`. It needs only Bun: no clone, no build step, no dev dependencies. Then install the
+factory into a project from that project's root:
 
 ```sh
 cd /path/to/project      # a git repo
@@ -79,7 +81,7 @@ There are two CLIs, and they do different jobs:
 
 | Command | What it is | Runs |
 |---|---|---|
-| `factory …` | the linked source CLI, from your factory clone | `init`, `upgrade` (it also has the core commands, but use the installed copy for those) |
+| `factory …` | the global command: the release bundle, or a clone's source CLI (below) | `init`, `upgrade`, `--version` (it also has the core commands, but use the installed copy for those) |
 | `bun factory/cli.ts …` | the project's installed copy, a self-contained managed file | `doctor`, `show`, `claim`, `event`, `rebuild`, `abandon` |
 
 `factory init` writes the skill and agents under `.claude/`, `factory/cli.ts`,
@@ -88,10 +90,23 @@ There are two CLIs, and they do different jobs:
 `.gitignore`, and registers the project with Andon. Details are in
 [`docs/upgrade.md`](docs/upgrade.md).
 
+**Developing the factory.** To run `factory` from a clone's source instead, link it from the
+clone's root:
+
+```sh
+cd /path/to/factory      # the clone's root
+bun install
+bun run cli:link         # factory --version now says: factory X.Y.Z (source: /path/to/factory)
+```
+
+Whichever ran last, the global install or `bun run cli:link`, owns `factory` on that machine;
+`factory --version` tells you which.
+
 ## Upgrade
 
-Pull a new factory release into your clone (`git pull && bun install`). The link follows the
-clone, so there is nothing to relink. Then, in each project:
+Run the install command again (`bun add -g github:mattmccray/factory#release`) to take the newest
+release. With a linked clone, pull instead (`git pull && bun install`); the link follows the
+clone. Then, in each project:
 
 ```sh
 cd /path/to/project
@@ -259,8 +274,9 @@ This repo builds the factory with the factory, but the factory being built is ne
 doing the building. The source is `packages/` and `apps/`. The installed copy that runs this
 repo's jobs is `.claude/` and `factory/`, and no job changes it. Promoting merged source into the
 installed copy is a deliberate human step on `main`, after a merge and never mid-job:
-`factory init --force` the first time (adopting the vendored v0), then `factory upgrade`, each
-run from this repo's root. See [`docs/upgrade.md`](docs/upgrade.md), "Self-upgrade of this
+`factory init --force` the first time (adopting the vendored v0), then `bun run release` and
+`factory upgrade`, each run from this repo's root with `factory` linked to this checkout, and
+finally `bun run release:push`. See [`docs/upgrade.md`](docs/upgrade.md), "Self-upgrade of this
 repo".
 
 ## Rules of thumb
