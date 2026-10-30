@@ -49,6 +49,7 @@
   import NewExplorationSheet from './NewExplorationSheet.svelte';
   import { copyThenStart, exploreOpen, loadLastExplored, nextStart, saveLastExplored, startWorkCaller, startWorkPush } from './startwork';
   import type { ExploreProject, StartItem } from './startwork';
+  import { epicMenuCaller } from './epicmenu';
   import { jobMenuCaller } from './jobmenu';
   import { menuArmer, projectMenuCaller, swallowsClick } from './projectmenu';
   import { entryOf, epicKey, formatHash, historyStep, initialView, jobKey, readEntry, viewKey, viewOf } from './route';
@@ -214,11 +215,11 @@
     // File → New Exploration… and a project's right-click New Exploration… and Run Next: a request,
     // checked against the listed projects; anything else does nothing.
     const offStartWork = subscribe?.(START_WORK_EVENT, (data) => onstartwork(data));
-    // The Mac app's right-click menu on a project row or gutter, or on a board job token: armed for
-    // the project or job under the pointer, and a control-click there doesn't click through
-    // (projectmenu.ts, jobmenu.ts). A browser: nothing.
+    // The Mac app's right-click menu on a project row or gutter, a board job token, or an epic's name
+    // in its sub-lane: armed for the project, job, or epic under the pointer, and a control-click
+    // there doesn't click through (projectmenu.ts, jobmenu.ts, epicmenu.ts). A browser: nothing.
     const ask = projectMenuCaller(mode, Reflect.get(window, 'tiny'));
-    const arm = ask === null ? null : menuArmer(mode, ask, jobMenuCaller(mode, Reflect.get(window, 'tiny')));
+    const arm = ask === null ? null : menuArmer(mode, ask, jobMenuCaller(mode, Reflect.get(window, 'tiny')), epicMenuCaller(mode, Reflect.get(window, 'tiny')));
     const onpointerover = (e: PointerEvent): void => arm?.point(e.target);
     const onpointerout = (e: PointerEvent): void => {
       if (e.relatedTarget === null) arm?.leave();
