@@ -1,7 +1,7 @@
 // The Andon service (docs/contract/v1.md "Andon service"): one Bun daemon per machine that reads every
 // project listed in the Andon registry through `@factory/contract` and serves it, read-only, on
 // loopback:
-//   GET /projects                        → { projects: [{ id, name, root }] } (name: config.json's `name`, else basename(root))
+//   GET /projects                        → { projects: [{ id, name, root, release }] } (name: config.json's `name`, else basename(root))
 //   GET /projects/<pid>/board            → { jobs, config, epics } (a bad config is a 500 carrying the reason);
 //                                          epics: the on-board (unsettled) epics' epic.json, in slug order
 //   GET /projects/<pid>/board?settled=summary → { jobs, config, settled, epics }: unsettled jobs only, plus
@@ -9,7 +9,7 @@
 //   GET /projects/<pid>/settled          → { jobs, epics }, the project's settled jobs and epics only (errors as for board)
 //   GET /projects/<pid>/jobs/<id>/docs   → { files: [{ path, text }] }, that job's markdown in reading order
 //   GET /projects/<pid>/epics/<slug>/docs → { files: [{ path, text }] }, the epic's plan, then its member briefs in plan order
-//   GET /events                          → text/event-stream of `projects`, `board`, and `error` events
+//   GET /events                          → text/event-stream of `projects`, `release`, `board`, and `error` events
 //   GET /events?settled=summary          → the same stream, with each `board` event narrow
 //                                          ({ project, jobs, config, settled, epics }, as for the narrow board)
 //   GET /, GET /<asset>                  → the built Andon UI (`uiDir`), read-only; a path outside it is a 404
@@ -37,6 +37,14 @@
 // coming crossing, no timer is armed.
 // A project's name is resolved from its config.json on every GET /projects and on connect, and
 // `projects` is re-sent whenever a resolved name changes (or the registry's list does).
+// Releases (release.ts): each project's `release: { installed, state }` is resolved the same way,
+// from its `factory/managed.json` against the release the service runs (the clone's templates
+// `package.json` version, read once at startup), and a change to either field re-sends `projects`.
+//   GET /release                         → { running, onDisk, changelog } (the clone's templates
+//                                          version at startup and now, and its parsed CHANGELOG.md)
+// The `release` event carries the same body: on connect (after `projects`), and whenever the
+// clone's `CHANGELOG.md` or `packages/templates/package.json` changes (two non-recursive watches,
+// on the clone root and on `packages/templates/`).
 // The board and docs readers are ported from the vendored `factory/serve.ts` (not imported).
 import { createHash } from 'node:crypto';
 import { watch } from 'node:fs';
@@ -47,10 +55,13 @@ import { isEpicSlug, parseConfig, parsePlan, readRegistry } from '@factory/contr
 import type { Config } from '@factory/contract';
 import { EMPTY_ARCHIVE, archiveTip, gitCommonDir, projectArchivedEpic, readArchive, spawnGit } from './archive';
 import type { ArchiveCache, GitRunner } from './archive';
+import { readInstalled, readRelease, readTemplatesVersion, releaseState } from './release';
+import type { ProjectRelease, ReleaseInfo } from './release';
 import { MAX_DELAY_MS, nextSettle, partition, summarize } from './settled';
 import type { SettledSummary } from './settled';
 
 export type { GitRunner } from './archive';
+export type { ChangelogEntry, ChangelogRelease, ProjectRelease, ReleaseInfo, ReleaseState } from './release';
 
 export interface ServiceOptions {
   port: number; // 0 picks a free port
@@ -60,6 +71,7 @@ export interface ServiceOptions {
   uiDir?: string; // the Andon UI build (`apps/andon/dist`), served at `/`; absent or unbuilt: `/` is a 404
   git?: GitRunner; // how git is run to read `factory/archive` (default: spawned without a shell)
   settleTimers?: SettleTimers; // how the per-project settle timers are set and cleared (default: setTimeout)
+  cloneRoot?: string; // the factory clone the service runs from: its release and CHANGELOG.md; absent: `running`/`onDisk` null, `changelog` []
 }
 
 /** Sets and clears the one-shot settle timers (injectable so a test can see what is pending). */
@@ -77,6 +89,7 @@ export interface ProjectInfo {
   id: string; // first 12 hex characters of sha256(root)
   name: string; // config.json's `name` when the config is valid and sets it, else basename(root)
   root: string; // absolute repo root
+  release: ProjectRelease; // its managed.json `version`, and its state against the running release
 }
 
 type Job = Record<string, unknown>;
@@ -363,15 +376,22 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
   let projects = new Map<string, Project>();
   let stopped = false;
 
-  // Resolves every project's name and returns the list. `info.name` is the name connected clients
-  // were last sent: when a resolved name differs from it (or `force`, for a registry change), the
-  // list is sent to every connected client as a `projects` event. Runs one at a time, so clients
-  // always end on the latest list.
+  // The release this service runs: the clone's templates version, read once, now.
+  const running = await readTemplatesVersion(opts.cloneRoot);
+  const resolveRelease = async (p: Project): Promise<ProjectRelease> => {
+    const installed = await readInstalled(p.factory);
+    return { installed, state: releaseState(installed, running) };
+  };
+
+  // Resolves every project's name and release and returns the list. `info` holds what connected
+  // clients were last sent: when a resolved name or release differs from it (or `force`, for a
+  // registry change), the list is sent to every connected client as a `projects` event. Runs one
+  // at a time, so clients always end on the latest list.
   let announcing: Promise<unknown> = Promise.resolve();
   function announce(force: boolean): Promise<ProjectInfo[]> {
     const run = announcing.then(async () => {
       const open = [...projects.values()];
-      const names = await Promise.all(open.map(resolveName));
+      const [names, releases] = await Promise.all([Promise.all(open.map(resolveName)), Promise.all(open.map(resolveRelease))]);
       let changed = force;
       const current = open.filter((p, i) => {
         const name = names[i] ?? basename(p.info.root);
@@ -379,9 +399,14 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
           p.info.name = name;
           changed = true;
         }
+        const release = releases[i] ?? { installed: null, state: 'unknown' };
+        if (release.installed !== p.info.release.installed || release.state !== p.info.release.state) {
+          p.info.release = release;
+          changed = true;
+        }
         return !p.closed;
       });
-      const list = current.map((p) => ({ ...p.info }));
+      const list = current.map((p) => ({ ...p.info, release: { ...p.info.release } }));
       if (changed) broadcast('projects', { projects: list });
       return list;
     });
@@ -500,7 +525,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       clearSettle(p);
       if (!p.closed) broadcast('error', { project: p.info.id, reason: `config.json: ${message(e)}` });
     }
-    // A config.json edit may have changed the project's resolved name.
+    // A config.json edit may have changed the project's resolved name, a managed.json write its release.
     if (!p.closed) await announce(false);
   }
 
@@ -593,7 +618,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
 
   function openProject(root: string): Project {
     const p: Project = {
-      info: { id: projectId(root), name: basename(root), root },
+      info: { id: projectId(root), name: basename(root), root, release: { installed: null, state: 'unknown' } },
       factory: join(root, 'factory'),
       lastGood: new Map(),
       lastGoodEpic: new Map(),
@@ -613,8 +638,8 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     };
     p.archiveTask = openArchive(p);
     try {
-      // Non-recursive: sees config.json and jobs/ appearing, never anything inside .worktrees/ or
-      // .lock/. Dot-named entries (those two, and temp files) are ignored.
+      // Non-recursive: sees config.json, managed.json, and jobs/ appearing, never anything inside
+      // .worktrees/ or .lock/. Dot-named entries (those two, and temp files) are ignored.
       const w = watch(p.factory, (_event, filename) => {
         if (filename !== null && filename.startsWith('.')) return;
         if (filename === null || filename === 'jobs') watchJobs(p);
@@ -706,9 +731,39 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
   }
   await reload();
 
+  // The clone's release files: `CHANGELOG.md` in its root and `package.json` in
+  // `packages/templates/`, each a non-recursive watch, debounced to one `release` event per burst.
+  let releaseTimer: ReturnType<typeof setTimeout> | null = null;
+  const releaseBody = (): Promise<ReleaseInfo> => readRelease(opts.cloneRoot, running);
+  async function emitRelease(): Promise<void> {
+    if (stopped || clients.size === 0) return;
+    const body = await releaseBody();
+    if (!stopped) broadcast('release', body);
+  }
+  function scheduleRelease(): void {
+    if (stopped || releaseTimer !== null) return;
+    releaseTimer = setTimeout(() => {
+      releaseTimer = null;
+      void emitRelease();
+    }, debounceMs);
+  }
+  const cloneWatchers = new Set<FSWatcher>();
+  function watchClone(dir: string, file: string): void {
+    const w = watchDir(dir, (name) => {
+      if (name === null || name === file) scheduleRelease();
+    }, (dropped) => cloneWatchers.delete(dropped));
+    if (w !== null) cloneWatchers.add(w);
+  }
+  if (opts.cloneRoot !== undefined) {
+    watchClone(opts.cloneRoot, 'CHANGELOG.md');
+    watchClone(join(opts.cloneRoot, 'packages', 'templates'), 'package.json');
+  }
+
   // The connecting client gets the freshly resolved list (any change is first sent to the others).
+  // Then it gets the `release` event.
   async function events(req: Request, form: Form): Promise<Response> {
     const list = await announce(false);
+    const release = await releaseBody();
     let self: Client | null = null;
     const drop = (): void => {
       if (self === null) return;
@@ -725,6 +780,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
         const first = form === 'narrow' && !hasForm('narrow');
         clients.set(c, form);
         c.enqueue(frame('projects', { projects: list }));
+        c.enqueue(frame('release', release));
         // The first narrow client arms every project's settle timer (later ones find them armed).
         if (first) for (const p of projects.values()) void armFromBuild(p);
       },
@@ -756,6 +812,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     const summary = url.searchParams.get('settled') === 'summary';
     if (pathname === '/projects') return json({ projects: await announce(false) });
     if (pathname === '/events') return events(req, summary ? 'narrow' : 'plain');
+    if (pathname === '/release') return json(await releaseBody());
 
     const b = pathname.match(/^\/projects\/([^/]+)\/(board|settled)$/);
     if (b !== null) {
@@ -816,6 +873,9 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       stopped = true;
       if (registryTimer !== null) clearTimeout(registryTimer);
       registryWatcher?.close();
+      if (releaseTimer !== null) clearTimeout(releaseTimer);
+      for (const w of cloneWatchers) w.close();
+      cloneWatchers.clear();
       const open = [...projects.values()];
       for (const p of open) closeProject(p);
       await Promise.all(open.map((p) => p.archiveTask)); // no git process outlives the service

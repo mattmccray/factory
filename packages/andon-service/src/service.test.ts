@@ -9,6 +9,8 @@ import { projectId, startService } from './index';
 import type { GitRunner, Service } from './index';
 
 const CONFIG = { schema: 'factory/v1', reviewers: ['security', 'code'], maxRound: 2, dashboard: { settleAfterHours: 24 } };
+// Every project here has no managed.json and the service no clone root.
+const UNKNOWN = { installed: null, state: 'unknown' };
 
 let tmp: string;
 let registry: string;
@@ -143,8 +145,8 @@ describe('HTTP endpoints (AC3)', () => {
     expect(projects.cache).toBe('no-store');
     expect(projects.body).toEqual({
       projects: [
-        { id: projectId(a), name: 'alpha', root: a },
-        { id: projectId(b), name: 'beta', root: b },
+        { id: projectId(a), name: 'alpha', root: a, release: UNKNOWN },
+        { id: projectId(b), name: 'beta', root: b, release: UNKNOWN },
       ],
     });
     expect(projectId(a)).toMatch(/^[0-9a-f]{12}$/);
@@ -248,7 +250,7 @@ describe('HTTP endpoints (AC3)', () => {
     await mkdir(bare);
     await addRoot(registry, bare);
     const { url } = await start();
-    expect((await getJson(`${url}/projects`)).body).toEqual({ projects: [{ id: projectId(bare), name: basename(bare), root: bare }] });
+    expect((await getJson(`${url}/projects`)).body).toEqual({ projects: [{ id: projectId(bare), name: basename(bare), root: bare, release: UNKNOWN }] });
   });
 });
 
@@ -271,10 +273,10 @@ describe('project names from config.json (AC3, AC4)', () => {
     const { url } = await start();
     const want = {
       projects: [
-        { id: projectId(named), name: 'Café — Ops (v2)!', root: named },
-        { id: projectId(plain), name: 'plain', root: plain },
-        { id: projectId(invalid), name: 'invalid', root: invalid },
-        { id: projectId(bare), name: 'bare', root: bare },
+        { id: projectId(named), name: 'Café — Ops (v2)!', root: named, release: UNKNOWN },
+        { id: projectId(plain), name: 'plain', root: plain, release: UNKNOWN },
+        { id: projectId(invalid), name: 'invalid', root: invalid, release: UNKNOWN },
+        { id: projectId(bare), name: 'bare', root: bare, release: UNKNOWN },
       ],
     };
     expect((await getJson(`${url}/projects`)).body).toEqual(want);
@@ -356,7 +358,7 @@ describe('the event stream (AC4, AC5)', () => {
     expect(client.contentType).toStartWith('text/event-stream');
     const first = await client.next((e) => e.event === 'projects');
     expect(client.seen[0]?.event).toBe('projects');
-    expect(first.data).toEqual({ projects: [{ id: projectId(a), name: 'alpha', root: a }] });
+    expect(first.data).toEqual({ projects: [{ id: projectId(a), name: 'alpha', root: a, release: UNKNOWN }] });
     await settle(150);
 
     await appendEvent(join(a, 'factory'), '001-first-job', parseEventInput('stage.entered', { stage: 'spec' }));
@@ -416,9 +418,9 @@ describe('the event stream (AC4, AC5)', () => {
     await addRoot(registry, c);
     const listed = await client.next((e) => e.event === 'projects' && JSON.stringify(e.data).includes(c));
     expect(field(listed.data, 'projects')).toEqual([
-      { id: projectId(a), name: 'alpha', root: a },
-      { id: projectId(b), name: 'beta', root: b },
-      { id: projectId(c), name: 'gamma', root: c },
+      { id: projectId(a), name: 'alpha', root: a, release: UNKNOWN },
+      { id: projectId(b), name: 'beta', root: b, release: UNKNOWN },
+      { id: projectId(c), name: 'gamma', root: c, release: UNKNOWN },
     ]);
     await settle(150);
 
@@ -452,7 +454,7 @@ describe('the event stream (AC4, AC5)', () => {
     const deadline = Date.now() + 2000;
     while (!logs.some((l) => l.includes('schema')) && Date.now() < deadline) await settle(20);
     expect(logs.some((l) => l.includes('schema'))).toBe(true);
-    expect(field((await getJson(`${url}/projects`)).body, 'projects')).toEqual([{ id: projectId(a), name: 'alpha', root: a }]);
+    expect(field((await getJson(`${url}/projects`)).body, 'projects')).toEqual([{ id: projectId(a), name: 'alpha', root: a, release: UNKNOWN }]);
   });
 });
 
@@ -536,7 +538,7 @@ describe('the built UI (AC5)', () => {
       expect(root.status).toBe(404);
       expect(root.headers.get('cache-control')).toBe('no-store');
       expect((await fetch(`${url}/index.html`)).status).toBe(404);
-      expect(field((await getJson(`${url}/projects`)).body, 'projects')).toEqual([{ id: projectId(a), name: 'alpha', root: a }]);
+      expect(field((await getJson(`${url}/projects`)).body, 'projects')).toEqual([{ id: projectId(a), name: 'alpha', root: a, release: UNKNOWN }]);
       expect((await getJson(`${url}/projects/${projectId(a)}/board`)).status).toBe(200);
       expect((await getJson(`${url}/projects/nope/board`)).status).toBe(404);
       await service?.stop();

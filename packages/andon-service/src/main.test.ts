@@ -36,6 +36,32 @@ test('the process entry reads ANDON_PORT and ANDON_HOME and serves the registry'
   }
 });
 
+test('the process entry passes the repo root as the clone root: GET /release runs the templates version', async () => {
+  const proc = Bun.spawn([process.execPath, MAIN], { env: { ...process.env, ANDON_HOME: home, ANDON_PORT: '0' }, stdout: 'pipe', stderr: 'pipe' });
+  try {
+    const reader = proc.stdout.getReader();
+    let out = '';
+    while (!out.includes('\n')) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      out += new TextDecoder().decode(value);
+    }
+    const url = out.match(/http:\/\/127\.0\.0\.1:\d+/)?.[0];
+    expect(url).toBeDefined();
+    const res = await fetch(`${url}/release`);
+    expect(res.status).toBe(200);
+    const body: unknown = await res.json();
+    const pkg: unknown = await Bun.file(join(import.meta.dir, '..', '..', 'templates', 'package.json')).json();
+    const version = typeof pkg === 'object' && pkg !== null && 'version' in pkg ? pkg.version : undefined;
+    expect(typeof version).toBe('string');
+    expect(typeof body === 'object' && body !== null && 'running' in body ? body.running : undefined).toBe(version);
+    expect(typeof body === 'object' && body !== null && 'onDisk' in body ? body.onDisk : undefined).toBe(version);
+  } finally {
+    proc.kill();
+    await proc.exited;
+  }
+});
+
 test('a malformed ANDON_PORT exits 1 with a reason', async () => {
   const proc = Bun.spawn([process.execPath, MAIN], { env: { ...process.env, ANDON_HOME: home, ANDON_PORT: 'eighty' }, stdout: 'pipe', stderr: 'pipe' });
   expect(await proc.exited).toBe(1);
@@ -44,7 +70,8 @@ test('a malformed ANDON_PORT exits 1 with a reason', async () => {
 
 test('the process entry serves the UI from apps/andon-ui/dist', async () => {
   const text = await Bun.file(MAIN).text();
-  expect(text).toContain("const uiDir = join(import.meta.dir, '..', '..', '..', 'apps', 'andon-ui', 'dist');");
+  expect(text).toContain("const cloneRoot = join(import.meta.dir, '..', '..', '..');");
+  expect(text).toContain("const uiDir = join(cloneRoot, 'apps', 'andon-ui', 'dist');");
   const ui = join(import.meta.dir, '..', '..', '..', 'apps', 'andon-ui', 'package.json');
   expect(JSON.stringify(await Bun.file(ui).json())).toContain('"name":"@factory/andon-ui"');
 });
