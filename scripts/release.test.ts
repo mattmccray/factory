@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { gitIn } from '../packages/cli/src/gitrepo';
-import { type BuildBundle, type Entry, areaOf, buildWithScript, bump, collect, formatSection, parseSubject, prependChangelog, release, setVersion } from './release';
+import { type BuildBundle, type Entry, areaOf, buildWithScript, bump, collect, formatSection, parseSubject, prependChangelog, RELEASE_BRANCH, type RunGate, readGate, release, setVersion } from './release';
 
 const TODAY = '2026-10-29';
 
@@ -69,10 +69,16 @@ const PACKAGES: Record<string, string> = {
   'apps/andon/package.json': '{\n  "name": "@factory/andon",\n  "version": "0.0.0",\n  "nested": {\n    "version": "9.9.9"\n  }\n}\n',
 };
 
-/** Writes the package.json files and commits them as the first commit. */
+// The overlay's config the release reads its gate from: no `gate` here, so no gate is configured.
+const CONFIG = 'factory/config.json';
+const configText = (extra: Record<string, unknown> = {}): string =>
+  `${JSON.stringify({ schema: 'factory/v1', reviewers: ['code'], maxRound: 2, dashboard: { settleAfterHours: 24 }, ...extra }, null, 2)}\n`;
+
+/** Writes the package.json files and the gate-less config, and commits them as the first commit. */
 async function seed(subject = 'chore: seed'): Promise<void> {
   initMain();
   for (const [path, text] of Object.entries(PACKAGES)) await put(path, text);
+  await put(CONFIG, configText());
   gitIn(repo, 'add', '-A');
   gitIn(repo, 'commit', '--quiet', '-m', subject);
 }
@@ -80,12 +86,13 @@ async function seed(subject = 'chore: seed'): Promise<void> {
 /** Everything the release could change: HEAD, tags, status, and each file's bytes. */
 async function snapshot(): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
-  for (const path of [...Object.keys(PACKAGES), 'CHANGELOG.md']) files[path] = existsSync(join(repo, path)) ? await read(path) : '<absent>';
+  for (const path of [...Object.keys(PACKAGES), 'CHANGELOG.md', CONFIG]) files[path] = existsSync(join(repo, path)) ? await read(path) : '<absent>';
   return {
     ...files,
     head: gitIn(repo, 'rev-parse', 'HEAD'),
     branch: gitIn(repo, 'rev-parse', '--abbrev-ref', 'HEAD'),
     tags: gitIn(repo, 'tag', '--list'),
+    release: gitIn(repo, 'branch', '--list', '--format=%(refname) %(objectname)', RELEASE_BRANCH),
     status: gitIn(repo, 'status', '--porcelain'),
   };
 }
@@ -224,8 +231,11 @@ describe('entry selection and formatting (AC2)', () => {
       ['## v0.1.0 (2026-10-29)', '', '### Breaking', '', '- CLI: drop Z', '', '### Added', '', '- Andon: show X (060-x)', '', '### Fixed', '', '- repair Y', ''].join('\n'),
     );
 
-    // Through the script: the skipped subject is named in the output, the chore is absent.
+    // Through the script: the skipped subject is named in the output, the chore is absent. The dry
+    // run stages the tree it would commit, so it needs the package.json files and the config.
+    await put('package.json', PACKAGES['package.json'] ?? '');
     await put('packages/templates/package.json', PACKAGES['packages/templates/package.json'] ?? '');
+    await put(CONFIG, configText());
     gitIn(repo, 'add', '-A');
     gitIn(repo, 'commit', '--quiet', '-m', 'chore: add templates');
     const r = run(true);
@@ -539,7 +549,7 @@ describe('the release bundle on the release branch (060 AC4)', () => {
     expect(gitIn(repo, 'symbolic-ref', 'HEAD')).toBe('refs/heads/main');
   });
 
-  test('--dry-run neither builds nor writes', async () => {
+  test('--dry-run builds no bundle and writes nothing', async () => {
     await releasable();
     const before = await snapshot();
     let built = false;
@@ -591,12 +601,232 @@ describe('a failed bundle build writes nothing (060 AC5)', () => {
   }
 });
 
+describe('the gate on the staged release tree (064)', () => {
+  const sq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+  const logPath = (): string => join(root, 'gate.log');
+  const logged = async (): Promise<string[]> => (existsSync(logPath()) ? (await readFile(logPath(), 'utf8')).split('\n').filter(Boolean) : []);
+  const say = (word: string): string => `echo ${word} >> ${sq(logPath())}`;
+
+  /** v0.1.0, then a releasable feat, with `extra` merged into the config (committed as a chore). */
+  async function releasable(extra: Record<string, unknown> = {}, raw?: string): Promise<void> {
+    await seed();
+    await put('CHANGELOG.md', '## v0.1.0 (2026-10-01)\n\n### Added\n\n- CLI: first (001-first)\n');
+    gitIn(repo, 'add', '-A');
+    gitIn(repo, 'commit', '--quiet', '-m', 'chore: the old changelog');
+    gitIn(repo, 'tag', '-a', 'v0.1.0', '-m', 'factory v0.1.0');
+    await jobMerge('feat(cli): add c', '060-c');
+    await put(CONFIG, raw ?? configText(extra));
+    gitIn(repo, 'add', '-A');
+    if (gitIn(repo, 'status', '--porcelain') !== '') gitIn(repo, 'commit', '--quiet', '-m', 'chore(factory): the gate');
+  }
+  // A build that logs when it runs, then builds as fakeBuild does.
+  let built = 0;
+  const loggingBuild: BuildBundle = (tree, out) => {
+    built += 1;
+    writeFileSync(logPath(), 'build\n', { flag: 'a' });
+    fakeBuild(tree, out);
+  };
+  beforeEach(() => {
+    built = 0;
+  });
+  const go = (dryRun: boolean, gate?: RunGate) => release(repo, { dryRun, today: TODAY, build: loggingBuild, ...(gate === undefined ? {} : { gate }) });
+
+  test('AC3: a green gate runs in order on the staged tree (new versions and CHANGELOG.md) before the build and any write', async () => {
+    const seen = join(root, 'seen');
+    await mkdir(seen);
+    const look = [
+      `pwd -P > ${sq(join(seen, 'cwd'))}`,
+      `cp packages/templates/package.json ${sq(join(seen, 'staged-templates.json'))}`,
+      `cp CHANGELOG.md ${sq(join(seen, 'staged-changelog.md'))}`,
+      `cp ${sq(join(repo, 'packages/templates/package.json'))} ${sq(join(seen, 'repo-templates.json'))}`,
+      `git -C ${sq(repo)} rev-parse HEAD > ${sq(join(seen, 'repo-head'))}`,
+      `git -C ${sq(repo)} tag --list > ${sq(join(seen, 'repo-tags'))}`,
+    ].join(' && ');
+    await releasable({ gate: [say('one'), look, say('two')] });
+    const head = gitIn(repo, 'rev-parse', 'HEAD');
+    const r = go(false);
+    expect(r.code).toBe(0);
+    expect(await logged()).toEqual(['one', 'two', 'build']);
+    expect(r.out).toContain('gate: green (');
+    expect(r.out).toContain('tagged release-v0.2.0');
+
+    const cwd = (await readFile(join(seen, 'cwd'), 'utf8')).trim();
+    expect(cwd).not.toBe(repo);
+    expect(cwd.endsWith('/tree')).toBe(true);
+    expect(await readFile(join(seen, 'staged-templates.json'), 'utf8')).toContain('"version": "0.2.0"');
+    expect(await readFile(join(seen, 'staged-changelog.md'), 'utf8')).toStartWith('## v0.2.0 (2026-10-29)\n\n### Added\n\n- CLI: add c (060-c)\n');
+    // The repo was untouched while the gate ran: the old version, the old HEAD, only v0.1.0.
+    expect(await readFile(join(seen, 'repo-templates.json'), 'utf8')).toContain('"version": "0.1.0"');
+    expect((await readFile(join(seen, 'repo-head'), 'utf8')).trim()).toBe(head);
+    expect((await readFile(join(seen, 'repo-tags'), 'utf8')).trim()).toBe('v0.1.0');
+    expect(gitIn(repo, 'log', '-1', '--format=%s')).toBe('chore(release): v0.2.0');
+    expect(gitIn(repo, 'rev-parse', 'HEAD~1')).toBe(head);
+  });
+
+  test('AC3: the gate runner gets the staged tree and each command in order', async () => {
+    await releasable({ gate: ['first', 'second', 'third'] });
+    const calls: string[] = [];
+    let trees = new Set<string>();
+    const r = go(false, (tree, command) => {
+      trees.add(tree);
+      calls.push(`${command} ${String(built)}`);
+      return 0;
+    });
+    expect(r.code).toBe(0);
+    expect(calls).toEqual(['first 0', 'second 0', 'third 0']);
+    expect(built).toBe(1);
+    expect(trees.size).toBe(1);
+    trees = new Set([...trees].map((t) => (t.startsWith(repo) ? 'inside the repo' : 'outside')));
+    expect([...trees]).toEqual(['outside']);
+  });
+
+  for (const dryRun of [false, true]) {
+    test(`AC${dryRun ? 5 : 4}: a red gate${dryRun ? ' on --dry-run' : ''} exits 1 naming the command; no later command runs; nothing is written`, async () => {
+      await releasable({ gate: [say('first'), 'exit 1', say('third')] });
+      const before = await snapshot();
+      const r = go(dryRun);
+      expect(r.code).toBe(1);
+      expect(r.out).toContain('gate is red: exit 1');
+      expect(r.out.trimEnd().split('\n')).toHaveLength(1);
+      expect(await logged()).toEqual(['first']);
+      expect(built).toBe(0);
+      expect(await snapshot()).toEqual(before);
+      expect(await read('packages/templates/package.json')).toBe(PACKAGES['packages/templates/package.json'] ?? '');
+      expect(await read('CHANGELOG.md')).toStartWith('## v0.1.0 ');
+      expect(gitIn(repo, 'tag', '--list')).toBe('v0.1.0');
+      expect(refOf('refs/heads/release')).toBeNull();
+    });
+  }
+
+  test('AC4: a red gate leaves an existing release branch where it was', async () => {
+    await releasable({ gate: [say('ok')] });
+    expect(go(false).code).toBe(0);
+    const tip = refOf('refs/heads/release');
+    expect(tip).not.toBeNull();
+    await jobMerge('fix(cli): repair d', '061-d');
+    await put(CONFIG, configText({ gate: ['false'] }));
+    gitIn(repo, 'add', '-A');
+    gitIn(repo, 'commit', '--quiet', '-m', 'chore(factory): a red gate');
+    const before = await snapshot();
+    const r = go(false);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('gate is red: false');
+    expect(await snapshot()).toEqual(before);
+    expect(refOf('refs/heads/release')).toBe(tip);
+    expect(gitIn(repo, 'tag', '--list', 'v0.2.1', 'release-v0.2.1')).toBe('');
+  });
+
+  test('AC5: a green --dry-run runs the gate, prints the version and section, writes nothing, and builds no bundle', async () => {
+    await releasable({ gate: [say('one'), say('two')] });
+    const before = await snapshot();
+    const r = go(true);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('v0.2.0 (from v0.1.0)');
+    expect(r.out).toContain('## v0.2.0 (2026-10-29)\n\n### Added\n\n- CLI: add c (060-c)\n');
+    expect(r.out).toContain('dry run: nothing written');
+    expect(await logged()).toEqual(['one', 'two']);
+    expect(built).toBe(0);
+    expect(await snapshot()).toEqual(before);
+    expect(refOf('refs/heads/release')).toBeNull();
+  });
+
+  test('AC5: the script from the command line: a red gate on --dry-run exits 1 with gate is red', async () => {
+    await releasable({ gate: [say('first'), 'exit 7'] });
+    const before = await snapshot();
+    const p = Bun.spawnSync(['bun', join(import.meta.dir, 'release.ts'), '--dry-run'], { cwd: repo, stdout: 'pipe', stderr: 'pipe' });
+    expect(p.exitCode).toBe(1);
+    expect(p.stderr.toString()).toContain('gate is red: exit 7');
+    expect(await snapshot()).toEqual(before);
+  });
+
+  test('AC6: no gate in factory/config.json: it says no gate is configured and goes on (real and dry run)', async () => {
+    await releasable();
+    const dry = go(true);
+    expect(dry.code).toBe(0);
+    expect(dry.out).toContain('no gate configured');
+    expect(built).toBe(0);
+    const r = go(false);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('no gate configured');
+    expect(r.out).toContain('tagged release-v0.2.0');
+    expect(built).toBe(1);
+  });
+
+  const invalid: Record<string, string | null> = {
+    'not JSON': '{ "schema": "factory/v1",\n',
+    'an empty gate': configText({ gate: [] }),
+    'a gate that is a string': configText({ gate: 'bun run test' }),
+    'a blank gate command': configText({ gate: ['echo ok', ' '] }),
+    'a wrong schema': configText({ schema: 'factory/v0' }),
+    'no factory/config.json': null,
+  };
+  for (const [name, raw] of Object.entries(invalid)) {
+    test(`AC6: refuses, writing nothing, on an invalid config: ${name}`, async () => {
+      await releasable({}, raw ?? '');
+      if (raw === null) {
+        gitIn(repo, 'rm', '--quiet', CONFIG);
+        gitIn(repo, 'commit', '--quiet', '-m', 'chore(factory): no config');
+      }
+      for (const dryRun of [false, true]) {
+        const before = await snapshot();
+        const r = go(dryRun);
+        expect(r.code).toBe(1);
+        expect(r.out.trimEnd().split('\n')).toHaveLength(1);
+        expect(r.out).toMatch(/^release refused: factory\/config\.json is (invalid|unreadable): /);
+        expect(built).toBe(0);
+        expect(await snapshot()).toEqual(before);
+        expect(refOf('refs/heads/release')).toBeNull();
+      }
+    });
+  }
+
+  test('the earlier refusals still come first, before the gate runs', async () => {
+    await releasable({ gate: [say('ran'), 'exit 1'] });
+    await put('stray.txt', 'x\n');
+    const r = go(false);
+    expect(r.out).toMatch(/working tree is dirty/);
+    await rm(join(repo, 'stray.txt'));
+    gitIn(repo, 'checkout', '--quiet', '-b', 'feature');
+    expect(go(true).out).toMatch(/not on main/);
+    gitIn(repo, 'checkout', '--quiet', 'main');
+    gitIn(repo, 'tag', 'release-v0.2.0', 'HEAD~1');
+    expect(go(false).out).toContain('release-v0.2.0 already exists');
+    expect(await logged()).toEqual([]);
+  });
+
+  test('readGate reads the commands in order, or null when no gate is configured', async () => {
+    await releasable({ gate: ['a', 'b c'] });
+    expect(readGate(repo)).toEqual(['a', 'b c']);
+    await put(CONFIG, configText());
+    expect(readGate(repo)).toBeNull();
+  });
+});
+
+/**
+ * This source's files: git's tracked and untracked-but-not-ignored files in a checkout, or, in the
+ * staged release tree the gate runs in (a `git archive` with no `.git`), every file but the
+ * mirrored `node_modules`.
+ */
+function sourceFiles(source: string): string[] {
+  const listed = Bun.spawnSync(['git', '-C', source, 'rev-parse', '--show-prefix'], { stdout: 'pipe', stderr: 'pipe' });
+  if (listed.exitCode === 0 && listed.stdout.toString().trim() === '') {
+    const p = Bun.spawnSync(['git', '-C', source, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { stdout: 'pipe' });
+    return p.stdout.toString().split('\0').filter(Boolean);
+  }
+  const walk = (rel: string): string[] =>
+    readdirSync(join(source, rel), { withFileTypes: true }).flatMap((e) => {
+      const path = rel === '' ? e.name : `${rel}/${e.name}`;
+      if (e.name === 'node_modules' || e.name === '.git') return [];
+      return e.isDirectory() ? walk(path) : e.isFile() ? [path] : [];
+    });
+  return walk('');
+}
+
 describe('the real bundle, built from the tree about to be committed (060 AC4)', () => {
   test('a test repo holding this source: the release tree runs as factory <new version> (release)', async () => {
     const source = join(import.meta.dir, '..');
     initMain();
-    const listed = Bun.spawnSync(['git', '-C', source, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { stdout: 'pipe' });
-    for (const rel of listed.stdout.toString().split('\0').filter(Boolean)) {
+    for (const rel of sourceFiles(source)) {
       if (!existsSync(join(source, rel))) continue;
       await mkdir(dirname(join(repo, rel)), { recursive: true });
       await writeFile(join(repo, rel), await readFile(join(source, rel)));
@@ -608,7 +838,13 @@ describe('the real bundle, built from the tree about to be committed (060 AC4)',
     gitIn(repo, 'tag', '-a', `v${current}`, '-m', `factory v${current}`);
     await commit('feat(cli): something new');
 
-    const r = release(repo, { dryRun: false, today: TODAY, modules: source });
+    // This source's own gate (`bun run test`, ...) would run this suite again: a stand-in passes it.
+    const ran: string[] = [];
+    const r = release(repo, { dryRun: false, today: TODAY, modules: source, gate: (_tree, command) => {
+      ran.push(command);
+      return 0;
+    } });
+    expect(ran).toEqual(readGate(repo) ?? []);
     expect(r.out).toContain('tagged release-v');
     expect(r.code).toBe(0);
     const next = gitIn(repo, 'describe', '--tags', '--abbrev=0', '--match', 'v*', 'HEAD').slice(1);

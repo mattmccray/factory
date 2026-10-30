@@ -5,13 +5,18 @@
 // every `package.json`, prepends a section to `CHANGELOG.md`, commits `chore(release): vX.Y.Z`,
 // and tags `vX.Y.Z` (annotated). It then commits the release bundle (scripts/bundle.ts) onto the
 // `release` branch with git plumbing, never moving the checkout, and tags that commit
-// `release-vX.Y.Z` (annotated). The bundle is built first, from the tree the release is about to
-// commit (`HEAD` plus the new versions and changelog, staged in a temp dir), so a failed build
-// writes nothing at all. It never pushes (`bun run release:push` does) and never runs
-// `factory upgrade`.
+// `release-vX.Y.Z` (annotated). Before any write, it stages the tree the release is about to commit
+// (`HEAD` plus the new versions and changelog, in a temp dir) and runs the gate from
+// `factory/config.json` there, in order, stopping at the first failing command: a red gate refuses
+// with `gate is red: <command>` and writes nothing, and `--dry-run` runs the gate too. Then the
+// bundle is built from that same staged tree, so a failed build writes nothing at all either.
+// `--dry-run` stops after the gate: it builds no bundle and writes nothing. With no `gate` in
+// `factory/config.json`, it says so and goes on; an unreadable or invalid config refuses. It never
+// pushes (`bun run release:push` does) and never runs `factory upgrade`.
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { parseConfig } from '../packages/contract/src/contract';
 
 export type Kind = 'breaking' | 'added' | 'fixed';
 
@@ -229,10 +234,14 @@ function localDate(d: Date): string {
 /** Builds the release bundle of the source tree at `tree` into the empty directory `out`; throws a one-line reason. */
 export type BuildBundle = (tree: string, out: string) => void;
 
+/** Runs one gate command from the staged tree's root and returns its exit code. */
+export type RunGate = (tree: string, command: string) => number;
+
 export interface ReleaseOptions {
   dryRun: boolean;
   today?: string; // YYYY-MM-DD; defaults to the local date
   build?: BuildBundle; // defaults to the staged tree's own `scripts/bundle.ts`
+  gate?: RunGate; // defaults to running each command through `sh -c`
   modules?: string; // the checkout whose installed `node_modules` the staged tree borrows; defaults to `repo`
 }
 
@@ -252,6 +261,37 @@ export const buildWithScript: BuildBundle = (tree, out) => {
   const p = Bun.spawnSync([process.execPath, script, out], { cwd: tree, stdout: 'pipe', stderr: 'pipe' });
   if (p.exitCode !== 0) throw new Error(firstLine(p.stderr.toString()) || firstLine(p.stdout.toString()) || `exit ${p.exitCode}`);
 };
+
+/** The default gate runner: the command through a shell (`sh -c`), from the tree's root, its output shown. */
+export const runWithShell: RunGate = (tree, command) => {
+  const p = Bun.spawnSync(['sh', '-c', command], { cwd: tree, stdin: 'ignore', stdout: 'inherit', stderr: 'inherit' });
+  return p.exitCode ?? 1;
+};
+
+/**
+ * The gate from `<repo>/factory/config.json`, validated by the contract's rules: its commands in
+ * order, or null when `gate` is absent (no gate configured). Throws a one-line reason when the
+ * config is missing, unreadable, or invalid.
+ */
+export function readGate(repo: string): string[] | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(join(repo, 'factory', 'config.json'), 'utf8'));
+  } catch (e) {
+    throw new Error(`factory/config.json is unreadable: ${firstLine(e instanceof Error ? e.message : String(e))}`);
+  }
+  try {
+    return parseConfig(raw).gate ?? null;
+  } catch (e) {
+    throw new Error(`factory/config.json is invalid: ${firstLine(e instanceof Error ? e.message : String(e))}`);
+  }
+}
+
+/** Runs `commands` in order from `tree`, stopping at the first non-zero exit; returns that command, or null when all pass. */
+function redCommand(tree: string, commands: readonly string[], run: RunGate): string | null {
+  for (const command of commands) if (run(tree, command) !== 0) return command;
+  return null;
+}
 
 /**
  * Mirrors an installed `node_modules` into the staged tree, so the staged sources resolve their
@@ -364,7 +404,14 @@ export function release(repo: string, opts: ReleaseOptions): { code: number; out
     if (git(repo, 'tag', '--list', bundleTag).trim() !== '') return { code: 1, out: `${notes}release refused: tag ${bundleTag} already exists\n` };
     const section = formatSection(version, opts.today ?? localDate(new Date()), entries);
     const head = `${tag}${base === null ? ' (baseline: no v* tag yet, no bump)' : ` (from ${base.tag})`}\n`;
-    if (opts.dryRun) return { code: 0, out: `${head}${notes}dry run: nothing written\n\n${section}` };
+
+    let gate: string[] | null;
+    try {
+      gate = readGate(repo);
+    } catch (e) {
+      return { code: 1, out: `${notes}release refused: ${e instanceof Error ? e.message : String(e)}\n` };
+    }
+    const gateLine = gate === null ? 'no gate configured: factory/config.json has no gate\n' : `gate: green (${gate.join(', ')})\n`;
 
     // Everything is computed and validated before the first write.
     const writes: [string, string][] = packageFiles(repo).map((path) => {
@@ -377,14 +424,27 @@ export function release(repo: string, opts: ReleaseOptions): { code: number; out
     const changelog = join(repo, 'CHANGELOG.md');
     writes.push(['CHANGELOG.md', prependChangelog(existsSync(changelog) ? readFileSync(changelog, 'utf8') : null, section)]);
 
-    // The bundle is built from the tree about to be committed, before the first write to the repo.
+    // The gate runs on, and the bundle is built from, the tree about to be committed, before the
+    // first write to the repo. A dry run stops after the gate.
+    if (opts.dryRun && gate === null) return { code: 0, out: `${head}${notes}${gateLine}dry run: nothing written\n\n${section}` };
     const work = mkdtempSync(join(tmpdir(), 'factory-release-'));
     try {
+      const tree = join(work, 'tree');
+      try {
+        stageTree(repo, tree, writes, opts.modules ?? repo);
+      } catch (e) {
+        return { code: 1, out: `release failed: staging the release tree: ${firstLine(e instanceof Error ? e.message : String(e))}\n` };
+      }
+      if (gate !== null) {
+        const red = redCommand(tree, gate, opts.gate ?? runWithShell);
+        if (red !== null) return { code: 1, out: `${notes}release refused: gate is red: ${red}\n` };
+      }
+      if (opts.dryRun) return { code: 0, out: `${head}${notes}${gateLine}dry run: nothing written\n\n${section}` };
+
       const out = join(work, 'bundle');
       try {
-        stageTree(repo, join(work, 'tree'), writes, opts.modules ?? repo);
         mkdirSync(out);
-        (opts.build ?? buildWithScript)(join(work, 'tree'), out);
+        (opts.build ?? buildWithScript)(tree, out);
         checkBundle(out);
       } catch (e) {
         return { code: 1, out: `release failed: bundle build: ${firstLine(e instanceof Error ? e.message : String(e))}\n` };
@@ -405,7 +465,7 @@ export function release(repo: string, opts: ReleaseOptions): { code: number; out
       }
       return {
         code: 0,
-        out: `${head}${notes}\n${section}\ncommitted chore(release): ${tag} and tagged ${tag}.\ncommitted the bundle onto ${RELEASE_BRANCH} (${bundleCommit.slice(0, 7)}) and tagged ${bundleTag}. Nothing was pushed.\nNext: factory upgrade, bun factory/cli.ts doctor, commit chore(factory): promote …, then bun run release:push\n`,
+        out: `${head}${notes}${gateLine}\n${section}\ncommitted chore(release): ${tag} and tagged ${tag}.\ncommitted the bundle onto ${RELEASE_BRANCH} (${bundleCommit.slice(0, 7)}) and tagged ${bundleTag}. Nothing was pushed.\nNext: factory upgrade, bun factory/cli.ts doctor, commit chore(factory): promote …, then bun run release:push\n`,
       };
     } finally {
       rmSync(work, { recursive: true, force: true });
