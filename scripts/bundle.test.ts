@@ -169,11 +169,16 @@ async function serviceUrl(proc: Bun.Subprocess<'ignore', 'pipe', 'pipe'>): Promi
   return url;
 }
 
-async function checkService(serviceJs: string, root: string): Promise<void> {
+async function checkService(serviceJs: string, root: string, args: string[] = []): Promise<void> {
   const home = join(tmp, `andon-${Math.random().toString(36).slice(2)}`);
-  const proc = Bun.spawn([process.execPath, serviceJs], { env: { ...process.env, ANDON_HOME: home, ANDON_PORT: '0' }, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
+  await mkdir(home, { recursive: true });
+  await writeFile(join(home, 'projects.json'), `${JSON.stringify({ schema: 'factory/v1', projects: [{ root: join(home, 'proj') }] })}\n`);
+  const proc = Bun.spawn([process.execPath, serviceJs, ...args], { env: { ...process.env, ANDON_HOME: home, ANDON_PORT: '0' }, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
   try {
     const url = await serviceUrl(proc);
+    const listed = await fetch(`${url}/projects`);
+    expect(listed.status).toBe(200);
+    expect(JSON.stringify(await listed.json())).toContain(join(home, 'proj'));
     const index = await fetch(`${url}/`);
     expect(index.status).toBe(200);
     expect(await index.text()).toBe(await readFile(join(root, UI_DIR, 'index.html'), 'utf8'));
@@ -193,6 +198,10 @@ async function checkService(serviceJs: string, root: string): Promise<void> {
 describe('the bundle\'s Andon service (AC7)', () => {
   test('serves the built UI at / and reports the bundle\'s version and CHANGELOG.md on GET /release', async () => {
     await checkService(join(bundle, SERVICE), bundle);
+  }, 30_000);
+
+  test('the bundle\'s CLI runs the same tree in the foreground with factory service run (062 AC7)', async () => {
+    await checkService(join(bundle, BIN), bundle, ['service', 'run']);
   }, 30_000);
 });
 

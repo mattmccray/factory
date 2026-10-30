@@ -11,6 +11,7 @@
     "factory": "src/main.ts"
   },
   "dependencies": {
+    "@factory/andon-service": "workspace:*",
     "@factory/contract": "workspace:*",
     "@factory/templates": "workspace:*"
   }

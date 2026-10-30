@@ -34,8 +34,8 @@ test('from source: factory <version> (source: <clone path>), exit 0, with no con
 });
 
 test('from the release bundle: factory <version> (release), exit 0', async () => {
-  expect(await cli(['--version'], { kind: 'release', files: bakedRelease(dir) })).toEqual({ code: 0, out: [`factory ${VERSION} (release)`], err: [] });
-  expect(versionLine({ kind: 'release', files: bakedRelease(dir) })).toBe(`factory ${VERSION} (release)`);
+  expect(await cli(['--version'], { kind: 'release', root: dir, files: bakedRelease(dir) })).toEqual({ code: 0, out: [`factory ${VERSION} (release)`], err: [] });
+  expect(versionLine({ kind: 'release', root: dir, files: bakedRelease(dir) })).toBe(`factory ${VERSION} (release)`);
 });
 
 test('--version takes no arguments', async () => {

@@ -3,6 +3,8 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { addRoot, registryPath } from '@factory/contract';
+import { bundleTree, sourceTree } from './entry';
+import { BUNDLE_VERSION_FILE, SOURCE_VERSION_FILE } from './release';
 
 const MAIN = join(import.meta.dir, 'main.ts');
 let home: string;
@@ -71,7 +73,10 @@ test('a malformed ANDON_PORT exits 1 with a reason', async () => {
 test('the process entry serves the UI from apps/andon-ui/dist', async () => {
   const text = await Bun.file(MAIN).text();
   expect(text).toContain("const cloneRoot = join(import.meta.dir, '..', '..', '..');");
-  expect(text).toContain("const uiDir = join(cloneRoot, 'apps', 'andon-ui', 'dist');");
+  expect(text).toContain('await serve(sourceTree(cloneRoot));');
+  const root = join(import.meta.dir, '..', '..', '..');
+  expect(sourceTree(root)).toEqual({ uiDir: join(root, 'apps', 'andon-ui', 'dist'), cloneRoot: root, versionFile: SOURCE_VERSION_FILE });
+  expect(bundleTree('/b')).toEqual({ uiDir: '/b/andon/ui', cloneRoot: '/b', versionFile: BUNDLE_VERSION_FILE });
   const ui = join(import.meta.dir, '..', '..', '..', 'apps', 'andon-ui', 'package.json');
   expect(JSON.stringify(await Bun.file(ui).json())).toContain('"name":"@factory/andon-ui"');
 });
