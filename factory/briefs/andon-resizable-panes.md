@@ -1,6 +1,7 @@
 # A draggable Files divider in the inspector, and a resizable sidebar
 
-- Status: ready
+- Status: done
+- Job: 074-andon-resizable-panes (merged e2c3d4d via epic andon-window-polish, 2026-10-30)
 - Sources: the explore request of 2026-10-30 (Matt's notes: "the horizontal divider between the list of files in a job … and the detail of the selected document … can we make that resizable … the banner with the ability to approve, reject, abandon … pushes the document detail area down to such a small region you only read a few lines at a time"; "resizability on the main project sidebar as well … as a matter of polish"); `apps/andon-ui/src/Inspector.svelte` (the edge grip), `apps/andon-ui/src/inspector.ts` (`INSPECTOR_MIN`/`MAX`/`DEFAULT`, `clampWidth`), `apps/andon-ui/src/app.css` (`.files`, `--sbw`); epic `factory/epics/andon-window-polish.md`
 - Date: 2026-10-30
 

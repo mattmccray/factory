@@ -1,6 +1,7 @@
 # New Exploration and Run Next from Andon's menus
 
-- Status: ready
+- Status: done
+- Job: 075-andon-explore-menus (merged 9cd9974 via epic andon-window-polish, 2026-10-30)
 - Sources: the explore request of 2026-10-30 (Matt's notes: "add to the context menu and the app menu some of these new functions we've added, the ability to create a new exploration prompt specifically"); brief `t3-start-work` (job 068), `project-context-menu`; `apps/andon/src/appmenu.ts`, `apps/andon/src/projectmenu.ts`, `apps/andon/src/startwork.ts`, `apps/andon-ui/src/NewExplorationSheet.svelte`, `apps/andon-ui/src/BacklogSheet.svelte`; member `andon-window-chrome` (the File menu); epic `factory/epics/andon-window-polish.md`
 - Date: 2026-10-30
 

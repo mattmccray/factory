@@ -1,6 +1,7 @@
 # An epic's right-click menu: Open in T3 Code
 
-- Status: ready
+- Status: done
+- Job: 076-epic-context-menu (merged 252b826 via epic andon-window-polish, 2026-10-30)
 - Sources: the explore request of 2026-10-30 (Matt's notes: "add a context menu to epics as well, that first column that shows the epic name … a right click where you can do an open in T3 code … so I can go right to the orchestrator thread for that epic"); briefs `job-context-menu` (job 040), `job-session-link`; `apps/andon/src/jobmenu.ts`, `apps/andon/src/backend.ts` (`showJobMenu`, `runJobItem`), `apps/andon-ui/src/jobmenu.ts`, `apps/andon-ui/src/projectmenu.ts` (`menuArmer`), `apps/andon-ui/src/Lane.svelte` (the epic name button); `docs/contract/v1.md` "Epics" (`session` in `epic.json`); epic `factory/epics/andon-window-polish.md`
 - Date: 2026-10-30
 

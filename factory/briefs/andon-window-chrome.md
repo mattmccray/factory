@@ -1,6 +1,7 @@
 # A full-bleed About window, and ⌘W for the front window
 
-- Status: ready
+- Status: done
+- Job: 073-andon-window-chrome (merged ad969aa via epic andon-window-polish, 2026-10-30)
 - Sources: the explore request of 2026-10-30 (Matt's notes: "On the about dialog, I'd like that image to be full bleed to the top … Just the close button only … its parent window is … the main window … I like the way the settings window works"; "Cmd+W doesn't seem to close the settings window, nor does that shortcut close the about window"); briefs `andon-about` (job 065), `settings-window-chrome` (job 037); `apps/andon/src/appmenu.ts` (`aboutWindow`, `settingsWindow`, `appMenu`), `apps/andon/src/backend.ts` (`openAbout`, `openSettings`, `bringBackMain`), `apps/andon-ui/src/About.svelte`; epic `factory/epics/andon-window-polish.md`
 - Date: 2026-10-30
 
