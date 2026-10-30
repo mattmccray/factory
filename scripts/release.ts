@@ -395,8 +395,14 @@ export function release(repo: string, opts: ReleaseOptions): { code: number; out
       git(repo, 'commit', '--quiet', '-m', `chore(release): ${tag}`);
       git(repo, 'tag', '-a', tag, '-m', `factory ${tag}`);
       const main = git(repo, 'rev-parse', 'HEAD').trim();
-      const bundleCommit = commitBundle(repo, out, join(work, 'index'), `chore(release): bundle ${tag} from main ${main}\n\nThe release bundle (scripts/bundle.ts) built from main at ${main}, chore(release): ${tag}.`);
-      git(repo, 'tag', '-a', bundleTag, bundleCommit, '-m', `factory ${tag} bundle`);
+      const recover = `; ${tag} is cut on main without its bundle: to retry, delete tag ${tag}, reset main to HEAD~1 (and release to its previous commit, if it moved), then rerun`;
+      let bundleCommit: string;
+      try {
+        bundleCommit = commitBundle(repo, out, join(work, 'index'), `chore(release): bundle ${tag} from main ${main}\n\nThe release bundle (scripts/bundle.ts) built from main at ${main}, chore(release): ${tag}.`);
+        git(repo, 'tag', '-a', bundleTag, bundleCommit, '-m', `factory ${tag} bundle`);
+      } catch (e) {
+        return { code: 1, out: `release failed: ${firstLine(e instanceof Error ? e.message : String(e))}${recover}\n` };
+      }
       return {
         code: 0,
         out: `${head}${notes}\n${section}\ncommitted chore(release): ${tag} and tagged ${tag}.\ncommitted the bundle onto ${RELEASE_BRANCH} (${bundleCommit.slice(0, 7)}) and tagged ${bundleTag}. Nothing was pushed.\nNext: factory upgrade, bun factory/cli.ts doctor, commit chore(factory): promote …, then bun run release:push\n`,
