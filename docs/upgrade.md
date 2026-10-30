@@ -149,6 +149,12 @@ bun run release:push         # pushes main, release, vX.Y.Z, and release-vX.Y.Z;
 factory service restart      # the Andon service runs the new release
 ```
 
+`bun run promote` does the local half in one step: `factory upgrade`, the doctor, the
+`chore(factory): promote vX.Y.Z` commit, and `factory service restart`. It commits only what lies
+under `.claude/` and `factory/`, and refuses, changing nothing, off `main`, with changes outside
+those two paths, or when `factory --version` does not name this checkout as its source. It never
+pushes; run `bun run release:push` after it.
+
 Commit the upgrade's result as its own `chore(factory): promote …` commit, then push with
 `bun run release:push` as the last step. Each machine then takes the release with
 `bun add -g github:mattmccray/factory#release` (or the pinned `#release-vX.Y.Z` line it prints).

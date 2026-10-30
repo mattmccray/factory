@@ -17,7 +17,8 @@
     "andon:ui:dev": "bun run --cwd apps/andon-ui dev",
     "factory:event": "bun factory/cli.ts event",
     "release": "bun scripts/release.ts",
-    "release:push": "bun scripts/release-push.ts"
+    "release:push": "bun scripts/release-push.ts",
+    "promote": "bun scripts/promote.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
