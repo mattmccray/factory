@@ -5,6 +5,7 @@
 //   epic=<project>/<slug>           the open inspector's epic page (instead of a job; it wins over job=)
 //   file=<path|timing>              its selected file (only with job= or epic=)
 //   settled  or  settled=<project>  the Settled sheet, optionally filtered to one project
+//   whats-new  or  whats-new=<project>  the What's New sheet: every release, or the ones a project is missing
 //   needs                           the Needs Me filter
 // The Rework, Abandon, and shortcut sheets, and an inspector open with nothing selected, have no
 // hash form: they ride in `history.state`. Opening a layer pushes a history entry, so Back closes
@@ -36,12 +37,13 @@ export interface View {
   epic?: EpicRef | undefined; // the epic page; absent (or undefined): none. Never set together with `job`.
   file: string | null; // a doc path, or TIMING; null: the inspector picks
   settled: { project: string | null } | null; // the Settled sheet and its project filter
+  whatsNew: { project: string | null } | null; // the What's New sheet: whole (null), or scoped to one project
   sheet: SheetName | null;
   needs: boolean;
 }
 
 /** The default view: All Projects, nothing open. */
-export const defaultView = (): View => ({ project: null, inspector: false, job: null, file: null, settled: null, sheet: null, needs: false });
+export const defaultView = (): View => ({ project: null, inspector: false, job: null, file: null, settled: null, whatsNew: null, sheet: null, needs: false });
 
 /** The board's key for a job (`projects.ts` `boardJobs`). */
 export const jobKey = (ref: JobRef): string => `${ref.project}/${ref.id}`;
@@ -70,6 +72,7 @@ export function formatHash(v: View): string {
   else if (v.job !== null) parts.push(`job=${enc(v.job.project)}/${enc(v.job.id)}`);
   if (named(v) && v.file !== null) parts.push(`file=${v.file === TIMING ? 'timing' : enc(v.file)}`);
   if (v.settled !== null) parts.push(v.settled.project === null ? 'settled' : `settled=${enc(v.settled.project)}`);
+  if (v.whatsNew !== null) parts.push(v.whatsNew.project === null ? 'whats-new' : `whats-new=${enc(v.whatsNew.project)}`);
   if (v.needs) parts.push('needs');
   return parts.length > 0 ? `#${parts.join('&')}` : '';
 }
@@ -121,6 +124,12 @@ export function parseHash(hash: string): View {
     } else if (key === 'settled') {
       const p = raw === null || raw === '' ? null : dec(raw);
       v.settled = { project: p };
+    } else if (key === 'whats-new') {
+      if (raw === null || raw === '') v.whatsNew = { project: null };
+      else {
+        const p = dec(raw);
+        if (p !== null) v.whatsNew = { project: p }; // a malformed escape: the form is ignored
+      }
     } else if (key === 'needs' && raw === null) {
       v.needs = true;
     }
@@ -176,15 +185,18 @@ export function initialView(hash: string, stored: string, all: string, state: un
 
 export type Step = 'none' | 'push' | 'replace' | 'back';
 
-/** Whether `next` opens a layer that `prev` didn't have: the inspector, the Settled sheet, or another sheet. */
+/** Whether `next` opens a layer that `prev` didn't have: the inspector, the Settled sheet, the What's New sheet, or another sheet. */
 export const opensLayer = (prev: View, next: View): boolean =>
-  (!prev.inspector && next.inspector) || (prev.settled === null && next.settled !== null) || (next.sheet !== null && next.sheet !== prev.sheet);
+  (!prev.inspector && next.inspector) ||
+  (prev.settled === null && next.settled !== null) ||
+  (prev.whatsNew === null && next.whatsNew !== null) ||
+  (next.sheet !== null && next.sheet !== prev.sheet);
 
 /**
  * How the history follows a view change. Opening a layer pushes, so Back closes it. Returning to
  * exactly the view the current entry was pushed over (`under`, a viewKey) goes back instead, so a
  * closed layer leaves no entry behind. Anything else (a file, the focus, Needs Me, a filter, a
- * layer closing onto a different view) replaces the entry.
+ * What's New sheet's scope, a layer closing onto a different view) replaces the entry.
  */
 export function historyStep(prev: View, next: View, under: string | null): Step {
   const key = viewKey(next);

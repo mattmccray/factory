@@ -5,6 +5,8 @@
 // check its shapes against the contract's at compile time; it never runs contract code, so it
 // runs in a browser (and later under txiki.js).
 import type { AgentSpan as ContractAgentSpan, Config, EpicSnapshot, JobSnapshot, StageSpan as ContractStageSpan } from '@factory/contract';
+import { toProjectRelease } from './release';
+import type { ProjectRelease } from './release';
 
 export type ReviewState = string; // 'PASS' | 'CHANGES' | 'pending', or a value a later v1 adds
 
@@ -121,6 +123,8 @@ export interface ProjectInfo {
   id: string;
   name: string;
   root: string;
+  /** Its factory release (`{ installed, state }`); absent when the service sent none (an older service) or a malformed one. */
+  release?: ProjectRelease;
 }
 
 export const DEFAULT_SETTLE_HOURS = 24;
@@ -288,7 +292,8 @@ export function toProjects(v: unknown): ProjectInfo[] {
     const id = str(p.id);
     if (id === null) continue;
     const root = str(p.root) ?? '';
-    out.push({ id, name: str(p.name) ?? id, root });
+    const release = toProjectRelease(p.release);
+    out.push(release === null ? { id, name: str(p.name) ?? id, root } : { id, name: str(p.name) ?? id, root, release });
   }
   return out;
 }

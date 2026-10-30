@@ -9,7 +9,8 @@
 // see handoff.ts). `bun run
 // andon:build` bundles it into build/backend.js, the plain-JS entry tinyjs.json names.
 // The windows' pages (the service-served UI) get no Tiny API but the two calls the drag regions make
-// (`win.startDrag`, `win.zoom`), the status bar event this adapter pushes (`event.statusbar`),
+// (`win.startDrag`, `win.zoom`), the two events this adapter pushes (`event.statusbar`, and
+// `event.whatsnew` for Help → What's New),
 // `projectMenu`, which takes a project id (or null) and nothing else, the Settings window's
 // `getSettings` and `setSetting` (see settings.ts), which answer only when Tiny's api meta names the
 // Settings window, and `handOff` (see handoff.ts), which takes a project id, a job id, an action, and
@@ -30,7 +31,7 @@ import type { DockLook } from './lantern';
 import { startApp } from './app';
 import type { App } from './app';
 import { bringBackAction, oneAtATime, trayClickAction } from './trayclick';
-import { SETTINGS_WINDOW_ID, STATUS_BAR_EVENT, STATUS_BAR_ID, STATUS_BAR_KEY, appMenu, menuAction, settingsWindow, statusBarLabel, statusBarPayload, storedHidden } from './appmenu';
+import { SETTINGS_WINDOW_ID, STATUS_BAR_EVENT, STATUS_BAR_ID, STATUS_BAR_KEY, WHATS_NEW_EVENT, appMenu, menuAction, settingsWindow, statusBarLabel, statusBarPayload, storedHidden, whatsNewPayload } from './appmenu';
 import type { SettingsWindowOptions } from './appmenu';
 import { DEFAULT_HANDOFF_MODE, T3_HANDOFF_KEY, fromSettingsWindow, settingChange, settingsSnapshot, storedMode } from './settings';
 import type { HandoffMode, Settings } from './settings';
@@ -359,6 +360,12 @@ export async function onMenu(id: string, app: MacApp): Promise<void> {
       return app.window('main').zoom();
     case 'show-main':
       return showMain(app); // the tray's left click: show the window in front, on this Space
+    case 'whats-new':
+      // Show the board as the tray click does, then ask its page to open What's New; the page routes
+      // itself (its hash and history) and keeps its focused project. Nothing else is sent.
+      await showMain(app);
+      app.push(WHATS_NEW_EVENT, whatsNewPayload());
+      return;
     case 'open':
       await app.shell.open(action.url);
       return;

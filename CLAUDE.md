@@ -23,9 +23,12 @@ The factory being built is never the factory doing the building.
 ## Promotion
 
 Promoting merged source into the installed copy is a deliberate, human-approved step outside
-any job: `factory upgrade` run against this repo on `main`, after a merge, never mid-job (see
-`docs/upgrade.md`, "Self-upgrade of this repo"). `upgrade` leaves the overlay alone, so
-overlay changes (`factory/config.json`, `factory/roles/`) are hand edits in the same step.
+any job, on `main`, after a merge, never mid-job (see `docs/upgrade.md`, "Self-upgrade of this
+repo"): `bun run release` cuts the release (the version, `CHANGELOG.md`, the
+`chore(release): vX.Y.Z` commit and its `vX.Y.Z` tag; decision 14), then `factory upgrade`,
+`bun factory/cli.ts doctor`, and the `chore(factory): promote …` commit. Nothing is pushed by
+the script. `upgrade` leaves the overlay alone, so overlay changes (`factory/config.json`,
+`factory/roles/`) are hand edits in the same step.
 
 ## The contract
 

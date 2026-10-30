@@ -3,7 +3,8 @@ import { find } from './find';
 import { buildLanes } from './lanes';
 import { ALL, boardJobs } from './projects';
 import { sidebarModel, subtitle, title } from './sidebar';
-import { applyEvent, applyFetched, applySettled, emptyState, revOf, settledCurrent, startSettled, toSummary, wantsSettled } from './state';
+import { applyEvent, applyFetched, applyFetchedRelease, applySettled, emptyState, releaseRev, revOf, settledCurrent, startSettled, toSummary, wantsSettled } from './state';
+import { projectRelease, releaseBody } from './fixtures';
 import type { UiState } from './state';
 
 const P1 = { id: 'aaaaaaaaaaaa', name: 'one', root: '/r/one' };
@@ -236,5 +237,45 @@ describe('epics in the UI state (056 AC1)', () => {
     expect(subtitle(withEmpty, P1.id, 1, 0)).toEqual(subtitle(plain, P1.id, 1, 0));
     expect(find(withEmpty.projects, boardJobs(withEmpty, ALL), 'one', now)).toEqual(find(plain.projects, boardJobs(plain, ALL), 'one', now));
     expect(boardJobs(withEmpty, ALL).every((b) => b.epic === undefined)).toBe(true);
+  });
+});
+
+describe('the release slot (059 AC6, AC7)', () => {
+  test('empty until release data arrives', () => {
+    expect(emptyState().release).toEqual({ info: null, rev: 0 });
+  });
+
+  test('a release event sets it and bumps its rev; a malformed one changes nothing', () => {
+    const s = applyEvent(twoProjects(), 'release', releaseBody('0.2.0', '0.3.0'));
+    expect(s.release.info?.running).toBe('0.2.0');
+    expect(s.release.info?.onDisk).toBe('0.3.0');
+    expect(s.release.info?.changelog.map((r) => r.version)).toEqual(['0.3.0', '0.2.0', '0.1.0']);
+    expect(releaseRev(s)).toBe(1);
+    for (const bad of [null, 'x', {}, { running: '0.2.0' }]) expect(applyEvent(s, 'release', bad)).toBe(s);
+  });
+
+  test('a projects event keeps the release, and carries each project\'s release', () => {
+    let s = applyEvent(twoProjects(), 'release', releaseBody('0.2.0'));
+    s = applyEvent(s, 'projects', { projects: [{ ...P1, release: projectRelease('0.1.0', 'behind') }, P2] });
+    expect(s.release.info?.running).toBe('0.2.0');
+    expect(s.projects).toEqual([{ ...P1, release: { installed: '0.1.0', state: 'behind' } }, P2]);
+  });
+
+  test('a fetched release applies unless a release event arrived since it was sent', () => {
+    const s0 = twoProjects();
+    const rev = releaseRev(s0);
+    const fetched = applyFetchedRelease(s0, rev, { ok: true, data: releaseBody('0.1.0') });
+    expect(fetched.release.info?.running).toBe('0.1.0');
+    const newer = applyEvent(s0, 'release', releaseBody('0.2.0'));
+    expect(applyFetchedRelease(newer, rev, { ok: true, data: releaseBody('0.1.0') })).toBe(newer);
+    expect(applyFetchedRelease(newer, rev, { ok: false, reason: 'HTTP 404' })).toBe(newer);
+  });
+
+  test('a 404, another failure, or a malformed body is no release data', () => {
+    const had = applyFetchedRelease(twoProjects(), 0, { ok: true, data: releaseBody('0.1.0') });
+    expect(applyFetchedRelease(had, 0, { ok: false, reason: 'HTTP 404' }).release.info).toBeNull();
+    expect(applyFetchedRelease(had, 0, { ok: true, data: { running: 7 } }).release.info).toBeNull();
+    const none = twoProjects();
+    expect(applyFetchedRelease(none, 0, { ok: false, reason: 'not found' })).toBe(none);
   });
 });

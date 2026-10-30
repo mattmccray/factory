@@ -258,5 +258,8 @@ export const EVENTS_PATH = '/events?settled=summary';
 /** A project's narrow board: its unsettled jobs, its config, and its settled summary. */
 export const boardPath = (pid: string): string => `/projects/${encodeURIComponent(pid)}/board?settled=summary`;
 
+/** The service's factory release and changelog (`{ running, onDisk, changelog }`); an older service answers 404. */
+export const RELEASE_PATH = '/release';
+
 /** A project's settled jobs, fetched only when a view needs them. */
 export const settledPath = (pid: string): string => `/projects/${encodeURIComponent(pid)}/settled`;

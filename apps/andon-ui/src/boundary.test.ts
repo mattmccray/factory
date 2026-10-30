@@ -7,6 +7,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import config from '../vite.config';
 import { isRecord } from './job';
+import { PUSHED_EVENTS, STATUS_BAR_EVENT, WHATS_NEW_EVENT } from './sidebar';
 
 const app = join(import.meta.dir, '..');
 
@@ -43,13 +44,13 @@ describe('the contract boundary (009 AC3)', () => {
 });
 
 describe('the Vite dev server (009 AC4)', () => {
-  test('binds loopback with CORS off, and still proxies /projects and /events to the service', () => {
+  test('binds loopback with CORS off, and still proxies /projects, /events, and /release (059) to the service', () => {
     const server = isRecord(config) && isRecord(config.server) ? config.server : {};
     expect(server.host).toBe('127.0.0.1');
     expect(server.cors).toBe(false);
     const proxy = isRecord(server.proxy) ? server.proxy : {};
-    expect(Object.keys(proxy).sort()).toEqual(['/events', '/projects']);
-    for (const key of ['/projects', '/events']) {
+    expect(Object.keys(proxy).sort()).toEqual(['/events', '/projects', '/release']);
+    for (const key of ['/projects', '/events', '/release']) {
       const entry = proxy[key];
       expect(isRecord(entry) && entry.target).toBe(`http://127.0.0.1:${process.env.ANDON_PORT ?? '8766'}`);
       expect(isRecord(entry) && entry.changeOrigin).toBe(true);
@@ -165,6 +166,19 @@ describe('Andon never writes job state (026 AC5)', () => {
       if (name === 'projectmenu.ts' || name === 'jobmenu.ts' || name === 'sidebar.ts' || name === 'settings.ts' || name === 'handoff.ts') continue;
       expect({ file: name, hit: /\bhost\.api\b|\btiny\.api\b|\bapi\.on\b/.exec(read(file))?.[0] ?? null }).toEqual({ file: name, hit: null });
     }
+  });
+
+  test("the page hears exactly the Mac app's pushed events its api gate names: statusbar and whatsnew (059)", () => {
+    expect(STATUS_BAR_EVENT).toBe('statusbar');
+    expect(WHATS_NEW_EVENT).toBe('whatsnew');
+    expect(PUSHED_EVENTS).toEqual(['statusbar', 'whatsnew']);
+    const tiny: unknown = JSON.parse(read(join(app, '..', 'andon', 'tinyjs.json')));
+    const gate = isRecord(tiny) && isRecord(tiny.api) && Array.isArray(tiny.api.enable) ? tiny.api.enable : [];
+    expect(gate.filter((e): e is string => typeof e === 'string' && e.startsWith('event.'))).toEqual(PUSHED_EVENTS.map((e) => `event.${e}`));
+    expect(gate).toContain('event.whatsnew');
+    // Every subscription goes through pushSubscriber with one of those names, in App.svelte only.
+    const subs = [...read(join(import.meta.dir, 'App.svelte')).matchAll(/subscribe\?\.\((\w+),/g)].map((m) => m[1]);
+    expect(subs).toEqual(['STATUS_BAR_EVENT', 'WHATS_NEW_EVENT']);
   });
 
   test('Fetcher stays path-only', () => {

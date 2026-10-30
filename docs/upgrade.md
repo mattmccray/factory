@@ -99,12 +99,23 @@ Use `-f`: plain `readlink` stops at Bun's global link (`../install/global/node_m
 and never shows the clone. If it prints a path in another clone, or nothing, rerun
 `bun run cli:link` from this checkout's root, then check again.
 
-Then upgrade:
+Then cut the release, and upgrade:
 
 ```sh
-cd /path/to/factory
-factory upgrade
+cd /path/to/factory          # this repo's root, on main, clean, with no job running
+bun run release --dry-run    # optional: prints the next vX.Y.Z and its CHANGELOG.md section
+bun run release              # writes the version and CHANGELOG.md, commits chore(release): vX.Y.Z, tags vX.Y.Z
+factory upgrade              # installs the release: the stamp and managed.json carry vX.Y.Z's version
 bun factory/cli.ts doctor
 ```
 
-Commit the result as its own `chore(factory): promote …` commit.
+Commit the upgrade's result as its own `chore(factory): promote …` commit.
+
+`bun run release` (decision 14 in `docs/decisions.md`) computes the bump from the Conventional
+Commits on `main`'s first-parent history since the newest `v*` tag (pre-1.0: `feat` or a `!`
+breaking change bumps the minor, `fix` or `perf` the patch), writes the version into the root
+and every workspace `package.json`, and prepends the release's section to `CHANGELOG.md`. With
+no `v*` tag yet, it cuts `v0.1.0`, the version already stamped, with no bump. It refuses, writing
+nothing, off `main`, on a dirty tree, or when nothing user-facing merged since the tag. It never
+pushes the commit or the tag (push them yourself when you choose to) and never runs
+`factory upgrade`.

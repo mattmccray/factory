@@ -10,6 +10,8 @@ import {
   SHOW_MAIN_ID,
   STATUS_BAR_EVENT,
   STATUS_BAR_ID,
+  WHATS_NEW_EVENT,
+  WHATS_NEW_ID,
   ZOOM_ID,
   appMenu,
   menuAction,
@@ -18,6 +20,7 @@ import {
   statusBarLabel,
   statusBarPayload,
   storedHidden,
+  whatsNewPayload,
 } from './appmenu';
 import type { Menu } from './appmenu';
 
@@ -29,7 +32,7 @@ const expected = (toggle: string): Menu[] => [
     title: 'Window',
     items: [{ id: MINIMIZE_ID, label: 'Minimize', key: 'm' }, { id: ZOOM_ID, label: 'Zoom' }, { separator: true }, { id: SHOW_MAIN_ID, label: 'Andon', key: '0' }],
   },
-  { title: 'Help', role: 'help', items: [{ id: GITHUB_ID, label: 'Factory on GitHub' }] },
+  { title: 'Help', role: 'help', items: [{ id: WHATS_NEW_ID, label: "What's New" }, { id: GITHUB_ID, label: 'Factory on GitHub' }] },
 ];
 
 describe('AC1: the menu spec', () => {
@@ -48,7 +51,7 @@ describe('AC1: the menu spec', () => {
     const ids = items.map((i) => i.id);
     expect(ids.every((id) => typeof id === 'string' && id.length > 0)).toBe(true);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).toHaveLength(6);
+    expect(ids).toHaveLength(7);
   });
 });
 
@@ -98,5 +101,22 @@ describe('035 AC1: Settings… and the Settings window', () => {
       chrome: { frame: true, windowControls: ['close'] },
       parent: 'main',
     });
+  });
+});
+
+describe("059 AC8: Help → What's New", () => {
+  test("Help lists What's New above Factory on GitHub, for either status bar state", () => {
+    for (const hidden of [false, true]) {
+      const help = appMenu(hidden).find((m) => m.title === 'Help');
+      expect(help).toEqual({ title: 'Help', role: 'help', items: [{ id: WHATS_NEW_ID, label: "What's New" }, { id: GITHUB_ID, label: 'Factory on GitHub' }] });
+    }
+  });
+
+  test('its id maps to the action that shows the main window and pushes the whatsnew event', () => {
+    expect(WHATS_NEW_ID).toBe('whatsnew');
+    expect(menuAction(WHATS_NEW_ID)).toEqual({ kind: 'whats-new' });
+    expect(WHATS_NEW_EVENT).toBe('whatsnew');
+    expect(whatsNewPayload()).toEqual({});
+    for (const id of ['whats-new', 'WhatsNew', 'changelog']) expect({ id, action: menuAction(id) }).toEqual({ id, action: null });
   });
 });

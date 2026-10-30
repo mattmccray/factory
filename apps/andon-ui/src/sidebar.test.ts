@@ -2,11 +2,11 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildBoard } from './board';
-import { HOUR, NOW, before, job, tag } from './fixtures';
+import { HOUR, NOW, before, job, projectRelease, releaseBody, tag } from './fixtures';
 import { kindOf } from './lanes';
 import type { Status } from './live';
 import { ALL, SELECTION_KEY, boardJobs, hotEpics, loadSelection, resolveSelection, saveSelection } from './projects';
-import { LEGEND, MAC_INSET, STATUS_BAR_EVENT, footer, frame, isActive, projectStatus, pushSubscriber, reviewFailed, settleHours, settleText, shellMode, sidebarModel, statusBarHidden, subtitle, subtitleText, title } from './sidebar';
+import { LEGEND, MAC_INSET, STATUS_BAR_EVENT, WHATS_NEW_EVENT, footer, footerLine, footerRelease, frame, isActive, projectStatus, pushSubscriber, reviewFailed, settleHours, settleText, shellMode, sidebarModel, statusBarHidden, subtitle, subtitleText, title } from './sidebar';
 import { applyEvent, emptyState } from './state';
 import type { UiState } from './state';
 
@@ -150,11 +150,11 @@ describe('the selection (AC2)', () => {
 
 describe('the footer and toolbar texts (AC3)', () => {
   test('the footer: connected with the project count, connecting, or unreachable, each with its dot', () => {
-    expect(footer('live', 3)).toEqual({ text: 'Connected · 3 projects', dot: 'green' });
-    expect(footer('live', 1)).toEqual({ text: 'Connected · 1 project', dot: 'green' });
-    expect(footer('live', 12)).toEqual({ text: 'Connected · 12 projects', dot: 'green' });
-    expect(footer('connecting', 3)).toEqual({ text: 'Connecting…', dot: 'gray' });
-    expect(footer('down', 3)).toEqual({ text: 'Unreachable', dot: 'red' });
+    expect(footer('live', 3)).toEqual({ text: 'Connected · 3 projects', dot: 'green', release: null });
+    expect(footer('live', 1)).toEqual({ text: 'Connected · 1 project', dot: 'green', release: null });
+    expect(footer('live', 12)).toEqual({ text: 'Connected · 12 projects', dot: 'green', release: null });
+    expect(footer('connecting', 3)).toEqual({ text: 'Connecting…', dot: 'gray', release: null });
+    expect(footer('down', 3)).toEqual({ text: 'Unreachable', dot: 'red', release: null });
     const statuses: readonly Status[] = ['live', 'connecting', 'down'];
     for (const status of statuses) for (const n of [0, 1, 3, 12]) expect(footer(status, n).text).not.toContain('andon-service');
   });
@@ -365,5 +365,168 @@ describe('epics in the sidebar and the toolbar (056 AC5)', () => {
     expect(subtitle(s, EPICS.id, board.running, board.waiting + hotEpics(s, EPICS.id))).toMatchObject({ waiting: '2 waiting on you', elsewhere: '2 waiting elsewhere' });
     const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
     expect(app).toContain('subtitle(ui, sel, board.running, board.waiting + hotEpics(ui, sel))');
+  });
+});
+
+// ---- factory releases (059) ----
+
+describe('sidebar rows by release state (059 AC1)', () => {
+  const BEHIND = { ...MID, release: projectRelease('0.1.0', 'behind') };
+  const CURRENT = { ...ALPHA, release: projectRelease('0.2.0', 'current') };
+  const AHEAD = { ...BETA, release: projectRelease('0.3.0', 'ahead') };
+  const UNKNOWN = { ...NEW, release: projectRelease(null, 'unknown') };
+  const OLD = ZED; // an older service: no release
+
+  function releases(withRelease = true): UiState {
+    let s = state();
+    s = applyEvent(s, 'projects', { projects: [OLD, CURRENT, BEHIND, AHEAD, UNKNOWN] });
+    return withRelease ? applyEvent(s, 'release', releaseBody('0.2.0')) : s;
+  }
+  const row = (s: UiState, id: string) => sidebarModel(s, ALL).projects.find((p) => p.id === id);
+
+  test('behind: a glyph after the name, whose hover text and accessible name name both releases', () => {
+    const r = row(releases(), MID.id);
+    expect(r?.release).toEqual({ state: 'behind', line: 'factory 0.1.0 installed · 0.2.0 available', glyph: { label: 'factory 0.1.0 installed · 0.2.0 available' } });
+    expect(r?.title).toBe('/r/mid\nfactory 0.1.0 installed · 0.2.0 available');
+  });
+
+  test("behind before the service's running release is known: a newer release available", () => {
+    const r = row(releases(false), MID.id);
+    expect(r?.release?.glyph).toEqual({ label: 'factory 0.1.0 installed · a newer release available' });
+  });
+
+  test('current, ahead, and unknown: no glyph, each with its own hover line', () => {
+    const s = releases();
+    expect(row(s, ALPHA.id)?.release).toEqual({ state: 'current', line: 'factory 0.2.0 installed · up to date', glyph: null });
+    expect(row(s, BETA.id)?.release).toEqual({ state: 'ahead', line: "factory 0.3.0 installed · newer than this machine's 0.2.0", glyph: null });
+    expect(row(s, NEW.id)?.release).toEqual({ state: 'unknown', line: 'factory version unknown', glyph: null });
+    expect(row(s, ALPHA.id)?.title).toBe('/r/alpha\nfactory 0.2.0 installed · up to date');
+    expect(row(s, NEW.id)?.title).toBe('/r/new\nfactory version unknown');
+  });
+
+  test('unchanged: the dot, the badge, and the rest of the row are as without a release', () => {
+    const withRel = sidebarModel(releases(), ALL).projects;
+    const without = sidebarModel(applyEvent(releases(), 'projects', { projects: [OLD, ALPHA, MID, BETA, NEW] }), ALL).projects;
+    expect(withRel.map(({ release, title, ...rest }) => rest)).toEqual(without.map(({ release, title, ...rest }) => rest));
+    expect(row(releases(), ZED.id)?.badge).toEqual({ tone: 'red', count: 2, label: '2 need a human' });
+  });
+
+  test('the glyph is its own button beside the row button, never nested, never the red badge, and the release line describes the row', () => {
+    const sidebar = readFileSync(join(import.meta.dir, 'Sidebar.svelte'), 'utf8');
+    const li = /<li class="sbrow"[\s\S]*?<\/li>/.exec(sidebar)?.[0] ?? '';
+    const rowButton = /<button\s+class="sbi"[\s\S]*?<\/button>/.exec(li)?.[0] ?? '';
+    expect(rowButton).not.toBe('');
+    expect(rowButton).not.toContain('relglyph');
+    expect(rowButton.match(/<button/g)?.length).toBe(1);
+    const after = li.slice(li.indexOf(rowButton) + rowButton.length);
+    expect(after).toContain('<button class="relglyph" type="button" title={p.release.glyph.label} aria-label={p.release.glyph.label}');
+    expect(after).not.toContain('badge');
+    // The row's accessible name is unchanged; its release line is its description.
+    expect(rowButton).toContain('aria-label={label(p.name, STATE_LABELS[p.state], p.badge)}');
+    expect(rowButton).toContain('aria-describedby={p.release !== null ? `rel-${p.id}` : undefined}');
+    expect(rowButton).toContain('<span class="sr-only" id="rel-{p.id}">{p.release.line}</span>');
+  });
+
+  test('the glyph is muted in both appearances: label tokens, never the red badge fill or a red', () => {
+    const css = readFileSync(join(import.meta.dir, 'app.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rules = [...css.matchAll(/(^|\n)(\.relglyph[^{]*)\{([^}]*)\}/g)].map((m) => m[3] ?? '');
+    expect(rules.length).toBeGreaterThan(0);
+    for (const body of rules) {
+      expect(body).not.toMatch(/--badge-red|--red\b|--red-ink|#fff\b/);
+      for (const c of body.matchAll(/(?:^|[;\s])color:\s*([^;]+)/g)) expect(c[1]?.trim()).toMatch(/^var\(--label[23]\)$/);
+    }
+  });
+});
+
+describe('the footer release (059 AC2)', () => {
+  test('live with release data: "Connected · N projects · v0.2.0", the version opening What\'s New', () => {
+    const info = applyEvent(emptyState(), 'release', releaseBody('0.2.0')).release.info;
+    const f = footer('live', 3, info);
+    expect(f.text).toBe('Connected · 3 projects');
+    expect(f.release).toEqual({ kind: 'version', text: 'v0.2.0', title: "What's new in v0.2.0" });
+    expect(footerLine(f)).toBe('Connected · 3 projects · v0.2.0');
+  });
+
+  test('onDisk differs from running: the version becomes the restart note, which copies the restart command', () => {
+    const info = applyEvent(emptyState(), 'release', releaseBody('0.2.0', '0.3.0')).release.info;
+    const r = footer('live', 3, info).release;
+    expect(r?.kind).toBe('restart');
+    if (r?.kind !== 'restart') throw new Error('no restart note');
+    expect(r.text).toBe('Restart service');
+    expect(r.command).toBe('bun run andon:service');
+    for (const part of ['v0.2.0', 'v0.3.0', 'bun run andon:service']) expect(r.title).toContain(part);
+    expect(footerLine(footer('live', 1, info))).toBe('Connected · 1 project · Restart service');
+  });
+
+  test('onDisk null, or equal to running: no note', () => {
+    expect(footerRelease({ running: '0.2.0', onDisk: null, changelog: [] })).toEqual({ kind: 'version', text: 'v0.2.0', title: "What's new in v0.2.0" });
+    expect(footerRelease({ running: '0.2.0', onDisk: '0.2.0', changelog: [] })?.kind).toBe('version');
+    expect(footerRelease({ running: null, onDisk: '0.2.0', changelog: [] })?.kind).toBe('restart');
+    expect(footerRelease({ running: null, onDisk: null, changelog: [] })).toBeNull();
+  });
+
+  test('only while live', () => {
+    const info = applyEvent(emptyState(), 'release', releaseBody('0.2.0')).release.info;
+    expect(footer('connecting', 3, info)).toEqual({ text: 'Connecting…', dot: 'gray', release: null });
+    expect(footer('down', 3, info)).toEqual({ text: 'Unreachable', dot: 'red', release: null });
+  });
+
+  test('one line: the version and the note never shrink or wrap, while the connection text truncates (design §3)', () => {
+    const css = readFileSync(join(import.meta.dir, 'app.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rule = (selector: string): string => {
+      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(?:^|\\n)${escaped}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+    };
+    const ver = rule('.service .ver');
+    expect(ver).toMatch(/flex:\s*none/);
+    expect(ver).toMatch(/white-space:\s*nowrap/);
+    expect(rule('.service .sep')).toMatch(/flex:\s*none/);
+    const sidebar = readFileSync(join(import.meta.dir, 'Sidebar.svelte'), 'utf8');
+    expect(sidebar).toContain('onclick={() => onwhatsnew(null)}>{rel.text}</button>');
+    expect(sidebar).toContain('onclick={() => oncopy(rel.command)}');
+  });
+});
+
+describe('an older service (059 AC7)', () => {
+  test('no release on project entries, no release event: no glyph, no hover line, the footer as before', () => {
+    const s = state();
+    for (const r of sidebarModel(s, ALL).projects) {
+      expect(r.release).toBeNull();
+      expect(r.title).toBe(s.projects.find((p) => p.id === r.id)?.root ?? '');
+    }
+    expect(s.release.info).toBeNull();
+    expect(footer('live', 5, s.release.info)).toEqual({ text: 'Connected · 5 projects', dot: 'green', release: null });
+    expect(footerLine(footer('live', 5, s.release.info))).toBe('Connected · 5 projects');
+  });
+
+  test('malformed release values count as missing, and nothing throws', () => {
+    let s = applyEvent(emptyState(), 'projects', {
+      projects: [
+        { ...MID, release: 'behind' },
+        { ...ALPHA, release: { installed: 1, state: 'behind' } },
+        { ...BETA, release: { installed: '0.1.0', state: 'stale' } },
+        { ...NEW, release: null },
+      ],
+    });
+    for (const bad of [null, 'x', 3, {}, { running: 1 }, { running: '0.2.0', onDisk: '0.2.0', changelog: 'none' }]) s = applyEvent(s, 'release', bad);
+    expect(s.release.info).toBeNull();
+    for (const r of sidebarModel(s, ALL).projects) expect([r.id, r.release]).toEqual([r.id, null]);
+    expect(footer('live', 4, s.release.info).release).toBeNull();
+  });
+});
+
+describe("the Mac app's What's New event (059 AC8)", () => {
+  test('the page subscribes to whatsnew through pushSubscriber and opens the whole sheet', () => {
+    expect(WHATS_NEW_EVENT).toBe('whatsnew');
+    const heard: string[] = [];
+    const host = { api: { on: (event: string, fn: (data: unknown) => void) => { heard.push(event); fn({}); return () => undefined; } } };
+    const sub = pushSubscriber('mac', host);
+    let opened = 0;
+    sub?.(WHATS_NEW_EVENT, () => opened++);
+    expect(heard).toEqual(['whatsnew']);
+    expect(opened).toBe(1);
+    expect(pushSubscriber('browser', host)).toBeNull();
+    const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
+    expect(app).toContain("subscribe?.(WHATS_NEW_EVENT, () => openWhatsNew(null));");
   });
 });
