@@ -45,10 +45,10 @@ describe('AC1: the workspace names the service, the UI, and the Mac app', () => 
 });
 
 describe('AC2: the root scripts and .gitignore follow the new names', () => {
-  test('andon runs the Mac app, andon:service the service, andon:ui:* the UI, and andon:build both', () => {
+  test('andon runs the Mac app, andon:ui:* the UI, and andon:build both; the service is factory service run, not a root script (062 AC7)', () => {
     const s = rootScripts();
     expect(s.andon).toBe('bun run --cwd apps/andon dev');
-    expect(s['andon:service']).toBe('bun packages/andon-service/src/main.ts');
+    expect('andon:service' in s).toBe(false);
     expect(s['andon:ui:build']).toBe('bun run --cwd apps/andon-ui build');
     expect(s['andon:ui:dev']).toBe('bun run --cwd apps/andon-ui dev');
     expect(s['andon:build']).toBe('bun run andon:ui:build && bun run --cwd apps/andon build');

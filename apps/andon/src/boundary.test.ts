@@ -296,13 +296,15 @@ describe('AC6: tinyjs.json', () => {
   });
 });
 
-test('the bundle is one self-contained ESM file with the service location fixed in', async () => {
-  const js = await bundleBackend({ repo: '/the/repo', bun: '/the/bun' });
+test('the bundle is one self-contained ESM file with the repo fixed in, and no service command (062 AC8)', async () => {
+  const js = await bundleBackend({ repo: '/the/repo' });
   expect(js).not.toMatch(/^\s*import\s/m); // nothing left to resolve under txiki
   expect(js).not.toMatch(/\brequire\(/);
   expect(js).not.toContain('__ANDON_REPO__');
   expect(js).toContain('"/the/repo"');
-  expect(js).toContain('"/the/bun"');
+  expect(js).not.toContain('__ANDON_BUN__');
+  expect(js).not.toContain('andon-service');
+  expect(js).toContain('factory service install');
   expect(js).toMatch(/export\s*\{[^}]*\binit\b/);
   expect(js).toMatch(/export\s*\{[^}]*\bonTray\b/);
   expect(js).toMatch(/export\s*\{[^}]*\bonMenu\b/);
