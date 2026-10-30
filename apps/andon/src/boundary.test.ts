@@ -43,7 +43,7 @@ const readJson = (path: string): Record<string, unknown> => {
 describe('AC5: the Mac app runs no contract, service, or UI code', () => {
   test('the scan sees the logic modules and the adapter', () => {
     expect(sources).toContain(ADAPTER);
-    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts', 'appmenu.ts', 'projectmenu.ts', 'settings.ts', 'handoff.ts', 'jobmenu.ts', 'about.ts', 'startwork.ts']) expect(sources).toContain(f);
+    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts', 'appmenu.ts', 'projectmenu.ts', 'settings.ts', 'handoff.ts', 'jobmenu.ts', 'about.ts', 'startwork.ts', 'noservice.ts']) expect(sources).toContain(f);
   });
 
   test('the import matcher flags @factory/*, the UI, and the service, not the Mac app itself', () => {
@@ -172,6 +172,43 @@ describe("backend.ts types the adapter with Tiny's vendored types, narrowed to M
 test("065 AC3: the version fixed into the bundle is apps/andon/package.json's, not tinyjs.json's", async () => {
   expect(await appVersion()).toBe(String(readJson(join(appDir, 'package.json')).version));
   expect(await appVersion()).toMatch(/^\d+\.\d+\.\d+/);
+});
+
+describe('071 AC6: the no-service page is a string from a runtime-neutral module, and the app ships no frontend', () => {
+  /** Every file under apps/andon but its dependencies and build output. */
+  function files(dir: string, out: string[] = []): string[] {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === 'node_modules' || e.name === 'build') continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) files(p, out);
+      else out.push(p.slice(appDir.length + 1));
+    }
+    return out;
+  }
+
+  test('apps/andon has no .html or .css file and no frontend directory', () => {
+    const all = files(appDir);
+    expect(all.length).toBeGreaterThan(0);
+    expect(all.filter((f) => /\.(html?|css)$/i.test(f))).toEqual([]);
+    for (const dir of ['frontend', 'public', 'web', 'dist']) expect({ dir, exists: existsSync(join(appDir, dir)) }).toEqual({ dir, exists: false });
+  });
+
+  test('tinyjs.json names no frontend or page of its own', () => {
+    const cfg = readJson(join(appDir, 'tinyjs.json'));
+    for (const key of ['frontend', 'page']) expect({ key, set: key in cfg }).toEqual({ key, set: false });
+  });
+
+  test('the page lives in noservice.ts, which names no Tiny or txiki; only backend.ts calls reload', () => {
+    const page = readFileSync(join(import.meta.dir, 'noservice.ts'), 'utf8');
+    expect(page).toMatch(/^export function noServicePage\(\): string/m);
+    expect(page.match(NAMES_TINY)).toBeNull();
+    for (const f of sources.filter((x) => x !== ADAPTER)) {
+      expect({ file: f, reloads: /\.reload\(/.test(readFileSync(join(import.meta.dir, f), 'utf8')) }).toEqual({ file: f, reloads: false });
+    }
+    const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
+    expect(adapter).toContain('app.reload(noServicePage())');
+    expect(adapter).toMatch(/^export type MacApp = Pick<TinyApp, [^>]*'reload'[^>]*>/m);
+  });
 });
 
 describe('AC6: tinyjs.json', () => {
