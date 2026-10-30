@@ -198,7 +198,8 @@ describe('the footer and toolbar texts (AC3)', () => {
       expect({ want, found: sidebar.includes(want) }).toEqual({ want, found: true });
     }
     const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
-    expect(app).toContain("The Andon service isn't answering.<br /><br />Start it from the factory repo: <code>bun run andon:service</code>");
+    expect(app).toContain("The Andon service isn't answering.<br /><br />Install it once per machine with <code>factory service install</code>, or start it with <code>factory service start</code>.");
+    expect(app).not.toContain('andon:service');
     expect(app).toContain('Connecting to the Andon service…');
     for (const text of [sidebar, app]) expect(text).not.toMatch(/andon[- ]agent/i);
   });
@@ -453,8 +454,8 @@ describe('the footer release (059 AC2)', () => {
     expect(r?.kind).toBe('restart');
     if (r?.kind !== 'restart') throw new Error('no restart note');
     expect(r.text).toBe('Restart service');
-    expect(r.command).toBe('bun run andon:service');
-    for (const part of ['v0.2.0', 'v0.3.0', 'bun run andon:service']) expect(r.title).toContain(part);
+    expect(r.command).toBe('factory service restart');
+    for (const part of ['v0.2.0', 'v0.3.0', 'factory service restart']) expect(r.title).toContain(part);
     expect(footerLine(footer('live', 1, info))).toBe('Connected · 1 project · Restart service');
   });
 

@@ -247,18 +247,39 @@ factory upgrade --force
 ## Andon
 
 Andon is the dashboard: a board per project, with live timers for each stage and each reviewer,
-a needs-human row, and a job drawer with the files and timing. It has three parts, run from the
-factory clone: the Andon service (a daemon), the Andon UI it serves, and Andon, the Mac app.
-The service and the UI:
+a needs-human row, and a job drawer with the files and timing. It has three parts: the Andon
+service (a daemon), the Andon UI it serves, and Andon, the Mac app.
+
+The Andon service is one Bun daemon per machine. `factory service install` makes it a per-user
+OS service (a launchd LaunchAgent, `dev.factory.andon`, on macOS; a systemd `--user` unit,
+`andon.service`, on Linux) that starts at login and restarts after a crash, with no `sudo`:
 
 ```sh
-bun run andon:ui:build   # once, and after pulling: builds the UI the service serves
-bun run andon:service    # the Andon service: http://127.0.0.1:8766/
+factory service install   # write the unit, enable it, start it: http://127.0.0.1:8766/
+factory service status    # installed, running (pid), the URL, the running and on-disk release, the logs
+factory service restart   # after taking a new release (Andon says "Restart service")
+factory service start     # or stop; uninstall removes the unit and keeps ~/.andon
+factory service run       # the service in the foreground, without installing it
 ```
 
-The Andon service is one Bun daemon per machine. It watches the projects in `~/.andon/projects.json`
-(`factory init` adds each project; set `ANDON_HOME` to move the file and `ANDON_PORT` to change
-the port), streams changes to the UI, and never writes job state.
+The unit runs the installing `factory`'s `service run` with the installing `bun`, so run
+`install` again after switching between the global install and `bun run cli:link` to re-point
+it. `ANDON_PORT` and `ANDON_HOME`, when set at `install`, are recorded in the unit. `install`
+refuses, naming the pid, when another process (an old terminal service, say) holds the port.
+Logs go to `~/.andon/service.log` on macOS and to the journal on Linux
+(`journalctl --user -u andon.service`). On a headless Linux box, `install` prints the
+`loginctl enable-linger` hint when lingering is off, since user services stop at logout without
+it; it never changes that setting itself.
+
+From a clone, build the UI the service serves once, and after pulling:
+
+```sh
+bun run andon:ui:build
+```
+
+The service watches the projects in `~/.andon/projects.json` (`factory init` adds each project;
+set `ANDON_HOME` to move the file and `ANDON_PORT` to change the port), streams changes to the
+UI, and never writes job state.
 
 A project you delete or move stays registered until you remove it with the linked source CLI:
 
@@ -273,7 +294,9 @@ factory projects remove <path>       # unregister one root, whatever its state
 `/run/media/…`, `/mnt/<name>`), so unplugging a drive doesn't unregister its projects.
 
 Andon, the Mac app, wraps the UI in a window with a tray badge counting needs-human jobs and
-native notifications on escalate and merge. It starts the service if none is running:
+native notifications on escalate and merge. It is only a client of the service: it never starts
+or stops it, and when none answers it shows a notice naming `factory service install` and
+connects once the service is up:
 
 ```sh
 bun run andon:build   # build the Mac app (and the UI)

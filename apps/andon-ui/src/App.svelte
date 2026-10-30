@@ -520,7 +520,7 @@
       {/if}
       {#if ui.projects.length === 0}
         {#if status === 'down'}
-          <div class="nothing">The Andon service isn't answering.<br /><br />Start it from the factory repo: <code>bun run andon:service</code></div>
+          <div class="nothing">The Andon service isn't answering.<br /><br />Install it once per machine with <code>factory service install</code>, or start it with <code>factory service start</code>.</div>
         {:else if status === 'live'}
           <div class="nothing">No projects are registered.<br /><br />Run <code>factory init</code> in a repo to add it.</div>
         {:else}

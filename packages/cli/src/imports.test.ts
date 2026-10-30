@@ -4,7 +4,8 @@ import { join } from 'node:path';
 
 // AC4: the source CLI depends on the contract only through `@factory/contract`, never on the
 // installed copy under factory/ (its lib/ or cli.ts). The installer renders through
-// `@factory/templates`.
+// `@factory/templates`, and `service` reaches the Andon service only through its entry
+// (`@factory/andon-service/entry`).
 const SPECIFIER = /(?:^|\s)(?:import|export)\s(?:[^'"]*?\sfrom\s)?['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]\s*\)/gm;
 
 test('packages/cli imports contract code only from @factory/contract', async () => {
@@ -16,7 +17,7 @@ test('packages/cli imports contract code only from @factory/contract', async () 
     for (const m of text.matchAll(SPECIFIER)) {
       const spec = m[1] ?? m[2] ?? '';
       seen.push(spec);
-      const allowed = spec === '@factory/contract' || spec === '@factory/templates' || spec === 'bun:test' || spec.startsWith('node:') || /^\.\/[\w.-]+$/.test(spec);
+      const allowed = spec === '@factory/contract' || spec === '@factory/andon-service/entry' || spec === '@factory/templates' || spec === 'bun:test' || spec.startsWith('node:') || /^\.\/[\w.-]+$/.test(spec);
       expect({ file: f, spec, allowed }).toEqual({ file: f, spec, allowed: true });
       expect(spec).not.toContain('factory/lib');
       expect(spec).not.toContain('..');

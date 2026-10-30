@@ -254,7 +254,7 @@ export function fleetJobs(now: number = NOW): BoardJob[] {
 /**
  * Writes the fleet under `home` as a throwaway Andon home: `projects.json` and one project root
  * per project (`<home>/<name>/factory/config.json` and `jobs/<id>/job.json`), with times measured
- * back from `now`. Run the service on it with `ANDON_HOME=<home> ANDON_PORT=<port> bun run andon:service`.
+ * back from `now`. Run the service on it with `ANDON_HOME=<home> ANDON_PORT=<port> factory service run`.
  */
 export function writeFleet(home: string, now: number = Date.now()): void {
   const roots: string[] = [];

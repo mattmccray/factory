@@ -83,12 +83,20 @@ contract is `docs/contract/v1.md`.
     - The Andon UI is a Svelte web app that connects to one or more services. Supporting
       multiple machines later just means adding more service URLs.
     - Andon, the Mac app, is a thin **Tiny JS** wrapper (https://tinyjs.app) around the UI. It
-      starts the local service if needed and adds a tray badge with the needs-human count, plus
-      native notifications on escalate and merge.
+      starts the local service if needed (amended 2026-10-30, below: it no longer does) and adds
+      a tray badge with the needs-human count, plus native notifications on escalate and merge.
     - The Mac app must stay thin enough to swap out. Tiny JS moves fast and has had breaking
       changes, and its backend is txiki.js, not Node, so the contract code must not run there.
     - Registration: `factory init` registers a project with the local service. (Adding or
       removing projects from Andon itself is deferred.)
+    - Amended 2026-10-30 (approved by Matt; brief `factory/briefs/andon-service-install.md`):
+      the OS service manager is the Andon service's only owner. `factory service install` makes
+      it a per-user launchd LaunchAgent (`dev.factory.andon`, macOS) or systemd `--user` unit
+      (`andon.service`, Linux), with no `sudo`, started at login and restarted after a crash,
+      running the installing `factory`'s `service run`. The Mac app no longer starts the service
+      (or stops it on quit): when its probe finds none, it shows a notice naming
+      `factory service install`. One owner, so an app-spawned copy and a launchd copy never race
+      for the port, and a Linux box with no Mac app works the same way.
 11. **The factory builds itself.**
     - This repo was seeded by hand once (2026-10-22) with a vendored v0 copy of Minerva's
       factory. Everything since goes through `/factory`.

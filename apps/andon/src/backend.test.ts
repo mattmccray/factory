@@ -10,7 +10,8 @@ import { jobItemId, jobMenuItems } from './jobmenu';
 import type { Availability, MenuProject } from './projectmenu';
 import type { HandoffMode, Settings } from './settings';
 import { GITHUB_ID, MINIMIZE_ID, SETTINGS_ID, SETTINGS_SIZE, SHOW_MAIN_ID, STATUS_BAR_ID, WHATS_NEW_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
-import { trayNotice, traySpec } from './badge';
+import { QUIT_ID, trayNotice, traySpec } from './badge';
+import { INSTALL_NOTICE } from './autostart';
 
 /** Which window ops fail. Mutable, so a test can heal the window between clicks. Each failing op is
  *  still recorded, then `getState` rejects and `restore`/`show` throw. */
@@ -206,7 +207,7 @@ test('AC4: the tray icon is the outlined or filled lantern, as a template image,
   expect(assetPath('/the/repo/', 'x.png')).toBe('/the/repo/apps/andon/assets/x.png');
 });
 
-// ---- init: the idle look before the service answers and after it fails to start ----
+// ---- init: the idle look before the service answers, and the install notice when none does ----
 
 interface FakeProcess {
   stdout: ReadableStream<Uint8Array> | null;
@@ -216,15 +217,21 @@ interface FakeProcess {
 
 const never = <T>(): Promise<T> => new Promise<T>(() => undefined);
 
-/** Stand in txiki's `tjs` and the build-time repo path. `curl` runs `curl`; any other spawn runs `service`. */
-function fakeGlobals(curl: () => FakeProcess, service: () => FakeProcess): void {
+/** Stand in txiki's `tjs` and the build-time repo path. Every spawn is recorded; `curl` runs `curl`, and any other spawn (the app checks) throws. */
+function fakeGlobals(curl: () => FakeProcess, spawned: string[][] = []): void {
   Reflect.set(globalThis, '__ANDON_REPO__', REPO);
-  Reflect.set(globalThis, '__ANDON_BUN__', '/the/bun');
-  Reflect.set(globalThis, 'tjs', { env: {}, spawn: (argv: string[]) => (argv[0] === 'curl' ? curl() : service()) });
+  Reflect.set(globalThis, 'tjs', {
+    env: {},
+    spawn: (argv: string[]) => {
+      spawned.push(argv);
+      if (argv[0] !== 'curl') throw new Error(`unexpected spawn: ${argv.join(' ')}`);
+      return curl();
+    },
+  });
 }
 
 afterEach(() => {
-  for (const k of ['__ANDON_REPO__', '__ANDON_BUN__', 'tjs']) Reflect.deleteProperty(globalThis, k);
+  for (const k of ['__ANDON_REPO__', 'tjs']) Reflect.deleteProperty(globalThis, k);
 });
 
 /** The Dock is idle (never set, or reset with '') and the badge is clear (never set, or ''). */
@@ -235,33 +242,42 @@ function expectIdle(l: ReturnType<typeof lanternApp>): void {
 
 test('AC5: before the service answers, the tray shows the notice with the outlined lantern, and the Dock is idle', () => {
   const hung: FakeProcess = { stdout: new ReadableStream<Uint8Array>(), kill: () => undefined, wait: never };
-  fakeGlobals(
-    () => hung,
-    () => hung,
-  );
+  fakeGlobals(() => hung);
   const l = lanternApp();
   init(l.app);
-  expect(l.trays).toEqual([{ ...trayNotice('starting the service'), icon: join(ASSETS, 'tray-idle.png'), template: true }]);
+  expect(l.trays).toEqual([{ ...trayNotice('connecting to the Andon service'), icon: join(ASSETS, 'tray-idle.png'), template: true }]);
   expectIdle(l);
 });
 
-test('AC5: when the service fails to start, the tray shows the reason with the outlined lantern, and the Dock is idle', async () => {
+test('062 AC8: with no service answering, the tray names factory service install, the Dock is idle, nothing but curl is spawned, and Quit stops nothing', async () => {
   const unreachable = (): FakeProcess => ({
     stdout: new ReadableStream<Uint8Array>({ start: (c) => c.close() }),
     kill: () => undefined,
     wait: async () => ({ exit_status: 7, term_signal: null }),
   });
-  fakeGlobals(unreachable, () => {
-    throw new Error('no bun here');
-  });
+  const spawned: string[][] = [];
+  fakeGlobals(unreachable, spawned);
   const l = lanternApp();
   init(l.app);
   for (let i = 0; i < 50 && l.trays.length < 2; i++) await new Promise((r) => setTimeout(r, 2));
   expect(l.trays).toHaveLength(2);
-  const last = l.trays.at(-1);
-  expect(last?.tooltip).toStartWith('Andon: could not start the service');
-  expect(last).toMatchObject({ title: '', icon: join(ASSETS, 'tray-idle.png'), template: true });
+  expect(l.trays.at(-1)).toMatchObject({ ...trayNotice(INSTALL_NOTICE), icon: join(ASSETS, 'tray-idle.png'), template: true });
+  expect(String(l.trays.at(-1)?.tooltip)).toContain('factory service install');
   expectIdle(l);
+  // curl probes the service, and `open`/`mdfind` check the Open in apps: nothing else runs (no bun, no service)
+  const notOurs = (a: string[]): boolean => !['curl', 'open', 'mdfind'].includes(a[0] ?? '');
+  expect(spawned.some((a) => a[0] === 'curl')).toBe(true);
+  expect(spawned.filter(notOurs)).toEqual([]);
+  expect(spawned.some((a) => a.some((x) => x.includes('andon-service') || x === 'service'))).toBe(false);
+  const before = spawned.length;
+  await onTray(QUIT_ID, l.app);
+  expect(spawned.slice(before).filter(notOurs)).toEqual([]);
+});
+
+test('062 AC8: backend.ts starts and stops no service: no spawn command for it, no child handling', async () => {
+  const src = await Bun.file(join(import.meta.dir, 'backend.ts')).text();
+  for (const gone of ['serviceCommand', 'ensureService', 'spawnChild', 'Child', '__ANDON_BUN__', 'andon-service']) expect({ gone, found: src.includes(gone) }).toEqual({ gone, found: false });
+  expect(src).toContain('waitForService');
 });
 
 test('the reload after starting the service (or on another port) keeps ?shell=mac', () => {
@@ -333,10 +349,7 @@ function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<s
 /** init, with the service never answering, then let the stored choice be read. */
 async function initMenu(stored: unknown): Promise<ReturnType<typeof menuApp>> {
   const hung: FakeProcess = { stdout: new ReadableStream<Uint8Array>(), kill: () => undefined, wait: never };
-  fakeGlobals(
-    () => hung,
-    () => hung,
-  );
+  fakeGlobals(() => hung);
   const m = menuApp(stored);
   init(m.app);
   for (let i = 0; i < 50 && !m.log.some((e) => e[0] === 'menu.set'); i++) await new Promise((r) => setTimeout(r, 1));
@@ -356,10 +369,7 @@ test('AC3: init sets the menu bar with the label for the stored state', async ()
 
 test('AC3: init still sets the menu bar (status bar shown) when the store cannot be read', async () => {
   const hung: FakeProcess = { stdout: new ReadableStream<Uint8Array>(), kill: () => undefined, wait: never };
-  fakeGlobals(
-    () => hung,
-    () => hung,
-  );
+  fakeGlobals(() => hung);
   const m = menuApp(true);
   m.app.store.get = async () => {
     throw new Error('no store');
@@ -442,7 +452,6 @@ test('035 AC1: Settings… opens the settings window on the service port, not re
 test('035 AC1: the settings window loads from the port init resolved', async () => {
   const hung: FakeProcess = { stdout: new ReadableStream<Uint8Array>(), kill: () => undefined, wait: never };
   Reflect.set(globalThis, '__ANDON_REPO__', REPO);
-  Reflect.set(globalThis, '__ANDON_BUN__', '/the/bun');
   Reflect.set(globalThis, 'tjs', { env: { ANDON_PORT: '9123' }, spawn: () => hung });
   const m = menuApp(null);
   init(m.app);
@@ -688,10 +697,7 @@ test("AC3: when the main window's main frame finishes loading, the current state
 
 test('AC3: a page that finishes loading before the store is read gets the stored state', async () => {
   const hung: FakeProcess = { stdout: new ReadableStream<Uint8Array>(), kill: () => undefined, wait: never };
-  fakeGlobals(
-    () => hung,
-    () => hung,
-  );
+  fakeGlobals(() => hung);
   const m = menuApp(true);
   init(m.app);
   await onNavigate({ window: 'main', kind: 'finish', isMainFrame: true }, m.app);
@@ -1413,7 +1419,6 @@ const hungProcess = (): FakeProcess & { stderr: null } => ({ stdout: new Readabl
 /** Stand in `tjs` (and the build-time globals) for the app check, the icon lookups, and the service (which never answers). */
 function fakeIconMachine(w: IconWorld): void {
   Reflect.set(globalThis, '__ANDON_REPO__', REPO);
-  Reflect.set(globalThis, '__ANDON_BUN__', '/the/bun');
   Reflect.set(globalThis, 'tjs', {
     env: { HOME: '/Users/me' },
     spawn: (argv: string[]) => {

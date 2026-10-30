@@ -1,84 +1,65 @@
 import { expect, test } from 'bun:test';
-import { serviceCommand, DEFAULT_PORT, ensureService, pageUrl, probeService, resolvePort, SHELL_QUERY } from './autostart';
-import type { AutostartDeps } from './autostart';
+import { DEFAULT_PORT, INSTALL_NOTICE, PROBE_MS, pageUrl, probeService, resolvePort, SHELL_QUERY, waitForService } from './autostart';
+import type { WaitDeps } from './autostart';
 import type { Http } from './http';
+import * as autostart from './autostart';
 
-const CMD = serviceCommand('/repo', '/bin/bun');
-
-function deps(answers: boolean[], over: Partial<AutostartDeps> = {}) {
-  const spawned: Array<{ argv: string[]; env: Record<string, string> }> = [];
+function deps(answers: boolean[], over: Partial<WaitDeps> = {}) {
   let probes = 0;
-  let stops = 0;
-  const d: AutostartDeps = {
+  let missing = 0;
+  const slept: number[] = [];
+  const d: WaitDeps = {
     probe: async () => answers[probes++] ?? false,
-    spawn: (argv, env) => {
-      spawned.push({ argv, env });
-      return { stop: () => stops++ };
-    },
-    sleep: async () => undefined,
-    command: CMD,
-    port: 9123,
-    retries: 5,
-    retryMs: 200,
+    sleep: async (ms) => void slept.push(ms),
+    missing: () => void missing++,
+    cancelled: () => false,
     ...over,
   };
-  return { d, spawned, probes: () => probes, stops: () => stops };
+  return { d, probes: () => probes, missing: () => missing, slept };
 }
 
-test('AC4: the service command is bun on the service entry; the port is $ANDON_PORT or 8766', () => {
-  expect(CMD).toEqual(['/bin/bun', '/repo/packages/andon-service/src/main.ts']);
-  expect(serviceCommand('/repo/')).toEqual(['bun', '/repo/packages/andon-service/src/main.ts']);
+test('the port is $ANDON_PORT or 8766', () => {
   expect(resolvePort({})).toBe(DEFAULT_PORT);
   expect(DEFAULT_PORT).toBe(8766);
   expect(resolvePort({ ANDON_PORT: '9001' })).toBe(9001);
   for (const bad of ['', 'x', '70000', '0', '-1']) expect(resolvePort({ ANDON_PORT: bad })).toBe(DEFAULT_PORT);
 });
 
-test('AC4: a service already answering is not spawned, and is left alone on quit', async () => {
+test('062 AC8: a service already answering is used as it is, with no notice', async () => {
   const t = deps([true]);
-  const service = await ensureService(t.d);
-  expect(service).toMatchObject({ ok: true, started: false });
-  expect(t.spawned).toEqual([]);
-  service.stop();
-  expect(t.stops()).toBe(0);
-});
-
-test('AC4: an unreachable service is spawned exactly once with ANDON_PORT, re-probed until it answers, and stopped on quit', async () => {
-  const t = deps([false, false, false, true]);
-  const service = await ensureService(t.d);
-  expect(service).toMatchObject({ ok: true, started: true });
-  expect(t.spawned).toEqual([{ argv: CMD, env: { ANDON_PORT: '9123' } }]);
-  expect(t.probes()).toBe(4);
-  service.stop();
-  service.stop();
-  expect(t.stops()).toBe(1);
-});
-
-test('AC4: retries are bounded, and giving up reports one line (its child is still stopped on quit)', async () => {
-  const t = deps([]);
-  const service = await ensureService(t.d);
-  expect(t.spawned).toHaveLength(1);
-  expect(t.probes()).toBe(6); // the first probe, then 5 retries
-  if (service.ok) throw new Error('expected a failure');
-  expect(service.reason).toBe('the service did not answer on http://127.0.0.1:9123 within 1s');
-  expect(service.reason).not.toContain('\n');
-  service.stop();
-  expect(t.stops()).toBe(1);
-});
-
-test('AC4: a spawn that throws is a one-line failure, with nothing to stop', async () => {
-  const t = deps([], {
-    spawn: () => {
-      throw new Error('ENOENT: no such file\nstack');
-    },
-  });
-  const service = await ensureService(t.d);
-  if (service.ok) throw new Error('expected a failure');
-  expect(service.reason).toBe('could not start the service (/bin/bun /repo/packages/andon-service/src/main.ts): ENOENT: no such file');
+  expect(await waitForService(t.d)).toEqual({ answered: true, waited: false });
+  expect(t.missing()).toBe(0);
   expect(t.probes()).toBe(1);
 });
 
-test('AC4: the probe is GET /projects, and only a 2xx counts', async () => {
+test('062 AC8: with no service, the notice shows once, and the app probes until the service answers', async () => {
+  const t = deps([false, false, false, true]);
+  expect(await waitForService(t.d)).toEqual({ answered: true, waited: true });
+  expect(t.missing()).toBe(1);
+  expect(t.probes()).toBe(4);
+  expect(t.slept).toEqual([PROBE_MS, PROBE_MS, PROBE_MS]);
+});
+
+test('062 AC8: quitting stops the probing', async () => {
+  let quit = false;
+  const t = deps([false, false], {
+    sleep: async () => {
+      quit = true;
+    },
+    cancelled: () => quit,
+  });
+  expect(await waitForService(t.d)).toEqual({ answered: false, waited: true });
+  expect(t.probes()).toBe(1);
+});
+
+test('062 AC8: the notice names factory service install, and the module starts nothing', () => {
+  expect(INSTALL_NOTICE).toContain('factory service install');
+  expect(INSTALL_NOTICE).not.toContain('\n');
+  const names = Object.keys(autostart);
+  for (const gone of ['ensureService', 'serviceCommand']) expect(names).not.toContain(gone);
+});
+
+test('the probe is GET /projects, and only a 2xx counts', async () => {
   const asked: string[] = [];
   const answer =
     (status: number | 'refused'): Http =>
