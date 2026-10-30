@@ -51,6 +51,8 @@ async function cutRelease(): Promise<void> {
   ]) gitIn(repo, 'config', k ?? '', v ?? '');
   await put('package.json', '{\n  "name": "factory",\n  "version": "0.1.0"\n}\n');
   await put('packages/templates/package.json', '{\n  "name": "@factory/templates",\n  "version": "0.1.0"\n}\n');
+  // The config `bun run release` reads its gate from: none configured, so the cut needs no gate.
+  await put('factory/config.json', '{ "schema": "factory/v1", "reviewers": ["code"], "maxRound": 2, "dashboard": { "settleAfterHours": 24 } }\n');
   gitIn(repo, 'add', '-A');
   gitIn(repo, 'commit', '--quiet', '-m', 'chore: seed');
   gitIn(repo, 'tag', '-a', 'v0.1.0', '-m', 'factory v0.1.0');
