@@ -45,6 +45,18 @@ Matt installs the factory on any of his machines (the Mac Studio, the Linux boxe
    self-upgrade steps check `factory --version` says `source` in this checkout.** Why: Matt
    treats the global install exactly as the link; one code path behaves the same everywhere,
    and the job skills keep calling the project's own `bun factory/cli.ts`.
+6. Pushing a release? → **A separate root script, `bun run release:push` (`bun run release`
+   itself still never pushes). It pushes `main`, `release`, and the newest version's `vX.Y.Z`
+   and `release-vX.Y.Z` tags to `origin` in one `git push --atomic`; never a force, never
+   `factory/archive` or any `factory/*` branch. It refuses, pushing nothing, with a one-line
+   reason: off `main` (or detached), a dirty tree, the newest `v*` tag without its
+   `release-v*` tag (no bundle), that version already on `origin` ("nothing to push"), or
+   `origin/main` holding commits the local `main` lacks (pushing would need a force). It runs as
+   promotion's last step, after the `chore(factory): promote …` commit, and prints each ref
+   pushed and the install line for that version
+   (`bun add -g github:mattmccray/factory#release-vX.Y.Z`).** Why: Matt wants one command for
+   the git steps of putting a release out; pushing stays his explicit act, so decision 14's
+   "the release script never pushes" holds.
 
 ## Facts (verified 2026-10-30, bun 1.4.2)
 - `bun add -g git+ssh://git@github.com/mattmccray/factory.git` installs the raw repo as one
@@ -61,10 +73,10 @@ Matt installs the factory on any of his machines (the Mac Studio, the Linux boxe
   `cli.ts`, and the contract text built into the bundle); a bundle entry with a `package.json`
   `bin: factory`, holding the CLI, the Andon service, and the built Andon UI; `bun run release`
   building it and committing it onto `release` with plumbing, tagged `release-vX.Y.Z`, writing
-  nothing on a failed build; `factory --version`; README "Install" and `docs/upgrade.md`
+  nothing on a failed build; `bun run release:push` (decision 6); `factory --version`; README "Install" and `docs/upgrade.md`
   rewritten around the global install (`cli:link` kept, for developing the factory);
   `docs/decisions.md` decisions 6 and 14 amended.
-- Out: an npm publish; any push (Matt pushes `main`, `release`, and the tags); the Mac app's
+- Out: an npm publish; any push other than `release:push`, which Matt runs; the Mac app's
   install; flipping the repo public; the service commands (brief
   `andon-service-install`); pruning the registry (brief `registry-prune`)
 
@@ -77,6 +89,9 @@ Matt installs the factory on any of his machines (the Mac Studio, the Linux boxe
   runs with no clone present: `factory --version` prints `factory <version> (release)`, and
   `factory init` then `factory doctor` in a fresh git repo install and pass, byte-identical to a
   source install of the same version.
+- `bun run release:push` against a local bare `origin` pushes `main`, `release`, and both tags
+  atomically and prints them with the install line; each refusal case pushes nothing and says
+  why, and a second run says "nothing to push".
 - `factory upgrade` from the global install replaces a project's managed core and leaves its
   overlay alone, as from source.
 - From source, `factory --version` prints `(source: <clone path>)`.
@@ -89,8 +104,9 @@ scope; public publishing stays deferred", approved by Matt on 2026-10-30. The jo
 
 "Decision 14 amended: `bun run release` also builds the self-contained bundle and commits it
 onto the `release` branch, tagged `release-vX.Y.Z` (decision 4 above); a failed build writes
-nothing", approved by Matt on 2026-10-30. The job updates `docs/decisions.md` decision 14 and
-`docs/upgrade.md`'s release steps to match.
+nothing; `bun run release:push` (decision 6) pushes a cut release, run by Matt as promotion's
+last step", approved by Matt on 2026-10-30. The job updates `docs/decisions.md` decision 14 and
+`docs/upgrade.md`'s release and self-upgrade steps to match.
 
 ## Open
 None.
