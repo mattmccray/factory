@@ -12,7 +12,8 @@ import type { HandoffMode, Settings } from './settings';
 import { ABOUT_ID, ABOUT_SIZE, GITHUB_URL, aboutWindow, DEFAULT_VIEW, GITHUB_ID, INSPECTOR_ID, MERGED_ID, MINIMIZE_ID, NEEDS_ME_ID, SETTINGS_ID, SETTINGS_SIZE, SETTLED_ID, SHOW_MAIN_ID, SIDEBAR_ID, STATUS_BAR_ID, WHATS_NEW_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
 import type { MenuState } from './appmenu';
 import { QUIT_ID, trayNotice, traySpec } from './badge';
-import { INSTALL_NOTICE } from './autostart';
+import { INSTALL_NOTICE, PROBE_MS } from './autostart';
+import { noServicePage } from './noservice';
 
 /** Which window ops fail. Mutable, so a test can heal the window between clicks. Each failing op is
  *  still recorded, then `getState` rejects and `restore`/`show` throw. */
@@ -53,6 +54,7 @@ function fakeApp(state: MacWinState | null, fail: Failures = {}): { app: MacApp;
     win: { open: (id) => calls.push(`win.open(${id})`) },
     setHideOnClose: () => calls.push('setHideOnClose'),
     quit: () => calls.push('quit'),
+    reload: async () => void calls.push('reload'),
     push: () => calls.push('push'),
     menu: { set: () => calls.push('menu.set'), update: () => calls.push('menu.update'), setContext: () => calls.push('menu.setContext') },
     store: {
@@ -284,6 +286,153 @@ test('062 AC8: backend.ts starts and stops no service: no spawn command for it, 
 test('the reload after starting the service (or on another port) keeps ?shell=mac', () => {
   expect(reloadScript(8766)).toBe('location.replace("http://127.0.0.1:8766/?shell=mac")');
   expect(reloadScript(9123)).toBe('location.replace("http://127.0.0.1:9123/?shell=mac")');
+});
+
+// ---- 071: the no-service page in the main window, and the switch to the board ----
+
+/** A curl that answers `GET /projects` with 200 `[]` while `up.on`, and is refused while not.
+ *  `GET /events` answers one `projects` event with no projects and stays open, so the started app shows its
+ *  tray and idles; anything else hangs. */
+function serviceCurl(up: { on: boolean }, spawned: string[][]): void {
+  Reflect.set(globalThis, '__ANDON_REPO__', REPO);
+  Reflect.set(globalThis, 'tjs', {
+    env: {},
+    spawn: (argv: string[]): FakeProcess => {
+      spawned.push(argv);
+      if (argv[0] !== 'curl') throw new Error(`unexpected spawn: ${argv.join(' ')}`);
+      const url = argv.at(-1) ?? '';
+      if (url.endsWith('/events') && up.on) {
+        const head = new TextEncoder().encode('HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\nevent: projects\ndata: {"projects":[]}\n\n');
+        return { stdout: new ReadableStream<Uint8Array>({ start: (c) => c.enqueue(head) }), kill: () => undefined, wait: never };
+      }
+      if (!url.endsWith('/projects')) return { stdout: new ReadableStream<Uint8Array>(), kill: () => undefined, wait: never };
+      if (!up.on) return { stdout: new ReadableStream<Uint8Array>({ start: (c) => c.close() }), kill: () => undefined, wait: async () => ({ exit_status: 7, term_signal: null }) };
+      const bytes = new TextEncoder().encode('HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n[]');
+      return {
+        stdout: new ReadableStream<Uint8Array>({ start: (c) => (c.enqueue(bytes), c.close()) }),
+        kill: () => undefined,
+        wait: async () => ({ exit_status: 0, term_signal: null }),
+      };
+    },
+  });
+}
+
+/** A fake app that records the main window's loads: `reload(html)` and `eval(js)`, plus the trays,
+ *  the Dock, and anything that would relaunch or reopen a window. */
+function windowApp(): { app: MacApp; reloads: (string | undefined)[]; evals: string[]; trays: MacTraySpec[]; icons: string[]; reopened: string[] } {
+  const reloads: (string | undefined)[] = [];
+  const evals: string[] = [];
+  const reopened: string[] = [];
+  const l = lanternApp();
+  const base = l.app.window;
+  l.app.window = (id) => ({ ...base(id), eval: (js) => void evals.push(`${id}:${js}`) });
+  l.app.reload = async (html) => void reloads.push(html);
+  l.app.quit = () => void reopened.push('quit');
+  l.app.win = { open: (id) => void reopened.push(`win.open(${id})`) };
+  return { app: l.app, reloads, evals, trays: l.trays, icons: l.icons, reopened };
+}
+
+/** Runs `fn` with the probe loop's PROBE_MS sleeps cut to 1ms (every other timer unchanged). */
+async function fastProbes<T>(fn: () => Promise<T>): Promise<T> {
+  const real = globalThis.setTimeout;
+  Reflect.set(globalThis, 'setTimeout', (cb: () => void, ms?: number) => real(cb, ms === PROBE_MS ? 1 : ms));
+  try {
+    return await fn();
+  } finally {
+    Reflect.set(globalThis, 'setTimeout', real);
+  }
+}
+
+const until = async (done: () => boolean): Promise<void> => {
+  for (let i = 0; i < 200 && !done(); i++) await new Promise((r) => setTimeout(r, 1));
+};
+
+const idleNotice = { ...trayNotice(INSTALL_NOTICE), icon: join(ASSETS, 'tray-idle.png'), template: true };
+
+test('071 AC3, AC4: the first miss loads the no-service page once; once the service answers, the board loads once and the app starts, with no relaunch', async () => {
+  const up = { on: false };
+  const spawned: string[][] = [];
+  serviceCurl(up, spawned);
+  const w = windowApp();
+  await fastProbes(async () => {
+    await logging(async () => {
+      init(w.app);
+      await until(() => w.reloads.length > 0);
+      // several probes miss: the page is still loaded only once
+      const probes = (): number => spawned.filter((a) => a.at(-1)?.endsWith('/projects') === true).length;
+      await until(() => probes() >= 4);
+      expect(probes()).toBeGreaterThanOrEqual(4);
+      // AC3
+      expect(w.reloads).toEqual([noServicePage()]);
+      expect(w.trays.at(-1)).toEqual(idleNotice);
+      expect(w.icons.every((p) => p === '')).toBe(true);
+      expect(w.evals).toEqual([]);
+      // AC4
+      up.on = true;
+      await until(() => w.evals.length > 0 && JSON.stringify(w.trays.at(-1)) !== JSON.stringify(idleNotice));
+      await settle();
+    });
+  });
+  expect(w.evals).toEqual([`main:${reloadScript(8766)}`]);
+  expect(w.reloads).toEqual([noServicePage()]);
+  expect(w.trays.at(-1)).not.toEqual(idleNotice); // startApp ran: the tray left the notice
+  expect(w.reopened).toEqual([]);
+  await onTray(QUIT_ID, w.app);
+});
+
+test('071 AC5: a service answering at the default port on the first probe loads neither the page nor the board', async () => {
+  const up = { on: true };
+  serviceCurl(up, []);
+  const w = windowApp();
+  await logging(async () => {
+    init(w.app);
+    await until(() => w.trays.length > 1);
+    await settle();
+  });
+  expect(w.trays.length).toBeGreaterThan(1); // the app started
+  expect(w.reloads).toEqual([]);
+  expect(w.evals).toEqual([]);
+  await onTray(QUIT_ID, w.app);
+});
+
+test('071 AC5: after Quit, or a newer init, while waiting, neither the board nor a later page loads', async () => {
+  for (const end of ['quit', 'init'] as const) {
+    const up = { on: false };
+    serviceCurl(up, []);
+    const first = windowApp();
+    const second = windowApp();
+    await fastProbes(async () => {
+      await logging(async () => {
+        init(first.app);
+        await until(() => first.reloads.length > 0);
+        if (end === 'quit') await onTray(QUIT_ID, first.app);
+        up.on = true; // the service answers: only a current lifecycle may act on it
+        if (end === 'init') init(second.app);
+        await settle();
+        await settle();
+      });
+    });
+    expect({ end, reloads: first.reloads.length, evals: first.evals }).toEqual({ end, reloads: 1, evals: [] });
+    if (end === 'init') {
+      // the newer lifecycle's probe answered at once, at the default port: no page, no board reload
+      expect(second.reloads).toEqual([]);
+      expect(second.evals).toEqual([]);
+      await onTray(QUIT_ID, second.app);
+    }
+  }
+});
+
+test('071 AC5: a Quit before the first miss loads no page', async () => {
+  const up = { on: false };
+  serviceCurl(up, []);
+  const w = windowApp();
+  await logging(async () => {
+    init(w.app);
+    await onTray(QUIT_ID, w.app); // before the first probe settles
+    await settle();
+  });
+  expect(w.reloads).toEqual([]);
+  expect(w.evals).toEqual([]);
 });
 
 // ---- the app menu ----

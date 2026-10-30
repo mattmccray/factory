@@ -1,7 +1,7 @@
 // The Tiny JS backend adapter: the only file that touches Tiny or txiki.js. It wires the Mac app's
 // runtime-neutral logic (app.ts, autostart.ts, appmenu.ts) to Tiny's `app.tray`, `app.icon`,
 // `app.badge`, `app.notify`, `app.menu`, `app.store`, `app.push`, `app.shell`, `app.clipboard`,
-// `app.thumbnail` (the Open in apps' icons), the
+// `app.thumbnail` (the Open in apps' icons), `app.reload` (the no-service page: see noservice.ts), the
 // `app.win.open` and `app.windows` (the Settings and About windows), the `onTray`, `onMenu`, `onNavigate`, and
 // `onContextMenu` hooks, and the eight custom `api` methods, and to
 // txiki's `tjs.spawn`, `tjs.stat`, and `tjs.remove` (for curl: see curl.ts, for a project's
@@ -34,6 +34,7 @@ import { boardPath } from './follow';
 import { NOT_ON_BOARD, NO_SESSION, boardJob, copyFailureText, isJobItemId, jobMenuItems, jobMenuRequest, jobSession, openFailureText, parseJobItemId, threadLink } from './jobmenu';
 import type { DockLook } from './lantern';
 import { startApp } from './app';
+import { noServicePage, windowLoad } from './noservice';
 import type { App } from './app';
 import { bringBackAction, oneAtATime, trayClickAction } from './trayclick';
 import {
@@ -86,7 +87,7 @@ export type MacWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpace
 /** The backend `app` object Tiny passes to `init` and the hooks, narrowed to what the Mac app uses.
  *  `icon('')` resets the Dock icon to the bundle icon, `badge('')` clears the badge, and `done`
  *  settles when the launcher closes (⌘Q, or the app menu's Quit). */
-export type MacApp = Pick<TinyApp, 'icon' | 'badge' | 'notify' | 'setHideOnClose' | 'quit' | 'push' | 'windows' | 'thumbnail'> &
+export type MacApp = Pick<TinyApp, 'icon' | 'badge' | 'notify' | 'setHideOnClose' | 'quit' | 'push' | 'windows' | 'thumbnail' | 'reload'> &
   Partial<Pick<TinyApp, 'done'>> & {
     tray: Pick<TinyApp['tray'], 'set'>;
     menu: Pick<TinyApp['menu'], 'set' | 'update' | 'setContext'>;
@@ -170,6 +171,16 @@ function curlHttp(base: string): Http {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Loads the no-service page into the main window in place of the page that failed. Settles either
+ *  way: a failed load is logged, and the board still loads once the service answers. */
+async function showNoServicePage(app: MacApp): Promise<void> {
+  try {
+    await app.reload(noServicePage());
+  } catch (err) {
+    console.log(`andon: could not show the no-service page (${String(err)})`);
+  }
+}
 
 /** The script that reloads the main window onto the service's page, in Mac-app mode. */
 export const reloadScript = (port: number): string => `location.replace(${JSON.stringify(pageUrl(port))})`;
@@ -295,21 +306,27 @@ export function init(app: MacApp): void {
   void app.done?.then(stopAll, stopAll);
 
   void (async () => {
-    // The Mac app starts no service: with none answering, it shows the install notice and probes
-    // until one does (after `factory service install`, or `factory service start`).
+    // The Mac app starts no service: with none answering, it shows the install notice in the tray
+    // and the no-service page in the window, and probes until one does (after `factory service
+    // install`, or `factory service start`).
+    const current = (): boolean => !quitting && mine === lifecycle;
+    let page: Promise<void> = Promise.resolve();
     const found = await waitForService({
       probe: () => probeService(http),
       sleep,
-      cancelled: () => quitting || mine !== lifecycle,
+      cancelled: () => !current(),
       missing: () => {
         console.log(`andon: ${INSTALL_NOTICE}`);
         showNotice(app, repo, INSTALL_NOTICE);
+        if (windowLoad({ kind: 'miss' }, current()) === 'page') page = showNoServicePage(app);
       },
     });
-    if (!found.answered || quitting || mine !== lifecycle) return;
-    // The window loaded tinyjs.json's URL before the service answered (or on another port): load it
-    // now, keeping `?shell=mac` so the page keeps its Mac frame.
-    if (found.waited || port !== DEFAULT_PORT) app.window('main').eval(reloadScript(port));
+    if (!found.answered || !current()) return;
+    await page; // the board replaces the page only once the page has loaded
+    if (!current()) return;
+    // The window loaded tinyjs.json's URL (or the no-service page) before the service answered, or
+    // on another port: load the board now, keeping `?shell=mac` so the page keeps its Mac frame.
+    if (windowLoad({ kind: 'done', found, port }, true) === 'board') app.window('main').eval(reloadScript(port));
     andon = startApp({
       http,
       tray: (spec, running) => setTray(app, repo, spec, running),
