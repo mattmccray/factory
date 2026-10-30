@@ -240,10 +240,10 @@ describe('stamp (AC6)', () => {
 });
 
 describe('version and manifest (AC5)', () => {
-  test('VERSION is package.json version, 0.1.0', async () => {
+  test('VERSION is package.json version, a valid X.Y.Z (the release version, never pinned here)', async () => {
     const pkg: unknown = JSON.parse(await readFile(join(import.meta.dir, '..', 'package.json'), 'utf8'));
     expect(typeof pkg === 'object' && pkg !== null && 'version' in pkg ? pkg.version : undefined).toBe(VERSION);
-    expect(VERSION).toBe('0.1.0');
+    expect(VERSION).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
   test('the manifest parses and hashes each file\'s UTF-8 bytes', () => {
