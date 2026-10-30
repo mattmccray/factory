@@ -3,13 +3,13 @@
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { getAbout, api, startWork, assetPath, checkApps, checkFound, dockIcon, findAppBundle, findT3, lookupIcon, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runJobItem, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, setViewState, showProjectMenu, trayIcon } from './backend';
+import { closeAbout, getAbout, api, startWork, assetPath, checkApps, checkFound, dockIcon, findAppBundle, findT3, lookupIcon, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runJobItem, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, setViewState, showProjectMenu, trayIcon } from './backend';
 import type { HandoffHost, JobMenuHost, StartWorkHost, MacApp, MacNavEvent, MacTraySpec, MacWinState, RunResult } from './backend';
 import { itemId, projectMenuItems } from './projectmenu';
 import { jobItemId, jobMenuItems } from './jobmenu';
 import type { Availability, MenuProject } from './projectmenu';
 import type { HandoffMode, Settings } from './settings';
-import { ABOUT_ID, ABOUT_SIZE, GITHUB_URL, aboutWindow, DEFAULT_VIEW, GITHUB_ID, INSPECTOR_ID, MERGED_ID, MINIMIZE_ID, NEEDS_ME_ID, SETTINGS_ID, SETTINGS_SIZE, SETTLED_ID, SHOW_MAIN_ID, SIDEBAR_ID, STATUS_BAR_ID, WHATS_NEW_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
+import { ABOUT_ID, ABOUT_SIZE, CLOSE_WINDOW_ID, GITHUB_URL, aboutWindow, DEFAULT_VIEW, GITHUB_ID, INSPECTOR_ID, MERGED_ID, MINIMIZE_ID, NEEDS_ME_ID, SETTINGS_ID, SETTINGS_SIZE, SETTLED_ID, SHOW_MAIN_ID, SIDEBAR_ID, STATUS_BAR_ID, WHATS_NEW_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
 import type { MenuState } from './appmenu';
 import { QUIT_ID, trayNotice, traySpec } from './badge';
 import { INSTALL_NOTICE, PROBE_MS } from './autostart';
@@ -49,6 +49,8 @@ function fakeApp(state: MacWinState | null, fail: Failures = {}): { app: MacApp;
       minimize: () => calls.push(`${id}.minimize`),
       zoom: () => calls.push(`${id}.zoom`),
       setResizable: (on) => calls.push(`${id}.resizable(${on})`),
+      close: () => calls.push(`${id}.close`),
+      hide: (opts) => calls.push(`${id}.hide(${JSON.stringify(opts)})`),
     }),
     windows: async () => ['main'],
     win: { open: (id) => calls.push(`win.open(${id})`) },
@@ -85,8 +87,8 @@ function fakeApp(state: MacWinState | null, fail: Failures = {}): { app: MacApp;
 
 // The tray click reads only `minimized`, `fullscreen`, and `allSpaces`; Tiny's `visible` and `focused`
 // play no part in it (rework 2), so a window in front and one hidden look the same to it. Settings…'s
-// bring-back step also reads `visible` (037).
-const st = (minimized: boolean, fullscreen = false, visible = true): MacWinState => ({ minimized, fullscreen, allSpaces: false, visible });
+// bring-back step also reads `visible` (037). Close Window reads `focused` (073), set per window by menuApp's `focus`.
+const st = (minimized: boolean, fullscreen = false, visible = true): MacWinState => ({ minimized, fullscreen, allSpaces: false, visible, focused: false });
 /** Show on the Space the user is on: join every Space, show, then pin it back to one. */
 const showHere = (...mid: string[]): string[] => ['main.getState', 'main.allSpaces(true)', ...mid, 'main.show', 'main.allSpaces(false)'];
 
@@ -439,10 +441,12 @@ test('071 AC5: a Quit before the first miss loads no page', async () => {
 
 /** The main window's state as the menu fake reports it: a state, null, or `'fail'` (`getState` rejects). */
 type MainState = { current: MacWinState | null | 'fail' };
+/** Which windows report `focused: true` (073): every window reads main's state, with its own focus. */
+type FocusState = { ids: Set<string> };
 
 /** A fake app that records the menu bar, the store, the pushes, and the shell, with `stored` as the
  *  status bar choice in the store, and `main.current` as the main window's state. */
-function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<string, unknown>; open: Set<string>; main: MainState } {
+function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<string, unknown>; open: Set<string>; main: MainState; focus: FocusState } {
   const log: unknown[][] = [];
   const store = new Map<string, unknown>([['statusBarHidden', stored]]);
   const { app } = fakeApp(st(false));
@@ -460,6 +464,7 @@ function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<s
     },
   };
   app.push = (event, data) => void log.push(['push', event, data]);
+  app.quit = () => void log.push(['quit']);
   app.shell = {
     open: async (target) => {
       log.push(['shell.open', target]);
@@ -471,11 +476,12 @@ function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<s
     },
   };
   const main: MainState = { current: st(false) };
+  const focus: FocusState = { ids: new Set() };
   app.window = (id) => ({
     getState: async () => {
       const state = main.current;
       if (state === 'fail') throw new Error(`${id}.getState failed`);
-      return state;
+      return state === null ? null : { ...state, focused: focus.ids.has(id) };
     },
     restore: () => log.push([`${id}.restore`]),
     setAllSpaces: (on) => log.push([`${id}.allSpaces`, on]),
@@ -484,6 +490,11 @@ function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<s
     minimize: () => log.push([`${id}.minimize`]),
     zoom: () => log.push([`${id}.zoom`]),
     setResizable: (on) => log.push([`${id}.resizable`, on]),
+    close: () => {
+      open.delete(id);
+      log.push([`${id}.close`]);
+    },
+    hide: (opts) => log.push([`${id}.hide`, opts]),
   });
   const open = new Set<string>(['main']);
   app.windows = async () => [...open];
@@ -493,7 +504,7 @@ function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<s
       log.push(['win.open', id, opts]);
     },
   };
-  return { app, log, store, open, main };
+  return { app, log, store, open, main, focus };
 }
 
 /** init, with the service never answering, then let the stored choice be read. */
@@ -635,7 +646,7 @@ test('065 AC2: About Andon opens the About window on the service port, not resiz
   m.log.length = 0;
   await onMenu(ABOUT_ID, m.app);
   expect(m.log).toEqual([
-    ['win.open', 'about', { page: 'http://127.0.0.1:8766/?shell=mac&view=about', title: 'About Andon', size: ABOUT_SIZE, minSize: ABOUT_SIZE, chrome: { frame: true, windowControls: ['close'] } }],
+    ['win.open', 'about', { page: 'http://127.0.0.1:8766/?shell=mac&view=about', title: 'About Andon', size: ABOUT_SIZE, minSize: ABOUT_SIZE, chrome: { frame: false, windowControls: ['close'] }, parent: 'main' }],
     ['about.resizable', false],
   ]);
   m.log.length = 0;
@@ -654,18 +665,149 @@ test('065 AC2: the About window loads from the port init resolved, and two quick
   expect(m.log.filter((e) => e[0] === 'win.open')).toEqual([['win.open', 'about', aboutWindow(9123)]]);
 });
 
-test('065 AC2: About leaves the main window alone, and opens again once closed', async () => {
-  for (const state of [st(false, false, false), st(true, false, false)]) {
-    const m = await initMenu(null);
+// ---- About Andon brings the main window back first (073) ----
+
+const aboutOpen = (port = 8766): unknown[] => ['win.open', 'about', aboutWindow(port)];
+
+test('073 AC2: with the main window up, About Andon opens About and leaves main alone; it opens again once closed', async () => {
+  const m = await initMenu(null);
+  m.main.current = st(false, false, true);
+  m.log.length = 0;
+  await onMenu(ABOUT_ID, m.app);
+  expect(m.log).toEqual([aboutOpen(), ['about.resizable', false]]);
+  m.open.delete('about');
+  m.log.length = 0;
+  await onMenu(ABOUT_ID, m.app);
+  expect(m.log).toEqual([aboutOpen(), ['about.resizable', false]]);
+});
+
+test('073 AC2: with the main window hidden, About Andon shows it, then opens About; once open, shows main, then About', async () => {
+  const m = await initMenu(null);
+  m.main.current = st(false, false, false);
+  m.log.length = 0;
+  await onMenu(ABOUT_ID, m.app);
+  expect(m.log).toEqual([['main.show'], aboutOpen(), ['about.resizable', false]]);
+  m.log.length = 0;
+  await onMenu(ABOUT_ID, m.app);
+  expect(m.log).toEqual([['main.show'], ['about.show']]);
+});
+
+test('073 AC2: with the main window minimized, About Andon restores and shows it, then opens About; once open, then shows About', async () => {
+  const m = await initMenu(null);
+  m.main.current = st(true, false, false);
+  m.log.length = 0;
+  await onMenu(ABOUT_ID, m.app);
+  expect(m.log).toEqual([['main.restore'], ['main.show'], aboutOpen(), ['about.resizable', false]]);
+  m.log.length = 0;
+  await onMenu(ABOUT_ID, m.app);
+  expect(m.log).toEqual([['main.restore'], ['main.show'], ['about.show']]);
+});
+
+test('073 AC2: with About open, About Andon never opens a second window: main is brought back, then About shown and focused', async () => {
+  const m = await initMenu(null);
+  await onMenu(ABOUT_ID, m.app);
+  for (const state of [st(false, false, false), st(true, false, false), st(false, false, true)]) {
     m.main.current = state;
     m.log.length = 0;
     await onMenu(ABOUT_ID, m.app);
-    expect(m.log.some((e) => typeof e[0] === 'string' && e[0].startsWith('main.'))).toBe(false);
-    m.open.delete('about');
+    expect(m.log.filter((e) => e[0] === 'win.open')).toEqual([]);
+    expect(m.log.at(-1)).toEqual(['about.show']);
+    expect(m.log.filter((e) => e[0] === 'about.show')).toHaveLength(1);
+  }
+});
+
+test('073 AC2: when the main window state cannot be read (rejects or null), About Andon shows main, no restore, and still opens or shows About', async () => {
+  for (const current of ['fail', null] as const) {
+    const m = await initMenu(null);
+    m.main.current = current;
     m.log.length = 0;
     await onMenu(ABOUT_ID, m.app);
-    expect(m.log.map((e) => e[0])).toEqual(['win.open', 'about.resizable']);
+    expect(m.log).toEqual([['main.show'], aboutOpen(), ['about.resizable', false]]);
+    m.log.length = 0;
+    await onMenu(ABOUT_ID, m.app);
+    expect(m.log).toEqual([['main.show'], ['about.show']]);
   }
+});
+
+test('073 AC2: two quick clicks with the main window minimized open one About window and bring main back once', async () => {
+  const m = await initMenu(null);
+  m.main.current = st(true, false, false);
+  m.log.length = 0;
+  await Promise.all([onMenu(ABOUT_ID, m.app), onMenu(ABOUT_ID, m.app)]);
+  expect(m.log).toEqual([['main.restore'], ['main.show'], aboutOpen(), ['about.resizable', false]]);
+});
+
+// ---- File → Close Window (073) ----
+
+/** The menu app with main, Settings, and About open, the main window up, and `focused` the windows reporting focus. */
+async function closeApp(focused: string[]): Promise<ReturnType<typeof menuApp>> {
+  const m = await initMenu(null);
+  m.open.add('settings');
+  m.open.add('about');
+  for (const id of focused) m.focus.ids.add(id);
+  m.log.length = 0;
+  return m;
+}
+const closes = (log: unknown[][]): unknown[][] => log.filter((e) => typeof e[0] === 'string' && /\.(close|hide|show|restore|minimize)$|^quit$/.test(e[0]));
+
+test('073 AC4: with Settings focused, Close Window closes only Settings', async () => {
+  const m = await closeApp(['settings']);
+  await onMenu(CLOSE_WINDOW_ID, m.app);
+  expect(closes(m.log)).toEqual([['settings.close']]);
+  expect([...m.open].sort()).toEqual(['about', 'main']);
+});
+
+test('073 AC4: with About focused, Close Window closes only About', async () => {
+  const m = await closeApp(['about']);
+  await onMenu(CLOSE_WINDOW_ID, m.app);
+  expect(closes(m.log)).toEqual([['about.close']]);
+  expect([...m.open].sort()).toEqual(['main', 'settings']);
+});
+
+test('073 AC4: with main focused, Close Window hides main alone (as its close button does), never closing or quitting it', async () => {
+  const m = await closeApp(['main']);
+  await onMenu(CLOSE_WINDOW_ID, m.app);
+  expect(closes(m.log)).toEqual([['main.hide', { app: false }]]);
+  expect(m.log.some((e) => e[0] === 'main.close' || e[0] === 'quit')).toBe(false);
+  expect(m.open.has('main')).toBe(true);
+  // with only main open, too
+  const only = await initMenu(null);
+  only.focus.ids.add('main');
+  only.log.length = 0;
+  await onMenu(CLOSE_WINDOW_ID, only.app);
+  expect(closes(only.log)).toEqual([['main.hide', { app: false }]]);
+});
+
+test('073 AC4: with no Andon window focused, Close Window does nothing', async () => {
+  const m = await closeApp([]);
+  await onMenu(CLOSE_WINDOW_ID, m.app);
+  expect(closes(m.log)).toEqual([]);
+  expect([...m.open].sort()).toEqual(['about', 'main', 'settings']);
+});
+
+test('073 AC4: with the window state unreadable (rejects or null), or the windows unlisted, Close Window does nothing', async () => {
+  for (const current of ['fail', null] as const) {
+    const m = await closeApp(['settings', 'about', 'main']);
+    m.main.current = current;
+    await onMenu(CLOSE_WINDOW_ID, m.app);
+    expect({ current, log: closes(m.log) }).toEqual({ current, log: [] });
+  }
+  const m = await closeApp(['about']);
+  m.app.windows = async () => {
+    throw new Error('no windows');
+  };
+  await onMenu(CLOSE_WINDOW_ID, m.app);
+  expect(closes(m.log)).toEqual([]);
+});
+
+test('073 AC4: a window not open, or not an Andon window, is never read or closed', async () => {
+  const m = await initMenu(null);
+  m.open.add('other');
+  m.focus.ids.add('other');
+  m.focus.ids.add('about'); // reports focus, but it isn't open
+  m.log.length = 0;
+  await onMenu(CLOSE_WINDOW_ID, m.app);
+  expect(closes(m.log)).toEqual([]);
 });
 
 const ABOUT_META = { window: 'about', origin: 'http://127.0.0.1:8766' };
@@ -692,6 +834,33 @@ test('065 AC3: from any window but About (main, Settings, none), getAbout answer
   for (const meta of [{ window: 'main' }, { window: 'settings' }, { window: 'other' }, { window: 'About' }, {}, null, undefined, 'about']) {
     expect({ meta, r: await getAbout(meta) }).toEqual({ meta, r: null });
     expect({ meta, r: await api.getAbout({ window: 'about' }, m.app, meta) }).toEqual({ meta, r: null });
+  }
+  expect(m.log).toEqual([]);
+});
+
+test('073 AC5: closeAbout from the About window, with no params, closes only the About window', async () => {
+  for (const params of [null, undefined]) {
+    const m = menuApp(null);
+    m.open.add('about');
+    m.open.add('settings');
+    expect(await closeAbout(params, m.app, ABOUT_META)).toBe(true);
+    expect(m.log).toEqual([['about.close']]);
+    m.open.add('about');
+    m.log.length = 0;
+    expect(await api.closeAbout(params, m.app, ABOUT_META)).toBe(true);
+    expect(m.log).toEqual([['about.close']]);
+  }
+});
+
+test('073 AC5: closeAbout from any window but About, with malformed meta, or with params supplied, closes nothing', async () => {
+  const m = menuApp(null);
+  m.open.add('about');
+  for (const meta of [{ window: 'main' }, { window: 'settings' }, { window: 'other' }, { window: 'About' }, {}, null, undefined, 'about', ['about']]) {
+    expect({ meta, r: await closeAbout(null, m.app, meta) }).toEqual({ meta, r: false });
+    expect({ meta, r: await api.closeAbout({ window: 'about' }, m.app, meta) }).toEqual({ meta, r: false });
+  }
+  for (const params of [{}, { window: 'about' }, 'about', 0, false, [], ['main']]) {
+    expect({ params, r: await closeAbout(params, m.app, ABOUT_META) }).toEqual({ params, r: false });
   }
   expect(m.log).toEqual([]);
 });
@@ -1185,7 +1354,7 @@ test("AC2: a newer request wins over an older one's slower app check", async () 
 });
 
 test('AC2: the api names its methods, and with the app not following the service it lists no project', async () => {
-  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout', 'startWork']);
+  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout', 'startWork', 'closeAbout']);
   fakeMachine([], []);
   const { app, log } = contextApp();
   await api.projectMenu({ project: PID }, app);

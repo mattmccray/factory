@@ -1,5 +1,6 @@
 // The Mac app's menu bar: Andon (About Andon, which opens the About window in place of the stock
-// About panel, and Settings…, which opens the Settings window), the stock Edit menu,
+// About panel, and Settings…, which opens the Settings window), File (Close Window, ⌘W, which closes
+// Settings or About or hides the main window, whichever is focused), the stock Edit menu,
 // View (the board's view toggles: Needs Me, the Settled and Backlog sheets, the sidebar, the inspector, the status
 // bar, and the Merged column; labels flip, Finder-style, to name what choosing them does), Window (Minimize, Zoom, Andon), and Help (What's New, which shows the
 // main window and asks the board to open its What's New sheet, and the project on GitHub).
@@ -37,6 +38,7 @@ export type PageEvent = typeof NEEDS_ME_EVENT | typeof SETTLED_EVENT | typeof BA
  *  it fires here instead of showing the stock About panel. */
 export const ABOUT_ID = 'about';
 export const SETTINGS_ID = 'settings';
+export const CLOSE_WINDOW_ID = 'closewindow';
 export const STATUS_BAR_ID = 'statusbar';
 export const NEEDS_ME_ID = 'needsme';
 export const SETTLED_ID = 'settled';
@@ -123,10 +125,16 @@ export function viewLabelUpdates(prev: ViewState, next: ViewState): Array<{ id: 
   return out;
 }
 
+/** The File menu, in order: Close Window (⌘W). New items go in this list (no other menu moves). */
+export function fileMenu(): MenuItem[] {
+  return [{ id: CLOSE_WINDOW_ID, label: 'Close Window', key: 'w' }];
+}
+
 /** The whole menu bar, in bar order, for a state. */
 export function appMenu(s: MenuState): Menu[] {
   return [
     { role: 'app', items: [{ id: SETTINGS_ID, label: 'Settings…', key: ',', enabled: true }] },
+    { title: 'File', items: fileMenu() },
     { role: 'edit' },
     { title: 'View', items: viewMenu(s) },
     {
@@ -141,6 +149,7 @@ export function appMenu(s: MenuState): Menu[] {
 export type MenuAction =
   | { kind: 'open-about' }
   | { kind: 'open-settings' }
+  | { kind: 'close-window' } // close the focused Settings or About window, or hide the focused main window
   | { kind: 'toggle-status-bar' }
   | { kind: 'toggle-merged' }
   | { kind: 'page'; event: PageEvent; show: boolean } // push `event` to the page; `show`: show the main window first
@@ -157,6 +166,8 @@ export function menuAction(id: string): MenuAction | null {
       return { kind: 'open-about' };
     case SETTINGS_ID:
       return { kind: 'open-settings' };
+    case CLOSE_WINDOW_ID:
+      return { kind: 'close-window' };
     case STATUS_BAR_ID:
       return { kind: 'toggle-status-bar' };
     case MERGED_ID:
@@ -200,6 +211,23 @@ export const mergedPayload = (hidden: boolean): { hidden: boolean } => ({ hidden
 
 /** The payload of a page action event: nothing to carry, the page toggles (or opens) on its own state. */
 export const pageEventPayload = (): Record<string, never> => ({});
+
+/** What Close Window does to a window: `close` Settings or About, `hide` the main window (as its
+ *  close button does: Andon never quits from it). */
+export interface CloseStep {
+  id: string;
+  step: 'close' | 'hide';
+}
+
+/** Close Window's target, from the ids of the open windows that report focus: the one Andon window
+ *  among them (main, Settings, or About). None, or more than one, is null: nothing happens, never a
+ *  guess. */
+export function closeWindowStep(focused: readonly string[]): CloseStep | null {
+  const ours = focused.filter((id) => id === 'main' || id === SETTINGS_WINDOW_ID || id === ABOUT_WINDOW_ID);
+  const [id] = ours;
+  if (ours.length !== 1 || id === undefined) return null;
+  return { id, step: id === 'main' ? 'hide' : 'close' };
+}
 
 // ---- the Settings window ----
 
@@ -257,16 +285,20 @@ export interface AboutWindowOptions {
   title: string;
   size: string;
   minSize: string;
-  chrome: { frame: true; windowControls: ['close'] };
+  chrome: { frame: false; windowControls: ['close'] };
+  parent: 'main';
 }
 
-/** How the About window opens: a standard titled frame with only the close button (nothing to
- *  minimize or zoom in a fixed-size window), the about page on the service's port, at its fixed
- *  size. Not a child of the main window: it stands on its own, and the main window is unaffected. */
+/** How the About window opens: frameless, so the art runs to the top edge (its page makes the art
+ *  band the drag area), with only the close button, at Tiny's default spot over the art (nothing to
+ *  minimize or zoom in a fixed-size window); the about page on the service's port, at its fixed
+ *  size, as a child of the main window, as Settings is: it stays above the board and moves, hides,
+ *  and minimizes with it. `parent` is open-time only in Tiny, so it is here, not set afterward. */
 export const aboutWindow = (port: number): AboutWindowOptions => ({
   page: aboutUrl(port),
   title: ABOUT_TITLE,
   size: ABOUT_SIZE,
   minSize: ABOUT_SIZE,
-  chrome: { frame: true, windowControls: ['close'] },
+  chrome: { frame: false, windowControls: ['close'] },
+  parent: 'main',
 });
