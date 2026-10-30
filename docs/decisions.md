@@ -35,6 +35,12 @@ contract is `docs/contract/v1.md`.
 6. **Personal now, publishable later.** Keep the contract and the boundary between managed
    files and overlay clean enough that publishing never needs a rewrite. Don't spend effort on
    public polish yet.
+   - Amended 2026-10-30 (approved by Matt; brief `factory/briefs/cli-global-install.md`):
+     installable from GitHub on Matt's own machines (macOS and Linux) is in scope:
+     `bun add -g github:mattmccray/factory#release` installs the release bundle (decision 14).
+     Public publishing stays deferred: no npm registry, no name-collision work, no docs site, no
+     public polish. The bundle is shaped like a package (a `package.json` with `bin: factory`),
+     so an npm publish later is only a publish.
 7. **Names:**
    - "factory" is the contract identifier: `/factory`, a `factory/` folder in each project,
      a `factory` CLI, and `schema: "factory/v1"`;
@@ -151,6 +157,20 @@ contract is `docs/contract/v1.md`.
       and section and changes nothing. A non-Conventional first-parent subject is skipped and
       named. It commits `chore(release): vX.Y.Z`, tags `vX.Y.Z` annotated (`factory vX.Y.Z`),
       and never pushes or runs `factory upgrade`.
+    - Amended 2026-10-30 (approved by Matt; brief `factory/briefs/cli-global-install.md`):
+      `bun run release` also builds the self-contained release bundle (`scripts/bundle.ts`: the
+      CLI with the rendered installed CLI and the contract built in, the Andon service, the built
+      Andon UI, `CHANGELOG.md`, and a `package.json` with `bin: factory`), from the tree it is
+      about to commit and before it writes anything, so a failed build writes nothing: no
+      commit, no tag, no `release` change, and a version never exists without its bundle. After
+      the `vX.Y.Z` tag, it commits the bundle onto the `release` branch with git plumbing (never
+      moving the checkout), each commit naming the `main` commit it was built from, and tags it
+      `release-vX.Y.Z` (annotated). The branch and tags stay out of the `factory/` namespace,
+      and no tag has a `/`. `bun run release:push` (`scripts/release-push.ts`), run by Matt as
+      promotion's last step after the `chore(factory): promote …` commit, pushes `main`,
+      `release`, `vX.Y.Z`, and `release-vX.Y.Z` to `origin` in one `git push --atomic`, never
+      forced and never a `factory/*` ref, and prints the install line; `bun run release`
+      itself still never pushes.
 
 ## Invariants
 

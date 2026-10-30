@@ -9,6 +9,7 @@ import { addRoot, parseConfig, parseManifest } from '@factory/contract';
 import type { Config, Manifest } from '@factory/contract';
 import { VERSION } from '@factory/templates';
 import { buildRelease } from './bundle';
+import type { ReleaseFiles } from './bundle';
 import { isNotFound, locate, protectedReason } from './paths';
 
 export interface InstallOptions {
@@ -16,6 +17,8 @@ export interface InstallOptions {
   stdout: (line: string) => void;
   /** The Andon registry file (`$ANDON_HOME/projects.json`) `init` registers the project in. Absent: no registration. */
   registry?: string;
+  /** Where the installed CLI and contract come from: this source tree (the default) or the release bundle's baked files. */
+  from?: ReleaseFiles;
 }
 
 /** The config `init` writes when the project has none. `/factory customize` will own this later. */
@@ -160,7 +163,7 @@ export async function init(root: string, opts: InstallOptions): Promise<void> {
   if ((await readOrNull(manifestAt)) !== null) throw new Error(`init: ${MANIFEST} exists: this project is installed, use upgrade`);
   const configAt = await place(repo, CONFIG, 'init', false);
   const { config, text: configText } = await readConfig('init', configAt);
-  const files = await buildRelease(config);
+  const files = await buildRelease(config, opts.from);
   const { writes, existing } = await planWrites(repo, files, 'init');
   const conflicts = differing(existing, files);
   if (conflicts.length > 0 && !opts.force) {
@@ -206,7 +209,7 @@ export async function upgrade(root: string, opts: InstallOptions): Promise<void>
   // pristine (present, matching its hash) unless --force.
   const deletes: Array<{ rel: string; at: string }> = [];
   const edited: string[] = [];
-  const files = await buildRelease(config);
+  const files = await buildRelease(config, opts.from);
   for (const [rel, want] of Object.entries(old.files)) {
     const at = await place(repo, rel, 'upgrade', true);
     const cur = await readOrNull(at).catch((e: unknown) => {

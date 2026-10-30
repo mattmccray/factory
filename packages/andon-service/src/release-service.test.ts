@@ -85,8 +85,8 @@ async function makeProject(name: string, managed?: string): Promise<string> {
   return root;
 }
 
-const start = async (cloneRoot?: string): Promise<Service> => {
-  service = await startService({ port: 0, registryPath: registry, log: () => undefined, ...(cloneRoot === undefined ? {} : { cloneRoot }) });
+const start = async (cloneRoot?: string, versionFile?: string): Promise<Service> => {
+  service = await startService({ port: 0, registryPath: registry, log: () => undefined, ...(cloneRoot === undefined ? {} : { cloneRoot }), ...(versionFile === undefined ? {} : { versionFile }) });
   return service;
 };
 
@@ -334,6 +334,27 @@ async function snapshot(dir: string): Promise<Record<string, string>> {
   await walk('');
   return out;
 }
+
+describe('the release bundle as the tree it runs in (060 AC7)', () => {
+  test('versionFile package.json: GET /release and the release event read the bundle root\'s package.json', async () => {
+    const bundle = join(tmp, 'bundle');
+    await writeAt(join(bundle, 'package.json'), JSON.stringify({ name: 'factory', version: '0.2.0', bin: { factory: 'bin/factory.js' } }));
+    await writeFile(join(bundle, 'CHANGELOG.md'), CHANGELOG);
+    const a = await makeProject('alpha', manifest('0.1.0'));
+    const { url } = await start(bundle, 'package.json');
+    expect((await get(`${url}/release`)).body).toEqual({ running: '0.2.0', onDisk: '0.2.0', changelog: PARSED });
+    expect(releaseOf((await get(`${url}/projects`)).body, a)).toEqual({ installed: '0.1.0', state: 'behind' });
+
+    const client = await connect(url);
+    await client.next((e) => e.event === 'release');
+    await quiet(client);
+    const from = client.seen.length;
+    await writeFile(join(bundle, 'package.json'), JSON.stringify({ name: 'factory', version: '0.3.0' }));
+    const bumped = await client.next((e) => e.event === 'release' && field(e.data, 'onDisk') === '0.3.0', from);
+    expect(bumped.data).toEqual({ running: '0.2.0', onDisk: '0.3.0', changelog: PARSED });
+    client.close();
+  });
+});
 
 describe('guards and read-only (AC6)', () => {
   test('a foreign Host or Origin is a 403, a non-GET is a 405, a 200 is no-store, and nothing is written', async () => {

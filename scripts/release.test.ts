@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { gitIn } from '../packages/cli/src/gitrepo';
-import { type Entry, areaOf, bump, collect, formatSection, parseSubject, prependChangelog, release, setVersion } from './release';
+import { type BuildBundle, type Entry, areaOf, buildWithScript, bump, collect, formatSection, parseSubject, prependChangelog, release, setVersion } from './release';
 
 const TODAY = '2026-10-29';
 
@@ -90,7 +90,18 @@ async function snapshot(): Promise<Record<string, string>> {
   };
 }
 
-const run = (dryRun = false) => release(repo, { dryRun, today: TODAY });
+// A stand-in bundle builder for these synthetic repos (scripts/bundle.test.ts builds the real one):
+// a package.json with bin.factory at the staged tree's templates version, and the bin itself.
+const fakeBuild: BuildBundle = (tree, out) => {
+  const pkg: unknown = JSON.parse(readFileSync(join(tree, 'packages', 'templates', 'package.json'), 'utf8'));
+  const version = typeof pkg === 'object' && pkg !== null && 'version' in pkg ? pkg.version : undefined;
+  mkdirSync(join(out, 'bin'), { recursive: true });
+  writeFileSync(join(out, 'bin', 'factory.js'), `#!/usr/bin/env bun\nconsole.log('factory ${String(version)} (release)');\n`);
+  writeFileSync(join(out, 'package.json'), `${JSON.stringify({ name: 'factory', version, bin: { factory: 'bin/factory.js' } }, null, 2)}\n`);
+  if (existsSync(join(tree, 'CHANGELOG.md'))) writeFileSync(join(out, 'CHANGELOG.md'), readFileSync(join(tree, 'CHANGELOG.md')));
+};
+
+const run = (dryRun = false, build: BuildBundle = fakeBuild) => release(repo, { dryRun, today: TODAY, build });
 const lines = (entries: Entry[]): string[] => entries.map((e) => `${e.kind} ${e.area ?? '-'} ${e.text} ${e.job ?? '-'}`);
 
 describe('parseSubject and areaOf', () => {
@@ -470,4 +481,149 @@ describe('setVersion and prependChangelog', () => {
     expect(prependChangelog('## v0.1.0 (d)\n\n- b\n', '## v0.2.0 (d)\n\n- a\n')).toBe('## v0.2.0 (d)\n\n- a\n\n## v0.1.0 (d)\n\n- b\n');
     expect(prependChangelog('# Changelog\n\n## v0.1.0 (d)\n', '## v0.2.0 (d)\n')).toBe('# Changelog\n\n## v0.2.0 (d)\n\n## v0.1.0 (d)\n');
   });
+});
+
+const refOf = (ref: string): string | null => {
+  const p = Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', ref], { stdout: 'pipe', stderr: 'pipe' });
+  return p.exitCode === 0 ? p.stdout.toString().trim() : null;
+};
+
+describe('the release bundle on the release branch (060 AC4)', () => {
+  async function releasable(): Promise<void> {
+    await seed();
+    await put('CHANGELOG.md', '## v0.1.0 (2026-10-01)\n\n### Added\n\n- CLI: first (001-first)\n');
+    gitIn(repo, 'add', '-A');
+    gitIn(repo, 'commit', '--quiet', '-m', 'chore: the old changelog');
+    gitIn(repo, 'tag', '-a', 'v0.1.0', '-m', 'factory v0.1.0');
+    await jobMerge('feat(cli): add c', '060-c');
+  }
+
+  test('commits the bundle onto release, tagged release-vX.Y.Z, naming the main commit; the checkout does not move; no remote is contacted', async () => {
+    await releasable();
+    // An origin that can't be reached: any contact would fail the release.
+    gitIn(repo, 'remote', 'add', 'origin', join(root, 'no-such-remote.git'));
+    const r = run();
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('tagged release-v0.2.0');
+    expect(r.out).toContain('Nothing was pushed');
+
+    const main = gitIn(repo, 'rev-parse', 'HEAD');
+    expect(gitIn(repo, 'log', '-1', '--format=%s')).toBe('chore(release): v0.2.0');
+    expect(gitIn(repo, 'rev-parse', 'v0.2.0^{commit}')).toBe(main);
+    expect(gitIn(repo, 'symbolic-ref', 'HEAD')).toBe('refs/heads/main');
+    expect(gitIn(repo, 'status', '--porcelain')).toBe('');
+    expect(gitIn(repo, 'diff', '--cached', '--name-only')).toBe('');
+    expect(existsSync(join(repo, 'bin'))).toBe(false);
+
+    const bundle = refOf('refs/heads/release');
+    expect(bundle).not.toBeNull();
+    expect(gitIn(repo, 'log', '-1', '--format=%B', 'release')).toContain(main);
+    expect(gitIn(repo, 'rev-list', '--parents', '-n', '1', 'release').split(' ')).toHaveLength(1); // the first is a root commit
+    expect(gitIn(repo, 'ls-tree', '-r', '--name-only', 'release').split('\n')).toEqual(['CHANGELOG.md', 'bin/factory.js', 'package.json']);
+    expect(gitIn(repo, 'ls-tree', 'release', 'bin/factory.js')).toStartWith('100755 blob');
+    const pkg: unknown = JSON.parse(gitIn(repo, 'show', 'release:package.json'));
+    expect(pkg).toMatchObject({ version: '0.2.0', bin: { factory: 'bin/factory.js' } });
+    expect(gitIn(repo, 'show', 'release:CHANGELOG.md')).toStartWith('## v0.2.0 (2026-10-29)');
+    expect(gitIn(repo, 'cat-file', '-t', 'release-v0.2.0')).toBe('tag');
+    expect(gitIn(repo, 'rev-parse', 'release-v0.2.0^{commit}')).toBe(bundle ?? '');
+    expect(gitIn(repo, 'branch', '--list', '--format=%(refname)')).not.toContain('factory/');
+
+    // A second release stacks a new release commit on the first.
+    await jobMerge('fix(cli): repair d', '061-d');
+    const again = run();
+    expect(again.code).toBe(0);
+    expect(gitIn(repo, 'rev-parse', 'release^')).toBe(bundle ?? '');
+    expect(JSON.parse(gitIn(repo, 'show', 'release:package.json'))).toMatchObject({ version: '0.2.1' });
+    expect(gitIn(repo, 'log', '-1', '--format=%B', 'release')).toContain(gitIn(repo, 'rev-parse', 'HEAD'));
+    expect(gitIn(repo, 'rev-parse', 'release-v0.2.1^{commit}')).toBe(gitIn(repo, 'rev-parse', 'release'));
+    expect(gitIn(repo, 'symbolic-ref', 'HEAD')).toBe('refs/heads/main');
+  });
+
+  test('--dry-run neither builds nor writes', async () => {
+    await releasable();
+    const before = await snapshot();
+    let built = false;
+    const r = run(true, () => {
+      built = true;
+    });
+    expect(r.code).toBe(0);
+    expect(built).toBe(false);
+    expect(await snapshot()).toEqual(before);
+    expect(refOf('refs/heads/release')).toBeNull();
+  });
+
+  test('refuses, writing nothing, when release-vX.Y.Z already exists', async () => {
+    await releasable();
+    gitIn(repo, 'tag', 'release-v0.2.0', 'HEAD~1');
+    const before = await snapshot();
+    const r = run();
+    expect(r.code).not.toBe(0);
+    expect(r.out).toContain('release-v0.2.0 already exists');
+    expect(await snapshot()).toEqual(before);
+  });
+});
+
+describe('a failed bundle build writes nothing (060 AC5)', () => {
+  async function releasable(): Promise<void> {
+    await seed();
+    gitIn(repo, 'tag', '-a', 'v0.1.0', '-m', 'factory v0.1.0');
+    await jobMerge('feat(cli): add c', '060-c');
+  }
+  const failing: Record<string, BuildBundle> = {
+    'a builder that throws': () => {
+      throw new Error('vite build failed: boom\nmore detail');
+    },
+    'a bundle with no bin': (_tree, out) => writeFileSync(join(out, 'package.json'), '{"name":"factory"}\n'),
+    'the default builder, with no scripts/bundle.ts in the tree': buildWithScript,
+  };
+  for (const [name, build] of Object.entries(failing)) {
+    test(name, async () => {
+      await releasable();
+      const before = await snapshot();
+      const r = run(false, build);
+      expect(r.code).not.toBe(0);
+      expect(r.out.trimEnd().split('\n')).toHaveLength(1);
+      expect(r.out).toStartWith('release failed: bundle build: ');
+      expect(await snapshot()).toEqual(before);
+      expect(refOf('refs/heads/release')).toBeNull();
+      expect(gitIn(repo, 'tag', '--list')).toBe('v0.1.0');
+    });
+  }
+});
+
+describe('the real bundle, built from the tree about to be committed (060 AC4)', () => {
+  test('a test repo holding this source: the release tree runs as factory <new version> (release)', async () => {
+    const source = join(import.meta.dir, '..');
+    initMain();
+    const listed = Bun.spawnSync(['git', '-C', source, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { stdout: 'pipe' });
+    for (const rel of listed.stdout.toString().split('\0').filter(Boolean)) {
+      if (!existsSync(join(source, rel))) continue;
+      await mkdir(dirname(join(repo, rel)), { recursive: true });
+      await writeFile(join(repo, rel), await readFile(join(source, rel)));
+    }
+    gitIn(repo, 'add', '-A');
+    gitIn(repo, 'commit', '--quiet', '-m', 'chore: import');
+    const pkg: unknown = JSON.parse(await read('packages/templates/package.json'));
+    const current = typeof pkg === 'object' && pkg !== null && 'version' in pkg && typeof pkg.version === 'string' ? pkg.version : '';
+    gitIn(repo, 'tag', '-a', `v${current}`, '-m', `factory v${current}`);
+    await commit('feat(cli): something new');
+
+    const r = release(repo, { dryRun: false, today: TODAY, modules: source });
+    expect(r.out).toContain('tagged release-v');
+    expect(r.code).toBe(0);
+    const next = gitIn(repo, 'describe', '--tags', '--abbrev=0', '--match', 'v*', 'HEAD').slice(1);
+    expect(next).not.toBe(current);
+
+    const out = join(root, 'checked-out');
+    await mkdir(out);
+    const tar = join(root, 'release.tar');
+    gitIn(repo, 'archive', '--format=tar', '-o', tar, 'release');
+    expect(Bun.spawnSync(['tar', '-xf', tar, '-C', out]).exitCode).toBe(0);
+    const v = Bun.spawnSync([process.execPath, join(out, 'bin', 'factory.js'), '--version'], { cwd: root, stdout: 'pipe', stderr: 'pipe' });
+    expect(v.stdout.toString()).toBe(`factory ${next} (release)\n`);
+    expect(await readFile(join(out, 'managed', 'cli.ts'), 'utf8')).toStartWith(`// factory ${next} ·`);
+    expect(JSON.parse(await readFile(join(out, 'package.json'), 'utf8'))).toMatchObject({ version: next, bin: { factory: 'bin/factory.js' } });
+    expect(await readFile(join(out, 'CHANGELOG.md'), 'utf8')).toStartWith(`## v${next} (${TODAY})`);
+    expect(gitIn(repo, 'status', '--porcelain')).toBe('');
+  }, 120_000);
 });
