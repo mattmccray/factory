@@ -1,3 +1,11 @@
+## v0.2.0 (2026-10-30)
+
+### Added
+
+- CLI: add factory projects to list, prune, and remove registry roots (061-registry-prune)
+- CLI: install the factory globally from GitHub via a release bundle (060-cli-global-install)
+- CLI: add factory service to install and run the Andon service (062-andon-service-install)
+
 ## v0.1.0 (2026-10-29)
 
 ### Breaking
