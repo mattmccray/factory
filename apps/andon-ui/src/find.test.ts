@@ -2,8 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import type { BoardJob } from './board';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { epicMatches, find, matches, needsFilter, needsMe } from './find';
-import { HOUR, NOW, before, epic, inEpic, job, stopped, tag, tagEpic } from './fixtures';
+import { BACKLOG_HITS_MAX, toBacklog } from './backlog';
+import type { BacklogList } from './backlog';
+import { backlogHits, epicMatches, find, matches, needsFilter, needsMe } from './find';
+import { HOUR, NOW, backlogBody, before, epic, inEpic, job, stopped, tag, tagEpic } from './fixtures';
 import { popoverOf } from './lanes';
 
 const P1 = { id: 'p1', name: 'Minerva' };
@@ -139,5 +141,37 @@ describe('epics in search and Needs Me (056 AC5, AC7)', () => {
     // a project whose only need is a waiting epic is kept
     const only = needsFilter([P1, P2, P3], [], [tagEpic(hot, P3)]);
     expect([only.projects.map((p) => p.id), only.epics.map((e) => e.key)]).toEqual([['p3'], ['p3/billing']]);
+  });
+});
+
+describe('067 AC6: search over the backlog', () => {
+  const lists = (data: unknown): Record<string, BacklogList> => ({ p1: { status: 'loaded', ...toBacklog(data), reason: null, rev: 1 } });
+  const cached = lists(backlogBody());
+
+  test('a trimmed, case-insensitive title match on a queued or exploring item with a page is a Backlog result that opens it', () => {
+    expect(backlogHits([P1], cached, '  FULL-text ')).toEqual([
+      { key: 'brief:p1/notes-search', title: 'Full-text search', project: 'Minerva', kindLabel: 'Brief', group: 'Queued', page: { kind: 'brief', project: 'p1', slug: 'notes-search' } },
+    ]);
+    expect(backlogHits([P1], cached, 'sign').map((h) => [h.kindLabel, h.page])).toEqual([['Epic', { kind: 'plan', project: 'p1', slug: 'auth' }]]);
+    expect(backlogHits([P1], cached, 'cloud').map((h) => h.group)).toEqual(['In exploration']);
+    expect(backlogHits([P1], cached, 'readme')).toEqual([]); // a text line has no page
+    expect(backlogHits([P1], cached, 'notes by body')).toEqual([]); // titles only
+    for (const q of ['', '   ']) expect(backlogHits([P1], cached, q)).toEqual([]);
+    expect(backlogHits([P2], cached, 'full')).toEqual([]); // only the projects given
+    const many = { queued: Array.from({ length: 12 }, (_, i) => ({ kind: 'brief', slug: `b-${i}`, title: `Same ${i}`, done: null, status: 'ready', members: null, abandoned: [] })), exploring: [] };
+    expect(backlogHits([P1], lists(many), 'same')).toHaveLength(BACKLOG_HITS_MAX);
+  });
+
+  test('find()\'s dimming is unchanged for the same inputs: backlog items never dim or light lanes', () => {
+    const jobs = [at({ id: '041-notes-search', title: 'Full-text search across notes', stage: 'review' })];
+    for (const q of ['full-text', 'sign-in', 'cloud', '']) {
+      const a = find([P1, P2, P3], jobs, q, NOW);
+      expect({ q, dim: [...a.dimLanes], keys: [...a.keys] }).toEqual({ q, dim: q === '' ? [] : q === 'full-text' ? ['p2', 'p3'] : ['p1', 'p2', 'p3'], keys: q === 'full-text' ? ['p1/041-notes-search'] : [] });
+    }
+    const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
+    expect(app).toContain('const found = $derived(find(shownProjects, jobs, query, now, epics));');
+    expect(app).toContain('const hits = $derived(backlogHits(inView, ui.backlogs, query));');
+    const bar = readFileSync(join(import.meta.dir, 'Toolbar.svelte'), 'utf8');
+    expect(bar).toContain('onclick={() => onopenpage(h.page)}');
   });
 });

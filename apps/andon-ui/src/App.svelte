@@ -15,14 +15,22 @@
   // The Mac app's View menu (063) asks the page to toggle Needs Me, open the Settled sheet, or toggle
   // the sidebar or inspector, and hides or shows the Merged column; the page reports its Needs Me,
   // sidebar, and inspector state back so the menu's labels follow it. A browser has none of this.
+  // The backlog (brief andon-backlog-ui) is read-only and on demand: a lane's "N queued" link, the
+  // toolbar's Backlog button, View → Show Backlog… (the `backlog` page event), and the hash open the
+  // Backlog sheet; its projects' backlogs are fetched while it is open (or while a search needs
+  // them) and re-fetched on their `backlog` events. A queued or exploring brief or epic opens its
+  // brief's or plan's page in the inspector.
   import { onMount, untrack } from 'svelte';
   import type { Fetcher } from './api';
+  import { backlogProjects, backlogSheet } from './backlog';
+  import type { BacklogCounts, DocRef } from './backlog';
+  import BacklogSheet from './BacklogSheet.svelte';
   import { buildBoard, movement } from './board';
   import CommandSheet from './CommandSheet.svelte';
   import Inspector from './Inspector.svelte';
   import { INSPECTOR_DEFAULT, TOAST_MS, copiedText, sidebarShown, toggleSidebar } from './inspector';
   import type { SheetKind, SidebarChoice } from './inspector';
-  import { find, needsFilter } from './find';
+  import { backlogHits, find, needsFilter } from './find';
   import { COPY_FAILED, handOffCaller, handoffToast } from './handoff';
   import type { HandoffRequest } from './handoff';
   import { initialKeys, reduceKey, topSheet } from './keys';
@@ -69,6 +77,7 @@
   import WhatsNewSheet from './WhatsNewSheet.svelte';
   import Sidebar from './Sidebar.svelte';
   import {
+    BACKLOG_EVENT,
     INSPECTOR_EVENT,
     MERGED_EVENT,
     NEEDS_ME_EVENT,
@@ -93,6 +102,7 @@
   import StatusBar from './StatusBar.svelte';
   import Toolbar from './Toolbar.svelte';
   import { NO_SETTLED, emptyState } from './state';
+  import { NO_BACKLOG } from './backlog';
   import type { SettledSummary, UiState } from './state';
 
   const storage = (): Storage | null => {
@@ -117,6 +127,9 @@
   let openFile = $state<string | null>(start.file); // the inspector's chosen file; null: it picks
   let settledOpen = $state(start.settled !== null);
   let settledProject = $state<string | null>(start.settled?.project ?? null); // a lane's "N settled" link filters the sheet
+  let backlogOpen = $state(start.backlog !== null && start.settled === null); // the Backlog sheet (never with the Settled sheet)
+  let backlogProject = $state<string | null>(start.backlog?.project ?? null); // a lane's "N queued" link filters it
+  let openDoc = $state<DocRef | null>(start.page ?? null); // a brief's or plan's page, instead of a job or an epic
   let sidebar = $state<SidebarChoice>({ user: true, override: false });
   let inspectorOpen = $state(start.inspector); // open with no job: "Nothing selected"
   let inspectorWidth = $state(INSPECTOR_DEFAULT); // not kept across reloads
@@ -142,6 +155,7 @@
     const started = startLive({ connect: (path) => new EventSource(path), fetcher, onState: (s) => (ui = s), onStatus: (s) => (status = s) });
     live = started;
     started.watch(untrack(() => watched));
+    started.watchBacklog(untrack(() => backlogPids));
     // Timers tick once a second; a hidden tab (where timers are throttled) catches up on return.
     const timer = setInterval(() => (now = Date.now()), 1000);
     const visible = (): void => {
@@ -163,6 +177,7 @@
     // The View menu's page actions: the payload is ignored, the page acts on its own state.
     const offNeedsMe = subscribe?.(NEEDS_ME_EVENT, () => onmenu(NEEDS_ME_EVENT));
     const offSettled = subscribe?.(SETTLED_EVENT, () => onmenu(SETTLED_EVENT));
+    const offBacklog = subscribe?.(BACKLOG_EVENT, () => onmenu(BACKLOG_EVENT));
     const offSidebar = subscribe?.(SIDEBAR_EVENT, () => onmenu(SIDEBAR_EVENT));
     const offInspector = subscribe?.(INSPECTOR_EVENT, () => onmenu(INSPECTOR_EVENT));
     // The Mac app's right-click menu on a project row or gutter, or on a board job token: armed for
@@ -198,6 +213,7 @@
       offMerged?.();
       offNeedsMe?.();
       offSettled?.();
+      offBacklog?.();
       offSidebar?.();
       offInspector?.();
       started.stop();
@@ -227,12 +243,23 @@
   const shownProjects = $derived((needed?.projects ?? ui.projects).filter((p) => !focused || p.id === sel));
   let laneOrder: LaneOrder | null = null;
   const summaries = $derived(Object.fromEntries(ui.projects.map((p): [string, SettledSummary] => [p.id, ui.boards[p.id]?.settled ?? NO_SETTLED])));
-  const lines = $derived(orderLanes(buildLanes(shownProjects, jobs, now, focused, summaries, epics, needs, mergedOff), loaded && !focused && !needs ? laneOrder : null));
+  const backlogCounts = $derived(Object.fromEntries(ui.projects.map((p): [string, BacklogCounts] => [p.id, ui.boards[p.id]?.backlog ?? NO_BACKLOG])));
+  const lines = $derived(orderLanes(buildLanes(shownProjects, jobs, now, focused, summaries, epics, needs, mergedOff, backlogCounts), loaded && !focused && !needs ? laneOrder : null));
   $effect(() => {
     if (loaded && !focused && !needs) laneOrder = lines.order;
   });
-  // Search dims the tokens and lanes that don't match; it hides nothing.
+  // Search dims the tokens and lanes that don't match; it hides nothing. It also lists the matching
+  // backlog items of the projects in view (never dimming or lighting the board).
   const found = $derived(find(shownProjects, jobs, query, now, epics));
+  const inView = $derived(ui.projects.filter((p) => !focused || p.id === sel));
+  const hits = $derived(backlogHits(inView, ui.backlogs, query));
+  const backlogTotal = $derived(inView.reduce((n, p) => n + (ui.boards[p.id]?.backlog.queued ?? 0) + (ui.boards[p.id]?.backlog.exploring ?? 0), 0));
+  // Backlogs on demand: the open sheet's projects, or, while a search is typed, the projects in view.
+  const backlogPids = $derived(backlogOpen ? backlogProjects(ui.projects, backlogProject) : query.trim() !== '' ? inView.map((p) => p.id) : []);
+  $effect(() => {
+    live?.watchBacklog(backlogPids);
+  });
+  const backlogModel = $derived(backlogSheet(ui.projects, ui.backlogs, backlogProject));
   const header = $derived(headerOf(lines.lanes, settleHours(ui, sel), mergedOff));
   // Recent activity draws on the focused project's settled jobs too, once its list has loaded.
   const recent = $derived(focused ? activity(needs ? jobs : withSettled(ui, sel)) : []);
@@ -337,13 +364,31 @@
     if (settledOpen && loaded && settledState.current && settledState.failures.length === 0 && !settledJobs.some(shown) && !settledEpics.some(shown)) settledOpen = false;
   });
 
+  const projectName = (pid: string): string => ui.projects.find((p) => p.id === pid)?.name ?? pid;
   function select(next: Selection): void {
     selection = next;
     saveSelection(storage(), next);
   }
   function openSettled(pid: string | null): void {
     settledProject = pid;
+    backlogOpen = false;
     settledOpen = true;
+  }
+  function openBacklog(pid: string | null): void {
+    backlogProject = pid;
+    settledOpen = false;
+    backlogOpen = true;
+  }
+  /** A brief's or plan's page in the inspector: from the Backlog sheet (which closes), a search result, or a plan's member. */
+  function openPage(ref: DocRef): void {
+    backlogOpen = false;
+    settledOpen = false;
+    openRef = null;
+    openEpic = null;
+    openFile = null;
+    sheet = null;
+    openDoc = ref;
+    inspectorOpen = true;
   }
   function openWhatsNew(pid: string | null): void {
     whatsNewProject = pid;
@@ -355,6 +400,7 @@
     settledOpen = false;
     if (openKey !== key) openFile = null;
     openEpic = null;
+    openDoc = null;
     if (sheet === 'epic-abandon') sheet = null;
     openRef = { project: b.project.id, id: b.job.id };
     inspectorOpen = true;
@@ -365,6 +411,7 @@
     settledOpen = false;
     if (openEpicKey !== key) openFile = null;
     openRef = null;
+    openDoc = null;
     sheet = null;
     openEpic = { project: e.project.id, slug: e.epic.slug };
     inspectorOpen = true;
@@ -373,6 +420,7 @@
     inspectorOpen = false;
     openRef = null;
     openEpic = null;
+    openDoc = null;
     openFile = null;
     sheet = null;
     sidebar = { user: sidebar.user, override: false };
@@ -392,6 +440,9 @@
         return;
       case 'open-settled':
         openSettled(null);
+        return;
+      case 'open-backlog':
+        openBacklog(null);
         return;
       case 'toggle-sidebar':
         toggleSide();
@@ -443,10 +494,12 @@
   const view = $derived<View>({
     project: sel === ALL ? null : sel,
     inspector: inspectorOpen,
-    job: openEpic === null ? openRef : null,
-    epic: openEpic ?? undefined,
-    file: openRef === null && openEpic === null ? null : openFile,
+    job: openEpic === null && openDoc === null ? openRef : null,
+    epic: openDoc === null ? (openEpic ?? undefined) : undefined,
+    page: openDoc ?? undefined,
+    file: (openRef === null && openEpic === null) || openDoc !== null ? null : openFile,
     settled: settledOpen ? { project: settledProject } : null,
+    backlog: backlogOpen ? { project: backlogProject } : null,
     whatsNew: whatsNewOpen ? { project: whatsNewProject } : null,
     sheet: keysOpen ? 'keys' : sheet,
     needs,
@@ -456,11 +509,14 @@
     if ((v.project ?? ALL) !== selection) select(v.project ?? ALL);
     openRef = v.job;
     openEpic = v.epic ?? null;
+    openDoc = v.page ?? null;
     openFile = v.file;
     inspectorOpen = v.inspector;
     if (!v.inspector) sidebar = { user: sidebar.user, override: false };
     settledOpen = v.settled !== null;
     settledProject = v.settled?.project ?? null;
+    backlogOpen = v.backlog !== null && v.settled === null;
+    backlogProject = v.backlog?.project ?? null;
     whatsNewOpen = v.whatsNew !== null;
     whatsNewProject = v.whatsNew?.project ?? null;
     sheet = v.sheet === 'rework' || v.sheet === 'abandon' || v.sheet === 'epic-abandon' ? v.sheet : null;
@@ -500,7 +556,7 @@
   const inField = (el: Element | null): boolean => el instanceof HTMLElement && (el.isContentEditable || el.matches('input, textarea, select'));
   function onkeydown(e: KeyboardEvent): void {
     if (e.defaultPrevented) return;
-    const layers = { sheet: settledOpen || whatsNewOpen || sheet !== null || keysOpen, inspector: inspectorOpen, searchText: query !== '', searchFocused };
+    const layers = { sheet: settledOpen || backlogOpen || whatsNewOpen || sheet !== null || keysOpen, inspector: inspectorOpen, searchText: query !== '', searchFocused };
     const r = reduceKey(keyState, { key: e.key, mod: e.ctrlKey || e.metaKey || e.altKey, inField: inField(document.activeElement) }, layers);
     keyState = r.state;
     // Escape's default is always suppressed: Chromium's ("stop loading") also aborts the event stream.
@@ -526,8 +582,8 @@
         return;
       case 'close-sheet':
         // the topmost first (keys.ts `topSheet`): What's New, then a command sheet or the shortcuts
-        // (which open over the Settled sheet's place), then the Settled sheet
-        switch (topSheet({ whatsNew: whatsNewOpen, keys: keysOpen, command: sheet !== null, settled: settledOpen })) {
+        // (which open over the Settled sheet's place), then the Settled sheet, then the Backlog sheet
+        switch (topSheet({ whatsNew: whatsNewOpen, keys: keysOpen, command: sheet !== null, settled: settledOpen, backlog: backlogOpen })) {
           case 'whatsNew':
             whatsNewOpen = false;
             return;
@@ -539,6 +595,9 @@
             return;
           case 'settled':
             settledOpen = false;
+            return;
+          case 'backlog':
+            backlogOpen = false;
             return;
           case null:
             return;
@@ -567,9 +626,11 @@
       {sub}
       {focused}
       settled={settledTotal(ui, sel, now)}
+      backlog={backlogTotal}
+      {hits}
       {sidebarOpen}
       {inspectorOpen}
-      selected={openItem !== null ? `${openItem.project.name} / ${openItem.job.id}` : openEpicItem !== null ? `${openEpicItem.project.name} / epic ${epicName(openEpicItem.epic)}` : null}
+      selected={openDoc !== null ? `${projectName(openDoc.project)} / ${openDoc.kind} ${openDoc.slug}` : openItem !== null ? `${openItem.project.name} / ${openItem.job.id}` : openEpicItem !== null ? `${openEpicItem.project.name} / epic ${epicName(openEpicItem.epic)}` : null}
       drag={win.drag}
       bind:query
       bind:searchEl
@@ -580,6 +641,8 @@
       onback={() => select(ALL)}
       ontoggleinspector={toggleInspector}
       onsettled={() => openSettled(null)}
+      onbacklog={() => openBacklog(null)}
+      onopenpage={openPage}
     />
     <main>
       {#if errors.length > 0}
@@ -612,6 +675,7 @@
           onopenepic={openEpicPage}
           onfocus={select}
           onsettled={openSettled}
+          onbacklog={openBacklog}
         />
         {#if needs && lines.lanes.length === 0}
           <div class="quiet">Nothing needs you{focused ? ' in this project' : ''}. Press <kbd>n</kbd> to show everything.</div>
@@ -623,9 +687,12 @@
     {#if !statusBarOff}<StatusBar {settle} {now} />{/if}
   </div>
   <Inspector
-    item={openEpic === null ? openItem : null}
-    epic={openEpicItem}
+    item={openEpic === null && openDoc === null ? openItem : null}
+    epic={openDoc === null ? openEpicItem : null}
     epicJobs={openEpicJobs}
+    page={openDoc}
+    pageProject={openDoc === null ? '' : projectName(openDoc.project)}
+    onopenpage={openPage}
     open={inspectorOpen}
     width={inspectorWidth}
     {now}
@@ -651,6 +718,14 @@
   onclose={() => (settledOpen = false)}
   onopen={openJob}
   onopenepic={openEpicPage}
+/>
+<BacklogSheet
+  model={backlogModel}
+  open={backlogOpen}
+  project={backlogProject === null ? null : (ui.projects.find((p) => p.id === backlogProject) ?? null)}
+  onclearfilter={() => (backlogProject = null)}
+  onclose={() => (backlogOpen = false)}
+  onopenpage={openPage}
 />
 <CommandSheet
   kind={sheet}

@@ -102,7 +102,7 @@ describe('Esc by layer order (AC2)', () => {
 });
 
 describe("Esc closes What's New as the topmost sheet (059 AC5)", () => {
-  const none = { whatsNew: false, keys: false, command: false, settled: false };
+  const none = { whatsNew: false, keys: false, command: false, settled: false, backlog: false };
 
   test('What\'s New is a sheet layer: Esc closes it before the inspector, and no single key works under it', () => {
     const layers: Layers = { ...NONE, sheet: true, inspector: true };
@@ -111,7 +111,7 @@ describe("Esc closes What's New as the topmost sheet (059 AC5)", () => {
   });
 
   test('topmost first: What\'s New, then the shortcuts or a command sheet, then the Settled sheet', () => {
-    expect(topSheet({ whatsNew: true, keys: true, command: true, settled: true })).toBe('whatsNew');
+    expect(topSheet({ whatsNew: true, keys: true, command: true, settled: true, backlog: true })).toBe('whatsNew');
     expect(topSheet({ ...none, whatsNew: true, settled: true })).toBe('whatsNew');
     expect(topSheet({ ...none, keys: true, settled: true })).toBe('keys');
     expect(topSheet({ ...none, command: true, settled: true })).toBe('command');
@@ -121,15 +121,15 @@ describe("Esc closes What's New as the topmost sheet (059 AC5)", () => {
 
   test('App.svelte counts it as a sheet and closes by topSheet', () => {
     const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
-    expect(app).toContain('sheet: settledOpen || whatsNewOpen || sheet !== null || keysOpen');
-    expect(app).toContain('switch (topSheet({ whatsNew: whatsNewOpen, keys: keysOpen, command: sheet !== null, settled: settledOpen }))');
+    expect(app).toContain('sheet: settledOpen || backlogOpen || whatsNewOpen || sheet !== null || keysOpen');
+    expect(app).toContain('switch (topSheet({ whatsNew: whatsNewOpen, keys: keysOpen, command: sheet !== null, settled: settledOpen, backlog: backlogOpen }))');
   });
 });
 
 describe('063 AC7: the shortcut sheet lists the View menu shortcuts', () => {
-  const menuKeys = ['⇧⌘N', '⇧⌘S', '⌃⌘S', '⌥⌘I', '⌘/'];
+  const menuKeys = ['⇧⌘N', '⇧⌘S', '⇧⌘B', '⌃⌘S', '⌥⌘I', '⌘/']; // ⇧⌘B: Show Backlog… (067 AC7), after Show Settled…
 
-  test('SHORTCUTS lists ⇧⌘N, ⇧⌘S, ⌃⌘S, ⌥⌘I, and ⌘/, in menu order, after the page keys', () => {
+  test('SHORTCUTS lists ⇧⌘N, ⇧⌘S, ⇧⌘B, ⌃⌘S, ⌥⌘I, and ⌘/, in menu order, after the page keys', () => {
     expect(SHORTCUTS.filter((s) => s.menu === true).map((s) => s.keys)).toEqual(menuKeys.map((k) => [k]));
     expect(SHORTCUTS.slice(0, 6).every((s) => s.menu !== true)).toBe(true);
     expect(new Set(SHORTCUTS.map((s) => s.text)).size).toBe(SHORTCUTS.length); // the sheet keys its rows by text
@@ -149,5 +149,22 @@ describe('063 AC7: the shortcut sheet lists the View menu shortcuts', () => {
   test('n still toggles Needs Me, and the menu shortcuts (a modifier held) are never the page reducer\'s', () => {
     expect(run([ev('n')])).toEqual(['toggle-needs']);
     expect(run([ev('N', { mod: true }), ev('S', { mod: true }), ev('s', { mod: true }), ev('i', { mod: true }), ev('/', { mod: true })])).toEqual([null, null, null, null, null]);
+  });
+});
+
+describe('067 AC7: the Backlog sheet in the layer order', () => {
+  const none = { whatsNew: false, keys: false, command: false, settled: false, backlog: false };
+  test('Esc closes it where the Settled sheet would be: under What\'s New, the shortcuts, and a command sheet', () => {
+    expect(topSheet({ ...none, backlog: true })).toBe('backlog');
+    expect(topSheet({ ...none, whatsNew: true, backlog: true })).toBe('whatsNew');
+    expect(topSheet({ ...none, keys: true, backlog: true })).toBe('keys');
+    expect(topSheet({ ...none, command: true, backlog: true })).toBe('command');
+    const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
+    expect(app).toMatch(/case 'backlog':\s*backlogOpen = false;/);
+  });
+
+  test('the shortcut sheet lists ⇧⌘B as a View menu row, in the Mac app only', () => {
+    expect(SHORTCUTS.find((s) => s.keys[0] === '⇧⌘B')).toEqual({ keys: ['⇧⌘B'], text: 'Show the backlog (View menu)', menu: true });
+    expect(shortcutsFor(false).some((s) => s.keys[0] === '⇧⌘B')).toBe(false);
   });
 });

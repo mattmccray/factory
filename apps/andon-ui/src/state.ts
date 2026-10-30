@@ -6,7 +6,12 @@
 // Epics ride along: a board's `epics` are its unsettled epics, and `/settled` returns `{ jobs, epics }`.
 // The service's release (`{ running, onDisk, changelog }`) arrives as the `release` event and from one
 // `GET /release` per `projects` event; an older service sends neither, and the slot stays empty.
+// The backlog (brief andon-backlog-ui) rides the same way: a narrow board's `backlog` counts, and
+// each project's `GET /projects/<pid>/backlog` lists, fetched only while a view needs them and
+// cached per project with a rev guard, so a slower, older response never overwrites a newer one.
 // Every update returns a new state; nothing here touches the DOM.
+import { NO_BACKLOG, toBacklog, toBacklogCounts } from './backlog';
+import type { BacklogCounts, BacklogList } from './backlog';
 import { isRecord, toConfig, toEpics, toJobs, toProjects } from './job';
 import type { BoardConfig, Epic, Job, ProjectInfo } from './job';
 import { toReleaseInfo } from './release';
@@ -28,6 +33,7 @@ export interface ProjectBoard {
   epics: Epic[]; // its epics on the board (unsettled); [] when the board has none
   config: BoardConfig;
   settled: SettledSummary;
+  backlog: BacklogCounts; // its narrow board's backlog counts; none ({ queued: 0, exploring: 0 }) when absent or malformed
   error: string | null; // `config.json: <reason>` while the project's config is bad
   loaded: boolean; // a board has arrived at least once
   rev: number; // bumped by every board or error, so a slower fetch can't overwrite a newer event
@@ -53,13 +59,14 @@ export interface UiState {
   projects: ProjectInfo[];
   boards: Record<string, ProjectBoard>;
   settled: Record<string, SettledList>;
+  backlogs: Record<string, BacklogList>; // each project's cached backlog lists, fetched on demand
   release: ReleaseSlot;
 }
 
 export const NO_SETTLED: SettledSummary = { count: 0, lastMergedAt: null };
 
-export const emptyState = (): UiState => ({ projects: [], boards: {}, settled: {}, release: { info: null, rev: 0 } });
-const emptyBoard = (): ProjectBoard => ({ jobs: [], epics: [], config: toConfig(null), settled: NO_SETTLED, error: null, loaded: false, rev: 0 });
+export const emptyState = (): UiState => ({ projects: [], boards: {}, settled: {}, backlogs: {}, release: { info: null, rev: 0 } });
+const emptyBoard = (): ProjectBoard => ({ jobs: [], epics: [], config: toConfig(null), settled: NO_SETTLED, backlog: NO_BACKLOG, error: null, loaded: false, rev: 0 });
 const known = (s: UiState, pid: string): boolean => s.projects.some((p) => p.id === pid);
 const boardOf = (s: UiState, pid: string): ProjectBoard => s.boards[pid] ?? emptyBoard();
 
@@ -87,16 +94,19 @@ function withBoard(s: UiState, pid: string, next: (b: ProjectBoard) => ProjectBo
   return { ...s, boards: { ...s.boards, [pid]: next(boardOf(s, pid)) } };
 }
 
-/** Replaces the project list. Boards and settled lists of listed projects are kept; the rest are dropped. */
+/** Replaces the project list. Boards, settled lists, and backlogs of listed projects are kept; the rest are dropped. */
 export function setProjects(s: UiState, projects: ProjectInfo[]): UiState {
   const boards: Record<string, ProjectBoard> = {};
   const settled: Record<string, SettledList> = {};
+  const backlogs: Record<string, BacklogList> = {};
   for (const p of projects) {
     boards[p.id] = boardOf(s, p.id);
     const list = s.settled[p.id];
     if (list !== undefined) settled[p.id] = list;
+    const backlog = s.backlogs[p.id];
+    if (backlog !== undefined) backlogs[p.id] = backlog;
   }
-  return { ...s, projects, boards, settled };
+  return { ...s, projects, boards, settled, backlogs };
 }
 
 /** A project's new board: its jobs, epics, config, and settled summary change, and any config error clears. */
@@ -106,6 +116,7 @@ export const setBoard = (s: UiState, pid: string, data: unknown): UiState =>
     epics: toEpics(isRecord(data) ? data.epics : null),
     config: toConfig(isRecord(data) ? data.config : null),
     settled: toSummary(isRecord(data) ? data.settled : null),
+    backlog: toBacklogCounts(isRecord(data) ? data.backlog : null),
     error: null,
     loaded: true,
     rev: b.rev + 1,
@@ -189,4 +200,23 @@ export function settledCurrent(s: UiState, pid: string): boolean {
   const b = s.boards[pid];
   const list = s.settled[pid];
   return b !== undefined && b.loaded && list !== undefined && list.status === 'loaded' && sameSummary(list.summary, b.settled);
+}
+
+// ---- backlogs ----
+
+/** Marks a project's backlog as being (re)fetched; the last list stays shown meanwhile. Returns the new state and the fetch's `rev`. */
+export function startBacklog(s: UiState, pid: string): { state: UiState; rev: number } {
+  const prev = s.backlogs[pid];
+  const rev = (prev?.rev ?? 0) + 1;
+  if (!known(s, pid)) return { state: s, rev };
+  const list: BacklogList = { status: 'loading', queued: prev?.queued ?? null, exploring: prev?.exploring ?? null, reason: null, rev };
+  return { state: { ...s, backlogs: { ...s.backlogs, [pid]: list } }, rev };
+}
+
+/** Applies a fetched backlog (`{ queued, exploring }`) or its error, replacing the list, unless a newer fetch was sent since `rev` or the project is gone. */
+export function applyBacklog(s: UiState, pid: string, rev: number, result: { ok: true; data: unknown } | { ok: false; reason: string }): UiState {
+  const list = s.backlogs[pid];
+  if (list === undefined || list.rev !== rev || !known(s, pid)) return s;
+  const next: BacklogList = result.ok ? { ...list, status: 'loaded', ...toBacklog(result.data), reason: null } : { ...list, status: 'failed', reason: result.reason };
+  return { ...s, backlogs: { ...s.backlogs, [pid]: next } };
 }

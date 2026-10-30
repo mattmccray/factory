@@ -6,11 +6,16 @@
 // changes, for as long as it is watched. A project no view needs is never fetched.
 // Each `projects` event also fetches `GET /release` once; `release` events keep it current after
 // that, and a fetch that resolves after a newer `release` event is dropped.
+// Backlogs (brief andon-backlog-ui) are fetched on demand too: `watchBacklog` names the projects
+// whose `GET /projects/<pid>/backlog` an open view needs (the Backlog sheet, or a search). A project
+// newly named is fetched; a `backlog` event `{ project }` re-fetches it while it is named, and
+// replaces its list (an older response never overwrites a newer one); each `projects` event (a
+// reconnect may have missed some) re-fetches every named project. A project no view names is never fetched.
 import type { Fetcher } from './api';
-import { fetchBoard, fetchRelease, fetchSettled } from './api';
+import { fetchBacklog, fetchBoard, fetchRelease, fetchSettled } from './api';
 import { isRecord } from './job';
 import { EVENTS_PATH } from './projects';
-import { applyEvent, applyFetched, applyFetchedRelease, applySettled, emptyState, releaseRev, revOf, startSettled, wantsSettled } from './state';
+import { applyBacklog, applyEvent, applyFetched, applyFetchedRelease, applySettled, emptyState, releaseRev, revOf, startBacklog, startSettled, wantsSettled } from './state';
 import type { UiState } from './state';
 
 /** The slice of `EventSource` used here, so tests can drive it. */
@@ -29,6 +34,8 @@ export interface Live {
   state(): UiState;
   /** The projects whose settled lists the open views need; a project newly named retries a failed fetch. */
   watch(pids: readonly string[]): void;
+  /** The projects whose backlogs the open views need: a project newly named is fetched, and re-fetched on its `backlog` events while named. */
+  watchBacklog(pids: readonly string[]): void;
   stop(): void;
 }
 
@@ -80,6 +87,15 @@ export function startLive(opts: {
     set(applySettled(state, pid, started.rev, result));
   }
 
+  let backlogWatched = new Set<string>();
+  async function loadBacklog(pid: string): Promise<void> {
+    const started = startBacklog(state, pid);
+    if (started.state === state) return; // not a listed project
+    set(started.state);
+    const result = await fetchBacklog(opts.fetcher, pid);
+    set(applyBacklog(state, pid, started.rev, result));
+  }
+
   async function load(pid: string): Promise<void> {
     const rev = revOf(state, pid);
     const result = await fetchBoard(opts.fetcher, pid);
@@ -99,7 +115,14 @@ export function startLive(opts: {
     if (event === 'projects') {
       for (const p of state.projects) void load(p.id);
       void loadRelease();
+      for (const pid of backlogWatched) if (!stopped) void loadBacklog(pid);
     }
+  };
+  // `backlog` carries no list: re-fetch the project's, only while a view needs it.
+  const onBacklog = (e: unknown): void => {
+    const msg = parse(e);
+    if (!msg.ok || stopped || !isRecord(msg.data) || typeof msg.data.project !== 'string') return;
+    if (backlogWatched.has(msg.data.project)) void loadBacklog(msg.data.project);
   };
   function open(): void {
     const src = opts.connect(EVENTS_PATH);
@@ -107,6 +130,7 @@ export function startLive(opts: {
     src.addEventListener('projects', on('projects'));
     src.addEventListener('board', on('board'));
     src.addEventListener('release', on('release'));
+    src.addEventListener('backlog', onBacklog);
     // `error` is both the service's named event (a MessageEvent with data) and EventSource's own
     // connection error (no data): the first updates a project, the second marks the service down.
     src.addEventListener('error', (e) => {
@@ -133,6 +157,11 @@ export function startLive(opts: {
       const added = new Set(pids.filter((pid) => !watched.has(pid)));
       watched = new Set(pids);
       sync(added);
+    },
+    watchBacklog(pids) {
+      const added = pids.filter((pid) => !backlogWatched.has(pid));
+      backlogWatched = new Set(pids);
+      for (const pid of added) if (!stopped) void loadBacklog(pid); // an unlisted project is fetched once it is listed
     },
     stop() {
       stopped = true;

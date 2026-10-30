@@ -10,7 +10,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BACKEND_OUT, appVersion, bundleBackend } from '../build';
 import { GET_ABOUT_METHOD } from './about';
-import { INSPECTOR_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, STATUS_BAR_EVENT, WHATS_NEW_EVENT } from './appmenu';
+import { BACKLOG_EVENT, INSPECTOR_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, STATUS_BAR_EVENT, WHATS_NEW_EVENT } from './appmenu';
 import { DEFAULT_PORT, pageUrl } from './autostart';
 import { PROJECT_MENU_METHOD } from './projectmenu';
 import { GET_SETTINGS_METHOD, SET_SETTING_METHOD, VIEW_STATE_METHOD } from './settings';
@@ -200,6 +200,7 @@ describe('AC6: tinyjs.json', () => {
           'event.merged',
           'event.needsme',
           'event.settled',
+          'event.backlog',
           'event.sidebar',
           'event.inspector',
           'projectMenu',
@@ -266,21 +267,25 @@ describe('AC6: tinyjs.json', () => {
     // the About window, and no event.
     expect(GET_ABOUT_METHOD).toBe('getAbout');
     const after063 = [...after059, ...newEvents, VIEW_STATE_METHOD];
+    // Show Backlog… (067) adds exactly one pushed event, `backlog`, right after `settled`, which the
+    // page only receives; no page-callable method is added.
+    expect(BACKLOG_EVENT).toBe('backlog');
+    const viewEvents = [`event.${MERGED_EVENT}`, `event.${NEEDS_ME_EVENT}`, `event.${SETTLED_EVENT}`, `event.${BACKLOG_EVENT}`, `event.${SIDEBAR_EVENT}`, `event.${INSPECTOR_EVENT}`];
     expect(cfg.api).toEqual({
       disable: ['*'],
-      enable: ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`, `event.${WHATS_NEW_EVENT}`, ...newEvents, PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD, VIEW_STATE_METHOD, GET_ABOUT_METHOD],
+      enable: ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`, `event.${WHATS_NEW_EVENT}`, ...viewEvents, PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD, VIEW_STATE_METHOD, GET_ABOUT_METHOD],
     });
     const enable = isRecord(cfg.api) && Array.isArray(cfg.api.enable) ? cfg.api.enable : [];
     const events = (list: readonly unknown[]): unknown[] => list.filter((e) => typeof e === 'string' && e.startsWith('event.'));
     const methods = (list: readonly unknown[]): unknown[] => list.filter((e) => typeof e === 'string' && !e.startsWith('event.') && !e.startsWith('win.'));
     // 063: the 059 list, plus the new events, plus exactly one method
     expect(after063.filter((e) => !after059.includes(String(e)))).toEqual([...newEvents, VIEW_STATE_METHOD]);
-    // 065: the 063 list plus exactly one method, getAbout
-    expect(enable.filter((e) => !after063.includes(String(e)))).toEqual([GET_ABOUT_METHOD]);
+    // 065: the 063 list plus exactly one method, getAbout; 067: plus exactly one event, backlog
+    expect(enable.filter((e) => !after063.includes(String(e)))).toEqual([`event.${BACKLOG_EVENT}`, GET_ABOUT_METHOD]);
     expect(after063.every((e) => enable.includes(e))).toBe(true);
-    expect(enable).toHaveLength(after063.length + 1);
+    expect(enable).toHaveLength(after063.length + 2);
     expect(methods(enable)).toEqual([...methods(after059), 'setViewState', 'getAbout']);
-    expect(events(enable)).toEqual(['event.statusbar', 'event.whatsnew', ...newEvents]);
+    expect(events(enable)).toEqual(['event.statusbar', 'event.whatsnew', ...viewEvents]);
     expect(cfg.inject).toBeUndefined();
   });
 
