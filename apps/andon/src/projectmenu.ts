@@ -1,18 +1,22 @@
-// A project's right-click menu in the Mac app: Copy Project Path, Reveal in Finder, a separator, and
-// Open in ▸ VS Code, T3 Code, Ghostty. The page asks for a project's menu by its id alone (the one
+// A project's right-click menu in the Mac app: New Exploration…, Run Next, a separator, Copy Project
+// Path, Reveal in Finder, a separator, and Open in ▸ VS Code, T3 Code, Ghostty. New Exploration… and
+// Run Next only ask the main window's page to act (the `startwork` event, appmenu.ts): the page opens
+// its New exploration sheet, or runs its Backlog sheet's Run next, which goes through `startWork`. The page asks for a project's menu by its id alone (the one
 // custom backend method, PROJECT_MENU_METHOD); everything else lives here, runtime-neutral: the item
 // list and its ids, which apps are grayed out, where `t3` is looked for, each Open in app's bundle id
 // and fallback `.app` locations and which item gets which icon, what a clicked item does (built only
 // from the root the backend's own `/projects` feed holds), and the failure text. backend.ts sets the
 // menu, checks the apps, finds their icons, and runs the actions.
+import { startWorkPayload } from './appmenu';
+import type { StartWorkPush } from './appmenu';
 import { isRecord } from './state';
 
 /** The one custom backend method the page may call (tinyjs.json's `api` gate names it). */
 export const PROJECT_MENU_METHOD = 'projectMenu';
 
 /** What an item does. */
-export type ProjectItem = 'copy' | 'reveal' | 'vscode' | 't3' | 'ghostty';
-const ITEMS: readonly ProjectItem[] = ['copy', 'reveal', 'vscode', 't3', 'ghostty'];
+export type ProjectItem = 'explore' | 'next' | 'copy' | 'reveal' | 'vscode' | 't3' | 'ghostty';
+const ITEMS: readonly ProjectItem[] = ['explore', 'next', 'copy', 'reveal', 'vscode', 't3', 'ghostty'];
 const isProjectItem = (v: string): v is ProjectItem => ITEMS.some((i) => i === v);
 
 /** The prefix of every project menu item id: `project-menu:<item>:<project id>`. */
@@ -144,6 +148,9 @@ function openInItem(pid: string, app: OpenInApp, enabled: boolean, icons: AppIco
 /** A project's menu, for the apps that are there, with the Open in icons found so far. */
 export function projectMenuItems(pid: string, apps: Availability, icons: AppIcons = {}): ContextItem[] {
   return [
+    { id: itemId('explore', pid), label: 'New Exploration…' },
+    { id: itemId('next', pid), label: 'Run Next' },
+    { separator: true },
     { id: itemId('copy', pid), label: 'Copy Project Path' },
     { id: itemId('reveal', pid), label: 'Reveal in Finder' },
     { separator: true },
@@ -174,8 +181,10 @@ export function menuProject(projects: readonly MenuProject[], pid: string): (Men
   return { ...p, root: p.root };
 }
 
-/** What a clicked item does: copy or reveal the root, or run an argv. */
+/** What a clicked item does: copy or reveal the root, run an argv, or ask the page to start work
+ *  (`show`: show the main window first). */
 export type ProjectAction =
+  | { kind: 'push'; payload: StartWorkPush; show: boolean; project: string }
   | { kind: 'copy'; root: string; project: string }
   | { kind: 'reveal'; root: string; project: string }
   | { kind: 'spawn'; argv: string[]; app: string; project: string };
@@ -195,6 +204,10 @@ export function resolveAction(id: unknown, projects: readonly MenuProject[], t3:
   if (p === null) return null;
   const project = display(p);
   switch (parsed.item) {
+    case 'explore':
+      return { kind: 'push', payload: startWorkPayload({ action: 'new-exploration', project: p.id }), show: true, project };
+    case 'next':
+      return { kind: 'push', payload: startWorkPayload({ action: 'next', project: p.id }), show: false, project };
     case 'copy':
       return { kind: 'copy', root: p.root, project };
     case 'reveal':
@@ -211,6 +224,8 @@ export function resolveAction(id: unknown, projects: readonly MenuProject[], t3:
 /** The notification text for an action that failed. */
 export function failureText(action: ProjectAction, reason: string): string {
   switch (action.kind) {
+    case 'push':
+      return `Couldn't start work in ${action.project}: ${reason}`;
     case 'copy':
       return `Couldn't copy the path of ${action.project}: ${reason}`;
     case 'reveal':

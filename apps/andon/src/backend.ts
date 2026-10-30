@@ -10,8 +10,9 @@
 // andon:build` bundles it into build/backend.js, the plain-JS entry tinyjs.json names.
 // The windows' pages (the service-served UI) get no Tiny API but the two calls the drag regions make
 // (`win.startDrag`, `win.zoom`), the events this adapter pushes (`event.statusbar`, `event.merged`,
-// `event.whatsnew` for Help → What's New, and the View menu's `event.needsme`, `event.settled`,
-// `event.sidebar`, and `event.inspector`),
+// `event.whatsnew` for Help → What's New, the View menu's `event.needsme`, `event.settled`,
+// `event.sidebar`, and `event.inspector`, and `event.startwork` for File → New Exploration… and a
+// project's right-click New Exploration… and Run Next: a request the page checks, never a command),
 // `projectMenu`, which takes a project id (or null) and nothing else, the Settings window's
 // `getSettings` and `setSetting` (see settings.ts), which answer only when Tiny's api meta names the
 // Settings window, and `handOff` (see handoff.ts), which takes a project id, a job id, an action, and
@@ -49,6 +50,7 @@ import {
   STATUS_BAR_EVENT,
   STATUS_BAR_ID,
   STATUS_BAR_KEY,
+  START_WORK_EVENT,
   WHATS_NEW_EVENT,
   aboutWindow,
   appMenu,
@@ -510,6 +512,12 @@ export async function onMenu(id: string, app: MacApp): Promise<void> {
       await showMain(app);
       app.push(WHATS_NEW_EVENT, whatsNewPayload());
       return;
+    case 'start-work':
+      // File → New Exploration…: show the board as the tray click does (back from hidden or
+      // minimized), then ask its page to open the New exploration sheet; the page picks the project.
+      await showMain(app);
+      app.push(START_WORK_EVENT, action.payload);
+      return;
     case 'open':
       await app.shell.open(action.url);
       return;
@@ -768,6 +776,12 @@ export async function showProjectMenu(params: unknown, app: MacApp, projects: re
 /** The failure reason of an action, or null when it worked. */
 async function perform(app: MacApp, action: ProjectAction, runner: (argv: string[]) => Promise<RunResult>): Promise<string | null> {
   switch (action.kind) {
+    case 'push':
+      // New Exploration… shows the board first; then the page is asked to act. It checks the request
+      // and starts work only through `startWork`, which reports its own failures.
+      if (action.show) await showMain(app);
+      app.push(START_WORK_EVENT, action.payload);
+      return null;
     case 'copy':
       try {
         return app.clipboard.write({ text: action.root }) ? null : 'the clipboard refused the write';
