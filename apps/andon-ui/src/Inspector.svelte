@@ -71,7 +71,7 @@
 
   let files = $state<DocFile[]>([]);
   let aside = $state<HTMLElement>();
-  let docPane = $state<HTMLDivElement>();
+  let docPane = $state<HTMLDivElement | null>(null); // bind:this sets null when its element unmounts
   let closeBtn = $state<HTMLButtonElement>();
   let loadedKey: string | null = null;
 
@@ -84,7 +84,7 @@
     if (key !== loadedKey) {
       loadedKey = key;
       files = [];
-      if (docPane !== undefined) docPane.scrollTop = 0;
+      if (docPane instanceof HTMLElement) docPane.scrollTop = 0;
     }
     let live = true;
     const read = job !== null ? fetchDocs(fetcher, job) : ep !== null ? fetchEpicDocs(fetcher, ep.project.id, ep.epic.slug) : Promise.resolve([]);
@@ -172,7 +172,7 @@
   async function choose(path: string | null, focus: boolean): Promise<void> {
     if (path === null) return;
     onfile(path);
-    if (docPane !== undefined && page === null) docPane.scrollTop = 0;
+    if (docPane instanceof HTMLElement && page === null) docPane.scrollTop = 0;
     if (!focus) return;
     await tick();
     const row = aside?.querySelector<HTMLButtonElement>('.file.on');
@@ -219,14 +219,14 @@
   // The grip between the Files list and the document (the job view only). `room` is the height
   // the two share; the list's height is clamped against it, so a kept height that no longer fits
   // is shown smaller and kept as is.
-  let filesEl = $state<HTMLElement>();
+  let filesEl = $state<HTMLElement | null>(null); // bind:this sets null when the job view unmounts
   let room = $state(0);
   let filesPx = $state(0); // the list's height as rendered
-  const measure = (): number => (filesEl !== undefined && docPane !== undefined ? filesEl.offsetHeight + docPane.offsetHeight : 0);
+  const measure = (): number => (filesEl instanceof HTMLElement && docPane instanceof HTMLElement ? filesEl.offsetHeight + docPane.offsetHeight : 0);
   $effect(() => {
     const f = filesEl;
     const d = docPane;
-    if (f === undefined || d === undefined || typeof ResizeObserver === 'undefined') return;
+    if (!(f instanceof HTMLElement) || !(d instanceof HTMLElement) || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => {
       room = measure();
       filesPx = f.offsetHeight;
@@ -239,7 +239,7 @@
   let fdragging = $state(false);
   let fstart = { y: 0, h: 0, room: 0 };
   function fgrab(e: PointerEvent): void {
-    if (e.button !== 0 || !(e.currentTarget instanceof HTMLElement) || filesEl === undefined) return;
+    if (e.button !== 0 || !(e.currentTarget instanceof HTMLElement) || !(filesEl instanceof HTMLElement)) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
     fstart = { y: e.clientY, h: filesEl.offsetHeight, room: measure() };
@@ -252,7 +252,7 @@
     fdragging = false;
   }
   function fnudge(e: KeyboardEvent): void {
-    if (filesEl === undefined) return;
+    if (!(filesEl instanceof HTMLElement)) return;
     const next = filesKey(filesEl.offsetHeight, e.key, e.shiftKey, measure());
     if (next === null) return;
     e.preventDefault();
@@ -470,15 +470,10 @@
 </aside>
 
 {#snippet fileList(label: string, sized: boolean = false)}
-  {#if sized}
-    <nav class="files" class:sized={filesShownPx !== null} aria-label={label} bind:this={filesEl} style:height={filesShownPx !== null ? `${filesShownPx}px` : undefined}>
-      {@render fileRows()}
-    </nav>
-  {:else}
-    <nav class="files" aria-label={label}>
-      {@render fileRows()}
-    </nav>
-  {/if}
+  <!-- Only the job view's list is measured and sized by the Files grip. -->
+  <nav class="files" class:sized={sized && filesShownPx !== null} aria-label={label} bind:this={() => (sized ? filesEl : null), (el) => { if (sized) filesEl = el; }} style:height={sized && filesShownPx !== null ? `${filesShownPx}px` : undefined}>
+    {@render fileRows()}
+  </nav>
 {/snippet}
 
 {#snippet fileRows()}
