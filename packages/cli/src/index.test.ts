@@ -144,6 +144,7 @@ describe('usage and show (AC3)', () => {
       init: 'usage: init [--force]',
       upgrade: 'usage: upgrade [--force]',
       version: 'usage: --version',
+      projects: 'usage: projects [prune [--dry-run] | remove <path>]',
       source: 'usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id> | doctor | init [--force] | upgrade [--force] | --version',
     });
   });

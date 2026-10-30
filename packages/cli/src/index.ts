@@ -1,7 +1,8 @@
 // The factory CLI, run from source or from the release bundle (docs/contract/v1.md "CLI"): the core
-// commands (`core.ts`) plus the installer and the version:
+// commands (`core.ts`) plus the installer, the Andon registry command, and the version:
 //   init [--force]      install the managed core into the project
 //   upgrade [--force]   replace the managed core with a new render
+//   projects [prune [--dry-run] | remove <path>]   list, prune, or remove Andon registry roots (projects.ts)
 //   --version           print the release and how this CLI runs
 // `run` is the whole command surface as a testable function; `main.ts` (source) and
 // `release-main.ts` (the release bundle) are the process entries. They differ only in their
@@ -13,6 +14,7 @@ import type { ReleaseFiles } from './bundle';
 import { USAGE as CORE_USAGE, dispatchCore, guarded } from './core';
 import type { Io } from './core';
 import { init, upgrade } from './install';
+import { PROJECTS_USAGE, projects } from './projects';
 
 export type { Io } from './core';
 
@@ -27,6 +29,7 @@ export const USAGE = {
   init: 'usage: init [--force]',
   upgrade: 'usage: upgrade [--force]',
   version: 'usage: --version',
+  projects: PROJECTS_USAGE,
   // The source CLI's top-level line: the installed CLI's line plus `doctor`, the installer commands, and `--version`.
   source: `${CORE_USAGE.all} | doctor | init [--force] | upgrade [--force] | --version`,
 };
@@ -44,7 +47,8 @@ function parseForce(rest: readonly string[], usage: string): boolean {
 }
 
 // Returns the exit code: 0 on success, 1 on any rejection or usage error (one stderr line).
-// `init`, `upgrade`, and `--version` dispatch before any config read, as `doctor` does.
+// `init`, `upgrade`, `projects`, and `--version` dispatch before any config read, as `doctor` does.
+// `projects` works on the machine's Andon registry, not on a project, so it needs no factory/ directory.
 export function run(argv: readonly string[], io: Io, origin: Origin = SOURCE_ORIGIN): Promise<number> {
   return guarded(io, async () => {
     const [cmd, ...rest] = argv;
@@ -61,6 +65,7 @@ export function run(argv: readonly string[], io: Io, origin: Origin = SOURCE_ORI
       await upgrade(io.root, { force: parseForce(rest, USAGE.upgrade), stdout: io.stdout, from: origin.files });
       return 0;
     }
+    if (cmd === 'projects') return projects(rest, { registry: io.registry, stdout: io.stdout });
     return dispatchCore(argv, io, USAGE.source);
   });
 }
