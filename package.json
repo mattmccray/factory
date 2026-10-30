@@ -8,7 +8,7 @@
     "apps/*"
   ],
   "scripts": {
-    "test": "bun test --pass-with-no-tests ./packages ./apps",
+    "test": "bun test --pass-with-no-tests ./packages ./apps ./scripts",
     "check": "tsc --noEmit && bun run --cwd apps/andon-ui check",
     "cli:link": "cd packages/cli && bun link",
     "andon": "bun run --cwd apps/andon dev",
@@ -16,7 +16,8 @@
     "andon:service": "bun packages/andon-service/src/main.ts",
     "andon:ui:build": "bun run --cwd apps/andon-ui build",
     "andon:ui:dev": "bun run --cwd apps/andon-ui dev",
-    "factory:event": "bun factory/cli.ts event"
+    "factory:event": "bun factory/cli.ts event",
+    "release": "bun scripts/release.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
