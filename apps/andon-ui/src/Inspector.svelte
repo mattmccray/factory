@@ -14,10 +14,15 @@
   // A brief's or plan's page (brief andon-backlog-ui; `page` instead of `item` and `epic`) shows its
   // text from `GET …/briefs/<slug>` or `GET …/plans/<slug>`, rendered as job files are; a plan's
   // page lists its `## Members` with each member brief's `- Status:` (a member row opens its brief).
+  // Its action (brief t3-start-work) is the one its item has in the project's live backlog, read when
+  // the page opens: Run, Start epic, or Continue exploring; none when the item is in neither group.
+  // It copies the command and, in the Mac app, starts it in T3 Code as Settings say (`onstart`).
   import { tick, untrack } from 'svelte';
-  import { fetchBrief, fetchDocs, fetchEpicDocs, fetchPage } from './api';
-  import { docKey, docPage, planMembers } from './backlog';
-  import type { DocRef, DocText } from './backlog';
+  import { fetchBacklog, fetchBrief, fetchDocs, fetchEpicDocs, fetchPage } from './api';
+  import { docKey, docPage, planMembers, toBacklog } from './backlog';
+  import type { Backlog, DocRef, DocText } from './backlog';
+  import { pageStart } from './startwork';
+  import type { StartItem } from './startwork';
   import type { DocFile, Fetcher } from './api';
   import { isEpicTerminal } from './board';
   import type { BoardEpic, BoardJob } from './board';
@@ -51,8 +56,9 @@
     onopenjob: (key: string) => void; // a member's job link
     onopenepic: (key: string) => void; // a job's link to its epic
     onopenpage: (ref: DocRef) => void; // a plan member's brief
+    onstart: (item: StartItem) => void; // a brief's or plan's action: copy, then start in T3 Code
   }
-  let { item, epic, epicJobs, page: docRef, pageProject, onopenpage, open, width, now, fetcher, file, onfile, onclose, onresize, oncopy, onhandoff, onsheet, onopenjob, onopenepic }: Props = $props();
+  let { item, epic, epicJobs, page: docRef, pageProject, onopenpage, onstart, open, width, now, fetcher, file, onfile, onclose, onresize, oncopy, onhandoff, onsheet, onopenjob, onopenepic }: Props = $props();
 
   const key = $derived(item !== null ? item.key : epic !== null ? `epic:${epic.key}` : docRef !== null ? docKey(docRef) : null);
   const updated = $derived(item !== null ? item.job.updated : (epic?.epic.updated ?? null));
@@ -92,12 +98,17 @@
   // A brief's or plan's page: its text, then (a plan) each member's brief, read once per page opened.
   let docText = $state.raw<DocText | null>(null);
   let memberBriefs = $state.raw<ReadonlyMap<string, DocText>>(new Map());
+  let pageBacklog = $state.raw<Backlog | null>(null);
   $effect(() => {
     const ref = docRef;
     docText = null;
     memberBriefs = new Map();
+    pageBacklog = null;
     if (ref === null) return;
     let live = true;
+    void fetchBacklog(fetcher, ref.project).then((b) => {
+      if (live && b.ok) pageBacklog = toBacklog(b.data);
+    });
     void fetchPage(fetcher, ref).then((d) => {
       if (!live) return;
       docText = d;
@@ -113,6 +124,7 @@
     };
   });
   const doc = $derived(item === null && epic === null && docRef !== null ? docPage(docRef, pageProject, docText, memberBriefs) : null);
+  const docStart = $derived(doc === null ? null : pageStart(doc.ref, pageBacklog));
 
   // Opening a job or an epic moves focus into the inspector (so ↑ and ↓ work at once); closing it
   // returns focus to where it was.
@@ -309,6 +321,10 @@
           <div class="crumbs"><span>{doc.project}</span><span aria-hidden="true">·</span><span class="stage-pill sp-doc">{doc.kindLabel}</span>{#if doc.status !== null}<span class="stage-pill sp-doc-status">{doc.status}</span>{/if}</div>
           <h2 id="ins-title">{doc.title}</h2>
           <div class="branch" title="relative to factory/">{doc.path}</div>
+          {#if docStart !== null}
+            {@const start = docStart}
+            <div class="acts dacts"><button class="btn primary" type="button" title="Copy {start.command}" onclick={() => onstart(start)}>{start.label}</button></div>
+          {/if}
         </div>
         {#if doc.members !== null}
           <section class="members" aria-label="Members">

@@ -253,6 +253,17 @@ It replaces the drawer. From top to bottom:
    - **Andon never runs these itself.** In the Mac app, when T3 Code is installed, it can also hand
      one to T3 Code: as an unsent draft in a new thread (the default), or, if chosen in Settings,
      sent to a new thread right away. Andon still writes no job state; the factory CLI does.
+   - **Starting work** (brief `t3-start-work`, approved 2026-10-30): the T3 Code hand-off also
+     covers starting work from the Backlog sheet, and from a brief's or plan's page in the
+     inspector, by the same modes and rules. A queued brief or free-text line offers **Run**
+     (`/factory next <title>`), a queued epic line **Start epic** (`/factory epic <slug>`), an
+     exploration **Continue exploring** (`/factory explore <slug>`), and each project **Run next**
+     (`/factory next`) and **New exploration…**, a sheet with an idea field
+     (`/factory explore "<idea>"`). Each copies its command first. The page names only the
+     project, the action, and the item's slug (a free-text line's exact title) or the typed idea;
+     the Mac app checks the item against the service's live backlog, builds the command itself,
+     and drafts, sends, or only copies as Settings say, with the same toasts. Andon writes no job
+     state and never edits `backlog.md`; the factory CLI and skill do.
 4. **Files**, grouped as today's `groupsOf()` does:
    - **Job**: timing, feature.md (and the brief), spec.md, build.md, decision.md, in that order.
    - **Round N**: one row per reviewer ("security review"), with a green or orange verdict dot;

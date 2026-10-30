@@ -3,10 +3,10 @@
 // `app.badge`, `app.notify`, `app.menu`, `app.store`, `app.push`, `app.shell`, `app.clipboard`,
 // `app.thumbnail` (the Open in apps' icons), the
 // `app.win.open` and `app.windows` (the Settings and About windows), the `onTray`, `onMenu`, `onNavigate`, and
-// `onContextMenu` hooks, and the seven custom `api` methods, and to
+// `onContextMenu` hooks, and the eight custom `api` methods, and to
 // txiki's `tjs.spawn`, `tjs.stat`, and `tjs.remove` (for curl: see curl.ts, for a project's
-// right-click menu: see projectmenu.ts, for a job's: see jobmenu.ts, and for the T3 Code hand-off:
-// see handoff.ts). `bun run
+// right-click menu: see projectmenu.ts, for a job's: see jobmenu.ts, for the T3 Code hand-off:
+// see handoff.ts, and for starting work in T3 Code: see startwork.ts). `bun run
 // andon:build` bundles it into build/backend.js, the plain-JS entry tinyjs.json names.
 // The windows' pages (the service-served UI) get no Tiny API but the two calls the drag regions make
 // (`win.startDrag`, `win.zoom`), the events this adapter pushes (`event.statusbar`, `event.merged`,
@@ -18,8 +18,10 @@
 // a note, and answers only when the meta names the main window, and `jobMenu` (see jobmenu.ts),
 // which takes a project id and a job id and nothing else, and `setViewState` (the main window's
 // page reporting its Needs Me, sidebar, and inspector booleans, answered only for the main window),
-// and the About window's `getAbout` (see about.ts), which answers only when the meta names the
-// About window: tinyjs.json's `api` gate denies the rest.
+// the About window's `getAbout` (see about.ts), which answers only when the meta names the
+// About window, and `startWork` (see startwork.ts), which takes a project id, an action, and a slug,
+// a free-text line's title, or an idea, and answers only when the meta names the main window:
+// tinyjs.json's `api` gate denies the rest.
 /// <reference path="../types/tiny.d.ts" />
 /// <reference path="../types/tjs.d.ts" />
 import { QUIT_ID, SHOW_ID, trayNotice } from './badge';
@@ -65,6 +67,7 @@ import { DEFAULT_HANDOFF_MODE, T3_HANDOFF_KEY, fromSettingsWindow, settingChange
 import type { HandoffMode, Settings } from './settings';
 import { draftFailureText, draftLink, fromMainWindow, githubRepo, handoffRequest, originArgv, sendArgv, sendFailureText } from './handoff';
 import type { HandoffOutcome } from './handoff';
+import { backlogPath, needsBacklog, startArgv, startShape, startWorkFrom } from './startwork';
 import { APP_NAMES, BUNDLE_IDS, GHOSTTY_APP, OPEN_IN_APPS, VSCODE_APP, appFallbacks, exitReason, failureText, mdfindHit, mdfindQuery, menuProject, menuRequest, projectMenuItems, resolveAction, t3Candidates } from './projectmenu';
 import type { AppIcons, Availability, MenuProject, OpenInApp, ProjectAction } from './projectmenu';
 
@@ -857,6 +860,77 @@ export async function handOff(params: unknown, app: MacApp, meta: unknown, host:
   }
 }
 
+// ---- starting work in T3 Code (brief t3-start-work) ----
+// Answered only when Tiny's api meta names the main window, like the hand-off. The page has already
+// copied its own command; this checks the request (startwork.ts), reads the service's live
+// `GET /projects/<pid>/backlog` over HTTP when the action names an item, builds the command again
+// from the service's copy, and then drafts, sends, or only copies exactly as `handOff` does.
+
+/** What starting work needs from the host: the hand-off's, plus the project's live backlog. */
+export interface StartWorkHost extends HandoffHost {
+  /** The project's backlog payload from the service that listed it; rejects when it can't be read. */
+  backlog(pid: string): Promise<unknown>;
+}
+
+/** The real host: the hand-off's, and the backlog from the local service. */
+export const hostStartWork: StartWorkHost = {
+  ...hostHandoff,
+  backlog: async (pid) => {
+    if (serviceHttp === null) throw new Error('the Andon service is not running');
+    return getJson(serviceHttp, backlogPath(pid));
+  },
+};
+
+/** The start running now, if any: a second start while one runs is dropped (answers null). */
+let starting = false;
+
+/**
+ * The main window's start: the request's shape checked (startwork.ts `startShape`), the backlog
+ * fetched when its action names an item, the item checked in its group and the command built
+ * (`startWorkFrom`), then, by the T3 Code setting, a draft opened (`open <prompt link>`, only with a
+ * GitHub `repo`) or the command sent (`<t3> thread start --title <title> <root> <command>`). Copy mode
+ * or no `t3`: nothing runs, "copy-only". A failed open or send notifies, and answers "copy-only".
+ * Null, with nothing run, opened, or notified, for any other window, a request that fails a check, a
+ * backlog fetch that fails, or a start already running.
+ */
+export async function startWork(params: unknown, app: MacApp, meta: unknown, host: StartWorkHost = hostStartWork): Promise<HandoffOutcome | null> {
+  if (!fromMainWindow(meta)) return null;
+  const shape = startShape(params, host.projects());
+  if (shape === null || starting) return null;
+  starting = true;
+  try {
+    let backlog: unknown = null;
+    if (needsBacklog(shape)) {
+      try {
+        backlog = await host.backlog(shape.project.id);
+      } catch (err) {
+        console.log(`andon: could not fetch the backlog to start work in ${shape.project.name} (${errorReason(err)})`);
+        return null;
+      }
+    }
+    const w = startWorkFrom(shape, backlog);
+    if (w === null) return null;
+    const mode = await readHandoffMode(app);
+    if (mode === 'copy') return 'copy-only';
+    const t3 = await host.findT3();
+    if (t3 === null) return 'copy-only';
+    if (mode === 'draft') {
+      const repo = githubRepo(await host.origin(w.project.root));
+      if (repo === null) return 'no-github-remote';
+      const r = await host.run(['open', draftLink(w.command, repo)]);
+      if (r.ok) return 'drafted';
+      await notifyFailure(app, draftFailureText(r.reason));
+      return 'copy-only';
+    }
+    const r = await host.run(startArgv(t3, w));
+    if (r.ok) return 'sent';
+    await notifyFailure(app, sendFailureText(r.reason));
+    return 'copy-only';
+  } finally {
+    starting = false;
+  }
+}
+
 // ---- a job's right-click menu (040) ----
 // Armed like the project menu: the page names the job under the pointer by its project id and job id
 // (`jobMenu({ project, job })`), and nothing else. The project must be in the backend's `/projects`
@@ -986,7 +1060,7 @@ export async function getAbout(meta: unknown): Promise<About | null> {
   return aboutAnswer(__ANDON_VERSION__);
 }
 
-/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, `handOff`, `jobMenu`, `setViewState`, and `getAbout` (tinyjs.json's gate enables each by name). */
+/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, `handOff`, `jobMenu`, `setViewState`, `getAbout`, and `startWork` (tinyjs.json's gate enables each by name). */
 export const api = {
   projectMenu: (params: unknown, app: MacApp): Promise<void> => showProjectMenu(params, app, listedProjects()),
   getSettings: (_params: unknown, app: MacApp, meta: unknown): Promise<Settings | null> => getSettings(app, meta),
@@ -995,6 +1069,7 @@ export const api = {
   jobMenu: (params: unknown, app: MacApp): Promise<void> => showJobMenu(params, app),
   setViewState: (params: unknown, app: MacApp, meta: unknown): Promise<ViewState | null> => setViewState(params, app, meta),
   getAbout: (_params: unknown, _app: MacApp, meta: unknown): Promise<About | null> => getAbout(meta),
+  startWork: (params: unknown, app: MacApp, meta: unknown): Promise<HandoffOutcome | null> => startWork(params, app, meta),
 };
 
 /** A click in the right-click menu: a `job-menu:` id goes to the job menu, every other id to the project menu. */

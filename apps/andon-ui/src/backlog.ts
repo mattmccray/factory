@@ -9,6 +9,8 @@
 // UI never runs contract code (`boundary.test.ts`). Nothing here fetches or touches the DOM.
 import { isRecord } from './job';
 import { markdown } from './markdown';
+import { exploringStart, queuedStart } from './startwork';
+import type { StartItem } from './startwork';
 
 /** A narrow board's backlog counts: the lengths of its project's `queued` and `exploring` lists. */
 export interface BacklogCounts {
@@ -220,6 +222,7 @@ export interface BacklogRow {
   status: string | null; // an exploration's status (draft)
   abandoned: string[]; // earlier abandoned attempts
   page: DocRef | null; // null: a text line, no page
+  start: StartItem | null; // its action (t3-start-work): Run, Start epic, or Continue exploring
 }
 
 export interface BacklogGroup {
@@ -258,6 +261,7 @@ function rowOf(project: string, group: 'q' | 'x', item: BacklogItem, i: number):
     status: group === 'x' ? item.status : null,
     abandoned: item.abandoned,
     page: pageOf(project, item),
+    start: group === 'q' ? queuedStart(project, item) : exploringStart(project, item),
   };
 }
 

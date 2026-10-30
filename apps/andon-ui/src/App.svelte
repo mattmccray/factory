@@ -19,7 +19,10 @@
   // toolbar's Backlog button, View → Show Backlog… (the `backlog` page event), and the hash open the
   // Backlog sheet; its projects' backlogs are fetched while it is open (or while a search needs
   // them) and re-fetched on their `backlog` events. A queued or exploring brief or epic opens its
-  // brief's or plan's page in the inspector.
+  // brief's or plan's page in the inspector. Starting work (brief t3-start-work): the Backlog sheet's
+  // rows and projects and the brief and plan pages offer Run, Start epic, Run next, Continue
+  // exploring, and New exploration… (its own sheet); each copies its command first, then, in the Mac
+  // app, asks it to start the work in T3 Code (startwork.ts), and the toast is the hand-off's.
   import { onMount, untrack } from 'svelte';
   import type { Fetcher } from './api';
   import { backlogProjects, backlogSheet } from './backlog';
@@ -38,6 +41,9 @@
   import { activity, buildLanes, headerOf, orderLanes } from './lanes';
   import type { LaneOrder } from './lanes';
   import Lines from './Lines.svelte';
+  import NewExplorationSheet from './NewExplorationSheet.svelte';
+  import { copyThenStart, startWorkCaller } from './startwork';
+  import type { StartItem } from './startwork';
   import { jobMenuCaller } from './jobmenu';
   import { menuArmer, projectMenuCaller, swallowsClick } from './projectmenu';
   import { entryOf, epicKey, formatHash, historyStep, initialView, jobKey, readEntry, viewKey, viewOf } from './route';
@@ -135,6 +141,7 @@
   let inspectorWidth = $state(INSPECTOR_DEFAULT); // not kept across reloads
   let sheet = $state<SheetKind | null>(start.sheet === 'rework' || start.sheet === 'abandon' || start.sheet === 'epic-abandon' ? start.sheet : null); // the open Rework… or Abandon… sheet (a job's or an epic's)
   let keysOpen = $state(start.sheet === 'keys'); // the shortcut sheet
+  let exploreProject = $state<{ id: string; name: string } | null>(null); // the New exploration sheet's project (null: closed)
   let whatsNewOpen = $state(start.whatsNew !== null); // the What's New sheet
   let whatsNewProject = $state<string | null>(start.whatsNew?.project ?? null); // its scope: a project id, or null for every release
   let needs = $state(start.needs); // Needs Me
@@ -485,6 +492,19 @@
     const t = handoffToast(copied, outcome, command);
     show(t.text, t.ok);
   }
+  // Starting work (t3-start-work): copy first, then (in the Mac app) ask it to start the work in T3
+  // Code as its Settings say; the toast is the hand-off's. A browser has no caller: copy only. An
+  // action from the Backlog sheet closes it, so the toast shows.
+  const startWork = startWorkCaller(mode, Reflect.get(window, 'tiny'));
+  async function copyAndStart(item: StartItem): Promise<void> {
+    backlogOpen = false;
+    const t = await copyThenStart(write, startWork, item.req, item.command);
+    show(t.text, t.ok);
+  }
+  function openNewExploration(project: { id: string; name: string }): void {
+    backlogOpen = false;
+    exploreProject = project;
+  }
   $effect(() => () => {
     if (toastTimer !== null) clearTimeout(toastTimer);
   });
@@ -556,7 +576,7 @@
   const inField = (el: Element | null): boolean => el instanceof HTMLElement && (el.isContentEditable || el.matches('input, textarea, select'));
   function onkeydown(e: KeyboardEvent): void {
     if (e.defaultPrevented) return;
-    const layers = { sheet: settledOpen || backlogOpen || whatsNewOpen || sheet !== null || keysOpen, inspector: inspectorOpen, searchText: query !== '', searchFocused };
+    const layers = { sheet: settledOpen || backlogOpen || whatsNewOpen || sheet !== null || keysOpen || exploreProject !== null, inspector: inspectorOpen, searchText: query !== '', searchFocused };
     const r = reduceKey(keyState, { key: e.key, mod: e.ctrlKey || e.metaKey || e.altKey, inField: inField(document.activeElement) }, layers);
     keyState = r.state;
     // Escape's default is always suppressed: Chromium's ("stop loading") also aborts the event stream.
@@ -582,7 +602,12 @@
         return;
       case 'close-sheet':
         // the topmost first (keys.ts `topSheet`): What's New, then a command sheet or the shortcuts
-        // (which open over the Settled sheet's place), then the Settled sheet, then the Backlog sheet
+        // (which open over the Settled sheet's place), then the Settled sheet, then the Backlog sheet;
+        // the New exploration sheet opens alone (the Backlog sheet closes for it), so it goes first
+        if (exploreProject !== null) {
+          exploreProject = null;
+          return;
+        }
         switch (topSheet({ whatsNew: whatsNewOpen, keys: keysOpen, command: sheet !== null, settled: settledOpen, backlog: backlogOpen })) {
           case 'whatsNew':
             whatsNewOpen = false;
@@ -693,6 +718,7 @@
     page={openDoc}
     pageProject={openDoc === null ? '' : projectName(openDoc.project)}
     onopenpage={openPage}
+    onstart={copyAndStart}
     open={inspectorOpen}
     width={inspectorWidth}
     {now}
@@ -726,7 +752,10 @@
   onclearfilter={() => (backlogProject = null)}
   onclose={() => (backlogOpen = false)}
   onopenpage={openPage}
+  onstart={copyAndStart}
+  onnewexploration={openNewExploration}
 />
+<NewExplorationSheet project={exploreProject} handsOff={startWork !== null} onstart={copyAndStart} onclose={() => (exploreProject = null)} />
 <CommandSheet
   kind={sheet}
   id={sheet === 'epic-abandon' ? (openEpicItem?.epic.slug ?? '') : (openItem?.job.id ?? '')}
