@@ -4,9 +4,13 @@
 // is narrow: its unsettled jobs, its config, and a settled summary. A project's settled jobs are
 // fetched only when a view needs them (`GET /projects/<pid>/settled`) and cached per project.
 // Epics ride along: a board's `epics` are its unsettled epics, and `/settled` returns `{ jobs, epics }`.
+// The service's release (`{ running, onDisk, changelog }`) arrives as the `release` event and from one
+// `GET /release` per `projects` event; an older service sends neither, and the slot stays empty.
 // Every update returns a new state; nothing here touches the DOM.
 import { isRecord, toConfig, toEpics, toJobs, toProjects } from './job';
 import type { BoardConfig, Epic, Job, ProjectInfo } from './job';
+import { toReleaseInfo } from './release';
+import type { ReleaseInfo } from './release';
 
 /**
  * A narrow board's settled summary: how many jobs settled, the newest settled merge's `endedAt`,
@@ -39,15 +43,22 @@ export interface SettledList {
   rev: number; // bumped by every fetch, so only the newest one applies
 }
 
+/** The service's release: null until one arrives (or while the service sends none); `rev` as a board's. */
+export interface ReleaseSlot {
+  info: ReleaseInfo | null;
+  rev: number; // bumped by every `release` event, so a slower `GET /release` can't overwrite a newer event
+}
+
 export interface UiState {
   projects: ProjectInfo[];
   boards: Record<string, ProjectBoard>;
   settled: Record<string, SettledList>;
+  release: ReleaseSlot;
 }
 
 export const NO_SETTLED: SettledSummary = { count: 0, lastMergedAt: null };
 
-export const emptyState = (): UiState => ({ projects: [], boards: {}, settled: {} });
+export const emptyState = (): UiState => ({ projects: [], boards: {}, settled: {}, release: { info: null, rev: 0 } });
 const emptyBoard = (): ProjectBoard => ({ jobs: [], epics: [], config: toConfig(null), settled: NO_SETTLED, error: null, loaded: false, rev: 0 });
 const known = (s: UiState, pid: string): boolean => s.projects.some((p) => p.id === pid);
 const boardOf = (s: UiState, pid: string): ProjectBoard => s.boards[pid] ?? emptyBoard();
@@ -85,7 +96,7 @@ export function setProjects(s: UiState, projects: ProjectInfo[]): UiState {
     const list = s.settled[p.id];
     if (list !== undefined) settled[p.id] = list;
   }
-  return { projects, boards, settled };
+  return { ...s, projects, boards, settled };
 }
 
 /** A project's new board: its jobs, epics, config, and settled summary change, and any config error clears. */
@@ -106,6 +117,10 @@ export const setError = (s: UiState, pid: string, reason: string): UiState => wi
 /** Applies one `GET /events` event. Unknown events and malformed data leave the state as is. */
 export function applyEvent(s: UiState, event: string, data: unknown): UiState {
   if (event === 'projects') return isRecord(data) && Array.isArray(data.projects) ? setProjects(s, toProjects(data)) : s;
+  if (event === 'release') {
+    const info = toReleaseInfo(data);
+    return info === null ? s : { ...s, release: { info, rev: s.release.rev + 1 } };
+  }
   if (!isRecord(data) || typeof data.project !== 'string') return s;
   if (event === 'board') return setBoard(s, data.project, data);
   if (event === 'error') return setError(s, data.project, typeof data.reason === 'string' ? data.reason : 'config.json: unreadable');
@@ -119,6 +134,20 @@ export const revOf = (s: UiState, pid: string): number => boardOf(s, pid).rev;
 export function applyFetched(s: UiState, pid: string, rev: number, result: { ok: true; data: unknown } | { ok: false; reason: string }): UiState {
   if (revOf(s, pid) !== rev) return s;
   return result.ok ? setBoard(s, pid, result.data) : setError(s, pid, result.reason);
+}
+
+/** The release `rev` to pass back with a fetched `GET /release`, read when the request is sent. */
+export const releaseRev = (s: UiState): number => s.release.rev;
+
+/**
+ * Applies a fetched `GET /release` unless a `release` event arrived since `rev`. A failed fetch (a
+ * 404 from an older service, any other non-2xx) or a malformed body is no release data.
+ */
+export function applyFetchedRelease(s: UiState, rev: number, result: { ok: true; data: unknown } | { ok: false; reason: string }): UiState {
+  if (s.release.rev !== rev) return s;
+  const info = result.ok ? toReleaseInfo(result.data) : null;
+  if (info === null && s.release.info === null) return s;
+  return { ...s, release: { info, rev } };
 }
 
 // ---- settled lists ----

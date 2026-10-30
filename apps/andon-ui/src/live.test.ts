@@ -1,5 +1,9 @@
 import { expect, test } from 'bun:test';
 import type { Fetcher } from './api';
+import { projectRelease, releaseBody } from './fixtures';
+import { footer, sidebarModel } from './sidebar';
+import { ALL } from './projects';
+import { whatsNew } from './release';
 import { startLive } from './live';
 import type { EventSourceLike, Status } from './live';
 import type { UiState } from './state';
@@ -51,7 +55,7 @@ test('a projects event fetches each board; board and error events then keep proj
   source.emit('open', {});
   source.send('projects', { projects: [P1, P2] });
   await tick();
-  expect(asked.sort()).toEqual([`/projects/${P1.id}/board?settled=summary`, `/projects/${P2.id}/board?settled=summary`]);
+  expect(asked.sort()).toEqual([`/projects/${P1.id}/board?settled=summary`, `/projects/${P2.id}/board?settled=summary`, '/release']); // and the release, once (059)
   expect(live.state().boards[P1.id]?.jobs.map((j) => j.id)).toEqual(['001-a']);
   expect(live.state().boards[P2.id]?.error).toBe('config.json: bad');
 
@@ -60,7 +64,7 @@ test('a projects event fetches each board; board and error events then keep proj
   source.send('error', { project: P1.id, reason: 'config.json: worse' });
   expect(live.state().boards[P1.id]?.error).toBe('config.json: worse');
   expect(live.state().boards[P1.id]?.jobs.map((j) => j.id)).toEqual(['001-a']);
-  expect(asked).toHaveLength(2);
+  expect(asked).toHaveLength(3);
 
   source.emit('error', { type: 'error' }); // the connection dropped (no data)
   expect(statuses).toEqual(['connecting', 'live', 'down']);
@@ -258,4 +262,112 @@ test('a watched project waits for its board before its list is fetched', async (
   await tick();
   expect(svc.settledAsks()).toEqual([`/projects/${P1.id}/settled`]);
   live.stop();
+});
+
+// ---- the factory release (059 AC6, AC7) ----
+
+/** A fake service for releases: boards answer empty, and `/release` answers what `release` holds, held until let go when `hold` is on. */
+function releaseService(answer: () => { ok: boolean; status: number; body: string }) {
+  const asked: string[] = [];
+  const held: Array<() => void> = [];
+  let hold = false;
+  const fetcher: Fetcher = async (path) => {
+    asked.push(path);
+    if (path !== '/release') return ok({ jobs: [], config: { reviewers: [] } });
+    const a = answer(); // read when asked
+    if (hold) await new Promise<void>((r) => held.push(r));
+    return { ok: a.ok, status: a.status, text: async () => a.body };
+  };
+  return { fetcher, asked, holdFetches: (on: boolean) => (hold = on), letGo: () => held.splice(0).forEach((r) => r()) };
+}
+
+const json = (body: unknown) => ({ ok: true, status: 200, body: JSON.stringify(body) });
+
+test('a projects event fetches GET /release once; the release event and changed projects update the glyph, the footer, and an open sheet', async () => {
+  const source = new FakeSource();
+  let body = json(releaseBody('0.2.0'));
+  const svc = releaseService(() => body);
+  const live = startLive({ connect: () => source, fetcher: svc.fetcher, onState: () => undefined, onStatus: () => undefined });
+  const behind = { ...P1, release: projectRelease('0.1.0', 'behind') };
+  source.send('projects', { projects: [behind, P2] });
+  await tick();
+  expect(svc.asked.filter((p) => p === '/release')).toHaveLength(1);
+  expect(live.state().release.info?.running).toBe('0.2.0');
+  const glyph = () => sidebarModel(live.state(), ALL).projects.find((p) => p.id === P1.id)?.release?.glyph ?? null;
+  const scoped = () => whatsNew(live.state().release.info, { id: P1.id, project: live.state().projects.find((p) => p.id === P1.id) ?? null });
+  expect(glyph()).toEqual({ label: 'factory 0.1.0 installed · 0.2.0 available' });
+  expect(scoped().releases.map((r) => r.version)).toEqual(['0.2.0']);
+  expect(footer('live', 2, live.state().release.info).release?.text).toBe('v0.2.0');
+
+  // a git pull: the service still runs 0.2.0, its clone has 0.3.0
+  source.send('release', releaseBody('0.2.0', '0.3.0'));
+  expect(footer('live', 2, live.state().release.info).release?.kind).toBe('restart');
+  // restarted: it runs 0.3.0, and the scoped sheet grows
+  source.send('release', releaseBody('0.3.0'));
+  expect(footer('live', 2, live.state().release.info).release?.text).toBe('v0.3.0');
+  expect(scoped().releases.map((r) => r.version)).toEqual(['0.3.0', '0.2.0']);
+  expect(whatsNew(live.state().release.info, null).releases).toHaveLength(3);
+
+  // factory upgrade in the project: its release changes in a projects event
+  body = json(releaseBody('0.3.0'));
+  source.send('projects', { projects: [{ ...P1, release: projectRelease('0.3.0', 'current') }, P2] });
+  expect(glyph()).toBeNull();
+  expect(scoped().scope?.behind).toBe(false);
+  await tick();
+  expect(svc.asked.filter((p) => p === '/release')).toHaveLength(2);
+  live.stop();
+});
+
+test('a GET /release that resolves after a newer release event does not overwrite it', async () => {
+  const source = new FakeSource();
+  const svc = releaseService(() => json(releaseBody('0.1.0')));
+  const live = startLive({ connect: () => source, fetcher: svc.fetcher, onState: () => undefined, onStatus: () => undefined });
+  svc.holdFetches(true);
+  source.send('projects', { projects: [P1] });
+  await tick();
+  source.send('release', releaseBody('0.2.0')); // sent right after the first projects event
+  svc.letGo(); // the older answer lands last
+  await tick();
+  await tick();
+  expect(live.state().release.info?.running).toBe('0.2.0');
+  live.stop();
+});
+
+test('a GET /release with no newer event applies; a later failure is no release data', async () => {
+  const source = new FakeSource();
+  let answer = json(releaseBody('0.2.0'));
+  const svc = releaseService(() => answer);
+  const live = startLive({ connect: () => source, fetcher: svc.fetcher, onState: () => undefined, onStatus: () => undefined });
+  source.send('projects', { projects: [P1] });
+  await tick();
+  expect(live.state().release.info?.running).toBe('0.2.0');
+  answer = { ok: false, status: 500, body: 'boom' };
+  source.send('projects', { projects: [P1] });
+  await tick();
+  expect(live.state().release.info).toBeNull();
+  live.stop();
+});
+
+test('an older service: no release on entries, no release event, and a 404 for /release; nothing shows and nothing throws (AC7)', async () => {
+  for (const answer of [
+    { ok: false, status: 404, body: 'not found' },
+    { ok: true, status: 200, body: '<!doctype html>' }, // not JSON
+    json({ running: 3 }), // malformed
+    json(null),
+  ]) {
+    const source = new FakeSource();
+    const svc = releaseService(() => answer);
+    const live = startLive({ connect: () => source, fetcher: svc.fetcher, onState: () => undefined, onStatus: () => undefined });
+    source.emit('open', {});
+    source.send('projects', { projects: [P1, P2] });
+    await tick();
+    expect(live.state().release.info).toBeNull();
+    expect(sidebarModel(live.state(), ALL).projects.map((p) => [p.release, p.title])).toEqual([
+      [null, P1.root],
+      [null, P2.root],
+    ]);
+    expect(footer('live', 2, live.state().release.info)).toEqual({ text: 'Connected · 2 projects', dot: 'green', release: null });
+    expect(Object.values(live.state().boards).every((b) => b.loaded)).toBe(true);
+    live.stop();
+  }
 });

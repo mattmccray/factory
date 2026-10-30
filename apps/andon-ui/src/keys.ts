@@ -16,7 +16,7 @@ export interface KeyInput {
 }
 
 export interface Layers {
-  sheet: boolean; // any sheet: Settled, Rework, Abandon, or shortcuts
+  sheet: boolean; // any sheet: Settled, What's New, Rework, Abandon, or shortcuts
   inspector: boolean;
   searchText: boolean; // the search field has text
   searchFocused: boolean;
@@ -38,6 +38,28 @@ export function escape(l: Layers): KeyAction | null {
   if (l.inspector) return 'close-inspector';
   if (l.searchText) return 'clear-search';
   if (l.searchFocused) return 'leave-search';
+  return null;
+}
+
+/** The sheets that can be open at once, by name. */
+export interface OpenSheets {
+  whatsNew: boolean;
+  keys: boolean;
+  command: boolean; // Rework…, Abandon…, or an epic's Abandon…
+  settled: boolean;
+}
+
+/**
+ * Which sheet Esc's `close-sheet` closes: the topmost one. What's New is always on top when open:
+ * Help → What's New (the Mac app) can open it over any sheet, and nothing opens over it (it is
+ * modal, and single keys are off while a sheet is open). Then the shortcuts or a command sheet,
+ * which open over the Settled sheet's place, then the Settled sheet.
+ */
+export function topSheet(o: OpenSheets): keyof OpenSheets | null {
+  if (o.whatsNew) return 'whatsNew';
+  if (o.keys) return 'keys';
+  if (o.command) return 'command';
+  if (o.settled) return 'settled';
   return null;
 }
 

@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { initialKeys, reduceKey } from './keys';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { initialKeys, reduceKey, topSheet } from './keys';
 import type { KeyAction, KeyInput, KeyState, Layers } from './keys';
 
 const NONE: Layers = { sheet: false, inspector: false, searchText: false, searchFocused: false };
@@ -96,5 +98,30 @@ describe('Esc by layer order (AC2)', () => {
       else if (r.action === 'clear-search') layers = { ...layers, searchText: false };
     }
     expect(out).toEqual(['close-sheet', 'close-inspector', 'clear-search']);
+  });
+});
+
+describe("Esc closes What's New as the topmost sheet (059 AC5)", () => {
+  const none = { whatsNew: false, keys: false, command: false, settled: false };
+
+  test('What\'s New is a sheet layer: Esc closes it before the inspector, and no single key works under it', () => {
+    const layers: Layers = { ...NONE, sheet: true, inspector: true };
+    expect(run([ev('Escape')], layers)).toEqual(['close-sheet']);
+    expect(run([ev('?'), ev('n'), ev('/')], layers)).toEqual([null, null, null]);
+  });
+
+  test('topmost first: What\'s New, then the shortcuts or a command sheet, then the Settled sheet', () => {
+    expect(topSheet({ whatsNew: true, keys: true, command: true, settled: true })).toBe('whatsNew');
+    expect(topSheet({ ...none, whatsNew: true, settled: true })).toBe('whatsNew');
+    expect(topSheet({ ...none, keys: true, settled: true })).toBe('keys');
+    expect(topSheet({ ...none, command: true, settled: true })).toBe('command');
+    expect(topSheet({ ...none, settled: true })).toBe('settled');
+    expect(topSheet(none)).toBeNull();
+  });
+
+  test('App.svelte counts it as a sheet and closes by topSheet', () => {
+    const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
+    expect(app).toContain('sheet: settledOpen || whatsNewOpen || sheet !== null || keysOpen');
+    expect(app).toContain('switch (topSheet({ whatsNew: whatsNewOpen, keys: keysOpen, command: sheet !== null, settled: settledOpen }))');
   });
 });

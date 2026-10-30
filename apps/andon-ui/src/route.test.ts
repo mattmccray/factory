@@ -82,7 +82,7 @@ describe('restoring a view (AC5)', () => {
 
   test('each hash form maps to its view state', () => {
     const view = initialView('#project=p1&job=p2/002-b&file=timing&settled=p3&needs', 'all', 'all', null);
-    expect(view).toEqual({ project: 'p1', inspector: true, job: { project: 'p2', id: '002-b' }, file: TIMING, settled: { project: 'p3' }, sheet: null, needs: true });
+    expect(view).toEqual({ project: 'p1', inspector: true, job: { project: 'p2', id: '002-b' }, file: TIMING, settled: { project: 'p3' }, whatsNew: null, sheet: null, needs: true });
   });
 
   test('history.state carries the sheets and an empty inspector', () => {
@@ -176,5 +176,54 @@ describe('the epic= hash form (056 AC6)', () => {
     expect(viewOf(formatHash(sheet), entryOf(sheet, viewKey(page)))).toEqual(sheet);
     expect(readEntry({ andon: { sheet: 'epic-abandon' } }).sheet).toBe('epic-abandon');
     expect(viewKey(page)).not.toBe(viewKey({ ...board, inspector: true }));
+  });
+});
+
+describe("the whats-new hash form (059 AC5)", () => {
+  test('round-trips whole and scoped, alongside the other forms', () => {
+    for (const view of [
+      v({ whatsNew: { project: null } }),
+      v({ whatsNew: { project: 'p1' } }),
+      v({ whatsNew: { project: 'a&b=c/d#e f%g' } }),
+      v({ project: 'p1', whatsNew: { project: 'p2' }, needs: true }),
+      v({ project: 'p1', job: { project: 'p1', id: '001-a' }, file: 'spec.md', settled: { project: 'p3' }, whatsNew: { project: null }, needs: true }),
+      { ...v({ whatsNew: { project: 'p1' } }), inspector: true, sheet: 'rework' as const },
+    ]) {
+      expect(parseHash(formatHash(view))).toEqual({ ...view, sheet: null, inspector: view.job !== null });
+      expect(viewOf(formatHash(view), entryOf(view, null))).toEqual(view);
+    }
+  });
+
+  test('its forms, joined with & like settled', () => {
+    expect(formatHash(v({ whatsNew: { project: null } }))).toBe('#whats-new');
+    expect(formatHash(v({ whatsNew: { project: 'p1' } }))).toBe('#whats-new=p1');
+    expect(formatHash(v({ project: 'p1', whatsNew: { project: 'p 2' }, needs: true }))).toBe('#project=p1&whats-new=p%202&needs');
+    expect(parseHash('#needs&whats-new=p1')).toEqual(v({ whatsNew: { project: 'p1' }, needs: true }));
+    expect(parseHash('whats-new')).toEqual(v({ whatsNew: { project: null } }));
+    expect(parseHash('#whats-new=')).toEqual(v({ whatsNew: { project: null } }));
+  });
+
+  test('malformed values are ignored', () => {
+    for (const h of ['#whats-new=%E0%A4%A', '#whats-new=%zz', '#whatsnew', '#whats_new=p1', '#WHATS-NEW']) {
+      expect({ h, view: parseHash(h) }).toEqual({ h, view: defaultView() });
+    }
+    expect(parseHash('#project=p1&whats-new=%E0')).toEqual(v({ project: 'p1' }));
+  });
+
+  test('opening it pushes, so Back closes it; closing goes back; switching its scope replaces', () => {
+    const board = v({ project: 'p1' });
+    const whole = v({ project: 'p1', whatsNew: { project: null } });
+    const scoped = v({ project: 'p1', whatsNew: { project: 'p2' } });
+    expect(historyStep(board, whole, null)).toBe('push');
+    expect(historyStep(board, scoped, null)).toBe('push');
+    expect(historyStep(v({ project: 'p1', settled: { project: null } }), { ...whole, settled: { project: null } }, null)).toBe('push');
+    expect(historyStep(scoped, whole, viewKey(board))).toBe('replace'); // "Show all releases"
+    expect(historyStep(whole, board, viewKey(board))).toBe('back');
+    expect(historyStep(whole, board, null)).toBe('replace'); // loaded from a link: nothing under it
+  });
+
+  test('reload restores the sheet and its scope, and keeps the focused project', () => {
+    expect(initialView('#project=p1&whats-new=p2', 'all', 'all', null)).toEqual(v({ project: 'p1', whatsNew: { project: 'p2' } }));
+    expect(initialView('#whats-new', 'p9', 'all', null)).toEqual(v({ whatsNew: { project: null } }));
   });
 });

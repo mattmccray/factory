@@ -92,6 +92,23 @@ svg.i { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-widt
 .service .txt { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .service .dot.gray { box-shadow: none; background: var(--gray); }
 .service .dot.red { box-shadow: none; }
+/* the footer's release (brief andon-version-ui, decision 1): the machine's version, a quiet button that
+   opens What's New, or the restart note; both stay whole while the connection text truncates */
+.service .sep { flex: none; margin: 0 -3px; color: var(--label3); }
+.service .ver { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 18px; margin: 0 -4px; padding: 0 4px; border: 0; border-radius: 4px; background: none;
+  font: inherit; color: var(--label2); white-space: nowrap; }
+.service .ver:hover { background: var(--ctl-h); color: var(--label); }
+.service .ver:focus-visible { outline-offset: 0; }
+.service .ver.restart { color: var(--blue-ink); }
+.service .ver svg.i { width: 11px; height: 11px; }
+/* a behind project's "update available" glyph: its own muted button at the row's end, never the red
+   badge's fill or color; the row keeps room for it */
+.sbrow { position: relative; }
+.sbrow.upd .sbi { padding-right: 32px; }
+.relglyph { position: absolute; top: 4px; right: 6px; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--label3); display: grid; place-items: center; }
+.relglyph:hover { background: var(--ctl-h); color: var(--label2); }
+.relglyph:focus-visible { outline-offset: 0; }
+.relglyph svg.i { width: 13px; height: 13px; }
 
 /* main column */
 .main { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--canvas); }
@@ -549,6 +566,25 @@ button.jid:hover b { text-decoration: underline; text-underline-offset: 2px; }
 .keys dt { display: flex; align-items: center; gap: 4px; }
 .keys dd { margin: 0; font-size: 12px; color: var(--label); }
 .keys .then { font-size: 10.5px; color: var(--label2); }
+/* the What's New sheet (brief andon-version-ui): releases newest first, each entry under Breaking, Added, or Fixed */
+.linkbtn { border: 0; background: none; padding: 0; font: inherit; color: var(--blue-ink); }
+.linkbtn:hover { text-decoration: underline; }
+.field .lbl { display: block; margin-bottom: 5px; font-size: 11.5px; color: var(--label2); }
+.field .cmd .btn { flex: none; }
+.wn { flex: 1; min-height: 0; overflow-y: auto; margin: 10px 12px 0; padding: 0 8px; border-radius: 8px; box-shadow: inset 0 0 0 .5px var(--sep2); }
+.wnr { padding: 10px 4px; border-bottom: .5px solid var(--sep); }
+.wnr:last-child { border-bottom: 0; }
+.wnr h3 { margin: 0; display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; font-weight: 600; }
+.wnr h3 .mono { font: 600 12px var(--mono); }
+.wnr h3 .date { font: 11px var(--mono); color: var(--label2); }
+.wnr h4 { margin: 8px 0 3px; font: 600 11px/1.2 var(--sys); color: var(--label3); }
+.wnr h4.sec-breaking { color: var(--orange-ink); }
+.wnr ul { margin: 0; padding: 0 0 0 14px; }
+.wnr li { font-size: 12px; line-height: 1.45; color: var(--label); overflow-wrap: anywhere; }
+.wnr .area { font-weight: 600; margin-right: 4px; }
+.wnr .area::after { content: ':'; }
+.wnr .jid { margin-left: 6px; font: 11px var(--mono); color: var(--label3); }
+.wn .empty { margin: 0; padding: 12px 4px; font-size: 12px; color: var(--label2); }
 kbd { display: inline-block; min-width: 18px; padding: 0 5px; text-align: center; font: 600 11px/18px var(--mono); color: var(--label); background: var(--ctl); border-radius: 4px; box-shadow: inset 0 0 0 .5px var(--sep2), 0 .5px 0 var(--sep2); }
 
 /* ── the Mac app's Settings window (035) ──────────────── */

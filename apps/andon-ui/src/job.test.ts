@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { landing, toJob } from './job';
+import { landing, toJob, toProjects } from './job';
 import type { WorkingStage } from './job';
 
 describe('toJob: target', () => {
@@ -36,5 +36,27 @@ describe('toJob: stoppedBy and stoppedFrom (025 AC1)', () => {
     expect(toJob({ id: '014-x', stoppedBy: null, stoppedFrom: null })).toMatchObject({ stoppedBy: null, stoppedFrom: null });
     for (const bad of ['', 'ESCALATED', 'abandoned', 3, true, {}, ['escalated']]) expect(toJob({ id: '014-x', stoppedBy: bad })?.stoppedBy).toBeNull();
     for (const bad of ['', 'needs-human', 'merged', 'abandoned', 'Review', 2, {}]) expect(toJob({ id: '014-x', stoppedFrom: bad })?.stoppedFrom).toBeNull();
+  });
+});
+
+describe('toProjects: release (059)', () => {
+  test('a well-formed release is kept; a missing or malformed one leaves the entry without it', () => {
+    const out = toProjects({
+      projects: [
+        { id: 'a', name: 'A', root: '/a', release: { installed: '0.1.0', state: 'behind' } },
+        { id: 'b', name: 'B', root: '/b', release: { installed: null, state: 'unknown' } },
+        { id: 'c', name: 'C', root: '/c' },
+        { id: 'd', name: 'D', root: '/d', release: { installed: '0.1.0', state: 'later' } },
+        { id: 'e', name: 'E', root: '/e', release: null },
+      ],
+    });
+    expect(out).toEqual([
+      { id: 'a', name: 'A', root: '/a', release: { installed: '0.1.0', state: 'behind' } },
+      { id: 'b', name: 'B', root: '/b', release: { installed: null, state: 'unknown' } },
+      { id: 'c', name: 'C', root: '/c' },
+      { id: 'd', name: 'D', root: '/d' },
+      { id: 'e', name: 'E', root: '/e' },
+    ]);
+    for (const p of out.slice(2)) expect('release' in p).toBe(false);
   });
 });

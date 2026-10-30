@@ -1,5 +1,7 @@
 // The frame's pure model (design §3, §4): the sidebar's rows (All Projects and every registered
-// project, each with a status dot and a badge), the connection footer, the toolbar's title and
+// project, each with a status dot, a badge, and its factory release: a quiet "update available"
+// glyph when it is behind, and a hover line for every state), the connection footer (with the
+// machine's release, or a restart note), the toolbar's title and
 // subtitle, the status bar's legend and settle text, the shell mode and view read from the page URL,
 // and the Mac app's status bar event.
 // Nothing here touches the DOM; App.svelte and the frame components only lay it out.
@@ -9,6 +11,8 @@ import { isReviewFailed } from './lanes';
 import type { Status } from './live';
 import { ALL, needsHuman } from './projects';
 import type { Selection } from './projects';
+import { RESTART_COMMAND, RESTART_NOTE, releaseLine, restartText, whatsNewTitle } from './release';
+import type { ReleaseInfo, ReleaseState } from './release';
 import type { UiState } from './state';
 
 /** A project's worst state, worst first. */
@@ -25,14 +29,22 @@ export interface Badge {
   label: string; // "2 need a human", "3 active"
 }
 
+/** A project row's factory release: its hover line (also announced as the row's description), and the glyph a behind project gets. */
+export interface RowRelease {
+  state: ReleaseState;
+  line: string; // "factory 0.1.0 installed · 0.2.0 available", "… · up to date", …, "factory version unknown"
+  glyph: { label: string } | null; // behind only: the "update available" button's hover text and accessible name
+}
+
 export interface SidebarRow {
   id: Selection;
   name: string;
-  title: string; // the tooltip: the project's root
+  title: string; // the tooltip: the project's root, then its release line when it has one
   state: ProjectState;
   dot: Dot;
   badge: Badge | null;
   selected: boolean;
+  release: RowRelease | null; // null: the service sent no release (an older service)
 }
 
 export interface SidebarModel {
@@ -74,10 +86,14 @@ const byName = (a: { name: string; id: string }, b: { name: string; id: string }
 /** The sidebar: All Projects (badge: the total needs-human count), then every project by name. */
 export function sidebarModel(s: UiState, sel: Selection): SidebarModel {
   const total = needsHuman(s).total;
+  const running = s.release.info?.running ?? null;
   const projects = s.projects
     .map((p): SidebarRow => {
       const { state, badge } = projectStatus(s.boards[p.id]?.jobs ?? [], s.boards[p.id]?.epics ?? []);
-      return { id: p.id, name: p.name, title: p.root, state, dot: DOTS[state], badge, selected: sel === p.id };
+      const line = releaseLine(p.release, running);
+      const release: RowRelease | null = p.release === undefined || line === null ? null : { state: p.release.state, line, glyph: p.release.state === 'behind' ? { label: line } : null };
+      const title = release === null ? p.root : `${p.root}\n${release.line}`;
+      return { id: p.id, name: p.name, title, state, dot: DOTS[state], badge, selected: sel === p.id, release };
     })
     .sort(byName);
   const known = projects.some((p) => p.selected);
@@ -86,16 +102,37 @@ export function sidebarModel(s: UiState, sel: Selection): SidebarModel {
 
 // ---- the connection footer ----
 
+/**
+ * What follows the footer's text while the connection is live: the machine's release (`v0.2.0`, a
+ * button that opens the whole What's New sheet), or, when the service's clone has moved to another
+ * release than the one it runs, a restart note that copies the restart command.
+ */
+export type FooterRelease =
+  | { kind: 'version'; text: string; title: string } // text "v0.2.0", title "What's new in v0.2.0"
+  | { kind: 'restart'; text: string; title: string; command: string }; // title: both releases and the command
+
 export interface Footer {
   text: string;
   dot: 'green' | 'gray' | 'red';
+  release: FooterRelease | null; // null: not live, or no release data (an older service)
 }
 
-export function footer(status: Status, projects: number): Footer {
-  if (status === 'live') return { text: `Connected · ${plural(projects, 'project', 'projects')}`, dot: 'green' };
-  if (status === 'down') return { text: 'Unreachable', dot: 'red' };
-  return { text: 'Connecting…', dot: 'gray' };
+/** The footer's release part, for release data; null when there is nothing to show. */
+export function footerRelease(info: ReleaseInfo | null): FooterRelease | null {
+  if (info === null) return null;
+  if (info.onDisk !== null && info.onDisk !== info.running) return { kind: 'restart', text: RESTART_NOTE, title: restartText(info.running, info.onDisk), command: RESTART_COMMAND };
+  if (info.running === null) return null;
+  return { kind: 'version', text: `v${info.running}`, title: whatsNewTitle(info.running) };
 }
+
+export function footer(status: Status, projects: number, release: ReleaseInfo | null = null): Footer {
+  if (status === 'live') return { text: `Connected · ${plural(projects, 'project', 'projects')}`, dot: 'green', release: footerRelease(release) };
+  if (status === 'down') return { text: 'Unreachable', dot: 'red', release: null };
+  return { text: 'Connecting…', dot: 'gray', release: null };
+}
+
+/** The footer as one line of text: "Connected · 3 projects · v0.2.0". */
+export const footerLine = (f: Footer): string => (f.release === null ? f.text : `${f.text} · ${f.release.text}`);
 
 // ---- the toolbar ----
 
@@ -185,6 +222,10 @@ export function appView(search: string): AppView {
 
 /** The event the Mac app pushes with the status bar state: `{ hidden: boolean }`. */
 export const STATUS_BAR_EVENT = 'statusbar';
+/** The event the Mac app pushes when Help → What's New is chosen: the page opens the whole What's New sheet. Its payload is ignored. */
+export const WHATS_NEW_EVENT = 'whatsnew';
+/** Every event the page subscribes to: tinyjs.json's api gate names each as `event.<name>`. */
+export const PUSHED_EVENTS: readonly string[] = [STATUS_BAR_EVENT, WHATS_NEW_EVENT];
 
 /** Subscribe to one pushed event; returns the unsubscribe. */
 export type Subscribe = (event: string, fn: (data: unknown) => void) => () => void;

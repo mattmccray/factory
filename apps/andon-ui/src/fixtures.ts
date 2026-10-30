@@ -299,3 +299,35 @@ export function narrowBoard(
   }
   return { jobs: jobs.filter((j) => !isSettled(j)), settled: { count: settledJobs.length, lastMergedAt: last?.text ?? null }, settledJobs };
 }
+
+// ---- factory releases (059) ----
+// As the service sends them (docs/contract/v1.md "Andon service"): a project entry's `release`, and
+// the `GET /release` body (also the `release` event's data), its changelog newest first.
+
+/** A project entry's `release`, as JSON. */
+export const projectRelease = (installed: string | null, state: string): Record<string, unknown> => ({ installed, state });
+
+/** A changelog entry, as JSON. */
+export const changeEntry = (text: string, area: string | null = null, job: string | null = null): Record<string, unknown> => ({ area, text, job });
+
+/** Three releases, newest first: 0.3.0 (all three sections), 0.2.0 (Added only), and 0.1.0 (Fixed only). */
+export const CHANGELOG: ReadonlyArray<Record<string, unknown>> = [
+  {
+    version: '0.3.0',
+    date: '2026-10-29',
+    sections: {
+      breaking: [changeEntry('the overlay moves to factory/roles', 'CLI', '057-roles')],
+      added: [changeEntry("What's New in the sidebar", 'Andon', '059-andon-version-ui'), changeEntry('a release script')],
+      fixed: [changeEntry('doctor reads a symlinked repo', 'CLI', null)],
+    },
+  },
+  { version: '0.2.0', date: '2026-10-20', sections: { breaking: [], added: [changeEntry('epics', 'CLI', '050-epics')], fixed: [] } },
+  { version: '0.1.0', date: '2026-10-01', sections: { breaking: [], added: [], fixed: [changeEntry('the first release')] } },
+];
+
+/** A `GET /release` body (or `release` event): the service runs `running`, its clone has `onDisk`. */
+export const releaseBody = (running: string | null, onDisk: string | null = running, changelog: ReadonlyArray<Record<string, unknown>> = CHANGELOG): Record<string, unknown> => ({
+  running,
+  onDisk,
+  changelog,
+});
