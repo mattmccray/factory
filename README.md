@@ -79,7 +79,7 @@ There are two CLIs, and they do different jobs:
 
 | Command | What it is | Runs |
 |---|---|---|
-| `factory …` | the linked source CLI, from your factory clone | `init`, `upgrade` (it also has the core commands, but use the installed copy for those) |
+| `factory …` | the linked source CLI, from your factory clone | `init`, `upgrade`, `projects` (it also has the core commands, but use the installed copy for those) |
 | `bun factory/cli.ts …` | the project's installed copy, a self-contained managed file | `doctor`, `show`, `claim`, `event`, `rebuild`, `abandon` |
 
 `factory init` writes the skill and agents under `.claude/`, `factory/cli.ts`,
@@ -244,6 +244,18 @@ bun run andon:service    # the Andon service: http://127.0.0.1:8766/
 The Andon service is one Bun daemon per machine. It watches the projects in `~/.andon/projects.json`
 (`factory init` adds each project; set `ANDON_HOME` to move the file and `ANDON_PORT` to change
 the port), streams changes to the UI, and never writes job state.
+
+A project you delete or move stays registered until you remove it with the linked source CLI:
+
+```sh
+factory projects                     # each registered root: ok, missing, or not a factory project
+factory projects prune --dry-run     # what prune would remove
+factory projects prune               # unregister the missing roots and the non-factory folders
+factory projects remove <path>       # unregister one root, whatever its state
+```
+
+`prune` skips a root on a removable volume that isn't mounted (`/Volumes/<name>`, `/media/…`,
+`/run/media/…`, `/mnt/<name>`), so unplugging a drive doesn't unregister its projects.
 
 Andon, the Mac app, wraps the UI in a window with a tray badge counting needs-human jobs and
 native notifications on escalate and merge. It starts the service if none is running:
