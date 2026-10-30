@@ -55,7 +55,7 @@ import { isEpicSlug, parseConfig, parsePlan, readRegistry } from '@factory/contr
 import type { Config } from '@factory/contract';
 import { EMPTY_ARCHIVE, archiveTip, gitCommonDir, projectArchivedEpic, readArchive, spawnGit } from './archive';
 import type { ArchiveCache, GitRunner } from './archive';
-import { readInstalled, readRelease, readTemplatesVersion, releaseState } from './release';
+import { SOURCE_VERSION_FILE, readInstalled, readRelease, readTemplatesVersion, releaseState } from './release';
 import type { ProjectRelease, ReleaseInfo } from './release';
 import { MAX_DELAY_MS, nextSettle, partition, summarize } from './settled';
 import type { SettledSummary } from './settled';
@@ -72,6 +72,7 @@ export interface ServiceOptions {
   git?: GitRunner; // how git is run to read `factory/archive` (default: spawned without a shell)
   settleTimers?: SettleTimers; // how the per-project settle timers are set and cleared (default: setTimeout)
   cloneRoot?: string; // the factory clone the service runs from: its release and CHANGELOG.md; absent: `running`/`onDisk` null, `changelog` []
+  versionFile?: string; // the file under `cloneRoot` whose `version` is the release (default `packages/templates/package.json`; the release bundle's is `package.json`)
 }
 
 /** Sets and clears the one-shot settle timers (injectable so a test can see what is pending). */
@@ -377,7 +378,8 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
   let stopped = false;
 
   // The release this service runs: the clone's templates version, read once, now.
-  const running = await readTemplatesVersion(opts.cloneRoot);
+  const versionFile = opts.versionFile ?? SOURCE_VERSION_FILE;
+  const running = await readTemplatesVersion(opts.cloneRoot, versionFile);
   const resolveRelease = async (p: Project): Promise<ProjectRelease> => {
     const installed = await readInstalled(p.factory);
     return { installed, state: releaseState(installed, running) };
@@ -731,10 +733,11 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
   }
   await reload();
 
-  // The clone's release files: `CHANGELOG.md` in its root and `package.json` in
-  // `packages/templates/`, each a non-recursive watch, debounced to one `release` event per burst.
+  // The clone's release files: `CHANGELOG.md` in its root and the version file (`package.json` in
+  // `packages/templates/`, or the bundle's root), each a non-recursive watch, debounced to one
+  // `release` event per burst.
   let releaseTimer: ReturnType<typeof setTimeout> | null = null;
-  const releaseBody = (): Promise<ReleaseInfo> => readRelease(opts.cloneRoot, running);
+  const releaseBody = (): Promise<ReleaseInfo> => readRelease(opts.cloneRoot, running, versionFile);
   async function emitRelease(): Promise<void> {
     if (stopped || clients.size === 0) return;
     const body = await releaseBody();
@@ -748,15 +751,21 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     }, debounceMs);
   }
   const cloneWatchers = new Set<FSWatcher>();
-  function watchClone(dir: string, file: string): void {
+  function watchClone(dir: string, files: readonly string[]): void {
     const w = watchDir(dir, (name) => {
-      if (name === null || name === file) scheduleRelease();
+      if (name === null || files.includes(name)) scheduleRelease();
     }, (dropped) => cloneWatchers.delete(dropped));
     if (w !== null) cloneWatchers.add(w);
   }
   if (opts.cloneRoot !== undefined) {
-    watchClone(opts.cloneRoot, 'CHANGELOG.md');
-    watchClone(join(opts.cloneRoot, 'packages', 'templates'), 'package.json');
+    // One watch per directory: the bundle's version file sits in the root beside `CHANGELOG.md`.
+    const root = resolve(opts.cloneRoot);
+    const versionAt = resolve(root, versionFile);
+    if (dirname(versionAt) === root) watchClone(root, ['CHANGELOG.md', basename(versionAt)]);
+    else {
+      watchClone(root, ['CHANGELOG.md']);
+      watchClone(dirname(versionAt), [basename(versionAt)]);
+    }
   }
 
   // The connecting client gets the freshly resolved list (any change is first sent to the others).

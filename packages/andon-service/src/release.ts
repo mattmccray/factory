@@ -1,7 +1,8 @@
 // Factory releases for the Andon service (docs/contract/v1.md "Andon service", `release`):
 // - a project's installed release, its `factory/managed.json` `version` (read with the contract's
 //   `parseManifest`), and its state against the release the service runs;
-// - the clone's release, `packages/templates/package.json`'s `version`;
+// - the clone's release, `packages/templates/package.json`'s `version` (from the release bundle,
+//   its root `package.json`: `versionFile` names which);
 // - the clone's `CHANGELOG.md`, parsed tolerantly (the strict format the release script writes:
 //   `## vX.Y.Z (YYYY-MM-DD)`, `### Breaking/Added/Fixed`, `- <Area>: <text> (<job id>)`).
 // Every read is of a fixed path; nothing here writes. The parsers are pure and never throw.
@@ -73,11 +74,16 @@ export async function readInstalled(factory: string): Promise<string | null> {
   }
 }
 
-/** The clone's `packages/templates/package.json` `version` when it is a string; else null. */
-export async function readTemplatesVersion(cloneRoot: string | undefined): Promise<string | null> {
+/** Where the release's version is read, relative to the tree the service runs in: a source clone. */
+export const SOURCE_VERSION_FILE = 'packages/templates/package.json';
+/** The same, in the release bundle: its root `package.json`, which carries the templates' version. */
+export const BUNDLE_VERSION_FILE = 'package.json';
+
+/** The `version` of `versionFile` in the clone (default: `packages/templates/package.json`) when it is a string; else null. */
+export async function readTemplatesVersion(cloneRoot: string | undefined, versionFile: string = SOURCE_VERSION_FILE): Promise<string | null> {
   if (cloneRoot === undefined) return null;
   try {
-    const pkg: unknown = JSON.parse(await readFile(join(cloneRoot, 'packages', 'templates', 'package.json'), 'utf8'));
+    const pkg: unknown = JSON.parse(await readFile(join(cloneRoot, versionFile), 'utf8'));
     if (typeof pkg !== 'object' || pkg === null || Array.isArray(pkg) || !('version' in pkg)) return null;
     return typeof pkg.version === 'string' ? pkg.version : null;
   } catch {
@@ -163,7 +169,7 @@ export async function readChangelog(cloneRoot: string | undefined): Promise<Chan
 }
 
 /** The `GET /release` body: `running` as read at startup, `onDisk` and `changelog` read now. */
-export async function readRelease(cloneRoot: string | undefined, running: string | null): Promise<ReleaseInfo> {
-  const [onDisk, changelog] = await Promise.all([readTemplatesVersion(cloneRoot), readChangelog(cloneRoot)]);
+export async function readRelease(cloneRoot: string | undefined, running: string | null, versionFile: string = SOURCE_VERSION_FILE): Promise<ReleaseInfo> {
+  const [onDisk, changelog] = await Promise.all([readTemplatesVersion(cloneRoot, versionFile), readChangelog(cloneRoot)]);
   return { running, onDisk, changelog };
 }
