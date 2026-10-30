@@ -61,6 +61,7 @@ interface World {
   linger: string;
   release: unknown; // null: nothing answers
   failOn?: string; // an argv (joined) that exits 1
+  paths?: Partial<Pick<ServiceHost, 'factory' | 'bun' | 'home'>>; // overrides FACTORY, BUN, HOME
 }
 
 function world(over: Partial<World> = {}): World {
@@ -70,11 +71,11 @@ function world(over: Partial<World> = {}): World {
 function host(w: World): ServiceHost {
   return {
     platform: w.platform,
-    home: HOME,
+    home: w.paths?.home ?? HOME,
     uid: UID,
     env: w.env,
-    factory: FACTORY,
-    bun: BUN,
+    factory: w.paths?.factory ?? FACTORY,
+    bun: w.paths?.bun ?? BUN,
     run: async (argv) => {
       const a = [...argv];
       w.runs.push(a);
@@ -184,6 +185,37 @@ describe('AC1: macOS, the LaunchAgent', () => {
       expect(w.files.size + w.runs.length).toBe(0);
     }
   });
+});
+
+describe('install refuses a bad factory, bun, home, or ANDON_HOME path', () => {
+  const bad = (abs: string): [string, string][] => [
+    ['relative', 'rel/path'],
+    ['newline', `${abs}\nX=1`],
+    ['carriage return', `${abs}\rX=1`],
+    ['NUL', `${abs}\0x`],
+  ];
+  const cases: { name: string; what: string; w: () => World; value: string }[] = [];
+  for (const platform of ['darwin', 'linux']) {
+    for (const [kind, value] of bad(FACTORY)) cases.push({ name: `${platform}: factory ${kind}`, what: 'the factory command', value, w: () => world({ platform, paths: { factory: value } }) });
+    for (const [kind, value] of bad(BUN)) cases.push({ name: `${platform}: bun ${kind}`, what: 'bun', value, w: () => world({ platform, paths: { bun: value } }) });
+    for (const [kind, value] of bad(HOME)) cases.push({ name: `${platform}: home ${kind}`, what: 'the home directory', value, w: () => world({ platform, paths: { home: value } }) });
+    for (const [kind, value] of bad('/tmp/andon')) cases.push({ name: `${platform}: ANDON_HOME ${kind}`, what: 'ANDON_HOME', value, w: () => world({ platform, env: { ANDON_HOME: value } }) });
+  }
+  for (const c of cases) {
+    test(`${c.name}: exit 1, one line naming it, no write, no mkdir, no run`, async () => {
+      const w = c.w();
+      const r = await cli(w, 'install');
+      expect(r.code).toBe(1);
+      expect(r.err).toHaveLength(1);
+      const line = r.err[0] ?? '';
+      expect(line.startsWith(`service: ${c.what} must`)).toBe(true);
+      if (c.value.startsWith('/')) expect(line).toContain('must not contain a newline or NUL');
+      else expect(line).toContain(JSON.stringify(c.value));
+      expect(w.files.size).toBe(0);
+      expect(w.dirs).toEqual([]);
+      expect(w.runs).toEqual([]);
+    });
+  }
 });
 
 describe('AC2: Linux, the systemd --user unit', () => {
