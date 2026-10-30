@@ -3,8 +3,8 @@
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { getAbout, api, assetPath, checkApps, checkFound, dockIcon, findAppBundle, findT3, lookupIcon, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runJobItem, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, setViewState, showProjectMenu, trayIcon } from './backend';
-import type { HandoffHost, JobMenuHost, MacApp, MacNavEvent, MacTraySpec, MacWinState, RunResult } from './backend';
+import { getAbout, api, startWork, assetPath, checkApps, checkFound, dockIcon, findAppBundle, findT3, lookupIcon, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runJobItem, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, setViewState, showProjectMenu, trayIcon } from './backend';
+import type { HandoffHost, JobMenuHost, StartWorkHost, MacApp, MacNavEvent, MacTraySpec, MacWinState, RunResult } from './backend';
 import { itemId, projectMenuItems } from './projectmenu';
 import { jobItemId, jobMenuItems } from './jobmenu';
 import type { Availability, MenuProject } from './projectmenu';
@@ -1036,7 +1036,7 @@ test("AC2: a newer request wins over an older one's slower app check", async () 
 });
 
 test('AC2: the api names its methods, and with the app not following the service it lists no project', async () => {
-  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout']);
+  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout', 'startWork']);
   fakeMachine([], []);
   const { app, log } = contextApp();
   await api.projectMenu({ project: PID }, app);
@@ -1359,6 +1359,179 @@ test('036: a second hand-off while one is running is dropped', async () => {
 test('036: with the app not following the service, the api lists no project, so nothing runs', async () => {
   const { app, log } = handoffApp('send');
   expect(await api.handOff(APPROVE, app, MAIN_META)).toBeNull();
+  expect(log).toEqual([]);
+});
+
+// ---- starting work in T3 Code (068) ----
+
+const sItem = (kind: string, slug: string | null, title: string): Record<string, unknown> => ({ kind, slug, title, done: null, status: null, members: kind === 'epic' ? 1 : null, abandoned: [] });
+const START_BACKLOG = {
+  queued: [sItem('brief', 'notes-search', 'Full-text search'), sItem('epic', 'auth', 'Sign-in'), sItem('text', null, 'Tidy the README')],
+  exploring: [sItem('brief', 'tag-cloud', 'A tag cloud')],
+};
+
+/** A fake start host: the hand-off's fake, plus a backlog fetch that records each pid (or rejects). */
+function fakeStartHost(opts: { t3?: string | null; origin?: string | null; run?: RunResult; backlog?: unknown; fail?: boolean } = {}): { host: StartWorkHost; ran: string[][]; origins: string[]; fetched: string[] } {
+  const h = fakeHost(opts);
+  const fetched: string[] = [];
+  const host: StartWorkHost = {
+    ...h.host,
+    backlog: async (pid) => {
+      fetched.push(pid);
+      if (opts.fail === true) throw new Error('HTTP 500');
+      return opts.backlog === undefined ? START_BACKLOG : opts.backlog;
+    },
+  };
+  return { host, ran: h.ran, origins: h.origins, fetched };
+}
+
+const START_CASES: Array<{ req: Record<string, unknown>; command: string; title: string }> = [
+  { req: { project: PID, action: 'run', slug: 'notes-search' }, command: '/factory next Full-text search', title: 'next notes-search' },
+  { req: { project: PID, action: 'run', title: 'Tidy the README' }, command: '/factory next Tidy the README', title: 'next Tidy the README' },
+  { req: { project: PID, action: 'epic', slug: 'auth' }, command: '/factory epic auth', title: 'epic auth' },
+  { req: { project: PID, action: 'next' }, command: '/factory next', title: 'next' },
+  { req: { project: PID, action: 'explore', slug: 'tag-cloud' }, command: '/factory explore tag-cloud', title: 'explore tag-cloud' },
+  { req: { project: PID, action: 'new-exploration', idea: 'a "tag" cloud' }, command: '/factory explore "a \\"tag\\" cloud"', title: 'explore' },
+];
+
+test('068 AC3: draft mode with a GitHub origin opens exactly the prompt link for each action, and answers drafted', async () => {
+  for (const c of START_CASES) {
+    const { app, log } = handoffApp('draft');
+    const h = fakeStartHost();
+    expect(await startWork(c.req, app, MAIN_META, h.host)).toBe('drafted');
+    expect(h.origins).toEqual([ROOT]);
+    expect(h.ran).toEqual([['open', `t3code://new?prompt=${encodeURIComponent(c.command)}&repo=mattmccray/factory`]]);
+    expect(log).toEqual([]);
+  }
+});
+
+test('068 AC3: only the item actions read the backlog, from the named project', async () => {
+  for (const c of START_CASES) {
+    const { app } = handoffApp('copy');
+    const h = fakeStartHost();
+    expect(await startWork(c.req, app, MAIN_META, h.host)).toBe('copy-only');
+    const item = c.req.action === 'run' || c.req.action === 'epic' || c.req.action === 'explore';
+    expect({ req: c.req, fetched: h.fetched }).toEqual({ req: c.req, fetched: item ? [PID] : [] });
+  }
+});
+
+test('068 AC3: draft mode with no GitHub origin opens nothing and answers no-github-remote', async () => {
+  for (const origin of [null, '', 'https://gitlab.com/a/b.git\n']) {
+    const { app, log } = handoffApp('draft');
+    const h = fakeStartHost({ origin });
+    expect(await startWork({ project: PID, action: 'next' }, app, MAIN_META, h.host)).toBe('no-github-remote');
+    expect(h.ran).toEqual([]);
+    expect(log).toEqual([]);
+  }
+});
+
+test('068 AC3: send mode runs exactly `<t3> thread start --title <title> <root> <command>`, and answers sent', async () => {
+  const { app, log } = handoffApp('send');
+  const h = fakeStartHost();
+  for (const c of START_CASES) expect(await startWork(c.req, app, MAIN_META, h.host)).toBe('sent');
+  expect(h.ran).toEqual(START_CASES.map((c) => [T3, 'thread', 'start', '--title', c.title, ROOT, c.command]));
+  expect(h.origins).toEqual([]);
+  expect(log).toEqual([]);
+});
+
+test('068 AC3: copy mode, or no t3, runs and opens nothing and answers copy-only', async () => {
+  for (const [mode, t3] of [['copy', T3], ['draft', null], ['send', null]] as const) {
+    const { app, log } = handoffApp(mode);
+    const h = fakeStartHost({ t3 });
+    expect(await startWork({ project: PID, action: 'epic', slug: 'auth' }, app, MAIN_META, h.host)).toBe('copy-only');
+    expect(h.ran).toEqual([]);
+    expect(h.origins).toEqual([]);
+    expect(log).toEqual([]);
+  }
+});
+
+test("068 AC3: a failed open or send notifies with the hand-off's failure text and answers copy-only", async () => {
+  const realLog = console.log;
+  console.log = () => undefined;
+  try {
+    const a = handoffApp('draft');
+    expect(await startWork({ project: PID, action: 'next' }, a.app, MAIN_META, fakeStartHost({ run: { ok: false, reason: 'no application knows t3code:' } }).host)).toBe('copy-only');
+    expect(a.log).toEqual([['notify', 'Andon', "Couldn't open a draft in T3 Code: no application knows t3code:"]]);
+    const b = handoffApp('send');
+    expect(await startWork({ project: PID, action: 'next' }, b.app, MAIN_META, fakeStartHost({ run: { ok: false, reason: 'Error: T3 Code is not running' } }).host)).toBe('copy-only');
+    expect(b.log).toEqual([['notify', 'Andon', "Couldn't send to T3 Code: Error: T3 Code is not running"]]);
+  } finally {
+    console.log = realLog;
+  }
+});
+
+test('068 AC3: another window, a refused request, or a failed backlog fetch runs, opens, and notifies nothing', async () => {
+  const requests: unknown[] = [
+    null,
+    { project: 'zzzzzzzzzzzz', action: 'next' },
+    { project: PID, action: 'next', slug: 'auth' },
+    { project: PID, action: 'epic', slug: 'notes-search' },
+    { project: PID, action: 'explore', slug: 'notes-search' },
+    { project: PID, action: 'run', title: 'Full-text search' },
+    { project: PID, action: 'new-exploration', idea: ' \n ' },
+    { project: PID, action: 'new-exploration', idea: 'x'.repeat(8000) },
+    { project: PID, action: 'next', command: 'rm -rf /' },
+  ];
+  const realLog = console.log;
+  console.log = () => undefined;
+  try {
+    for (const mode of ['draft', 'send']) {
+      for (const params of requests) {
+        const { app, log } = handoffApp(mode);
+        const h = fakeStartHost();
+        expect({ mode, params, r: await startWork(params, app, MAIN_META, h.host) }).toEqual({ mode, params, r: null });
+        expect(h.ran).toEqual([]);
+        expect(h.origins).toEqual([]);
+        expect(log).toEqual([]);
+      }
+      for (const [fail, backlog] of [[true, undefined], [false, 'junk'], [false, { queued: [] }]] as const) {
+        const { app, log } = handoffApp(mode);
+        const h = fakeStartHost({ fail, backlog });
+        expect(await startWork({ project: PID, action: 'epic', slug: 'auth' }, app, MAIN_META, h.host)).toBeNull();
+        expect(h.ran).toEqual([]);
+        expect(log).toEqual([]);
+      }
+      for (const meta of [{ window: 'settings' }, { window: 'about' }, {}, null, undefined, 'main']) {
+        const { app, log } = handoffApp(mode);
+        const h = fakeStartHost();
+        expect(await startWork({ project: PID, action: 'next' }, app, meta, h.host)).toBeNull();
+        expect(await api.startWork({ project: PID, action: 'next' }, app, meta)).toBeNull();
+        expect(h.ran).toEqual([]);
+        expect(h.fetched).toEqual([]);
+        expect(log).toEqual([]);
+      }
+    }
+  } finally {
+    console.log = realLog;
+  }
+});
+
+test('068 AC3: a second start while one is running is dropped and answers null', async () => {
+  const { app } = handoffApp('send');
+  let release: () => void = () => undefined;
+  const ran: string[][] = [];
+  const host: StartWorkHost = {
+    ...fakeStartHost().host,
+    run: (argv) => {
+      ran.push(argv);
+      return new Promise((r) => (release = () => r({ ok: true, reason: '' })));
+    },
+  };
+  const first = startWork({ project: PID, action: 'next' }, app, MAIN_META, host);
+  await new Promise((r) => setTimeout(r, 1));
+  expect(await startWork({ project: PID, action: 'next' }, app, MAIN_META, host)).toBeNull();
+  release();
+  expect(await first).toBe('sent');
+  expect(ran).toHaveLength(1);
+  const next = startWork({ project: PID, action: 'next' }, app, MAIN_META, host);
+  await new Promise((r) => setTimeout(r, 1));
+  release();
+  expect(await next).toBe('sent');
+});
+
+test('068: with the app not following the service, the api lists no project, so nothing runs', async () => {
+  const { app, log } = handoffApp('send');
+  expect(await api.startWork({ project: PID, action: 'next' }, app, MAIN_META)).toBeNull();
   expect(log).toEqual([]);
 });
 

@@ -626,6 +626,16 @@ kbd { display: inline-block; min-width: 18px; padding: 0 5px; text-align: center
 .blist .srow .si { font-family: var(--sys); color: var(--label2); overflow-wrap: anywhere; }
 .blist .btext { cursor: default; }
 .blist .btext:hover { background: none; }
+/* Starting work (t3-start-work): a project's Run next and New exploration…, a row's action, a page's. */
+.blist .bproj { display: flex; align-items: center; gap: 8px; }
+.blist .bpname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.blist .bacts { display: flex; gap: 6px; flex: none; }
+.blist .brow { display: flex; align-items: flex-start; border-bottom: .5px solid var(--sep); }
+.blist li.brow:last-child { border-bottom: 0; }
+.blist .brow .srow { flex: 1; min-width: 0; border-bottom: 0; }
+.blist .bstart { flex: none; height: 22px; padding: 0 9px; font-size: 11.5px; }
+.blist .brow .bstart { margin: 6px 12px 0 0; }
+.dacts { margin-top: 8px; }
 .sp-doc { color: var(--label3); }
 .sp-doc-status { color: var(--label2); }
 .pmem { width: 100%; text-align: left; border: 0; background: none; font: inherit; color: inherit; }
