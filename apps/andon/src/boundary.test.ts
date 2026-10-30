@@ -175,22 +175,50 @@ test("065 AC3: the version fixed into the bundle is apps/andon/package.json's, n
 });
 
 describe('071 AC6: the no-service page is a string from a runtime-neutral module, and the app ships no frontend', () => {
-  /** Every file under apps/andon but its dependencies and build output. */
-  function files(dir: string, out: string[] = []): string[] {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (e.name === 'node_modules' || e.name === 'build') continue;
-      const p = join(dir, e.name);
-      if (e.isDirectory()) files(p, out);
-      else out.push(p.slice(appDir.length + 1));
+  /** A directory at the top of apps/andon that would hold a frontend of the app's own. */
+  const FRONTEND_DIRS = ['frontend', 'public', 'web', 'dist'];
+
+  /**
+   * What breaks the no-frontend rule in a list of paths relative to apps/andon: each .html, .htm,
+   * or .css file at any depth, and each frontend directory (`<dir>/`) any path sits under.
+   */
+  function frontendViolations(paths: readonly string[]): string[] {
+    const out: string[] = [];
+    for (const p of paths) {
+      if (/\.(html?|css)$/i.test(p)) out.push(p);
+      const top = p.split('/')[0] ?? '';
+      if (p.includes('/') && FRONTEND_DIRS.includes(top) && !out.includes(`${top}/`)) out.push(`${top}/`);
     }
     return out;
   }
 
-  test('apps/andon has no .html or .css file and no frontend directory', () => {
-    const all = files(appDir);
-    expect(all.length).toBeGreaterThan(0);
-    expect(all.filter((f) => /\.(html?|css)$/i.test(f))).toEqual([]);
-    for (const dir of ['frontend', 'public', 'web', 'dist']) expect({ dir, exists: existsSync(join(appDir, dir)) }).toEqual({ dir, exists: false });
+  /** The git-tracked files under apps/andon, relative to it: what the repo ships, not build output on disk. */
+  function trackedFiles(): string[] {
+    const r = Bun.spawnSync(['git', 'ls-files', '-z'], { cwd: appDir, stdout: 'pipe', stderr: 'pipe' });
+    if (r.exitCode !== 0) throw new Error(`git ls-files failed in ${appDir}: ${new TextDecoder().decode(r.stderr)}`);
+    return new TextDecoder().decode(r.stdout).split('\0').filter((p) => p !== '');
+  }
+
+  test('the helper reports each tracked .html, .htm, or .css file at any depth', () => {
+    expect(frontendViolations(['src/page.html', 'assets/Style.CSS', 'index.htm', 'a/b/c/theme.css'])).toEqual(['src/page.html', 'assets/Style.CSS', 'index.htm', 'a/b/c/theme.css']);
+  });
+
+  test('the helper reports a file under a frontend, public, web, or dist directory at the top', () => {
+    for (const p of ['frontend/main.ts', 'public/logo.png', 'web/app.ts', 'dist/index.js']) {
+      expect({ p, found: frontendViolations([p]) }).toEqual({ p, found: [`${p.split('/')[0]}/`] });
+    }
+    expect(frontendViolations(['dist/index.js', 'dist/chunk.js', 'web/index.html'])).toEqual(['dist/', 'web/index.html', 'web/']);
+  });
+
+  test('the helper reports nothing for ordinary tracked files', () => {
+    expect(frontendViolations(['src/noservice.ts', 'assets/icon.png', 'tinyjs.json', 'package.json', 'src/web.ts', 'assets/dist.png', 'types/tiny.d.ts', 'src/dist/x.ts'])).toEqual([]);
+  });
+
+  test('apps/andon tracks no .html or .css file and no frontend directory', () => {
+    const tracked = trackedFiles();
+    expect(tracked.length).toBeGreaterThan(0);
+    expect(tracked).toContain('tinyjs.json');
+    expect(frontendViolations(tracked)).toEqual([]);
   });
 
   test('tinyjs.json names no frontend or page of its own', () => {
