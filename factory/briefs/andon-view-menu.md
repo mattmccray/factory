@@ -1,6 +1,7 @@
 # Andon's View menu and a Merged column switch
 
-- Status: ready
+- Status: done
+- Job: 063-andon-view-menu (merged c9c7bf6, 2026-10-30)
 - Sources: the explore request of 2026-10-29 (pre-1.0 notes: "Add settings for merged column visibility", "New app menu items: View …"); briefs `andon-app-menu`, `andon-settings`; `apps/andon/src/appmenu.ts`, `apps/andon/src/settings.ts`, `apps/andon-ui/src/App.svelte`
 - Date: 2026-10-30
 
