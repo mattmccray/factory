@@ -1,6 +1,7 @@
 # `factory projects` lists, prunes, and removes registered projects
 
-- Status: ready
+- Status: done
+- Job: 061-registry-prune (merged 96437d7 via epic factory-distribution, 2026-10-30)
 - Sources: the explore request of 2026-10-29 (pre-1.0 notes: "Maybe support cleanup too, for projects that we registered but the paths are no longer valid"); `packages/contract/src/registry.ts`; `docs/contract/v1.md` "Andon registry"; `docs/decisions.md` decision 10 and the Deferred list; epic `factory/epics/factory-distribution.md`
 - Date: 2026-10-30
 

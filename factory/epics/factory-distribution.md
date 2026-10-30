@@ -1,6 +1,7 @@
 # Factory distribution
 
-- Status: ready
+- Status: done
+- Landed: 8e7ec65 (2026-10-30)
 - Sources: the explore request of 2026-10-29 (pre-1.0 notes: "Prepare for publishing", "an easy/polished way to install the service", "Can the CLI be responsible for installing the andon service?"); `docs/decisions.md` decisions 6 and 10, and the Deferred list
 - Date: 2026-10-30
 

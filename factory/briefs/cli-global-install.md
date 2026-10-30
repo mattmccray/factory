@@ -1,6 +1,7 @@
 # The factory CLI installs globally from GitHub
 
-- Status: ready
+- Status: done
+- Job: 060-cli-global-install (merged ef3dbba via epic factory-distribution, 2026-10-30)
 - Sources: the explore request of 2026-10-29 (pre-1.0 notes, "Prepare for publishing", "`bun install -g …` then `factory service install`"); `docs/decisions.md` decisions 6, 10, 14 and the Deferred list; epic `factory/epics/factory-distribution.md`
 - Date: 2026-10-30
 

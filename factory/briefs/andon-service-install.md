@@ -1,6 +1,7 @@
 # `factory service` installs and runs the Andon service
 
-- Status: ready
+- Status: done
+- Job: 062-andon-service-install (merged 7ce7dc4 via epic factory-distribution, 2026-10-30)
 - Sources: the explore request of 2026-10-29 (pre-1.0 notes: "`factory service install`", "Can the CLI be responsible for installing the andon service? … platform-aware … start/stop/restart"); brief `cli-global-install`; `docs/decisions.md` decision 10; `apps/andon/src/autostart.ts`; epic `factory/epics/factory-distribution.md`
 - Date: 2026-10-30
 
