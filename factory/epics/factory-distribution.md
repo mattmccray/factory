@@ -14,4 +14,4 @@ live in, and the set is what "installable on my own machines" means.
 ## Members
 - `cli-global-install` — the factory CLI installs globally from GitHub, and `init` and `upgrade` work from that install
 - `andon-service-install` — `factory service install | start | stop | restart | status` on macOS (launchd) and Linux (systemd `--user`); the Mac app stops spawning the service from a clone after: `cli-global-install`
-- `registry-prune` — `factory projects prune` removes registered projects whose paths no longer exist
+- `registry-prune` — `factory projects` lists registered projects with their state, `projects prune` removes dead ones, and `projects remove <path>` removes one by hand
