@@ -42,7 +42,12 @@ release a project runs and read what changed between releases.
    template change) or a model rewrite can come later.
 4. Where does the changelog live? → **One `CHANGELOG.md` at this repo's root, written only by
    the release script, in a strict format: `## vX.Y.Z (YYYY-MM-DD)`, then `### Breaking` /
-   `### Added` / `### Fixed` lists (an empty section is left out). It is not installed into
+   `### Added` / `### Fixed` lists (an empty section is left out), newest release first. Each
+   entry is one line, `- <Area>: <text> (<job id>)`: no ` (<job id>)` for a direct commit on
+   `main`, and no `<Area>: ` when the commit had no scope (clarified 2026-10-29, shared with
+   member `andon-version-service`, which parses it), e.g.
+   `- Andon: show epics as sub-lanes, epic page, and epic-level waits (056-andon-epics-ui)`.
+   It is not installed into
    consumer projects; a project only says which version it runs (`managed.json`).** Why: one
    human-readable file (renders on GitHub too) with no JSON twin to drift; each machine's Andon
    service parses it from its own clone (member `andon-version-service`), and a script-written
