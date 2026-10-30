@@ -1,6 +1,7 @@
 # Andon service reports versions and the changelog
 
-- Status: ready
+- Status: done
+- Job: 058-andon-version-service (merged 2d78732 via epic factory-versioning, 2026-10-29)
 - Sources: the explore request of 2026-10-29; epic plan `factory/epics/factory-versioning.md`; brief `factory-release` (decisions 1, 4)
 - Date: 2026-10-29
 

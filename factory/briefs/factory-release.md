@@ -1,6 +1,7 @@
 # Factory releases and changelog
 
-- Status: ready
+- Status: done
+- Job: 057-factory-release (merged 9e388e9 via epic factory-versioning, 2026-10-29)
 - Sources: the explore request of 2026-10-29 (versioning, a stale-version indicator in Andon, an automated changelog shown in Andon); epic plan `factory/epics/factory-versioning.md`
 - Date: 2026-10-29
 

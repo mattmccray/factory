@@ -1,6 +1,7 @@
 # Factory versioning
 
-- Status: ready
+- Status: done
+- Landed: 4f3a3e6 (2026-10-29)
 - Sources: the explore request of 2026-10-29 (versioning, a stale-version indicator in Andon, an automated changelog shown in Andon)
 - Date: 2026-10-29
 

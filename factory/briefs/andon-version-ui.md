@@ -1,6 +1,7 @@
 # Andon shows stale installs and what's new
 
-- Status: ready
+- Status: done
+- Job: 059-andon-version-ui (merged b38d738 via epic factory-versioning, 2026-10-29)
 - Sources: the explore request of 2026-10-29; epic plan `factory/epics/factory-versioning.md`; briefs `factory-release`, `andon-version-service`
 - Date: 2026-10-29
 
