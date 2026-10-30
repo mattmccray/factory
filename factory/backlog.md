@@ -9,3 +9,4 @@ One feature per line — what "done" looks like, not the history. Add lines with
 
 Lines are in dependency order. Fuzzy ones should go through `/factory explore` first.
 
+- [ ] Factory versioning — a promotion-time release script with a generated changelog, and Andon quietly showing stale installs and What's New — epic: factory/epics/factory-versioning.md
