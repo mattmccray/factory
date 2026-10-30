@@ -137,9 +137,10 @@ Then cut the release, upgrade, and push:
 
 ```sh
 cd /path/to/factory          # this repo's root, on main, clean, with no job running
-bun run release --dry-run    # optional: prints the next vX.Y.Z and its CHANGELOG.md section
-bun run release              # builds the bundle, then: the version and CHANGELOG.md, chore(release): vX.Y.Z,
-                             # tag vX.Y.Z, the bundle committed onto release, tag release-vX.Y.Z
+bun run release --dry-run    # optional: runs the gate, prints the next vX.Y.Z and its CHANGELOG.md section
+bun run release              # runs the gate, builds the bundle, then: the version and CHANGELOG.md,
+                             # chore(release): vX.Y.Z, tag vX.Y.Z, the bundle committed onto release,
+                             # tag release-vX.Y.Z
 factory upgrade              # installs the release: the stamp and managed.json carry vX.Y.Z's version
 bun factory/cli.ts doctor
 git add .claude factory && git commit -m "chore(factory): promote vX.Y.Z"
@@ -157,12 +158,20 @@ breaking change bumps the minor, `fix` or `perf` the patch), writes the version 
 and every workspace `package.json`, and prepends the release's section to `CHANGELOG.md`. With
 no `v*` tag yet, it cuts `v0.1.0`, the version already stamped, with no bump. It refuses, writing
 nothing, off `main`, on a dirty tree, when nothing user-facing merged since the tag, or when
-`vX.Y.Z` or `release-vX.Y.Z` already exists. `--dry-run` neither builds nor writes.
+`vX.Y.Z` or `release-vX.Y.Z` already exists.
 
-Before it writes anything, it builds the release bundle (`scripts/bundle.ts`) from the tree it is
-about to commit: `HEAD` plus the new versions and changelog, staged in a temp directory that
-borrows this checkout's installed `node_modules`. If the build fails, it exits non-zero with a
-one-line reason and writes nothing: no commit, no tag, no `release` change. On success, after the
+After those checks, and before it writes anything, it stages the tree it is about to commit:
+`HEAD` plus the new versions and changelog, in a temp directory that borrows this checkout's
+installed `node_modules`. It runs the gate from `factory/config.json` there, each command through
+a shell from the staged tree's root, in order, stopping at the first one that exits non-zero. A
+red gate exits 1 with `gate is red: <command>` and writes nothing: no commit, no tag, no `release`
+change. With no `gate` in `factory/config.json`, it says no gate is configured and goes on; an
+unreadable or invalid `factory/config.json` refuses, writing nothing. `--dry-run` runs the gate
+too, the same way, then prints the version and section; it builds no bundle and writes nothing.
+
+Once the gate is green, it builds the release bundle (`scripts/bundle.ts`) from the same staged
+tree. If the build fails, it exits non-zero with a one-line reason and writes nothing: no commit,
+no tag, no `release` change. On success, after the
 `chore(release): vX.Y.Z` commit and the `vX.Y.Z` tag, it commits the bundle onto the `release`
 branch with git plumbing (the checkout, `HEAD`, and the working tree never move): each `release`
 commit's tree is exactly the bundle, its parent is the previous `release` commit (the first is a

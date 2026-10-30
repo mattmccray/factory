@@ -21,6 +21,18 @@ const ROLE_DOCS: Record<string, string> = {
   [agent('beta-2')]: 'beta-2',
 };
 const sha = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex');
+// The stamp header's version, the first thing after the frontmatter: `<!-- factory X.Y.Z · `.
+const STAMP_HEADER = /^<!-- factory \d+\.\d+\.\d+ · /;
+const STAMP_PLACEHOLDER = '<!-- factory <version> · ';
+// A rendered file with its stamp header's `factory <X.Y.Z>` replaced by `factory <version>`, so a
+// pin survives a release (the version bump). Nothing else changes: not the frontmatter, not the
+// rest of the stamp, and not any other `factory X.Y.Z` text in the body.
+const normalizeStamp = (text: string): string => {
+  const { frontmatter, body } = splitFrontmatter(text);
+  return `${frontmatter}${body.replace(STAMP_HEADER, STAMP_PLACEHOLDER)}`;
+};
+// The pin hash: sha256 of the stamp-normalized file.
+const pinSha = (text: string): string => sha(normalizeStamp(text));
 const at = (files: Record<string, string>, path: string): string => {
   const text = files[path];
   if (text === undefined) throw new Error(`not rendered: ${path}`);
@@ -297,6 +309,54 @@ describe('version and manifest (AC5)', () => {
       expect(dirty.out).toContain(`FAIL  ${edited}: changed (sha256 mismatch)`);
       expect(dirty.out.filter((l) => l.startsWith('FAIL'))).toEqual([`FAIL  ${edited}: changed (sha256 mismatch)`]);
     });
+  });
+});
+
+describe('the stamp-normalized pin hash (064 AC2)', () => {
+  const files = renderClaudeCode({ config: config() }).files;
+  const header = `<!-- factory ${VERSION} · `;
+  const bumped = (text: string, version: string): string => text.replace(header, `<!-- factory ${version} · `);
+
+  test('normalizing replaces only the stamp header\'s version with the placeholder', () => {
+    for (const [path, text] of Object.entries(files)) {
+      expect({ path, has: text.includes(header) }).toEqual({ path, has: true });
+      const normal = normalizeStamp(text);
+      expect(normal).toBe(text.replace(header, STAMP_PLACEHOLDER));
+      expect(normal).not.toContain(`factory ${VERSION} ·`);
+    }
+  });
+
+  test('a version-only change to the stamp header leaves the hash unchanged', () => {
+    for (const [path, text] of Object.entries(files)) {
+      for (const version of ['9.9.9', '0.0.1', '10.20.30']) {
+        const other = bumped(text, version);
+        expect(other).not.toBe(text);
+        expect({ path, version, same: pinSha(other) === pinSha(text) }).toEqual({ path, version, same: true });
+      }
+    }
+  });
+
+  test('any other change (the body, the frontmatter, the overlay path in the stamp) changes the hash', () => {
+    for (const [path, text] of Object.entries(files)) {
+      const { frontmatter, body } = splitFrontmatter(text);
+      const changed: Record<string, string> = {
+        body: `${text}x`,
+        'body, first byte after the stamp': text.replace(/( -->\n)([\s\S])/, (_m, end: string, c: string) => `${end}${c === 'X' ? 'Y' : 'X'}`),
+        frontmatter: frontmatter === '' ? `---\nname: x\n---\n${body}` : text.replace(/^---\n/, '---\nextra: 1\n'),
+        'overlay path in the stamp': text.replace('Project rules go in the overlay: ', 'Project rules go in the overlay: other/'),
+        'version and body together': `${bumped(text, '9.9.9')}x`,
+      };
+      for (const [what, other] of Object.entries(changed)) {
+        expect({ path, what, edited: other !== text }).toEqual({ path, what, edited: true });
+        expect({ path, what, same: pinSha(other) === pinSha(text) }).toEqual({ path, what, same: false });
+      }
+    }
+  });
+
+  test('a `factory X.Y.Z` that is not the stamp header is not normalized', () => {
+    const text = stamp('---\nname: x\n---\n# T\n<!-- factory 1.2.3 · not the header -->\n', 'o');
+    expect(pinSha(text.replace('1.2.3', '4.5.6'))).not.toBe(pinSha(text));
+    expect(normalizeStamp(text)).toContain('<!-- factory 1.2.3 · not the header -->');
   });
 });
 
@@ -592,18 +652,20 @@ describe('the customize interview in SKILL.md', () => {
     // Job 051 (merge conflicts go back to the builder) updated the builder and approver hashes: the
     // builder gains "A conflict note", and both read any `conflict-*.md`. Job 053 (the skill runs
     // epics, and explore writes them) updated the EXPLORE hash: the size check proposes an epic,
-    // Start resumes a plan, the plan format, and the member and plan Finish.
+    // Start resumes a plan, the plan format, and the member and plan Finish. Job 064 (release gate
+    // check) re-pinned every hash to the stamp-normalized form (pinSha): the stamp header's
+    // `factory <X.Y.Z>` hashes as `factory <version>`, so a release no longer breaks the pins.
     const before: Record<string, string> = {
-      [EXPLORE]: 'a3043f019ee60b10a5f0b1367619533e9631fb5257382825a9ecf2830975001e',
-      [agent('spec-writer')]: 'e8595a8b596b936e369373677acac3c37e233de10fc6b7035b12fb5b5c29a0b1',
-      [agent('builder')]: '44767f8cd0a0d6893403c8375fb0b4301590df53fea4aa02e6281e612802833f',
-      [agent('approver')]: '14d08440888b6d077f6a429def65cfd0cd9d5d964392feca3fea44d5cf2421f9',
-      [agent('alpha')]: 'dfe1cd9b59957007a63f3f4474d145d1ecc8e6a616db0236196fd065ef6c053d',
-      [agent('beta-2')]: '8c6e2ba134bb732ef87f579b5822350108bb6553b4257674fb30a4f5a3618840',
+      [EXPLORE]: 'c62fbd462cc7333e239883a489b2f0fe1d322f460a4dc1f52881c8226fffcde5',
+      [agent('spec-writer')]: '801a6ed850d5e6f887244c8f0e204aff4fd4dfccc25b6ae5866a613c07898436',
+      [agent('builder')]: '31bd61d3b6d55b57eb87e367c6cdcd7f357a94f19e9a05e36f49d3513c873120',
+      [agent('approver')]: 'e3571bff3055baade18a1490ba3318990e540df2ea53d50a97b88e3afc6f8170',
+      [agent('alpha')]: '6805505208865f1423e581be7799e0f812aa2cb598caf200ee373c19dc112b02',
+      [agent('beta-2')]: 'c5f3e25793e91ee5d40f188c1b8881931e38ce5678a18b6d9e29f4f34620b22f',
     };
     const { files } = renderClaudeCode({ config: config() });
     const now: Record<string, string> = {};
-    for (const [path, text] of Object.entries(files)) if (path !== SKILL) now[path] = sha(text);
+    for (const [path, text] of Object.entries(files)) if (path !== SKILL) now[path] = pinSha(text);
     expect(now).toEqual(before);
   });
 });
@@ -661,18 +723,19 @@ describe('per-role model from config.roles', () => {
     // Job 044 updated the EXPLORE hash (Finish under the lock, abandoned attempts, `- Abandoned:`).
     // Job 051 updated the builder and approver hashes (a conflict note, and `conflict-*.md` reads).
     // Job 053 updated the EXPLORE hash (epics: the size check, plan resume, plan format, Finish).
+    // Job 064 re-pinned every hash to the stamp-normalized form (pinSha), independent of VERSION.
     const before: Record<string, string> = {
-      [EXPLORE]: 'a3043f019ee60b10a5f0b1367619533e9631fb5257382825a9ecf2830975001e',
-      [agent('spec-writer')]: 'e8595a8b596b936e369373677acac3c37e233de10fc6b7035b12fb5b5c29a0b1',
-      [agent('builder')]: '44767f8cd0a0d6893403c8375fb0b4301590df53fea4aa02e6281e612802833f',
-      [agent('approver')]: '14d08440888b6d077f6a429def65cfd0cd9d5d964392feca3fea44d5cf2421f9',
-      [agent('alpha')]: 'dfe1cd9b59957007a63f3f4474d145d1ecc8e6a616db0236196fd065ef6c053d',
-      [agent('beta-2')]: '8c6e2ba134bb732ef87f579b5822350108bb6553b4257674fb30a4f5a3618840',
+      [EXPLORE]: 'c62fbd462cc7333e239883a489b2f0fe1d322f460a4dc1f52881c8226fffcde5',
+      [agent('spec-writer')]: '801a6ed850d5e6f887244c8f0e204aff4fd4dfccc25b6ae5866a613c07898436',
+      [agent('builder')]: '31bd61d3b6d55b57eb87e367c6cdcd7f357a94f19e9a05e36f49d3513c873120',
+      [agent('approver')]: 'e3571bff3055baade18a1490ba3318990e540df2ea53d50a97b88e3afc6f8170',
+      [agent('alpha')]: '6805505208865f1423e581be7799e0f812aa2cb598caf200ee373c19dc112b02',
+      [agent('beta-2')]: 'c5f3e25793e91ee5d40f188c1b8881931e38ce5678a18b6d9e29f4f34620b22f',
     };
     for (const c of [config(), config({ roles: {} }), config({ roles: { builder: { runner: 'claude' } } })]) {
       const { files } = renderClaudeCode({ config: c });
       const now: Record<string, string> = {};
-      for (const [path, text] of Object.entries(files)) if (path !== SKILL) now[path] = sha(text);
+      for (const [path, text] of Object.entries(files)) if (path !== SKILL) now[path] = pinSha(text);
       expect(now).toEqual(before);
       for (const path of AGENTS) expect({ path, model: modelOf(at(files, path)) }).toEqual({ path, model: 'opus' });
     }
