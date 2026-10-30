@@ -43,7 +43,8 @@ contract is `docs/contract/v1.md`.
    - everything lives in one repository, here.
 8. **Managed core plus project overlay.**
    - Managed files (skill, role templates, CLI) are stamped with a version and hash and must
-     not be edited.
+     not be edited. The stamped version is the factory's release version (decision 14), read
+     from `@factory/templates`' `package.json`.
    - The overlay is `factory/config.json` (reviewers, per-role model/runner, gate commands,
      issue tracker, merge policy, `maxRound`, settle threshold) plus `factory/roles/<role>.md`
      (each project's rules for a role).
@@ -120,6 +121,37 @@ contract is `docs/contract/v1.md`.
       approved by Matt on 2026-10-29. A reader re-projects `epic.json` from the archived epic log,
       that plan, and the archived member logs (brief `andon-epics-service`).
 
+14. **Releases** (2026-10-29, accepted by Matt; brief `factory/briefs/factory-release.md`).
+    - One release version for everything shipped from this repo (CLI, skill and agents, Andon
+      service, UI, Mac app). The contract keeps its own `schema: "factory/v1"` and dated additive
+      changes, separately. A project's installed version is its `managed.json` `version`.
+    - The version moves only at promotion, never in a job: `bun run release` (root tooling,
+      `scripts/release.ts`, not a `factory` command), run by a human on `main` as promotion's
+      first step, then `factory upgrade` as before. The bump comes from the Conventional Commits
+      since the newest `v*` tag: pre-1.0, `feat` and breaking (`!`) bump the minor and
+      `fix`/`perf` the patch.
+    - The changelog is deterministic, with no model at release time: one entry per job merge on
+      `main`'s first-parent history (a `Land epic` merge expands into its members' job merges),
+      plus direct commits on `main` whose type is user-facing. `feat`, `fix`, `perf`, and `!` are
+      in; `chore`, `specs`, `docs`, `test`, and `refactor` are out. The text is the subject
+      without its type, the scope maps to an area (`andon*` → Andon, `templates` → Skill, `cli`
+      → CLI, `contract` → Contract), and the job id is kept. The bump comes from the same entries.
+    - `CHANGELOG.md` at this repo's root, written only by the release script, in a strict format
+      (Andon's service parses it): `## vX.Y.Z (YYYY-MM-DD)`, then `### Breaking` / `### Added` /
+      `### Fixed` (empty ones left out), newest release first, each entry
+      `- <Area>: <text> (<job id>)`, with no job id for a direct commit and no area without a
+      scope. It is not installed into consumer projects.
+    - The version is written into the root `package.json` and every `packages/*` and `apps/*`
+      one; `@factory/templates`' stays the one code reads (the stamp, `managed.json`).
+    - The first release, with no `v*` tag, is `v0.1.0` (the version already stamped, no bump) on
+      `main`'s `HEAD`, and its section covers the whole history. Every later run bumps from the
+      newest `v*` tag.
+    - The script refuses, writing nothing, off `main` (or detached), on a dirty tree, or with
+      nothing user-facing since the tag ("nothing to release"). `--dry-run` prints the version
+      and section and changes nothing. A non-Conventional first-parent subject is skipped and
+      named. It commits `chore(release): vX.Y.Z`, tags `vX.Y.Z` annotated (`factory vX.Y.Z`),
+      and never pushes or runs `factory upgrade`.
+
 ## Invariants
 
 Lessons from the Minerva build that the contract and CLI must keep:
@@ -163,3 +195,5 @@ Deliberately unfixed, but real:
 - Reviewers that run only when certain files change.
 - Distribution for publishing: name collision checks, a package registry, docs site.
 - Reconstructing timing for legacy jobs (001–018) from git history; they show no timing.
+- A friendlier changelog line per job (an approver template change) or a model-written rewrite;
+  today the entry is the job's merge subject (decision 14).

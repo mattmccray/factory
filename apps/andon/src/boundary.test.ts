@@ -163,7 +163,7 @@ describe("backend.ts types the adapter with Tiny's vendored types, narrowed to M
 
   test("the root tsconfig doesn't include the vendored types", () => {
     const cfg = readJson(join(repoDir, 'tsconfig.json'));
-    expect(cfg.include).toEqual(['packages/*/src/**/*.ts', 'apps/*/src/**/*.ts', 'factory/**/*.ts']);
+    expect(cfg.include).toEqual(['packages/*/src/**/*.ts', 'apps/*/src/**/*.ts', 'scripts/**/*.ts', 'factory/**/*.ts']);
   });
 });
 
