@@ -7,7 +7,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import config from '../vite.config';
 import { isRecord } from './job';
-import { PUSHED_EVENTS, STATUS_BAR_EVENT, WHATS_NEW_EVENT } from './sidebar';
+import { PUSHED_EVENTS, STATUS_BAR_EVENT, VIEW_STATE_METHOD, WHATS_NEW_EVENT } from './sidebar';
 
 const app = join(import.meta.dir, '..');
 
@@ -122,7 +122,7 @@ describe('Andon never writes job state (026 AC5)', () => {
     }
   });
 
-  test("the page calls the Mac app's backend in four places only, each with its own fixed method names (032, 033, 035, 036, 040)", () => {
+  test("the page calls the Mac app's backend in five places only, each with its own fixed method names (032, 033, 035, 036, 040, 063)", () => {
     // Every mention of Tiny's `api.call` (or a `'call'` key) across the page's sources.
     const hits: { file: string; hit: string }[] = [];
     for (const file of sources) {
@@ -133,6 +133,7 @@ describe('Andon never writes job state (026 AC5)', () => {
       { file: 'jobmenu.ts', hit: 'api.call' },
       { file: 'projectmenu.ts', hit: 'api.call' },
       { file: 'settings.ts', hit: 'api.call' },
+      { file: 'sidebar.ts', hit: 'api.call' },
     ]);
     const text = read(join(import.meta.dir, 'projectmenu.ts'));
     // The one method name, fixed; the one call site passes it and a `{ project }` and nothing else.
@@ -148,6 +149,17 @@ describe('Andon never writes job state (026 AC5)', () => {
       'call, api, [GET_SETTINGS_METHOD, null]',
       "call, api, [SET_SETTING_METHOD, { key: 'statusBarHidden', value: hidden }]",
       "call, api, [SET_SETTING_METHOD, { key: 't3Handoff', value: mode }]",
+      "call, api, [SET_SETTING_METHOD, { key: 'mergedHidden', value: hidden }]",
+    ]);
+    // The view-state reporter (063): its one fixed method name, and the one call site passes it and
+    // only the three booleans. sidebar.ts's other Reflect.apply calls are the push subscriber's.
+    const sidebar = read(join(import.meta.dir, 'sidebar.ts'));
+    expect(sidebar).toContain("export const VIEW_STATE_METHOD = 'setViewState';");
+    expect(VIEW_STATE_METHOD).toBe('setViewState');
+    expect([...sidebar.matchAll(/Reflect\.apply\(([^;]*?)\);/g)].map((m) => m[1])).toEqual([
+      'on, api, [event, fn]',
+      'off, undefined, []',
+      'call, api, [VIEW_STATE_METHOD, { needsMe, sidebarShown, inspectorOpen }]',
     ]);
     // The hand-off caller (036): its one fixed method name, and the one call site passes it and the
     // request (a project id, a job id, an action, and a note: HandoffRequest), never a command.
@@ -168,17 +180,17 @@ describe('Andon never writes job state (026 AC5)', () => {
     }
   });
 
-  test("the page hears exactly the Mac app's pushed events its api gate names: statusbar and whatsnew (059)", () => {
+  test("the page hears exactly the Mac app's pushed events its api gate names: statusbar and whatsnew (059), and the View menu's (063)", () => {
     expect(STATUS_BAR_EVENT).toBe('statusbar');
     expect(WHATS_NEW_EVENT).toBe('whatsnew');
-    expect(PUSHED_EVENTS).toEqual(['statusbar', 'whatsnew']);
+    expect(PUSHED_EVENTS).toEqual(['statusbar', 'whatsnew', 'merged', 'needsme', 'settled', 'sidebar', 'inspector']);
     const tiny: unknown = JSON.parse(read(join(app, '..', 'andon', 'tinyjs.json')));
     const gate = isRecord(tiny) && isRecord(tiny.api) && Array.isArray(tiny.api.enable) ? tiny.api.enable : [];
     expect(gate.filter((e): e is string => typeof e === 'string' && e.startsWith('event.'))).toEqual(PUSHED_EVENTS.map((e) => `event.${e}`));
     expect(gate).toContain('event.whatsnew');
     // Every subscription goes through pushSubscriber with one of those names, in App.svelte only.
     const subs = [...read(join(import.meta.dir, 'App.svelte')).matchAll(/subscribe\?\.\((\w+),/g)].map((m) => m[1]);
-    expect(subs).toEqual(['STATUS_BAR_EVENT', 'WHATS_NEW_EVENT']);
+    expect(subs).toEqual(['STATUS_BAR_EVENT', 'WHATS_NEW_EVENT', 'MERGED_EVENT', 'NEEDS_ME_EVENT', 'SETTLED_EVENT', 'SIDEBAR_EVENT', 'INSPECTOR_EVENT']);
   });
 
   test('Fetcher stays path-only', () => {

@@ -10,6 +10,6 @@
   "icon": "assets/icon.png",
   "url": "http://127.0.0.1:8766/?shell=mac",
   "chrome": { "frame": false, "windowControls": true, "windowControlsPos": { "x": 18, "y": 20 }, "vibrancy": "sidebar" },
-  "api": { "disable": ["*"], "enable": ["win.startDrag", "win.zoom", "event.statusbar", "event.whatsnew", "projectMenu", "getSettings", "setSetting", "handOff", "jobMenu"] },
+  "api": { "disable": ["*"], "enable": ["win.startDrag", "win.zoom", "event.statusbar", "event.whatsnew", "event.merged", "event.needsme", "event.settled", "event.sidebar", "event.inspector", "projectMenu", "getSettings", "setSetting", "handOff", "jobMenu", "setViewState"] },
   "backend": "build/backend.js"
 }

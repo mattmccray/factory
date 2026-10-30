@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { GET_SETTINGS_METHOD, HANDOFF_CHOICES, SET_SETTING_METHOD, narrowSettings, settingsCaller, showsStatusBar } from './settings';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { GET_SETTINGS_METHOD, HANDOFF_CHOICES, SET_SETTING_METHOD, narrowSettings, settingsCaller, showsMerged, showsStatusBar } from './settings';
 
-const S = { statusBarHidden: false, t3Handoff: 'draft', t3Found: true } as const;
+const S = { statusBarHidden: false, t3Handoff: 'draft', mergedHidden: false, t3Found: true } as const;
 import { appView, pushSubscriber, shellMode } from './sidebar';
 
 describe('035 AC6: which view a URL gets', () => {
@@ -85,12 +87,49 @@ describe('035: the settings payload', () => {
   });
 
   test('036 AC7: narrowed with the T3 Code choice (one of three) and whether t3 was found', () => {
-    for (const t3Handoff of ['draft', 'send', 'copy'] as const) for (const t3Found of [true, false]) expect(narrowSettings({ statusBarHidden: false, t3Handoff, t3Found })).toEqual({ statusBarHidden: false, t3Handoff, t3Found });
+    for (const t3Handoff of ['draft', 'send', 'copy'] as const) for (const t3Found of [true, false]) expect(narrowSettings({ statusBarHidden: false, t3Handoff, mergedHidden: false, t3Found })).toEqual({ statusBarHidden: false, t3Handoff, mergedHidden: false, t3Found });
     for (const d of [{ statusBarHidden: false }, { ...S, t3Handoff: 'auto' }, { ...S, t3Handoff: null }, { ...S, t3Found: 'yes' }, { statusBarHidden: false, t3Handoff: 'draft' }, { statusBarHidden: false, t3Found: true }]) expect({ d, s: narrowSettings(d) }).toEqual({ d, s: null });
     expect(HANDOFF_CHOICES).toEqual([
       { mode: 'draft', label: 'Open a draft in T3 Code' },
       { mode: 'send', label: 'Send in T3 Code right away' },
       { mode: 'copy', label: 'Copy only' },
     ]);
+  });
+});
+
+describe('063 AC2: the Merged column setting in the page', () => {
+  test('narrowSettings requires mergedHidden to be a boolean', () => {
+    expect(narrowSettings({ ...S, mergedHidden: true })).toEqual({ ...S, mergedHidden: true });
+    const { mergedHidden: _drop, ...without } = S;
+    for (const d of [without, { ...S, mergedHidden: 'true' }, { ...S, mergedHidden: 1 }, { ...S, mergedHidden: null }, { ...S, mergedHidden: undefined }]) expect({ d, s: narrowSettings(d) }).toEqual({ d, s: null });
+  });
+
+  test('"Show Merged column" is checked when the column is shown', () => {
+    expect(showsMerged({ ...S, mergedHidden: false })).toBe(true);
+    expect(showsMerged({ ...S, mergedHidden: true })).toBe(false);
+  });
+
+  test('the caller sets it with the one fixed method and only the Merged change; refused or malformed answers are null', async () => {
+    const calls: unknown[][] = [];
+    const api = settingsCaller('mac', {
+      api: {
+        call: async (method: string, params: unknown) => {
+          calls.push([method, params]);
+          return { ...S, mergedHidden: true };
+        },
+      },
+    });
+    expect(await api?.setMergedHidden(true)).toEqual({ ...S, mergedHidden: true });
+    expect(calls).toEqual([['setSetting', { key: 'mergedHidden', value: true }]]);
+    for (const a of [() => null, () => ({ ...S, mergedHidden: 'yes' }), () => Promise.reject(new Error('denied'))]) expect(await settingsCaller('mac', { api: { call: a } })?.setMergedHidden(false)).toBeNull();
+    expect(settingsCaller('browser', { api: { call: async () => S } })).toBeNull();
+  });
+
+  test('Settings.svelte has the checkbox, follows the pushed Merged event, and sets through the caller', () => {
+    const src = readFileSync(join(import.meta.dir, 'Settings.svelte'), 'utf8');
+    expect(src).toContain('<input type="checkbox" checked={settings !== null && showsMerged(settings)} disabled={settings === null} onchange={onmerged} />');
+    expect(src).toContain('<span>Show Merged column</span>');
+    expect(src).toContain('subscribe?.(MERGED_EVENT,');
+    expect(src).toContain('await api?.setMergedHidden(!show)');
   });
 });

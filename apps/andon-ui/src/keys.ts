@@ -6,6 +6,8 @@
 //   Esc    close the topmost layer: a sheet, then the inspector, then search (clear, then leave)
 // Single-key shortcuts are ignored while focus is in a text field, while a modifier (Ctrl, Alt,
 // or Cmd) is held, or while a sheet is open over the page. Only Esc works from inside a field.
+// The Mac app's View menu shortcuts (063: ⇧⌘N, ⇧⌘S, ⌃⌘S, ⌥⌘I, ⌘/) are the menu's own, not this
+// reducer's; the shortcut sheet lists them in the Mac app only.
 
 export type KeyAction = 'focus-search' | 'toggle-needs' | 'open-keys' | 'all-projects' | 'close-sheet' | 'close-inspector' | 'clear-search' | 'leave-search';
 
@@ -83,12 +85,28 @@ export function reduceKey(s: KeyState, e: KeyInput, l: Layers): { state: KeyStat
   }
 }
 
-/** The shortcut sheet's rows, in the order §10 lists them. */
-export const SHORTCUTS: ReadonlyArray<{ keys: string[]; join?: 'then' | 'or'; text: string }> = [
+/** One row of the shortcut sheet. `menu`: a Mac app View menu shortcut, listed only in the Mac app. */
+export interface Shortcut {
+  keys: string[];
+  join?: 'then' | 'or';
+  text: string;
+  menu?: true;
+}
+
+/** The shortcut sheet's rows: the page's own, in the order §10 lists them, then the View menu's, in menu order. */
+export const SHORTCUTS: readonly Shortcut[] = [
   { keys: ['/'], text: 'Search jobs' },
   { keys: ['esc'], text: 'Close the sheet, then the inspector, then clear or leave search' },
   { keys: ['↑', '↓'], join: 'or', text: 'Previous or next file in the inspector' },
   { keys: ['g', 'a'], join: 'then', text: 'All Projects' },
   { keys: ['n'], text: 'Show only what needs you' },
   { keys: ['?'], text: 'This list of shortcuts' },
+  { keys: ['⇧⌘N'], text: 'Show only Needs Me, or all jobs (View menu)', menu: true },
+  { keys: ['⇧⌘S'], text: 'Show the settled jobs (View menu)', menu: true },
+  { keys: ['⌃⌘S'], text: 'Hide or show the sidebar (View menu)', menu: true },
+  { keys: ['⌥⌘I'], text: 'Hide or show the inspector (View menu)', menu: true },
+  { keys: ['⌘/'], text: 'Hide or show the status bar (View menu)', menu: true },
 ];
+
+/** The rows the sheet shows: every row in the Mac app, and only the page's own in a browser (it has no View menu). */
+export const shortcutsFor = (mac: boolean): readonly Shortcut[] => (mac ? SHORTCUTS : SHORTCUTS.filter((s) => s.menu !== true));

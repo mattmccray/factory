@@ -3,19 +3,22 @@
 // `app.badge`, `app.notify`, `app.menu`, `app.store`, `app.push`, `app.shell`, `app.clipboard`,
 // `app.thumbnail` (the Open in apps' icons), the
 // `app.win.open` and `app.windows` (the Settings window), the `onTray`, `onMenu`, `onNavigate`, and
-// `onContextMenu` hooks, and the five custom `api` methods, and to
+// `onContextMenu` hooks, and the six custom `api` methods, and to
 // txiki's `tjs.spawn`, `tjs.stat`, and `tjs.remove` (for curl: see curl.ts, for a project's
 // right-click menu: see projectmenu.ts, for a job's: see jobmenu.ts, and for the T3 Code hand-off:
 // see handoff.ts). `bun run
 // andon:build` bundles it into build/backend.js, the plain-JS entry tinyjs.json names.
 // The windows' pages (the service-served UI) get no Tiny API but the two calls the drag regions make
-// (`win.startDrag`, `win.zoom`), the two events this adapter pushes (`event.statusbar`, and
-// `event.whatsnew` for Help → What's New),
+// (`win.startDrag`, `win.zoom`), the events this adapter pushes (`event.statusbar`, `event.merged`,
+// `event.whatsnew` for Help → What's New, and the View menu's `event.needsme`, `event.settled`,
+// `event.sidebar`, and `event.inspector`),
 // `projectMenu`, which takes a project id (or null) and nothing else, the Settings window's
 // `getSettings` and `setSetting` (see settings.ts), which answer only when Tiny's api meta names the
 // Settings window, and `handOff` (see handoff.ts), which takes a project id, a job id, an action, and
 // a note, and answers only when the meta names the main window, and `jobMenu` (see jobmenu.ts),
-// which takes a project id and a job id and nothing else: tinyjs.json's `api` gate denies the rest.
+// which takes a project id and a job id and nothing else, and `setViewState` (the main window's
+// page reporting its Needs Me, sidebar, and inspector booleans, answered only for the main window):
+// tinyjs.json's `api` gate denies the rest.
 /// <reference path="../types/tiny.d.ts" />
 /// <reference path="../types/tjs.d.ts" />
 import { QUIT_ID, SHOW_ID, trayNotice } from './badge';
@@ -30,9 +33,30 @@ import type { DockLook } from './lantern';
 import { startApp } from './app';
 import type { App } from './app';
 import { bringBackAction, oneAtATime, trayClickAction } from './trayclick';
-import { SETTINGS_WINDOW_ID, STATUS_BAR_EVENT, STATUS_BAR_ID, STATUS_BAR_KEY, WHATS_NEW_EVENT, appMenu, menuAction, settingsWindow, statusBarLabel, statusBarPayload, storedHidden, whatsNewPayload } from './appmenu';
-import type { SettingsWindowOptions } from './appmenu';
-import { DEFAULT_HANDOFF_MODE, T3_HANDOFF_KEY, fromSettingsWindow, settingChange, settingsSnapshot, storedMode } from './settings';
+import {
+  DEFAULT_VIEW,
+  MERGED_EVENT,
+  MERGED_ID,
+  MERGED_KEY,
+  SETTINGS_WINDOW_ID,
+  STATUS_BAR_EVENT,
+  STATUS_BAR_ID,
+  STATUS_BAR_KEY,
+  WHATS_NEW_EVENT,
+  appMenu,
+  menuAction,
+  mergedLabel,
+  mergedPayload,
+  pageEventPayload,
+  settingsWindow,
+  statusBarLabel,
+  statusBarPayload,
+  storedHidden,
+  viewLabelUpdates,
+  whatsNewPayload,
+} from './appmenu';
+import type { SettingsWindowOptions, ViewState } from './appmenu';
+import { DEFAULT_HANDOFF_MODE, T3_HANDOFF_KEY, fromSettingsWindow, settingChange, settingsSnapshot, storedMode, viewStateParams } from './settings';
 import type { HandoffMode, Settings } from './settings';
 import { draftFailureText, draftLink, fromMainWindow, githubRepo, handoffRequest, originArgv, sendArgv, sendFailureText } from './handoff';
 import type { HandoffOutcome } from './handoff';
@@ -149,25 +173,36 @@ let servicePort = DEFAULT_PORT;
 /** The service's GET, as init built it: the job menu fetches a project's board through it. */
 let serviceHttp: Http | null = null;
 
-// ---- the status bar choice ----
-// Read from the store once at init; every change (the View menu toggle, ⌘/, or the Settings window)
-// goes through setStatusBar, which writes it back, relabels the View menu, and pushes the status bar
-// event to every window. The main window's page only listens (after its main frame loads and after
-// every change); the Settings window also asks for it (getSettings).
+// ---- the status bar and Merged column choices, and the page's view state ----
+// Both choices are read from the store once at init; every change (a View menu toggle, ⌘/, or the
+// Settings window) goes through setStatusBar or setMerged, which writes it back, relabels the View
+// menu, and pushes its event to every window. The main window's page only listens (after its main
+// frame loads and after every change); the Settings window also asks for them (getSettings).
+// The page's view state (Needs Me, the sidebar, the inspector) is the page's own: the View menu's
+// items only push an event asking the page to act, and the page reports its state back
+// (setViewState), which relabels those three items. It is not stored.
 
 let statusBarHidden = false;
-/** Settles once init has read the stored choice and set the menu bar. */
+let mergedHidden = false;
+let view: ViewState = { ...DEFAULT_VIEW };
+/** Settles once init has read the stored choices and set the menu bar. */
 let statusBarRead: Promise<void> = Promise.resolve();
 
-async function readStatusBar(app: MacApp): Promise<void> {
-  let stored: unknown = null;
+/** A stored hidden choice: exactly `true` is hidden; a store that fails reads as shown. */
+async function readHidden(app: MacApp, key: string, what: string): Promise<boolean> {
   try {
-    stored = await app.store.get(STATUS_BAR_KEY);
+    return storedHidden(await app.store.get(key));
   } catch (err) {
-    console.log(`andon: could not read the status bar choice (${String(err)}); showing it`);
+    console.log(`andon: could not read the ${what} choice (${String(err)}); showing it`);
+    return false;
   }
-  statusBarHidden = storedHidden(stored);
-  app.menu.set(appMenu(statusBarHidden));
+}
+
+async function readStatusBar(app: MacApp): Promise<void> {
+  const [bar, merged] = await Promise.all([readHidden(app, STATUS_BAR_KEY, 'status bar'), readHidden(app, MERGED_KEY, 'Merged column')]);
+  statusBarHidden = bar;
+  mergedHidden = merged;
+  app.menu.set(appMenu({ statusBarHidden, mergedHidden, view }));
 }
 
 const pushStatusBar = (app: MacApp): void => app.push(STATUS_BAR_EVENT, statusBarPayload(statusBarHidden));
@@ -189,6 +224,38 @@ async function toggleStatusBar(app: MacApp): Promise<void> {
   return setStatusBar(app, !statusBarHidden);
 }
 
+const pushMerged = (app: MacApp): void => app.push(MERGED_EVENT, mergedPayload(mergedHidden));
+
+/** The one path for a Merged column change, as setStatusBar is for the status bar. */
+async function setMerged(app: MacApp, hidden: boolean): Promise<void> {
+  await statusBarRead;
+  if (hidden === mergedHidden) return;
+  mergedHidden = hidden;
+  const saved = app.store.set(MERGED_KEY, hidden);
+  app.menu.update(MERGED_ID, { label: mergedLabel(hidden) });
+  pushMerged(app);
+  if (!(await saved)) console.log('andon: could not save the Merged column choice');
+}
+
+async function toggleMerged(app: MacApp): Promise<void> {
+  await statusBarRead;
+  return setMerged(app, !mergedHidden);
+}
+
+/** The main window's page reports its view state: answered only for the main window and only for
+ *  exactly the three booleans; relabels the items whose state changed and answers the state. Null,
+ *  with no label changed, for anything else. */
+export async function setViewState(params: unknown, app: MacApp, meta: unknown): Promise<ViewState | null> {
+  if (!fromMainWindow(meta)) return null;
+  const next = viewStateParams(params);
+  if (next === null) return null;
+  await statusBarRead;
+  const updates = viewLabelUpdates(view, next);
+  view = next;
+  for (const u of updates) app.menu.update(u.id, { label: u.label });
+  return next;
+}
+
 /** Quitting stops the app's own work (its stream and its probing), never the service: the OS service manager owns that. */
 function stopAll(): void {
   quitting = true;
@@ -205,6 +272,7 @@ export function init(app: MacApp): void {
   const http = curlHttp(url);
   serviceHttp = http;
   const repo = __ANDON_REPO__;
+  view = { ...DEFAULT_VIEW }; // the page reports its own once it loads
   statusBarRead = readStatusBar(app);
   void refreshApps(app); // warm the menu's app check, so the first right-click has it
   resetIcons();
@@ -334,6 +402,14 @@ export async function onMenu(id: string, app: MacApp): Promise<void> {
       return openSettings(app);
     case 'toggle-status-bar':
       return toggleStatusBar(app);
+    case 'toggle-merged':
+      return toggleMerged(app);
+    case 'page':
+      // Ask the board's page to act (it owns Needs Me, the Settled sheet, the sidebar, and the
+      // inspector); it reports its new state back. A sheet shows the board first, as What's New does.
+      if (action.show) await showMain(app);
+      app.push(action.event, pageEventPayload());
+      return;
     case 'minimize':
       return app.window('main').minimize();
     case 'zoom':
@@ -352,12 +428,13 @@ export async function onMenu(id: string, app: MacApp): Promise<void> {
   }
 }
 
-/** A navigation event. When the main window's page finishes loading, tell it the status bar state.
- *  It answers no policy ask (so every navigation is allowed, as before). */
+/** A navigation event. When the main window's page finishes loading, tell it the status bar and
+ *  Merged column states. It answers no policy ask (so every navigation is allowed, as before). */
 export async function onNavigate(info: MacNavEvent, app: MacApp): Promise<void> {
   if (info.window !== 'main' || info.kind !== 'finish' || info.isMainFrame === false) return;
   await statusBarRead;
   pushStatusBar(app);
+  pushMerged(app);
 }
 
 // ---- a project's right-click menu ----
@@ -653,7 +730,7 @@ async function readHandoffMode(app: MacApp): Promise<HandoffMode> {
 async function snapshot(app: MacApp): Promise<Settings> {
   await statusBarRead;
   const [t3Handoff, t3] = await Promise.all([readHandoffMode(app), findT3()]);
-  return settingsSnapshot({ statusBarHidden, t3Handoff }, t3 !== null);
+  return settingsSnapshot({ statusBarHidden, t3Handoff, mergedHidden }, t3 !== null);
 }
 
 /** The settings, from the stored choices (once init has read them); null for any other window. */
@@ -674,6 +751,9 @@ export async function setSetting(params: unknown, app: MacApp, meta: unknown): P
       break;
     case 't3Handoff':
       if (!(await app.store.set(T3_HANDOFF_KEY, change.value))) console.log('andon: could not save the T3 Code choice');
+      break;
+    case 'mergedHidden':
+      await setMerged(app, change.value);
       break;
   }
   return snapshot(app);
@@ -868,13 +948,14 @@ export async function runJobItem(id: unknown, app: MacApp, host: JobMenuHost = h
   if (failed !== null) await notifyFailure(app, openFailureText(job, failed));
 }
 
-/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, `handOff`, and `jobMenu` (tinyjs.json's gate enables each by name). */
+/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, `handOff`, `jobMenu`, and `setViewState` (tinyjs.json's gate enables each by name). */
 export const api = {
   projectMenu: (params: unknown, app: MacApp): Promise<void> => showProjectMenu(params, app, listedProjects()),
   getSettings: (_params: unknown, app: MacApp, meta: unknown): Promise<Settings | null> => getSettings(app, meta),
   setSetting: (params: unknown, app: MacApp, meta: unknown): Promise<Settings | null> => setSetting(params, app, meta),
   handOff: (params: unknown, app: MacApp, meta: unknown): Promise<HandoffOutcome | null> => handOff(params, app, meta),
   jobMenu: (params: unknown, app: MacApp): Promise<void> => showJobMenu(params, app),
+  setViewState: (params: unknown, app: MacApp, meta: unknown): Promise<ViewState | null> => setViewState(params, app, meta),
 };
 
 /** A click in the right-click menu: a `job-menu:` id goes to the job menu, every other id to the project menu. */

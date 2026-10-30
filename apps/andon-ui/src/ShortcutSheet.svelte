@@ -1,13 +1,16 @@
 <script lang="ts">
-  // The shortcut sheet (design §10): `?` opens it, and it lists the keyboard map from keys.ts.
-  import { SHORTCUTS } from './keys';
+  // The shortcut sheet (design §10): `?` opens it, and it lists the keyboard map from keys.ts, and,
+  // in the Mac app, the View menu's shortcuts (063).
+  import { shortcutsFor } from './keys';
   import Sheet from './Sheet.svelte';
 
   interface Props {
     open: boolean;
+    mac: boolean; // the Mac app: its View menu shortcuts are listed too
     onclose: () => void;
   }
-  let { open, onclose }: Props = $props();
+  let { open, mac, onclose }: Props = $props();
+  const rows = $derived(shortcutsFor(mac));
 </script>
 
 <Sheet {open} labelledby="keys-title" {onclose}>
@@ -16,7 +19,7 @@
     <p>Single keys work when focus isn't in a text field.</p>
   </header>
   <dl class="keys">
-    {#each SHORTCUTS as s (s.text)}
+    {#each rows as s (s.text)}
       <div>
         <dt>{#each s.keys as k, i (k)}{#if i > 0}<span class="then">{s.join ?? 'then'}</span>{/if}<kbd>{k}</kbd>{/each}</dt>
         <dd>{s.text}</dd>

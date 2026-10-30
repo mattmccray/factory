@@ -9,6 +9,9 @@
 // Epics (docs/design/epics/design.md decision 9): each unsettled epic gets a sub-lane under its
 // project's lane, in the same six columns, holding only its jobs; its gutter says how the epic is
 // doing and what it waits on. A project's tier counts its epics' jobs and each epic waiting on you.
+// The Mac app's "Show Merged column" setting (063) can hide the Merged column: the header, every
+// lane, and every sub-lane then have the other five, and a merged job shows only in the Settled
+// sheet and a focused project's recent activity.
 import { chipRounds, isEpicSettled, isEpicTerminal, isSettled, mergedAt, roundKeys } from './board';
 import type { BoardEpic, BoardJob } from './board';
 import { epicName } from './job';
@@ -136,6 +139,9 @@ export const COLUMNS: readonly ColumnInfo[] = [
   { key: 'approve', name: 'Approve', who: 'approver' },
   { key: 'merged', name: 'Merged', who: 'last 24 hours' },
 ];
+
+/** The board's columns: all six, or the five without Merged when it is hidden. */
+export const boardColumns = (mergedHidden: boolean): readonly ColumnInfo[] => (mergedHidden ? COLUMNS.filter((c) => c.key !== 'merged') : COLUMNS);
 
 /** The column a kind sits in; settled and abandoned jobs are never on the board. */
 export function columnOf(kind: Kind): Column | null {
@@ -409,13 +415,13 @@ const newest = (a: BoardJob, b: BoardJob): number => {
   return t(b) - t(a) || a.key.localeCompare(b.key);
 };
 
-/** The cells for a set of jobs: each column's tokens (newest first, capped unless focused) and the ghosts of needs-human jobs. */
-function cellsOf(live: readonly BoardJob[], k: (b: BoardJob) => Kind, now: number, focused: boolean): Cell[] {
+/** The cells for a set of jobs: each shown column's tokens (newest first, capped unless focused) and the ghosts of needs-human jobs. */
+function cellsOf(live: readonly BoardJob[], k: (b: BoardJob) => Kind, now: number, focused: boolean, columns: readonly ColumnInfo[]): Cell[] {
   const ghosts = live
     .filter((b) => k(b) !== 'merged')
     .map(ghostOf)
     .filter((g): g is Ghost => g !== null);
-  return COLUMNS.map((c): Cell => {
+  return columns.map((c): Cell => {
     const sorted = live.filter((b) => columnOf(k(b)) === c.key).sort(newest);
     const shown = focused ? sorted : sorted.slice(0, CELL_CAP);
     return {
@@ -500,10 +506,14 @@ function laneOf(
   summary: SettledSummary,
   epics: readonly BoardEpic[],
   needs: boolean,
+  mergedHidden: boolean,
 ): Lane {
+  const columns = boardColumns(mergedHidden);
   const kinds = new Map(jobs.map((b) => [b.key, kindOf(b, now)]));
   const k = (b: BoardJob): Kind => kinds.get(b.key) ?? 'claimed';
   const isLive = (b: BoardJob): boolean => k(b) !== 'settled' && k(b) !== 'abandoned';
+  // On the lane: live, and not merged while the Merged column is hidden.
+  const onBoard = (b: BoardJob): boolean => isLive(b) && !(mergedHidden && k(b) === 'merged');
   // Its epics on the board and not settled on screen, each with a sub-lane; their jobs leave the project's cells.
   const shownEpics = epics.filter((e) => !isEpicSettled(e.epic, e.settleAfterHours, now)).sort(byStart);
   const slugs = new Set(shownEpics.map((e) => e.epic.slug));
@@ -515,12 +525,13 @@ function laneOf(
   const humanJobs = active.filter((b) => isHuman(k(b))).length;
   const human = humanJobs + shownEpics.filter((e) => hotEpic(e.epic)).length;
   const failed = active.filter((b) => k(b) === 'review-failed').length;
-  const idle = live.length === 0 && shownEpics.length === 0;
+  const idle = !live.some(onBoard) && shownEpics.length === 0;
   const working = active.length - humanJobs;
   const state: LaneState = human > 0 ? 'needs-human' : failed > 0 ? 'review-failed' : working > 0 ? 'active' : 'idle';
 
   // The gutter and the cells are the project's own jobs: those in no shown epic.
   const ownLive = live.filter((b) => !inSub(b));
+  const ownShown = ownLive.filter(onBoard);
   const ownActive = ownLive.filter((b) => k(b) !== 'merged');
   const ownHuman = ownActive.filter((b) => isHuman(k(b))).length;
   const ownFailed = ownActive.filter((b) => k(b) === 'review-failed').length;
@@ -536,13 +547,13 @@ function laneOf(
   const merges = [...jobs.filter((b) => b.job.stage === 'merged').map((b) => mergedAt(b.job)), summary.lastMergedAt === null ? 0 : time(summary.lastMergedAt)].filter((t) => t > 0);
   const lastMergeAt = merges.length > 0 ? Math.max(...merges) : null;
 
-  const cells = cellsOf(ownLive, k, now, focused);
+  const cells = cellsOf(ownShown, k, now, focused, columns);
   const subs = shownEpics.map((e): SubLane => {
     const mine = jobs.filter((b) => b.job.epic === e.epic.slug);
-    const subCells = cellsOf(mine.filter(isLive), k, now, focused);
+    const subCells = cellsOf(mine.filter(onBoard), k, now, focused, columns);
     return { key: e.key, slug: e.epic.slug, hot: hotEpic(e.epic), gutter: epicGutter(e.epic, mine, now), cells: subCells, rows: rowsOf(subCells) };
   });
-  const header = needs && ownLive.length === 0 && subs.length > 0;
+  const header = needs && ownShown.length === 0 && subs.length > 0;
   const rows = (idle && !focused) || header ? 0 : rowsOf(cells);
 
   return {
@@ -570,6 +581,8 @@ function laneOf(
  * `epics` are the board's epics: each unsettled one gets a sub-lane under its project's lane, oldest
  * start first, holding its jobs (a job whose epic isn't among them stays in the project's cells).
  * `needs` is Needs Me: a lane shown only for its sub-lanes collapses to a one-line header.
+ * `mergedHidden` drops the Merged column: every lane's and sub-lane's cells are the other five, and a
+ * lane whose only live jobs are merged is idle.
  */
 export function buildLanes(
   projects: ReadonlyArray<{ id: string; name: string }>,
@@ -579,6 +592,7 @@ export function buildLanes(
   summaries: Readonly<Record<string, SettledSummary>> = {},
   epics: readonly BoardEpic[] = [],
   needs = false,
+  mergedHidden = false,
 ): Lane[] {
   return projects.map((p, i) =>
     laneOf(
@@ -590,6 +604,7 @@ export function buildLanes(
       summaries[p.id] ?? { count: 0, lastMergedAt: null },
       epics.filter((e) => e.project.id === p.id),
       needs,
+      mergedHidden,
     ),
   );
 }
@@ -635,18 +650,22 @@ export interface Header {
 /**
  * The sticky header: the gutter's "N active · M idle", and each column's job count and role, sub-lanes
  * included; the Andon count adds each epic waiting on you. Merged's role uses the smallest settleAfterHours shown.
+ * `mergedHidden` drops the Merged column, as `buildLanes` does.
  */
-export function headerOf(lanes: readonly Lane[], settleHours: readonly number[]): Header {
+export function headerOf(lanes: readonly Lane[], settleHours: readonly number[], mergedHidden = false): Header {
   const idle = lanes.filter((l) => l.idle).length;
   const hours = settleHours.length > 0 ? Math.min(...settleHours) : 24;
-  const size = (cell: Cell | undefined): number => (cell === undefined ? 0 : cell.tokens.length + cell.more);
+  const size = (cells: readonly Cell[], key: Column): number => {
+    const cell = cells.find((x) => x.column === key);
+    return cell === undefined ? 0 : cell.tokens.length + cell.more;
+  };
   return {
     corner: `${lanes.length - idle} active · ${idle} idle`,
-    columns: COLUMNS.map((c, i) => ({
+    columns: boardColumns(mergedHidden).map((c) => ({
       ...c,
       who: c.key === 'merged' ? (hours === 1 ? 'last hour' : `last ${hours} hours`) : c.who,
       count: lanes.reduce(
-        (n, l) => n + size(l.cells[i]) + l.subs.reduce((m, sub) => m + size(sub.cells[i]) + (c.key === 'andon' && sub.hot ? 1 : 0), 0),
+        (n, l) => n + size(l.cells, c.key) + l.subs.reduce((m, sub) => m + size(sub.cells, c.key) + (c.key === 'andon' && sub.hot ? 1 : 0), 0),
         0,
       ),
     })),

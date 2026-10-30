@@ -1,16 +1,17 @@
 <script lang="ts">
-  // The Mac app's Settings window: a General section with "Show status bar", and a T3 Code section
+  // The Mac app's Settings window: a General section with "Show status bar" and "Show Merged column"
+  // (063), and a T3 Code section
   // (036) with what the needs-human box's Approve and the sheets' Copy do besides copying: "Open a
   // draft in T3 Code", "Send in T3 Code right away", or "Copy only". Without `t3` the choices are
   // grayed out and a line says T3 Code wasn't found. The settings are the Mac app's: the view reads
   // them (getSettings), asks for each change at once with no Save button (setSetting), and follows
-  // status bar changes made elsewhere (the View menu, ⌘/) through the pushed status bar event.
+  // status bar and Merged column changes made elsewhere (the View menu, ⌘/) through their pushed events.
   // settings.ts and sidebar.ts hold the logic; this only lays it out. The board's window frame
   // (sidebar, toolbar, drag regions) doesn't apply here: the window has a standard title bar.
   import { onMount } from 'svelte';
-  import { HANDOFF_CHOICES, settingsCaller, showsStatusBar } from './settings';
+  import { HANDOFF_CHOICES, settingsCaller, showsMerged, showsStatusBar } from './settings';
   import type { HandoffMode, Settings } from './settings';
-  import { STATUS_BAR_EVENT, pushSubscriber, shellMode, statusBarHidden } from './sidebar';
+  import { MERGED_EVENT, STATUS_BAR_EVENT, mergedHidden, pushSubscriber, shellMode, statusBarHidden } from './sidebar';
 
   const mode = shellMode(window.location.search);
   const host: unknown = Reflect.get(window, 'tiny');
@@ -20,20 +21,35 @@
 
   onMount(() => {
     // Subscribe first, so a change pushed while the first answer is on its way isn't lost.
-    const off = pushSubscriber(mode, host)?.(STATUS_BAR_EVENT, (data) => {
+    const subscribe = pushSubscriber(mode, host);
+    const off = subscribe?.(STATUS_BAR_EVENT, (data) => {
       const hidden = statusBarHidden(data);
       if (hidden !== null && settings !== null) settings = { ...settings, statusBarHidden: hidden };
+    });
+    const offMerged = subscribe?.(MERGED_EVENT, (data) => {
+      const hidden = mergedHidden(data);
+      if (hidden !== null && settings !== null) settings = { ...settings, mergedHidden: hidden };
     });
     void api?.get().then((s) => {
       if (s !== null) settings = s;
     });
-    return () => off?.();
+    return () => {
+      off?.();
+      offMerged?.();
+    };
   });
 
   async function onchange(e: Event & { currentTarget: HTMLInputElement }): Promise<void> {
     const show = e.currentTarget.checked;
     if (settings !== null) settings = { ...settings, statusBarHidden: !show };
     const after = await api?.setStatusBarHidden(!show);
+    if (after !== undefined && after !== null) settings = after;
+  }
+
+  async function onmerged(e: Event & { currentTarget: HTMLInputElement }): Promise<void> {
+    const show = e.currentTarget.checked;
+    if (settings !== null) settings = { ...settings, mergedHidden: !show };
+    const after = await api?.setMergedHidden(!show);
     if (after !== undefined && after !== null) settings = after;
   }
 
@@ -56,6 +72,10 @@
       <label class="set-row">
         <input type="checkbox" checked={settings !== null && showsStatusBar(settings)} disabled={settings === null} {onchange} />
         <span>Show status bar</span>
+      </label>
+      <label class="set-row">
+        <input type="checkbox" checked={settings !== null && showsMerged(settings)} disabled={settings === null} onchange={onmerged} />
+        <span>Show Merged column</span>
       </label>
     </div>
   </section>

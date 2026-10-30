@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { SETTINGS_WINDOW_ID, STATUS_BAR_KEY } from './appmenu';
-import { DEFAULT_HANDOFF_MODE, GET_SETTINGS_METHOD, HANDOFF_MODES, SETTING_KEYS, SET_SETTING_METHOD, T3_HANDOFF_KEY, fromSettingsWindow, settingChange, settingsSnapshot, storedMode } from './settings';
+import { DEFAULT_HANDOFF_MODE, GET_SETTINGS_METHOD, HANDOFF_MODES, SETTING_KEYS, SET_SETTING_METHOD, T3_HANDOFF_KEY, VIEW_STATE_METHOD, fromSettingsWindow, settingChange, settingsSnapshot, storedMode, viewStateParams } from './settings';
 
 describe('035 AC3: the settings keys and the snapshot', () => {
-  test('two keys: statusBarHidden, the same name as the status bar store key, and t3Handoff (036)', () => {
-    expect(SETTING_KEYS).toEqual(['statusBarHidden', 't3Handoff']);
+  test('three keys: statusBarHidden, the same name as the status bar store key, t3Handoff (036), and mergedHidden (063)', () => {
+    expect(SETTING_KEYS).toEqual(['statusBarHidden', 't3Handoff', 'mergedHidden']);
     expect(T3_HANDOFF_KEY).toBe('t3Handoff');
     expect(STATUS_BAR_KEY).toBe('statusBarHidden');
     expect(GET_SETTINGS_METHOD).toBe('getSettings');
@@ -12,9 +12,9 @@ describe('035 AC3: the settings keys and the snapshot', () => {
   });
 
   test('the snapshot: exactly true is hidden; missing or anything else is shown', () => {
-    expect(settingsSnapshot({ statusBarHidden: true }, false)).toEqual({ statusBarHidden: true, t3Handoff: 'draft', t3Found: false });
+    expect(settingsSnapshot({ statusBarHidden: true }, false)).toEqual({ statusBarHidden: true, t3Handoff: 'draft', mergedHidden: false, t3Found: false });
     for (const v of [false, null, undefined, 'true', 1, {}, []]) expect({ v, s: settingsSnapshot({ statusBarHidden: v }, false).statusBarHidden }).toEqual({ v, s: false });
-    expect(settingsSnapshot({}, false)).toEqual({ statusBarHidden: false, t3Handoff: 'draft', t3Found: false });
+    expect(settingsSnapshot({}, false)).toEqual({ statusBarHidden: false, t3Handoff: 'draft', mergedHidden: false, t3Found: false });
   });
 });
 
@@ -22,9 +22,9 @@ describe('036 AC5: the T3 Code setting in the snapshot', () => {
   test('a stored draft, send, or copy is kept; anything else (or nothing) is draft; t3Found is passed through', () => {
     expect(HANDOFF_MODES).toEqual(['draft', 'send', 'copy']);
     expect(DEFAULT_HANDOFF_MODE).toBe('draft');
-    for (const m of HANDOFF_MODES) expect(settingsSnapshot({ t3Handoff: m }, true)).toEqual({ statusBarHidden: false, t3Handoff: m, t3Found: true });
+    for (const m of HANDOFF_MODES) expect(settingsSnapshot({ t3Handoff: m }, true)).toEqual({ statusBarHidden: false, t3Handoff: m, mergedHidden: false, t3Found: true });
     for (const v of [null, undefined, '', 'Draft', 'SEND', 'auto', 1, true, {}, ['send']]) expect({ v, m: storedMode(v) }).toEqual({ v, m: 'draft' });
-    expect(settingsSnapshot({ statusBarHidden: true, t3Handoff: 'nope' }, true)).toEqual({ statusBarHidden: true, t3Handoff: 'draft', t3Found: true });
+    expect(settingsSnapshot({ statusBarHidden: true, t3Handoff: 'nope' }, true)).toEqual({ statusBarHidden: true, t3Handoff: 'draft', mergedHidden: false, t3Found: true });
   });
 
   test('a t3Handoff change is accepted only for draft, send, or copy', () => {
@@ -74,5 +74,67 @@ describe('035 AC2: only the Settings window is answered', () => {
     for (const meta of [{ window: 'main' }, { window: 'Settings' }, { window: '' }, {}, null, undefined, 'settings', { window: ['settings'] }]) {
       expect({ meta, ok: fromSettingsWindow(meta) }).toEqual({ meta, ok: false });
     }
+  });
+});
+
+describe('063 AC2: the Merged column setting', () => {
+  test('the snapshot: exactly true is hidden; missing or anything else is shown', () => {
+    expect(settingsSnapshot({ mergedHidden: true }, false)).toEqual({ statusBarHidden: false, t3Handoff: 'draft', mergedHidden: true, t3Found: false });
+    for (const v of [false, null, undefined, 'true', 1, 0, {}, [], { hidden: true }]) expect({ v, m: settingsSnapshot({ mergedHidden: v }, false).mergedHidden }).toEqual({ v, m: false });
+    expect(settingsSnapshot({}, true).mergedHidden).toBe(false);
+  });
+
+  test('a mergedHidden change is accepted only with a boolean value and nothing else', () => {
+    expect(settingChange({ key: 'mergedHidden', value: true })).toEqual({ key: 'mergedHidden', value: true });
+    expect(settingChange({ key: 'mergedHidden', value: false })).toEqual({ key: 'mergedHidden', value: false });
+    const bad: unknown[] = [
+      { key: 'mergedHidden', value: 'true' },
+      { key: 'mergedHidden', value: 1 },
+      { key: 'mergedHidden', value: null },
+      { key: 'mergedHidden' },
+      { key: 'mergedHidden', value: true, extra: 1 },
+      { key: 'MergedHidden', value: true },
+      { key: 'merged', value: true },
+      { key: 'mergedShown', value: true },
+    ];
+    for (const p of bad) expect({ p, change: settingChange(p) }).toEqual({ p, change: null });
+  });
+});
+
+describe('063 AC6: the view-state params', () => {
+  test('the method is setViewState', () => {
+    expect(VIEW_STATE_METHOD).toBe('setViewState');
+  });
+
+  test('exactly the three booleans are accepted', () => {
+    for (const needsMe of [false, true]) {
+      for (const sidebarShown of [false, true]) {
+        for (const inspectorOpen of [false, true]) expect(viewStateParams({ needsMe, sidebarShown, inspectorOpen })).toEqual({ needsMe, sidebarShown, inspectorOpen });
+      }
+    }
+  });
+
+  test('anything else is refused: malformed, a key missing or extra, or a value not a boolean', () => {
+    const ok = { needsMe: true, sidebarShown: false, inspectorOpen: true };
+    const bad: unknown[] = [
+      null,
+      undefined,
+      true,
+      'needsMe',
+      [],
+      [true, false, true],
+      {},
+      { needsMe: true, sidebarShown: false },
+      { needsMe: true, inspectorOpen: true },
+      { sidebarShown: true, inspectorOpen: true },
+      { ...ok, extra: 1 },
+      { ...ok, window: 'main' },
+      { ...ok, needsMe: 'true' },
+      { ...ok, sidebarShown: 1 },
+      { ...ok, inspectorOpen: null },
+      { needsMe: true, sidebarShown: false, inspector: true },
+      { needs: true, sidebarShown: false, inspectorOpen: true },
+    ];
+    for (const p of bad) expect({ p, v: viewStateParams(p) }).toEqual({ p, v: null });
   });
 });
