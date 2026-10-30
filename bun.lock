@@ -11,11 +11,11 @@
     },
     "apps/andon": {
       "name": "@factory/andon",
-      "version": "0.0.0",
+      "version": "0.1.0",
     },
     "apps/andon-ui": {
       "name": "@factory/andon-ui",
-      "version": "0.0.0",
+      "version": "0.1.0",
       "devDependencies": {
         "@factory/contract": "workspace:*",
         "@sveltejs/vite-plugin-svelte": "^7.3.1",
@@ -26,7 +26,7 @@
     },
     "packages/andon-service": {
       "name": "@factory/andon-service",
-      "version": "0.0.0",
+      "version": "0.1.0",
       "bin": {
         "andon-service": "src/main.ts",
       },
@@ -36,18 +36,19 @@
     },
     "packages/cli": {
       "name": "@factory/cli",
-      "version": "0.0.0",
+      "version": "0.1.0",
       "bin": {
         "factory": "src/main.ts",
       },
       "dependencies": {
+        "@factory/andon-service": "workspace:*",
         "@factory/contract": "workspace:*",
         "@factory/templates": "workspace:*",
       },
     },
     "packages/contract": {
       "name": "@factory/contract",
-      "version": "0.0.0",
+      "version": "0.1.0",
     },
     "packages/templates": {
       "name": "@factory/templates",

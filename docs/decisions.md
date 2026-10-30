@@ -35,6 +35,12 @@ contract is `docs/contract/v1.md`.
 6. **Personal now, publishable later.** Keep the contract and the boundary between managed
    files and overlay clean enough that publishing never needs a rewrite. Don't spend effort on
    public polish yet.
+   - Amended 2026-10-30 (approved by Matt; brief `factory/briefs/cli-global-install.md`):
+     installable from GitHub on Matt's own machines (macOS and Linux) is in scope:
+     `bun add -g github:mattmccray/factory#release` installs the release bundle (decision 14).
+     Public publishing stays deferred: no npm registry, no name-collision work, no docs site, no
+     public polish. The bundle is shaped like a package (a `package.json` with `bin: factory`),
+     so an npm publish later is only a publish.
 7. **Names:**
    - "factory" is the contract identifier: `/factory`, a `factory/` folder in each project,
      a `factory` CLI, and `schema: "factory/v1"`;
@@ -77,12 +83,20 @@ contract is `docs/contract/v1.md`.
     - The Andon UI is a Svelte web app that connects to one or more services. Supporting
       multiple machines later just means adding more service URLs.
     - Andon, the Mac app, is a thin **Tiny JS** wrapper (https://tinyjs.app) around the UI. It
-      starts the local service if needed and adds a tray badge with the needs-human count, plus
-      native notifications on escalate and merge.
+      starts the local service if needed (amended 2026-10-30, below: it no longer does) and adds
+      a tray badge with the needs-human count, plus native notifications on escalate and merge.
     - The Mac app must stay thin enough to swap out. Tiny JS moves fast and has had breaking
       changes, and its backend is txiki.js, not Node, so the contract code must not run there.
     - Registration: `factory init` registers a project with the local service. (Adding or
       removing projects from Andon itself is deferred.)
+    - Amended 2026-10-30 (approved by Matt; brief `factory/briefs/andon-service-install.md`):
+      the OS service manager is the Andon service's only owner. `factory service install` makes
+      it a per-user launchd LaunchAgent (`dev.factory.andon`, macOS) or systemd `--user` unit
+      (`andon.service`, Linux), with no `sudo`, started at login and restarted after a crash,
+      running the installing `factory`'s `service run`. The Mac app no longer starts the service
+      (or stops it on quit): when its probe finds none, it shows a notice naming
+      `factory service install`. One owner, so an app-spawned copy and a launchd copy never race
+      for the port, and a Linux box with no Mac app works the same way.
 11. **The factory builds itself.**
     - This repo was seeded by hand once (2026-10-22) with a vendored v0 copy of Minerva's
       factory. Everything since goes through `/factory`.
@@ -151,6 +165,20 @@ contract is `docs/contract/v1.md`.
       and section and changes nothing. A non-Conventional first-parent subject is skipped and
       named. It commits `chore(release): vX.Y.Z`, tags `vX.Y.Z` annotated (`factory vX.Y.Z`),
       and never pushes or runs `factory upgrade`.
+    - Amended 2026-10-30 (approved by Matt; brief `factory/briefs/cli-global-install.md`):
+      `bun run release` also builds the self-contained release bundle (`scripts/bundle.ts`: the
+      CLI with the rendered installed CLI and the contract built in, the Andon service, the built
+      Andon UI, `CHANGELOG.md`, and a `package.json` with `bin: factory`), from the tree it is
+      about to commit and before it writes anything, so a failed build writes nothing: no
+      commit, no tag, no `release` change, and a version never exists without its bundle. After
+      the `vX.Y.Z` tag, it commits the bundle onto the `release` branch with git plumbing (never
+      moving the checkout), each commit naming the `main` commit it was built from, and tags it
+      `release-vX.Y.Z` (annotated). The branch and tags stay out of the `factory/` namespace,
+      and no tag has a `/`. `bun run release:push` (`scripts/release-push.ts`), run by Matt as
+      promotion's last step after the `chore(factory): promote …` commit, pushes `main`,
+      `release`, `vX.Y.Z`, and `release-vX.Y.Z` to `origin` in one `git push --atomic`, never
+      forced and never a `factory/*` ref, and prints the install line; `bun run release`
+      itself still never pushes.
 
 ## Invariants
 

@@ -4,7 +4,7 @@
 // `app.thumbnail` (the Open in apps' icons), the
 // `app.win.open` and `app.windows` (the Settings window), the `onTray`, `onMenu`, `onNavigate`, and
 // `onContextMenu` hooks, and the five custom `api` methods, and to
-// txiki's `tjs.spawn`, `tjs.stat`, and `tjs.remove` (for the service, for curl: see curl.ts, for a project's
+// txiki's `tjs.spawn`, `tjs.stat`, and `tjs.remove` (for curl: see curl.ts, for a project's
 // right-click menu: see projectmenu.ts, for a job's: see jobmenu.ts, and for the T3 Code hand-off:
 // see handoff.ts). `bun run
 // andon:build` bundles it into build/backend.js, the plain-JS entry tinyjs.json names.
@@ -20,8 +20,7 @@
 /// <reference path="../types/tjs.d.ts" />
 import { QUIT_ID, SHOW_ID, trayNotice } from './badge';
 import type { TraySpec } from './badge';
-import { serviceCommand, serviceUrl, DEFAULT_PORT, ensureService, pageUrl, probeService, resolvePort } from './autostart';
-import type { Service, Child } from './autostart';
+import { serviceUrl, DEFAULT_PORT, INSTALL_NOTICE, pageUrl, probeService, resolvePort, waitForService } from './autostart';
 import { curlArgv, responseFromCurl } from './curl';
 import { getJson, reason as errorReason } from './http';
 import type { Http } from './http';
@@ -76,13 +75,12 @@ type TinyAppIsMacApp = Holds<TinyApp extends MacApp ? true : false>;
 /** Compile-time proof that the Settings window's options are options Tiny's `win.open` takes. */
 type SettingsOptionsOpen = Holds<SettingsWindowOptions extends TinyOpenWindowOptions ? true : false>;
 
-// Fixed at build time by build.ts (`Bun.build` `define`).
+// Fixed at build time by build.ts (`Bun.build` `define`): the repo the lantern images are read from.
 declare const __ANDON_REPO__: string;
-declare const __ANDON_BUN__: string;
 
 // ---- the lantern images ----
 // By absolute path under the repo: Tiny doesn't ship `assets/` as runtime data, and the repo path
-// is fixed at build time (the same one the service is started from), so it works in `tinyjs dev`
+// is fixed at build time, so it works in `tinyjs dev`
 // and in a built app alike.
 
 export const assetPath = (repo: string, file: string): string => `${repo.replace(/\/+$/, '')}/apps/andon/assets/${file}`;
@@ -101,7 +99,7 @@ export function setDock(app: MacApp, repo: string, look: DockLook): void {
 export const setTray = (app: MacApp, repo: string, spec: TraySpec, running: boolean): void =>
   app.tray.set({ ...spec, icon: trayIcon(repo, running), template: true });
 
-/** No board to show (the service hasn't answered, or never will): the idle look, no badge, and the notice. */
+/** No board to show (the service hasn't answered yet, or isn't installed): the idle look, no badge, and the notice. */
 function showNotice(app: MacApp, repo: string, text: string): void {
   setTray(app, repo, trayNotice(text), false);
   setDock(app, repo, 'idle');
@@ -135,24 +133,6 @@ function curlHttp(base: string): Http {
   };
 }
 
-function spawnChild(argv: string[], env: Record<string, string>): Child {
-  const p = tjs.spawn(argv, { env: { ...tjs.env, ...env }, stdin: 'ignore', stdout: 'inherit', stderr: 'inherit' });
-  let exited = false;
-  void p.wait().then(() => {
-    exited = true;
-  });
-  return {
-    stop() {
-      if (exited) return;
-      try {
-        p.kill('SIGTERM'); // the service's own handler stops its watchers and exits
-      } catch {
-        // already gone
-      }
-    },
-  };
-}
-
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** The script that reloads the main window onto the service's page, in Mac-app mode. */
@@ -161,8 +141,9 @@ export const reloadScript = (port: number): string => `location.replace(${JSON.s
 // ---- lifecycle ----
 
 let andon: App | null = null;
-let service: Service | null = null;
 let quitting = false;
+/** Bumped by every init, so a probe loop from an earlier lifecycle stops. */
+let lifecycle = 0;
 /** The service's port, as init resolved it: the Settings window loads its page from there. */
 let servicePort = DEFAULT_PORT;
 /** The service's GET, as init built it: the job menu fetches a project's board through it. */
@@ -208,16 +189,16 @@ async function toggleStatusBar(app: MacApp): Promise<void> {
   return setStatusBar(app, !statusBarHidden);
 }
 
+/** Quitting stops the app's own work (its stream and its probing), never the service: the OS service manager owns that. */
 function stopAll(): void {
   quitting = true;
   andon?.stop();
   andon = null;
-  service?.stop(); // a no-op for a service the Mac app found already running
-  service = null;
 }
 
 export function init(app: MacApp): void {
   quitting = false; // a fresh lifecycle (Tiny calls init once; tests call it after a Quit)
+  const mine = ++lifecycle;
   const port = resolvePort(tjs.env);
   servicePort = port;
   const url = serviceUrl(port);
@@ -228,28 +209,27 @@ export function init(app: MacApp): void {
   void refreshApps(app); // warm the menu's app check, so the first right-click has it
   resetIcons();
   void lookupIcons(app, OPEN_IN_APPS); // the Open in icons, in the background: the menu never waits on them
-  showNotice(app, repo, 'starting the service');
+  showNotice(app, repo, 'connecting to the Andon service');
   app.setHideOnClose(true);
-  // ⌘Q skips onTray: stop our service before Tiny exits (kill is synchronous).
+  // ⌘Q skips onTray: stop the app's own work before Tiny exits.
   void app.done?.then(stopAll, stopAll);
 
   void (async () => {
-    service = await ensureService({
+    // The Mac app starts no service: with none answering, it shows the install notice and probes
+    // until one does (after `factory service install`, or `factory service start`).
+    const found = await waitForService({
       probe: () => probeService(http),
-      spawn: spawnChild,
       sleep,
-      command: serviceCommand(__ANDON_REPO__, __ANDON_BUN__),
-      port,
+      cancelled: () => quitting || mine !== lifecycle,
+      missing: () => {
+        console.log(`andon: ${INSTALL_NOTICE}`);
+        showNotice(app, repo, INSTALL_NOTICE);
+      },
     });
-    if (quitting) return stopAll();
-    if (!service.ok) {
-      console.log(`andon: ${service.reason}`);
-      showNotice(app, repo, service.reason);
-      return;
-    }
+    if (!found.answered || quitting || mine !== lifecycle) return;
     // The window loaded tinyjs.json's URL before the service answered (or on another port): load it
     // now, keeping `?shell=mac` so the page keeps its Mac frame.
-    if (service.started || port !== DEFAULT_PORT) app.window('main').eval(reloadScript(port));
+    if (found.waited || port !== DEFAULT_PORT) app.window('main').eval(reloadScript(port));
     andon = startApp({
       http,
       tray: (spec, running) => setTray(app, repo, spec, running),

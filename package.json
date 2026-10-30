@@ -13,11 +13,11 @@
     "cli:link": "cd packages/cli && bun link",
     "andon": "bun run --cwd apps/andon dev",
     "andon:build": "bun run andon:ui:build && bun run --cwd apps/andon build",
-    "andon:service": "bun packages/andon-service/src/main.ts",
     "andon:ui:build": "bun run --cwd apps/andon-ui build",
     "andon:ui:dev": "bun run --cwd apps/andon-ui dev",
     "factory:event": "bun factory/cli.ts event",
-    "release": "bun scripts/release.ts"
+    "release": "bun scripts/release.ts",
+    "release:push": "bun scripts/release-push.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

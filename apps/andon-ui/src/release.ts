@@ -143,8 +143,8 @@ export const whatsNewTitle = (version: string): string => `What's new in v${vers
 
 // ---- the commands Andon copies (never runs) ----
 
-/** The command that restarts the Andon service, from the factory repo. */
-export const RESTART_COMMAND = 'bun run andon:service';
+/** The command that restarts the Andon service (`factory service install` made it an OS service). */
+export const RESTART_COMMAND = 'factory service restart';
 
 /** A path as one POSIX shell word: single-quoted, with each `'` written `'\''`. */
 export const shellQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
@@ -157,7 +157,7 @@ export const RESTART_NOTE = 'Restart service';
 
 /** The restart note's hover text and accessible name: its visible text, both releases, and the command it copies. */
 export const restartText = (running: string | null, onDisk: string): string =>
-  `${RESTART_NOTE}: the Andon service runs factory ${running === null ? 'an unknown release' : `v${running}`}, and its clone now has v${onDisk}. Copy the command to restart it: ${RESTART_COMMAND}`;
+  `${RESTART_NOTE}: the Andon service runs factory ${running === null ? 'an unknown release' : `v${running}`}, and v${onDisk} is now on disk. Copy the command to restart it: ${RESTART_COMMAND}`;
 
 // ---- the What's New sheet ----
 

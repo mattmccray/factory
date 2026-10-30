@@ -111,10 +111,11 @@ describe('hover text and labels (AC1, AC2)', () => {
 
   test("the footer version's hover text, and the restart note naming both releases and the command", () => {
     expect(whatsNewTitle('0.2.0')).toBe("What's new in v0.2.0");
-    expect(RESTART_COMMAND).toBe('bun run andon:service');
+    expect(RESTART_COMMAND).toBe('factory service restart');
     const t = restartText('0.2.0', '0.3.0');
     expect(t).toStartWith('Restart service');
-    for (const part of ['v0.2.0', 'v0.3.0', 'bun run andon:service']) expect(t).toContain(part);
+    for (const part of ['v0.2.0', 'v0.3.0', 'factory service restart']) expect(t).toContain(part);
+    expect(t).not.toContain('andon:service');
     expect(restartText(null, '0.3.0')).toContain('an unknown release');
   });
 });
