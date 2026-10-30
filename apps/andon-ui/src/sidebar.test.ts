@@ -6,7 +6,7 @@ import { HOUR, NOW, before, job, projectRelease, releaseBody, tag } from './fixt
 import { kindOf } from './lanes';
 import type { Status } from './live';
 import { ALL, SELECTION_KEY, boardJobs, hotEpics, loadSelection, resolveSelection, saveSelection } from './projects';
-import { INSPECTOR_EVENT, LEGEND, MAC_INSET, MENU_EVENTS, MERGED_EVENT, NEEDS_ME_EVENT, PUSHED_EVENTS, SETTLED_EVENT, SIDEBAR_EVENT, STATUS_BAR_EVENT, VIEW_STATE_METHOD, WHATS_NEW_EVENT, footer, footerLine, footerRelease, frame, isActive, projectStatus, pushSubscriber, reviewFailed, settleHours, settleText, shellMode, sidebarModel, statusBarHidden, mergedHidden, menuEventAction, viewStateCaller, subtitle, subtitleText, title } from './sidebar';
+import { BACKLOG_EVENT, INSPECTOR_EVENT, LEGEND, MAC_INSET, MENU_EVENTS, MERGED_EVENT, NEEDS_ME_EVENT, PUSHED_EVENTS, SETTLED_EVENT, SIDEBAR_EVENT, STATUS_BAR_EVENT, VIEW_STATE_METHOD, WHATS_NEW_EVENT, footer, footerLine, footerRelease, frame, isActive, projectStatus, pushSubscriber, reviewFailed, settleHours, settleText, shellMode, sidebarModel, statusBarHidden, mergedHidden, menuEventAction, viewStateCaller, subtitle, subtitleText, title } from './sidebar';
 import { applyEvent, emptyState } from './state';
 import type { UiState } from './state';
 
@@ -535,10 +535,12 @@ describe("the Mac app's What's New event (059 AC8)", () => {
 describe("063: the Mac app's View menu events", () => {
   test('AC4: the event names, and each page event maps to its action; anything else does nothing', () => {
     expect([MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, INSPECTOR_EVENT]).toEqual(['merged', 'needsme', 'settled', 'sidebar', 'inspector']);
-    expect(PUSHED_EVENTS).toEqual(['statusbar', 'whatsnew', 'merged', 'needsme', 'settled', 'sidebar', 'inspector']);
-    expect(MENU_EVENTS).toEqual(['needsme', 'settled', 'sidebar', 'inspector']);
-    expect(MENU_EVENTS.map(menuEventAction)).toEqual(['toggle-needs', 'open-settled', 'toggle-sidebar', 'toggle-inspector']);
-    for (const e of ['statusbar', 'whatsnew', 'merged', 'NEEDSME', 'needs-me', '', 'settle']) expect({ e, a: menuEventAction(e) }).toEqual({ e, a: null });
+    // 067 AC7: Show Backlog…'s `backlog` event, right after Settled's
+    expect(BACKLOG_EVENT).toBe('backlog');
+    expect(PUSHED_EVENTS).toEqual(['statusbar', 'whatsnew', 'merged', 'needsme', 'settled', 'backlog', 'sidebar', 'inspector']);
+    expect(MENU_EVENTS).toEqual(['needsme', 'settled', 'backlog', 'sidebar', 'inspector']);
+    expect(MENU_EVENTS.map(menuEventAction)).toEqual(['toggle-needs', 'open-settled', 'open-backlog', 'toggle-sidebar', 'toggle-inspector']);
+    for (const e of ['statusbar', 'whatsnew', 'merged', 'NEEDSME', 'needs-me', '', 'settle', 'Backlog', 'backlogs']) expect({ e, a: menuEventAction(e) }).toEqual({ e, a: null });
   });
 
   test('AC3: the Merged event: hidden true hides, false shows, a malformed payload changes nothing', () => {
@@ -549,13 +551,14 @@ describe("063: the Mac app's View menu events", () => {
 
   test('AC4: App.svelte subscribes to each page event and acts on it', () => {
     const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
-    for (const name of ['NEEDS_ME_EVENT', 'SETTLED_EVENT', 'SIDEBAR_EVENT', 'INSPECTOR_EVENT']) expect(app).toContain(`subscribe?.(${name}, () => onmenu(${name}));`);
+    for (const name of ['NEEDS_ME_EVENT', 'SETTLED_EVENT', 'BACKLOG_EVENT', 'SIDEBAR_EVENT', 'INSPECTOR_EVENT']) expect(app).toContain(`subscribe?.(${name}, () => onmenu(${name}));`);
     expect(app).toMatch(/case 'toggle-needs':\s*needs = !needs;/);
     expect(app).toMatch(/case 'open-settled':\s*openSettled\(null\);/);
+    expect(app).toMatch(/case 'open-backlog':\s*openBacklog\(null\);/); // 067 AC7
     expect(app).toMatch(/case 'toggle-sidebar':\s*toggleSide\(\);/);
     expect(app).toMatch(/case 'toggle-inspector':\s*toggleInspector\(\);/);
     expect(app).toContain('if (hidden !== null) mergedOff = hidden;');
-    expect(app).toContain('buildLanes(shownProjects, jobs, now, focused, summaries, epics, needs, mergedOff)');
+    expect(app).toContain('buildLanes(shownProjects, jobs, now, focused, summaries, epics, needs, mergedOff, backlogCounts)');
     expect(app).toContain('headerOf(lines.lanes, settleHours(ui, sel), mergedOff)');
   });
 });

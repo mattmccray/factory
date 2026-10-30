@@ -11,8 +11,13 @@
   // progress bar by member state, the Members in plan order and the Generated sync and fix jobs
   // (each linking to its job), the red box with `/factory epic <slug>` to copy when it waits on you,
   // an Abandon… sheet, and the plan and member briefs as documents (the epic docs endpoint).
+  // A brief's or plan's page (brief andon-backlog-ui; `page` instead of `item` and `epic`) shows its
+  // text from `GET …/briefs/<slug>` or `GET …/plans/<slug>`, rendered as job files are; a plan's
+  // page lists its `## Members` with each member brief's `- Status:` (a member row opens its brief).
   import { tick, untrack } from 'svelte';
-  import { fetchDocs, fetchEpicDocs } from './api';
+  import { fetchBrief, fetchDocs, fetchEpicDocs, fetchPage } from './api';
+  import { docKey, docPage, planMembers } from './backlog';
+  import type { DocRef, DocText } from './backlog';
   import type { DocFile, Fetcher } from './api';
   import { isEpicTerminal } from './board';
   import type { BoardEpic, BoardJob } from './board';
@@ -30,6 +35,8 @@
     item: BoardJob | null; // the open job; null: an epic, or "Nothing selected"
     epic: BoardEpic | null; // the open epic (when `item` is null)
     epicJobs: BoardJob[]; // the open epic's jobs, for its Members and Generated rows
+    page: DocRef | null; // a brief's or plan's page (when `item` and `epic` are null)
+    pageProject: string; // its project's name
     open: boolean;
     width: number;
     now: number;
@@ -43,10 +50,11 @@
     onsheet: (kind: SheetKind) => void;
     onopenjob: (key: string) => void; // a member's job link
     onopenepic: (key: string) => void; // a job's link to its epic
+    onopenpage: (ref: DocRef) => void; // a plan member's brief
   }
-  let { item, epic, epicJobs, open, width, now, fetcher, file, onfile, onclose, onresize, oncopy, onhandoff, onsheet, onopenjob, onopenepic }: Props = $props();
+  let { item, epic, epicJobs, page: docRef, pageProject, onopenpage, open, width, now, fetcher, file, onfile, onclose, onresize, oncopy, onhandoff, onsheet, onopenjob, onopenepic }: Props = $props();
 
-  const key = $derived(item !== null ? item.key : epic !== null ? `epic:${epic.key}` : null);
+  const key = $derived(item !== null ? item.key : epic !== null ? `epic:${epic.key}` : docRef !== null ? docKey(docRef) : null);
   const updated = $derived(item !== null ? item.job.updated : (epic?.epic.updated ?? null));
 
   let files = $state<DocFile[]>([]);
@@ -80,6 +88,31 @@
       live = false;
     };
   });
+
+  // A brief's or plan's page: its text, then (a plan) each member's brief, read once per page opened.
+  let docText = $state.raw<DocText | null>(null);
+  let memberBriefs = $state.raw<ReadonlyMap<string, DocText>>(new Map());
+  $effect(() => {
+    const ref = docRef;
+    docText = null;
+    memberBriefs = new Map();
+    if (ref === null) return;
+    let live = true;
+    void fetchPage(fetcher, ref).then((d) => {
+      if (!live) return;
+      docText = d;
+      if (ref.kind !== 'plan' || d.state !== 'ok') return;
+      for (const slug of planMembers(d.text)) {
+        void fetchBrief(fetcher, ref.project, slug).then((b) => {
+          if (live) memberBriefs = new Map([...memberBriefs, [slug, b]]);
+        });
+      }
+    });
+    return () => {
+      live = false;
+    };
+  });
+  const doc = $derived(item === null && epic === null && docRef !== null ? docPage(docRef, pageProject, docText, memberBriefs) : null);
 
   // Opening a job or an epic moves focus into the inspector (so ↑ and ↓ work at once); closing it
   // returns focus to where it was.
@@ -265,6 +298,44 @@
         </section>
         {@render fileList('Epic documents')}
         <div class="doc">{@render documentView()}</div>
+      </div>
+    {:else if doc !== null}
+      <div class="ins-bar">
+        <span class="lbl">{doc.project} / {doc.ref.kind} / {doc.ref.slug}</span>
+        <button class="xbtn" type="button" bind:this={closeBtn} onclick={onclose} aria-label="Close the inspector" title="Close (esc)"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg></button>
+      </div>
+      <div class="ins-scroll">
+        <div class="ins-head">
+          <div class="crumbs"><span>{doc.project}</span><span aria-hidden="true">·</span><span class="stage-pill sp-doc">{doc.kindLabel}</span>{#if doc.status !== null}<span class="stage-pill sp-doc-status">{doc.status}</span>{/if}</div>
+          <h2 id="ins-title">{doc.title}</h2>
+          <div class="branch" title="relative to factory/">{doc.path}</div>
+        </div>
+        {#if doc.members !== null}
+          <section class="members" aria-label="Members">
+            <h3><span>Members</span><span>plan order</span></h3>
+            {#if doc.members.length === 0}<div class="empty">No members parse.</div>{/if}
+            <ul>
+              {#each doc.members as m (m.slug)}
+                <li>
+                  <button class="mem pmem" type="button" aria-haspopup="dialog" title="Open the brief {m.slug}" onclick={() => onopenpage(m.page)}>
+                    <span class="mi">{m.n}</span>
+                    <span class="mt">{m.slug}</span>
+                    <span class="mr"><span class="mst bs-{m.tone}">{m.status}</span></span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
+        <div class="doc">
+          <div class="md">
+            {#if doc.html !== null}
+              {@html doc.html}
+            {:else}
+              <p class="empty" class:fail={doc.note !== 'Loading…'}>{doc.note}</p>
+            {/if}
+          </div>
+        </div>
       </div>
     {:else if item === null || job === null}
       <div class="ins-bar"><span class="lbl">Inspector</span><button class="xbtn" type="button" onclick={onclose} aria-label="Close the inspector" title="Close (esc)"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg></button></div>

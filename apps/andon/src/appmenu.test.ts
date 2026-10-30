@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  BACKLOG_EVENT,
+  BACKLOG_ID,
+  BACKLOG_LABEL,
   DEFAULT_VIEW,
   GITHUB_ID,
   INSPECTOR_EVENT,
@@ -53,6 +56,7 @@ const ms = (over: Partial<Omit<MenuState, 'view'>> = {}, view: Partial<ViewState
 const viewItems = (needs: string, sidebar: string, inspector: string, bar: string, merged: string): MenuItem[] => [
   { id: NEEDS_ME_ID, label: needs, key: 'N' },
   { id: SETTLED_ID, label: 'Show Settled…', key: 'S' },
+  { id: BACKLOG_ID, label: 'Show Backlog…', key: 'B' }, // 067 AC7: right after Show Settled…
   { separator: true },
   { id: SIDEBAR_ID, label: sidebar, key: 'ctrl+s' },
   { id: INSPECTOR_ID, label: inspector, key: 'alt+i' },
@@ -88,7 +92,7 @@ describe('AC1: the menu spec', () => {
     const ids = items.map((i) => i.id);
     expect(ids.every((id) => typeof id === 'string' && id.length > 0)).toBe(true);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).toHaveLength(12);
+    expect(ids).toHaveLength(13); // 067: Show Backlog…
   });
 });
 
@@ -185,11 +189,12 @@ describe('063 AC1: the View menu', () => {
     }
   });
 
-  test('the shortcuts: ⇧⌘N, ⇧⌘S, ⌃⌘S, ⌥⌘I, ⌘/, and none for the Merged item', () => {
+  test('the shortcuts: ⇧⌘N, ⇧⌘S, ⇧⌘B, ⌃⌘S, ⌥⌘I, ⌘/, and none for the Merged item', () => {
     const keys = (viewOf(ms()) ?? []).filter((i) => i.separator !== true).map((i) => [i.id, i.key]);
     expect(keys).toEqual([
       [NEEDS_ME_ID, 'N'],
       [SETTLED_ID, 'S'],
+      [BACKLOG_ID, 'B'],
       [SIDEBAR_ID, 'ctrl+s'],
       [INSPECTOR_ID, 'alt+i'],
       [STATUS_BAR_ID, '/'],
@@ -206,6 +211,8 @@ describe('063 AC1: the View menu', () => {
     expect(menuAction(MERGED_ID)).toEqual({ kind: 'toggle-merged' });
     expect(menuAction(NEEDS_ME_ID)).toEqual({ kind: 'page', event: NEEDS_ME_EVENT, show: false });
     expect(menuAction(SETTLED_ID)).toEqual({ kind: 'page', event: SETTLED_EVENT, show: true });
+    expect(menuAction(BACKLOG_ID)).toEqual({ kind: 'page', event: BACKLOG_EVENT, show: true }); // 067 AC7: shows the board, as Settled does
+    expect([BACKLOG_ID, BACKLOG_EVENT, BACKLOG_LABEL]).toEqual(['backlog', 'backlog', 'Show Backlog…']);
     expect(menuAction(SIDEBAR_ID)).toEqual({ kind: 'page', event: SIDEBAR_EVENT, show: false });
     expect(menuAction(INSPECTOR_ID)).toEqual({ kind: 'page', event: INSPECTOR_EVENT, show: false });
     expect([NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, INSPECTOR_EVENT, MERGED_EVENT]).toEqual(['needsme', 'settled', 'sidebar', 'inspector', 'merged']);

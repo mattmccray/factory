@@ -1,7 +1,9 @@
 // Reads from the Andon service. The fetch function is passed in, so tests can fake the service.
+import { isSlug, toDocText } from './backlog';
+import type { DocRef, DocText } from './backlog';
 import type { BoardJob } from './board';
 import { isRecord } from './job';
-import { RELEASE_PATH, boardPath, docsPath, epicDocsPath, settledPath } from './projects';
+import { RELEASE_PATH, backlogPath, boardPath, briefPath, docsPath, epicDocsPath, planPath, settledPath } from './projects';
 
 export interface FetchResponse {
   ok: boolean;
@@ -57,3 +59,30 @@ export const fetchDocs = async (fetcher: Fetcher, b: Pick<BoardJob, 'project' | 
 
 /** An epic's docs (its plan, then its members' briefs), from its own project's `/projects/<pid>/epics/<slug>/docs`. */
 export const fetchEpicDocs = async (fetcher: Fetcher, pid: string, slug: string): Promise<DocFile[]> => toFiles(await getJson(fetcher, epicDocsPath(pid, slug)));
+
+/** One project's backlog (`{ queued, exploring }`), or the reason it couldn't be read (the first line of the error body). */
+export const fetchBacklog = (fetcher: Fetcher, pid: string): Promise<Fetched> => fetchJson(fetcher, backlogPath(pid));
+
+/** A brief's or plan's text: a 404 is `missing`, any other failure (or a malformed body) `failed` with its reason. A bad slug reads nothing. */
+async function fetchDocText(fetcher: Fetcher, path: string | null): Promise<DocText> {
+  if (path === null) return { state: 'missing' };
+  try {
+    const res = await fetcher(path);
+    const body = await res.text();
+    if (res.status === 404) return { state: 'missing' };
+    if (!res.ok) return { state: 'failed', reason: body.trim().split('\n')[0]?.slice(0, 160) || `HTTP ${res.status}` };
+    const doc = toDocText(JSON.parse(body));
+    return doc === null ? { state: 'failed', reason: 'unreadable' } : { state: 'ok', ...doc };
+  } catch (e) {
+    return { state: 'failed', reason: reason(e) };
+  }
+}
+
+/** A project's brief (`GET /projects/<pid>/briefs/<slug>`). */
+export const fetchBrief = (fetcher: Fetcher, pid: string, slug: string): Promise<DocText> => fetchDocText(fetcher, isSlug(slug) ? briefPath(pid, slug) : null);
+
+/** A project's plan (`GET /projects/<pid>/plans/<slug>`). */
+export const fetchPlan = (fetcher: Fetcher, pid: string, slug: string): Promise<DocText> => fetchDocText(fetcher, isSlug(slug) ? planPath(pid, slug) : null);
+
+/** A page's text: its brief or its plan. */
+export const fetchPage = (fetcher: Fetcher, ref: DocRef): Promise<DocText> => (ref.kind === 'brief' ? fetchBrief(fetcher, ref.project, ref.slug) : fetchPlan(fetcher, ref.project, ref.slug));

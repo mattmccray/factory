@@ -1,6 +1,6 @@
 // The Mac app's menu bar: Andon (About Andon, which opens the About window in place of the stock
 // About panel, and Settings…, which opens the Settings window), the stock Edit menu,
-// View (the board's view toggles: Needs Me, the Settled sheet, the sidebar, the inspector, the status
+// View (the board's view toggles: Needs Me, the Settled and Backlog sheets, the sidebar, the inspector, the status
 // bar, and the Merged column; labels flip, Finder-style, to name what choosing them does), Window (Minimize, Zoom, Andon), and Help (What's New, which shows the
 // main window and asks the board to open its What's New sheet, and the project on GitHub).
 // The menu spec, its ids, the label for a status bar state, what a click does, how the stored status
@@ -22,13 +22,15 @@ export const MERGED_EVENT = 'merged';
 /** The store key holding the Merged column choice: `true` when hidden. */
 export const MERGED_KEY = 'mergedHidden';
 // The events the Mac app pushes to the main window's page for the View menu's page actions (`{}`):
-// the page toggles Needs Me, opens the Settled sheet, toggles the sidebar, or toggles the inspector.
+// the page toggles Needs Me, opens the Settled sheet, opens the Backlog sheet, toggles the sidebar,
+// or toggles the inspector.
 export const NEEDS_ME_EVENT = 'needsme';
 export const SETTLED_EVENT = 'settled';
+export const BACKLOG_EVENT = 'backlog';
 export const SIDEBAR_EVENT = 'sidebar';
 export const INSPECTOR_EVENT = 'inspector';
-/** A View menu action the page carries out: one of the four events above. */
-export type PageEvent = typeof NEEDS_ME_EVENT | typeof SETTLED_EVENT | typeof SIDEBAR_EVENT | typeof INSPECTOR_EVENT;
+/** A View menu action the page carries out: one of the five events above. */
+export type PageEvent = typeof NEEDS_ME_EVENT | typeof SETTLED_EVENT | typeof BACKLOG_EVENT | typeof SIDEBAR_EVENT | typeof INSPECTOR_EVENT;
 
 // The ids of the clickable items.
 /** Tiny's reserved id for the app menu's About item: with tinyjs.json `"about": "menu"`, a click on
@@ -38,6 +40,7 @@ export const SETTINGS_ID = 'settings';
 export const STATUS_BAR_ID = 'statusbar';
 export const NEEDS_ME_ID = 'needsme';
 export const SETTLED_ID = 'settled';
+export const BACKLOG_ID = 'backlog';
 export const SIDEBAR_ID = 'sidebar';
 export const INSPECTOR_ID = 'inspector';
 export const MERGED_ID = 'merged';
@@ -92,6 +95,8 @@ export const sidebarLabel = (shown: boolean): string => (shown ? 'Hide Sidebar' 
 export const inspectorLabel = (open: boolean): string => (open ? 'Hide Inspector' : 'Show Inspector');
 /** "Show Settled…" opens the sheet; its label never flips. */
 export const SETTLED_LABEL = 'Show Settled…';
+/** "Show Backlog…" opens the Backlog sheet; its label never flips either. */
+export const BACKLOG_LABEL = 'Show Backlog…';
 
 /** The View menu, in order, for a state. Tiny's key spelling: an uppercase letter carries its own
  *  shift ('N' is ⇧⌘N), and `alt+`/`ctrl+` add ⌥/⌃ to ⌘. */
@@ -99,6 +104,7 @@ export function viewMenu(s: MenuState): MenuItem[] {
   return [
     { id: NEEDS_ME_ID, label: needsMeLabel(s.view.needsMe), key: 'N' },
     { id: SETTLED_ID, label: SETTLED_LABEL, key: 'S' },
+    { id: BACKLOG_ID, label: BACKLOG_LABEL, key: 'B' },
     { separator: true },
     { id: SIDEBAR_ID, label: sidebarLabel(s.view.sidebarShown), key: 'ctrl+s' },
     { id: INSPECTOR_ID, label: inspectorLabel(s.view.inspectorOpen), key: 'alt+i' },
@@ -159,6 +165,8 @@ export function menuAction(id: string): MenuAction | null {
       return { kind: 'page', event: NEEDS_ME_EVENT, show: false };
     case SETTLED_ID:
       return { kind: 'page', event: SETTLED_EVENT, show: true }; // a sheet: show the board, as What's New does
+    case BACKLOG_ID:
+      return { kind: 'page', event: BACKLOG_EVENT, show: true }; // a sheet, as Settled
     case SIDEBAR_ID:
       return { kind: 'page', event: SIDEBAR_EVENT, show: false };
     case INSPECTOR_ID:

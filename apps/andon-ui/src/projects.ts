@@ -263,3 +263,12 @@ export const RELEASE_PATH = '/release';
 
 /** A project's settled jobs, fetched only when a view needs them. */
 export const settledPath = (pid: string): string => `/projects/${encodeURIComponent(pid)}/settled`;
+
+/** A project's backlog and explorations: `{ queued, exploring }`. */
+export const backlogPath = (pid: string): string => `/projects/${encodeURIComponent(pid)}/backlog`;
+
+/** A project's brief, `{ path, text }`. The slug is checked by the caller (backlog.ts `isSlug`). */
+export const briefPath = (pid: string, slug: string): string => `/projects/${encodeURIComponent(pid)}/briefs/${encodeURIComponent(slug)}`;
+
+/** A project's plan, `{ path, text }`. The slug is checked by the caller (backlog.ts `isSlug`). */
+export const planPath = (pid: string, slug: string): string => `/projects/${encodeURIComponent(pid)}/plans/${encodeURIComponent(slug)}`;

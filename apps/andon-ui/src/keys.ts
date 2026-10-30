@@ -6,7 +6,7 @@
 //   Esc    close the topmost layer: a sheet, then the inspector, then search (clear, then leave)
 // Single-key shortcuts are ignored while focus is in a text field, while a modifier (Ctrl, Alt,
 // or Cmd) is held, or while a sheet is open over the page. Only Esc works from inside a field.
-// The Mac app's View menu shortcuts (063: ⇧⌘N, ⇧⌘S, ⌃⌘S, ⌥⌘I, ⌘/) are the menu's own, not this
+// The Mac app's View menu shortcuts (063: ⇧⌘N, ⇧⌘S, ⌃⌘S, ⌥⌘I, ⌘/; 067: ⇧⌘B) are the menu's own, not this
 // reducer's; the shortcut sheet lists them in the Mac app only.
 
 export type KeyAction = 'focus-search' | 'toggle-needs' | 'open-keys' | 'all-projects' | 'close-sheet' | 'close-inspector' | 'clear-search' | 'leave-search';
@@ -18,7 +18,7 @@ export interface KeyInput {
 }
 
 export interface Layers {
-  sheet: boolean; // any sheet: Settled, What's New, Rework, Abandon, or shortcuts
+  sheet: boolean; // any sheet: Settled, Backlog, What's New, Rework, Abandon, or shortcuts
   inspector: boolean;
   searchText: boolean; // the search field has text
   searchFocused: boolean;
@@ -49,19 +49,22 @@ export interface OpenSheets {
   keys: boolean;
   command: boolean; // Rework…, Abandon…, or an epic's Abandon…
   settled: boolean;
+  backlog: boolean; // the Backlog sheet: in the Settled sheet's place (the two never open together)
 }
 
 /**
  * Which sheet Esc's `close-sheet` closes: the topmost one. What's New is always on top when open:
  * Help → What's New (the Mac app) can open it over any sheet, and nothing opens over it (it is
  * modal, and single keys are off while a sheet is open). Then the shortcuts or a command sheet,
- * which open over the Settled sheet's place, then the Settled sheet.
+ * which open over the Settled sheet's place, then the Settled sheet, then the Backlog sheet (in the
+ * same place: opening one closes the other).
  */
 export function topSheet(o: OpenSheets): keyof OpenSheets | null {
   if (o.whatsNew) return 'whatsNew';
   if (o.keys) return 'keys';
   if (o.command) return 'command';
   if (o.settled) return 'settled';
+  if (o.backlog) return 'backlog';
   return null;
 }
 
@@ -103,6 +106,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { keys: ['?'], text: 'This list of shortcuts' },
   { keys: ['⇧⌘N'], text: 'Show only Needs Me, or all jobs (View menu)', menu: true },
   { keys: ['⇧⌘S'], text: 'Show the settled jobs (View menu)', menu: true },
+  { keys: ['⇧⌘B'], text: 'Show the backlog (View menu)', menu: true },
   { keys: ['⌃⌘S'], text: 'Hide or show the sidebar (View menu)', menu: true },
   { keys: ['⌥⌘I'], text: 'Hide or show the inspector (View menu)', menu: true },
   { keys: ['⌘/'], text: 'Hide or show the status bar (View menu)', menu: true },

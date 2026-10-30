@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { TIMING } from './docs';
 import { defaultView, entryOf, epicKey, formatHash, historyStep, initialView, jobKey, parseHash, readEntry, viewKey, viewOf } from './route';
+import type { DocRef } from './backlog';
 import type { View } from './route';
 
 const v = (fields: Partial<View>): View => {
@@ -82,7 +83,7 @@ describe('restoring a view (AC5)', () => {
 
   test('each hash form maps to its view state', () => {
     const view = initialView('#project=p1&job=p2/002-b&file=timing&settled=p3&needs', 'all', 'all', null);
-    expect(view).toEqual({ project: 'p1', inspector: true, job: { project: 'p2', id: '002-b' }, file: TIMING, settled: { project: 'p3' }, whatsNew: null, sheet: null, needs: true });
+    expect(view).toEqual({ project: 'p1', inspector: true, job: { project: 'p2', id: '002-b' }, file: TIMING, settled: { project: 'p3' }, backlog: null, whatsNew: null, sheet: null, needs: true });
   });
 
   test('history.state carries the sheets and an empty inspector', () => {
@@ -225,5 +226,51 @@ describe("the whats-new hash form (059 AC5)", () => {
   test('reload restores the sheet and its scope, and keeps the focused project', () => {
     expect(initialView('#project=p1&whats-new=p2', 'all', 'all', null)).toEqual(v({ project: 'p1', whatsNew: { project: 'p2' } }));
     expect(initialView('#whats-new', 'p9', 'all', null)).toEqual(v({ whatsNew: { project: null } }));
+  });
+});
+
+describe('067: the Backlog sheet and brief and plan pages in the hash', () => {
+  test('AC2: backlog and backlog=<pid> round-trip through formatHash and parseHash, as settled does', () => {
+    const forms: Array<[string, View]> = [
+      ['#backlog', v({ backlog: { project: null } })],
+      ['#backlog=p1', v({ backlog: { project: 'p1' } })],
+      ['#project=p1&backlog=p%2F2', v({ project: 'p1', backlog: { project: 'p/2' } })],
+    ];
+    for (const [hash, view] of forms) {
+      expect({ hash, parsed: parseHash(hash) }).toEqual({ hash, parsed: view });
+      expect({ hash, formatted: formatHash(view) }).toEqual({ hash, formatted: hash });
+    }
+    expect(parseHash('#backlog=')).toEqual(v({ backlog: { project: null } }));
+    expect(parseHash('#backlog=%E0%A4%A')).toEqual(defaultView()); // a malformed escape: ignored
+    // opening the sheet pushes, so Back closes it
+    expect(historyStep(defaultView(), v({ backlog: { project: null } }), null)).toBe('push');
+    expect(historyStep(v({ backlog: { project: 'p1' } }), v({ backlog: { project: null } }), null)).toBe('replace');
+  });
+
+  test('AC4: brief=<pid>/<slug> and plan=<pid>/<slug> open the inspector on that page, and round-trip', () => {
+    const brief = v({ inspector: true, page: { kind: 'brief', project: 'p1', slug: 'notes-search' } });
+    const plan = v({ inspector: true, page: { kind: 'plan', project: 'p/2', slug: 'auth' } });
+    expect(parseHash('#brief=p1/notes-search')).toEqual(brief);
+    expect(parseHash('#plan=p%2F2/auth')).toEqual(plan);
+    expect(formatHash(brief)).toBe('#brief=p1/notes-search');
+    expect(formatHash(plan)).toBe('#plan=p%2F2/auth');
+    expect(initialView('#brief=p1/notes-search', 'all', 'all', null)).toEqual(brief);
+    expect(historyStep(defaultView(), brief, null)).toBe('push');
+  });
+
+  test('AC4: a malformed slug or an unknown form is ignored', () => {
+    for (const h of ['#brief=p1/Bad', '#brief=p1/..', '#brief=p1/a%2Fb', '#plan=p1/-a', '#plan=p1/a--b', '#brief=p1', '#brief=/x', '#brief', '#plan=', '#briefs=p1/x', '#doc=p1/x', '#brief=p1/%E0%A4%A']) {
+      expect({ h, view: parseHash(h) }).toEqual({ h, view: defaultView() });
+    }
+  });
+
+  test('AC4: brief= and plan= never coexist with job= or epic=, and take no file=', () => {
+    const page: DocRef = { kind: 'brief', project: 'p1', slug: 's' };
+    for (const h of ['#job=p1/001-a&brief=p1/s', '#brief=p1/s&epic=p1/e', '#epic=p1/e&job=p1/001-a&brief=p1/s&file=spec.md']) {
+      const parsed = parseHash(h);
+      expect({ h, job: parsed.job, epic: parsed.epic, page: parsed.page, file: parsed.file }).toEqual({ h, job: null, epic: undefined, page, file: null });
+    }
+    expect(parseHash('#brief=p1/s&plan=p1/t').page).toEqual({ kind: 'plan', project: 'p1', slug: 't' }); // one subject: the last good one
+    expect(formatHash({ ...defaultView(), inspector: true, job: { project: 'p1', id: '001-a' }, epic: { project: 'p1', slug: 'e' }, page, file: 'spec.md' })).toBe('#brief=p1/s');
   });
 });

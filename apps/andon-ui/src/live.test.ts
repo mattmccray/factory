@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 import type { Fetcher } from './api';
 import { projectRelease, releaseBody } from './fixtures';
 import { footer, sidebarModel } from './sidebar';
@@ -370,4 +370,90 @@ test('an older service: no release on entries, no release event, and a 404 for /
     expect(Object.values(live.state().boards).every((b) => b.loaded)).toBe(true);
     live.stop();
   }
+});
+
+describe('067 AC3: backlogs on demand, re-fetched on `backlog` events', () => {
+  const item = (title: string) => ({ kind: 'brief', slug: 'x', title, done: null, status: 'ready', members: null, abandoned: [] });
+  // A service whose backlog responses the test releases by hand, in any order.
+  function service() {
+    const asked: string[] = [];
+    const pending: Array<{ path: string; resolve: (body: string, status?: number) => void }> = [];
+    const fetcher: Fetcher = (path) => {
+      asked.push(path);
+      if (!path.endsWith('/backlog')) return Promise.resolve({ ok: true, status: 200, text: async () => JSON.stringify({ jobs: [], config: { reviewers: [] } }) });
+      return new Promise((done) => pending.push({ path, resolve: (body, status = 200) => done({ ok: status === 200, status, text: async () => body }) }));
+    };
+    return { asked, pending, fetcher, backlogAsks: () => asked.filter((p) => p.endsWith('/backlog')) };
+  }
+
+  test('nothing is fetched while no view watches; a watched project is fetched, re-fetched on its event, and replaced', async () => {
+    const source = new FakeSource();
+    const svc = service();
+    const live = startLive({ connect: () => source, fetcher: svc.fetcher, onState: () => {}, onStatus: () => {} });
+    source.send('projects', { projects: [P1, P2] });
+    await tick();
+    source.send('backlog', { project: P1.id }); // the sheet is closed: nothing
+    await tick();
+    expect(svc.backlogAsks()).toEqual([]);
+
+    live.watchBacklog([P1.id]); // the sheet opens, filtered to P1
+    expect(svc.backlogAsks()).toEqual([`/projects/${P1.id}/backlog`]);
+    svc.pending.shift()?.resolve(JSON.stringify({ queued: [item('first')], exploring: [] }));
+    await tick();
+    expect(live.state().backlogs[P1.id]?.queued?.map((i) => i.title)).toEqual(['first']);
+
+    source.send('backlog', { project: P2.id }); // another project's event: not watched
+    source.send('backlog', { project: P1.id });
+    await tick();
+    expect(svc.backlogAsks()).toEqual([`/projects/${P1.id}/backlog`, `/projects/${P1.id}/backlog`]);
+    svc.pending.shift()?.resolve(JSON.stringify({ queued: [item('second')], exploring: [item('drafting')] }));
+    await tick();
+    expect(live.state().backlogs[P1.id]?.queued?.map((i) => i.title)).toEqual(['second']);
+    expect(live.state().backlogs[P1.id]?.exploring?.map((i) => i.title)).toEqual(['drafting']);
+
+    live.watchBacklog([]); // the sheet closes
+    source.send('backlog', { project: P1.id });
+    source.send('backlog', 'not json'); // malformed: ignored
+    source.emit('backlog', { data: '{' });
+    await tick();
+    expect(svc.backlogAsks()).toHaveLength(2);
+    live.stop();
+  });
+
+  test('a slower, older response never overwrites a newer one; a failure shows for that project only', async () => {
+    const source = new FakeSource();
+    const svc = service();
+    const live = startLive({ connect: () => source, fetcher: svc.fetcher, onState: () => {}, onStatus: () => {} });
+    source.send('projects', { projects: [P1, P2] });
+    await tick();
+    live.watchBacklog([P1.id, P2.id]);
+    source.send('backlog', { project: P1.id });
+    await tick();
+    const [p1old, p2, p1new] = [svc.pending[0], svc.pending[1], svc.pending[2]];
+    expect([p1old?.path, p2?.path, p1new?.path]).toEqual([`/projects/${P1.id}/backlog`, `/projects/${P2.id}/backlog`, `/projects/${P1.id}/backlog`]);
+    p1new?.resolve(JSON.stringify({ queued: [item('newer')], exploring: [] }));
+    await tick();
+    p1old?.resolve(JSON.stringify({ queued: [item('older')], exploring: [] }));
+    p2?.resolve('config.json: bad', 500);
+    await tick();
+    expect(live.state().backlogs[P1.id]).toMatchObject({ status: 'loaded', reason: null });
+    expect(live.state().backlogs[P1.id]?.queued?.map((i) => i.title)).toEqual(['newer']);
+    expect(live.state().backlogs[P2.id]).toMatchObject({ status: 'failed', reason: 'config.json: bad' });
+    live.stop();
+  });
+
+  test('a project watched before it is listed is fetched once the projects event lists it; a reconnect re-fetches watched ones', async () => {
+    const source = new FakeSource();
+    const svc = service();
+    const live = startLive({ connect: () => source, fetcher: svc.fetcher, onState: () => {}, onStatus: () => {} });
+    live.watchBacklog([P1.id]); // a #backlog=<pid> hash on load
+    expect(svc.backlogAsks()).toEqual([]);
+    source.send('projects', { projects: [P1, P2] });
+    await tick();
+    expect(svc.backlogAsks()).toEqual([`/projects/${P1.id}/backlog`]);
+    source.send('projects', { projects: [P1, P2] }); // a reconnect may have missed events
+    await tick();
+    expect(svc.backlogAsks()).toEqual([`/projects/${P1.id}/backlog`, `/projects/${P1.id}/backlog`]);
+    live.stop();
+  });
 });
