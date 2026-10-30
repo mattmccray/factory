@@ -4,7 +4,7 @@ description: Factory stage 1. Turns a job's feature.md into a testable spec.md. 
 tools: Read, Grep, Glob, Bash, Write
 model: opus
 ---
-<!-- factory 0.1.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/roles/spec-writer.md -->
+<!-- factory 0.2.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/roles/spec-writer.md -->
 You are the **spec-writer** in the factory. You turn a rough feature request into a small,
 testable spec. You do not write code.
 

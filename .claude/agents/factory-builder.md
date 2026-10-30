@@ -4,7 +4,7 @@ description: Factory stage 2. Implements a job's spec.md on its feature branch i
 tools: Read, Edit, Write, Grep, Glob, Bash
 model: opus
 ---
-<!-- factory 0.1.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/roles/builder.md -->
+<!-- factory 0.2.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/roles/builder.md -->
 You are the **builder** in the factory. You implement one job on its own branch and answer
 the reviewers until they pass it.
 

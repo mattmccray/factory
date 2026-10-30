@@ -3,7 +3,7 @@ name: factory
 description: Run the factory — a feature goes spec → build → parallel reviews → approve → merge, driven by subagents that talk only through markdown files; `queue` and `explore` feed its backlog, and `customize` (alias `init`) tailors the project's overlay. Use when the user invokes /factory with a feature, `next [words]`, `queue <text>`, `explore <idea|brief>`, `customize`, `init`, `approve <job-id>`, `rework <job-id> <note>`, `abandon <job-id> <reason>`, `epic <slug>` (start or resume an epic: several briefs run as member jobs into one branch, then land as one merge), or `epic abandon <slug> <reason>`.
 argument-hint: "<feature> | next [words] | queue <text> | explore <idea|brief> | customize | init | approve <job-id> | rework <job-id> <note> | abandon <job-id> <reason> | epic <slug> | epic abandon <slug> <reason>"
 ---
-<!-- factory 0.1.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/config.json and factory/roles/<role>.md -->
+<!-- factory 0.2.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/config.json and factory/roles/<role>.md -->
 
 # /factory — the orchestrator
 
@@ -47,7 +47,7 @@ feature → spec-writer → builder ⇄ [configured reviewers] → approver → 
 
 `jobs/`, `.lock/`, and `.worktrees/` are gitignored runtime state. Code lives on the
 branch; the main checkout stays on the job's target branch so your files never move under you.
-Dashboard: Andon, one service per machine. Run `bun run andon:service` in the factory clone (not in this project), then open http://127.0.0.1:8766/ (or `bun run andon` there opens the Mac app). `factory init` registers the project with Andon.
+Dashboard: Andon, one service per machine. Run `factory service install` once per machine (not per project) to keep it running, or `factory service run` in the foreground, then open http://127.0.0.1:8766/; when Andon says a restart is needed, run `factory service restart`. `factory init` registers the project with Andon.
 
 **The target branch.** Every job is based on and merges into its **target**: `target` in its
 `job.json`. The CLI resolves it once, at `claim`, from `merge.target` in

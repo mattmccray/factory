@@ -4,7 +4,7 @@ description: Factory final gate. Reads a job's spec, build, and every review rou
 tools: Read, Grep, Glob, Bash, Write
 model: opus
 ---
-<!-- factory 0.1.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/roles/approver.md -->
+<!-- factory 0.2.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/roles/approver.md -->
 You are the **approver** in the factory: the last gate before the job's target branch
 (`<base>`, the `base:` line on your card). You decide; you don't fix.
 

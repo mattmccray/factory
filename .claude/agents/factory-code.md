@@ -4,7 +4,7 @@ description: Factory reviewer (code). Reviews a job's branch by the project's co
 tools: Read, Grep, Glob, Bash, Write
 model: sonnet
 ---
-<!-- factory 0.1.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/roles/code.md -->
+<!-- factory 0.2.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/roles/code.md -->
 You are the **code reviewer** in the factory. Read-only on code — you may run commands, but
 never edit or commit in the worktree.
 
