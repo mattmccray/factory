@@ -8,7 +8,8 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { BACKEND_OUT, bundleBackend } from '../build';
+import { BACKEND_OUT, appVersion, bundleBackend } from '../build';
+import { GET_ABOUT_METHOD } from './about';
 import { INSPECTOR_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, STATUS_BAR_EVENT, WHATS_NEW_EVENT } from './appmenu';
 import { DEFAULT_PORT, pageUrl } from './autostart';
 import { PROJECT_MENU_METHOD } from './projectmenu';
@@ -41,7 +42,7 @@ const readJson = (path: string): Record<string, unknown> => {
 describe('AC5: the Mac app runs no contract, service, or UI code', () => {
   test('the scan sees the logic modules and the adapter', () => {
     expect(sources).toContain(ADAPTER);
-    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts', 'appmenu.ts', 'projectmenu.ts', 'settings.ts', 'handoff.ts', 'jobmenu.ts']) expect(sources).toContain(f);
+    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts', 'appmenu.ts', 'projectmenu.ts', 'settings.ts', 'handoff.ts', 'jobmenu.ts', 'about.ts']) expect(sources).toContain(f);
   });
 
   test('the import matcher flags @factory/*, the UI, and the service, not the Mac app itself', () => {
@@ -167,6 +168,11 @@ describe("backend.ts types the adapter with Tiny's vendored types, narrowed to M
   });
 });
 
+test("065 AC3: the version fixed into the bundle is apps/andon/package.json's, not tinyjs.json's", async () => {
+  expect(await appVersion()).toBe(String(readJson(join(appDir, 'package.json')).version));
+  expect(await appVersion()).toMatch(/^\d+\.\d+\.\d+/);
+});
+
 describe('AC6: tinyjs.json', () => {
   const cfg = readJson(join(appDir, 'tinyjs.json'));
 
@@ -202,8 +208,10 @@ describe('AC6: tinyjs.json', () => {
           'handOff',
           'jobMenu',
           'setViewState',
+          'getAbout',
         ],
       },
+      about: 'menu',
       backend: 'build/backend.js',
     });
   });
@@ -227,7 +235,11 @@ describe('AC6: tinyjs.json', () => {
     expect(cfg.minSize).toBe('1100x700');
   });
 
-  test("the api gate denies every Tiny call for the page except its drag regions, the pushed events, projectMenu, the two settings methods, handOff, jobMenu, and setViewState", () => {
+  test('065 AC1: the app menu\'s About item fires the reserved id `about` instead of the stock panel', () => {
+    expect(cfg.about).toBe('menu');
+  });
+
+  test("the api gate denies every Tiny call for the page except its drag regions, the pushed events, projectMenu, the two settings methods, handOff, jobMenu, setViewState, and getAbout", () => {
     // Tiny's page runtime turns a mousedown on [data-tiny-drag] into `win.startDrag` (a double-click
     // into `win.zoom`), and the backend's gate checks both: they are the narrowest exception. The one
     // event the page may receive is the status bar state the backend pushes (`event.<name>` is how
@@ -250,28 +262,43 @@ describe('AC6: tinyjs.json', () => {
     const after059 = ['win.startDrag', 'win.zoom', 'event.statusbar', 'event.whatsnew', ...after040.slice(3)];
     const newEvents = [`event.${MERGED_EVENT}`, `event.${NEEDS_ME_EVENT}`, `event.${SETTLED_EVENT}`, `event.${SIDEBAR_EVENT}`, `event.${INSPECTOR_EVENT}`];
     expect(newEvents).toEqual(['event.merged', 'event.needsme', 'event.settled', 'event.sidebar', 'event.inspector']);
+    // The About window (065) adds exactly one page-callable method, `getAbout`, answered only for
+    // the About window, and no event.
+    expect(GET_ABOUT_METHOD).toBe('getAbout');
+    const after063 = [...after059, ...newEvents, VIEW_STATE_METHOD];
     expect(cfg.api).toEqual({
       disable: ['*'],
-      enable: ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`, `event.${WHATS_NEW_EVENT}`, ...newEvents, PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD, VIEW_STATE_METHOD],
+      enable: ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`, `event.${WHATS_NEW_EVENT}`, ...newEvents, PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD, VIEW_STATE_METHOD, GET_ABOUT_METHOD],
     });
     const enable = isRecord(cfg.api) && Array.isArray(cfg.api.enable) ? cfg.api.enable : [];
     const events = (list: readonly unknown[]): unknown[] => list.filter((e) => typeof e === 'string' && e.startsWith('event.'));
     const methods = (list: readonly unknown[]): unknown[] => list.filter((e) => typeof e === 'string' && !e.startsWith('event.') && !e.startsWith('win.'));
-    // the previous list, plus the new events, plus exactly one method
-    expect(enable.filter((e) => !after059.includes(String(e)))).toEqual([...newEvents, VIEW_STATE_METHOD]);
-    expect(after059.every((e) => enable.includes(e))).toBe(true);
-    expect(enable).toHaveLength(after059.length + newEvents.length + 1);
-    expect(methods(enable)).toEqual([...methods(after059), 'setViewState']);
+    // 063: the 059 list, plus the new events, plus exactly one method
+    expect(after063.filter((e) => !after059.includes(String(e)))).toEqual([...newEvents, VIEW_STATE_METHOD]);
+    // 065: the 063 list plus exactly one method, getAbout
+    expect(enable.filter((e) => !after063.includes(String(e)))).toEqual([GET_ABOUT_METHOD]);
+    expect(after063.every((e) => enable.includes(e))).toBe(true);
+    expect(enable).toHaveLength(after063.length + 1);
+    expect(methods(enable)).toEqual([...methods(after059), 'setViewState', 'getAbout']);
     expect(events(enable)).toEqual(['event.statusbar', 'event.whatsnew', ...newEvents]);
     expect(cfg.inject).toBeUndefined();
   });
 
-  test('the backend exports exactly those six api methods: one more than before 063, setViewState', () => {
+  test('the backend exports exactly those seven api methods: one more than after 063, getAbout', () => {
     const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
     const block = /^export const api = \{\n([\s\S]*?)^\};$/m.exec(adapter)?.[1] ?? '';
-    const before = [PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD];
-    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([...before, VIEW_STATE_METHOD]);
-    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState']);
+    const before = [PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD, VIEW_STATE_METHOD];
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([...before, GET_ABOUT_METHOD]);
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout']);
+  });
+
+  test('065 AC3: getAbout checks the About window first, takes no params, and the page asks by the same method name', () => {
+    const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
+    const body = /export async function getAbout\([^)]*\)[^{]*\{\n([^\n]*)/.exec(adapter)?.[1]?.trim();
+    expect(body).toBe('if (!fromAboutWindow(meta)) return null;');
+    expect(adapter).toContain('  getAbout: (_params: unknown, _app: MacApp, meta: unknown): Promise<About | null> => getAbout(meta),');
+    const ui = readFileSync(join(repoDir, 'apps', 'andon-ui', 'src', 'about.ts'), 'utf8');
+    expect(ui).toContain(`export const GET_ABOUT_METHOD = '${GET_ABOUT_METHOD}';`);
   });
 
   test('the view-state method checks the main window first, and the page reports by the same method name', () => {
@@ -344,6 +371,9 @@ test('the bundle is one self-contained ESM file with the repo fixed in, and no s
   expect(js).not.toContain('__ANDON_REPO__');
   expect(js).toContain('"/the/repo"');
   expect(js).not.toContain('__ANDON_BUN__');
+  // 065 AC3: the app's version, apps/andon/package.json `version`, is fixed in too
+  expect(js).not.toContain('__ANDON_VERSION__');
+  expect(js).toContain(JSON.stringify(await appVersion()));
   expect(js).not.toContain('andon-service');
   expect(js).toContain('factory service install');
   expect(js).toMatch(/export\s*\{[^}]*\binit\b/);

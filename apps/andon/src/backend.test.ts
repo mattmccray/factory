@@ -3,13 +3,13 @@
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { api, assetPath, checkApps, checkFound, dockIcon, findAppBundle, findT3, lookupIcon, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runJobItem, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, setViewState, showProjectMenu, trayIcon } from './backend';
+import { getAbout, api, assetPath, checkApps, checkFound, dockIcon, findAppBundle, findT3, lookupIcon, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runJobItem, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, setViewState, showProjectMenu, trayIcon } from './backend';
 import type { HandoffHost, JobMenuHost, MacApp, MacNavEvent, MacTraySpec, MacWinState, RunResult } from './backend';
 import { itemId, projectMenuItems } from './projectmenu';
 import { jobItemId, jobMenuItems } from './jobmenu';
 import type { Availability, MenuProject } from './projectmenu';
 import type { HandoffMode, Settings } from './settings';
-import { DEFAULT_VIEW, GITHUB_ID, INSPECTOR_ID, MERGED_ID, MINIMIZE_ID, NEEDS_ME_ID, SETTINGS_ID, SETTINGS_SIZE, SETTLED_ID, SHOW_MAIN_ID, SIDEBAR_ID, STATUS_BAR_ID, WHATS_NEW_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
+import { ABOUT_ID, ABOUT_SIZE, GITHUB_URL, aboutWindow, DEFAULT_VIEW, GITHUB_ID, INSPECTOR_ID, MERGED_ID, MINIMIZE_ID, NEEDS_ME_ID, SETTINGS_ID, SETTINGS_SIZE, SETTLED_ID, SHOW_MAIN_ID, SIDEBAR_ID, STATUS_BAR_ID, WHATS_NEW_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
 import type { MenuState } from './appmenu';
 import { QUIT_ID, trayNotice, traySpec } from './badge';
 import { INSTALL_NOTICE } from './autostart';
@@ -232,7 +232,7 @@ function fakeGlobals(curl: () => FakeProcess, spawned: string[][] = []): void {
 }
 
 afterEach(() => {
-  for (const k of ['__ANDON_REPO__', 'tjs']) Reflect.deleteProperty(globalThis, k);
+  for (const k of ['__ANDON_REPO__', '__ANDON_VERSION__', 'tjs']) Reflect.deleteProperty(globalThis, k);
 });
 
 /** The Dock is idle (never set, or reset with '') and the badge is clear (never set, or ''). */
@@ -433,7 +433,7 @@ test("059 AC8: Help → What's New shows the main window as the tray click does,
 test('AC3: unknown ids do nothing', async () => {
   const m = await initMenu(null);
   m.log.length = 0;
-  for (const id of ['about', 'nope', 'SETTINGS']) await onMenu(id, m.app);
+  for (const id of ['ABOUT', 'nope', 'SETTINGS']) await onMenu(id, m.app);
   expect(m.log).toEqual([]);
 });
 
@@ -477,6 +477,74 @@ test('035 AC1: once the settings window is closed, Settings… opens it again', 
   m.log.length = 0;
   await onMenu(SETTINGS_ID, m.app);
   expect(m.log.map((e) => e[0])).toEqual(['win.open', 'settings.resizable']);
+});
+
+// ---- the About window (065) ----
+
+test('065 AC2: About Andon opens the About window on the service port, not resizable; a second click only shows it', async () => {
+  const m = await initMenu(null);
+  m.log.length = 0;
+  await onMenu(ABOUT_ID, m.app);
+  expect(m.log).toEqual([
+    ['win.open', 'about', { page: 'http://127.0.0.1:8766/?shell=mac&view=about', title: 'About Andon', size: ABOUT_SIZE, minSize: ABOUT_SIZE, chrome: { frame: true, windowControls: ['close'] } }],
+    ['about.resizable', false],
+  ]);
+  m.log.length = 0;
+  await onMenu(ABOUT_ID, m.app);
+  expect(m.log).toEqual([['about.show']]);
+});
+
+test('065 AC2: the About window loads from the port init resolved, and two quick clicks open one window', async () => {
+  const hung: FakeProcess = { stdout: new ReadableStream<Uint8Array>(), kill: () => undefined, wait: never };
+  Reflect.set(globalThis, '__ANDON_REPO__', REPO);
+  Reflect.set(globalThis, 'tjs', { env: { ANDON_PORT: '9123' }, spawn: () => hung });
+  const m = menuApp(null);
+  init(m.app);
+  m.log.length = 0;
+  await Promise.all([onMenu(ABOUT_ID, m.app), onMenu(ABOUT_ID, m.app)]);
+  expect(m.log.filter((e) => e[0] === 'win.open')).toEqual([['win.open', 'about', aboutWindow(9123)]]);
+});
+
+test('065 AC2: About leaves the main window alone, and opens again once closed', async () => {
+  for (const state of [st(false, false, false), st(true, false, false)]) {
+    const m = await initMenu(null);
+    m.main.current = state;
+    m.log.length = 0;
+    await onMenu(ABOUT_ID, m.app);
+    expect(m.log.some((e) => typeof e[0] === 'string' && e[0].startsWith('main.'))).toBe(false);
+    m.open.delete('about');
+    m.log.length = 0;
+    await onMenu(ABOUT_ID, m.app);
+    expect(m.log.map((e) => e[0])).toEqual(['win.open', 'about.resizable']);
+  }
+});
+
+const ABOUT_META = { window: 'about', origin: 'http://127.0.0.1:8766' };
+/** apps/andon/package.json's version: what build.ts fixes into the bundle as __ANDON_VERSION__. */
+const pkgVersion = async (): Promise<string> => {
+  const pkg: unknown = await Bun.file(join(import.meta.dir, '..', 'package.json')).json();
+  const v = typeof pkg === 'object' && pkg !== null && 'version' in pkg ? pkg.version : null;
+  if (typeof v !== 'string') throw new Error('no version');
+  return v;
+};
+
+test("065 AC3: getAbout answers the About window with the app's version and the GitHub URL", async () => {
+  const version = await pkgVersion();
+  Reflect.set(globalThis, '__ANDON_VERSION__', version);
+  const m = menuApp(null);
+  expect(await getAbout(ABOUT_META)).toEqual({ version, github: GITHUB_URL });
+  expect(await api.getAbout(null, m.app, ABOUT_META)).toEqual({ version, github: 'https://github.com/mattmccray/factory' });
+  expect(m.log).toEqual([]);
+});
+
+test('065 AC3: from any window but About (main, Settings, none), getAbout answers nothing', async () => {
+  Reflect.set(globalThis, '__ANDON_VERSION__', '9.9.9');
+  const m = menuApp(null);
+  for (const meta of [{ window: 'main' }, { window: 'settings' }, { window: 'other' }, { window: 'About' }, {}, null, undefined, 'about']) {
+    expect({ meta, r: await getAbout(meta) }).toEqual({ meta, r: null });
+    expect({ meta, r: await api.getAbout({ window: 'about' }, m.app, meta) }).toEqual({ meta, r: null });
+  }
+  expect(m.log).toEqual([]);
 });
 
 // ---- Settings… brings the main window back first (037) ----
@@ -968,7 +1036,7 @@ test("AC2: a newer request wins over an older one's slower app check", async () 
 });
 
 test('AC2: the api names its methods, and with the app not following the service it lists no project', async () => {
-  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState']);
+  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout']);
   fakeMachine([], []);
   const { app, log } = contextApp();
   await api.projectMenu({ project: PID }, app);

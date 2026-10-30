@@ -31,6 +31,13 @@ import {
   pageEventPayload,
   settingsUrl,
   settingsWindow,
+  ABOUT_ID,
+  ABOUT_QUERY,
+  ABOUT_SIZE,
+  ABOUT_TITLE,
+  ABOUT_WINDOW_ID,
+  aboutUrl,
+  aboutWindow,
   statusBarLabel,
   statusBarPayload,
   storedHidden,
@@ -94,7 +101,7 @@ describe('AC2: clicks and the stored value', () => {
     expect(menuAction(SHOW_MAIN_ID)).toEqual({ kind: 'show-main' });
     expect(menuAction(GITHUB_ID)).toEqual({ kind: 'open', url: 'https://github.com/mattmccray/factory' });
     expect(GITHUB_URL).toBe('https://github.com/mattmccray/factory');
-    for (const id of ['about', 'SETTINGS', 'settings-window', 'show', 'quit', '', 'STATUSBAR']) expect({ id, action: menuAction(id) }).toEqual({ id, action: null });
+    for (const id of ['ABOUT', 'about-window', 'SETTINGS', 'settings-window', 'show', 'quit', '', 'STATUSBAR']) expect({ id, action: menuAction(id) }).toEqual({ id, action: null });
   });
 
   test('only a stored true means hidden; missing or malformed means shown', () => {
@@ -218,5 +225,45 @@ describe('063 AC1: the View menu', () => {
     ]);
     expect(viewLabelUpdates({ needsMe: true, sidebarShown: false, inspectorOpen: true }, { needsMe: true, sidebarShown: true, inspectorOpen: true })).toEqual([{ id: SIDEBAR_ID, label: 'Hide Sidebar' }]);
     expect(DEFAULT_VIEW).toEqual({ needsMe: false, sidebarShown: true, inspectorOpen: false });
+  });
+});
+
+describe('065 AC1: About Andon', () => {
+  test("Tiny's reserved id `about` opens the About window; every other id maps as before", () => {
+    expect(ABOUT_ID).toBe('about');
+    expect(menuAction('about')).toEqual({ kind: 'open-about' });
+    expect(menuAction(SETTINGS_ID)).toEqual({ kind: 'open-settings' });
+    expect(menuAction(GITHUB_ID)).toEqual({ kind: 'open', url: GITHUB_URL });
+  });
+
+  test('the app-role items still hold only Settings… (⌘,): About is Tiny\'s own item, rerouted by tinyjs.json', () => {
+    for (const hidden of [false, true]) {
+      const app = appMenu(ms({ statusBarHidden: hidden })).find((m) => m.role === 'app');
+      expect(app).toEqual({ role: 'app', items: [{ id: SETTINGS_ID, label: 'Settings…', key: ',', enabled: true }] });
+    }
+    const ids = appMenu(ms()).flatMap((m) => m.items ?? []).map((i) => i.id);
+    expect(ids).not.toContain(ABOUT_ID);
+  });
+});
+
+describe('065 AC2: the About window', () => {
+  test('id `about`, titled About Andon, the about view on the port', () => {
+    expect(ABOUT_WINDOW_ID).toBe('about');
+    expect(ABOUT_TITLE).toBe('About Andon');
+    expect(ABOUT_QUERY).toBe('?shell=mac&view=about');
+    expect(aboutUrl(8766)).toBe('http://127.0.0.1:8766/?shell=mac&view=about');
+    expect(aboutUrl(9123)).toBe('http://127.0.0.1:9123/?shell=mac&view=about');
+  });
+
+  test('a fixed size (size equals minSize), a standard frame with only the close button, not a child of main', () => {
+    expect(ABOUT_SIZE).toMatch(/^\d+x\d+$/);
+    expect(aboutWindow(9123)).toEqual({
+      page: 'http://127.0.0.1:9123/?shell=mac&view=about',
+      title: 'About Andon',
+      size: ABOUT_SIZE,
+      minSize: ABOUT_SIZE,
+      chrome: { frame: true, windowControls: ['close'] },
+    });
+    expect('parent' in aboutWindow(8766)).toBe(false);
   });
 });
