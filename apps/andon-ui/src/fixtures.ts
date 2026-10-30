@@ -331,3 +331,37 @@ export const releaseBody = (running: string | null, onDisk: string | null = runn
   onDisk,
   changelog,
 });
+
+// ---- the backlog (brief andon-backlog-ui) ----
+
+/** A `GET /projects/<pid>/backlog` body, as the service sends it: three queued lines (a brief, an epic, free text) and one exploration. */
+export const backlogBody = (): { queued: unknown[]; exploring: unknown[] } => ({
+  queued: [
+    { kind: 'brief', slug: 'notes-search', title: 'Full-text search', done: 'search finds notes by body', status: 'ready', members: null, abandoned: ['003-notes-search: too broad'] },
+    { kind: 'epic', slug: 'auth', title: 'Sign-in', done: null, status: 'ready', members: 3, abandoned: [] },
+    { kind: 'text', slug: null, title: 'Tidy the README', done: 'the README reads well', status: null, members: null, abandoned: [] },
+  ],
+  exploring: [{ kind: 'brief', slug: 'tag-cloud', title: 'A tag cloud', done: null, status: 'draft', members: null, abandoned: [] }],
+});
+
+/** A plan's text with three members (one with `after:`), prose, and a later section. */
+export const planText = `# Sign-in
+
+- Status: ready
+
+## Intent
+Users sign in.
+
+## Members
+- \`auth-service\` — the service
+- \`auth-ui\` — the UI after: \`auth-service\`
+  (continued on an indented line)
+- \`auth-docs\` — the docs
+Some prose that is not a member.
+
+## Notes
+- \`not-a-member\` — listed after the section ends
+`;
+
+/** A brief's text with a `- Status:` line. */
+export const briefText = (status: string, title = 'A brief'): string => `# ${title}\n\n- Status: ${status}\n- Date: 2026-10-30\n\n## Intent\nSomething.\n`;

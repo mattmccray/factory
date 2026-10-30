@@ -1,0 +1,165 @@
+import { describe, expect, test } from 'bun:test';
+// The Mac app's start module, imported by this test only: the page's sources never import Mac app
+// code, and the Mac app's sources never import the UI, so the two command builders stay apart and
+// this pins that they agree.
+import { startWorkRequest } from '../../andon/src/startwork';
+import { backlogSheet, toBacklog } from './backlog';
+import type { BacklogList } from './backlog';
+import { backlogBody } from './fixtures';
+import { COPY_FAILED } from './handoff';
+import type { HandoffOutcome } from './handoff';
+import { shellMode } from './sidebar';
+import {
+  MAX_COMMAND,
+  NEXT_COMMAND,
+  START_WORK_METHOD,
+  copyThenStart,
+  exploreCommand,
+  exploringStart,
+  newExploration,
+  newExplorationCommand,
+  newExplorationStart,
+  nextStart,
+  pageStart,
+  queuedStart,
+  runCommand,
+  startEpicCommand,
+  startWorkCaller,
+} from './startwork';
+import type { StartItem, StartWorkRequest } from './startwork';
+
+const PID = 'aaaaaaaaaaaa';
+const PROJECTS = [{ id: PID, name: 'factory', root: '/Users/me/code/factory' }];
+const loaded = (data: unknown): BacklogList => ({ status: 'loaded', ...toBacklog(data), reason: null, rev: 1 });
+
+describe('068 AC2: the page builds the same commands as the Mac app', () => {
+  test('the exact strings', () => {
+    expect(runCommand('Full-text search')).toBe('/factory next Full-text search');
+    expect(startEpicCommand('auth')).toBe('/factory epic auth');
+    expect(NEXT_COMMAND).toBe('/factory next');
+    expect(exploreCommand('tag-cloud')).toBe('/factory explore tag-cloud');
+    expect(newExplorationCommand('  say "hi"\\now\r\nplease\n')).toBe('/factory explore "say \\"hi\\"\\\\now please"');
+  });
+
+  test("every row's, page's, and project's action agrees with the Mac app's command for the same request and backlog", () => {
+    const body = backlogBody();
+    const b = toBacklog(body);
+    const items: StartItem[] = [
+      ...b.queued.map((i) => queuedStart(PID, i)).filter((x): x is StartItem => x !== null),
+      ...b.exploring.map((i) => exploringStart(PID, i)).filter((x): x is StartItem => x !== null),
+      nextStart(PID),
+    ];
+    expect(items.map((i) => i.req.action)).toEqual(['run', 'epic', 'run', 'explore', 'next']);
+    for (const i of items) expect({ req: i.req, mac: startWorkRequest(i.req, PROJECTS, body)?.command }).toEqual({ req: i.req, mac: i.command });
+  });
+
+  test('New exploration agrees for every idea in the table', () => {
+    const ideas = ['plain', 'a "tag" cloud', 'C:\\path', 'line one\nline two\r\nthree\rfour', '  padded\t ', "it's `ticks` and $(sub)", 'café — ✓', '"', '\\', 'x'];
+    for (const idea of ideas) {
+      const req: StartWorkRequest = { project: PID, action: 'new-exploration', idea };
+      expect({ idea, mac: startWorkRequest(req, PROJECTS, null)?.command }).toEqual({ idea, mac: newExplorationCommand(idea) });
+    }
+  });
+});
+
+describe('068 AC6: the actions each row, project, and page offers', () => {
+  test('queued brief and text rows offer Run, a queued epic Start epic, an exploring row Continue exploring', () => {
+    const m = backlogSheet([{ id: PID, name: 'factory' }], { [PID]: loaded(backlogBody()) }, null);
+    const [queued, exploring] = m.projects[0]?.groups ?? [];
+    expect(queued?.rows.map((r) => [r.kindLabel, r.start?.label, r.start?.req, r.start?.command])).toEqual([
+      ['Brief', 'Run', { project: PID, action: 'run', slug: 'notes-search' }, '/factory next Full-text search'],
+      ['Epic', 'Start epic', { project: PID, action: 'epic', slug: 'auth' }, '/factory epic auth'],
+      ['Text', 'Run', { project: PID, action: 'run', title: 'Tidy the README' }, '/factory next Tidy the README'],
+    ]);
+    expect(exploring?.rows.map((r) => [r.start?.label, r.start?.req])).toEqual([['Continue exploring', { project: PID, action: 'explore', slug: 'tag-cloud' }]]);
+    const plan = loaded({ queued: [], exploring: [{ kind: 'epic', slug: 'billing', title: 'Billing', done: null, status: 'draft', members: 0, abandoned: [] }] });
+    expect(backlogSheet([{ id: PID, name: 'factory' }], { [PID]: plan }, null).projects[0]?.groups[0]?.rows[0]?.start?.req).toEqual({ project: PID, action: 'explore', slug: 'billing' });
+  });
+
+  test('each project offers Run next', () => {
+    expect(nextStart(PID)).toEqual({ label: 'Run next', req: { project: PID, action: 'next' }, command: '/factory next' });
+    expect(newExplorationStart(PID, ' a "tag" cloud ')).toEqual({ label: 'New exploration', req: { project: PID, action: 'new-exploration', idea: ' a "tag" cloud ' }, command: '/factory explore "a \\"tag\\" cloud"' });
+  });
+
+  test("a brief or plan page offers its item's action, or none when it is in neither group", () => {
+    const list = loaded({ ...backlogBody(), exploring: [...backlogBody().exploring, { kind: 'epic', slug: 'billing', title: 'Billing', done: null, status: 'draft', members: 0, abandoned: [] }] });
+    expect(pageStart({ kind: 'brief', project: PID, slug: 'notes-search' }, list)?.label).toBe('Run');
+    expect(pageStart({ kind: 'brief', project: PID, slug: 'notes-search' }, list)?.command).toBe('/factory next Full-text search');
+    expect(pageStart({ kind: 'plan', project: PID, slug: 'auth' }, list)?.label).toBe('Start epic');
+    expect(pageStart({ kind: 'brief', project: PID, slug: 'tag-cloud' }, list)?.label).toBe('Continue exploring');
+    expect(pageStart({ kind: 'plan', project: PID, slug: 'billing' }, list)?.req).toEqual({ project: PID, action: 'explore', slug: 'billing' });
+    expect(pageStart({ kind: 'brief', project: PID, slug: 'auth' }, list)).toBeNull(); // a plan's slug, as a brief
+    expect(pageStart({ kind: 'plan', project: PID, slug: 'notes-search' }, list)).toBeNull();
+    expect(pageStart({ kind: 'brief', project: PID, slug: 'done-long-ago' }, list)).toBeNull();
+    expect(pageStart({ kind: 'brief', project: PID, slug: 'notes-search' }, undefined)).toBeNull();
+    expect(pageStart({ kind: 'brief', project: PID, slug: 'notes-search' }, { queued: null, exploring: null })).toBeNull();
+  });
+
+  test('the New exploration sheet blocks a blank idea or an over-long command, and says why', () => {
+    expect(newExploration('a tag cloud')).toEqual({ text: '/factory explore "a tag cloud"', blocked: null });
+    expect(newExploration('').blocked).toBe('An idea is required.');
+    expect(newExploration(' \n\t ').blocked).toBe('An idea is required.');
+    const fits = 'x'.repeat(MAX_COMMAND - '/factory explore ""'.length);
+    expect(newExploration(fits).blocked).toBeNull();
+    expect(newExploration(`${fits}x`).blocked).toBe('The command is over 8,000 characters.');
+    expect(startWorkRequest({ project: PID, action: 'new-exploration', idea: `${fits}x` }, PROJECTS, null)).toBeNull();
+  });
+});
+
+describe('068 AC5: the caller, and copy first, then start, then the toast', () => {
+  const next: StartWorkRequest = { project: PID, action: 'next' };
+
+  test('null in a plain browser, or when Tiny or its api.call is missing', () => {
+    const host = { api: { call: async () => 'drafted' } };
+    expect(startWorkCaller('browser', host)).toBeNull();
+    expect(startWorkCaller(shellMode(''), host)).toBeNull();
+    for (const h of [undefined, null, {}, { api: null }, { api: {} }, { api: { call: 'x' } }]) expect(startWorkCaller('mac', h)).toBeNull();
+  });
+
+  test('in the Mac app it calls exactly START_WORK_METHOD with the request, and narrows the answer', async () => {
+    const calls: unknown[][] = [];
+    let answer: unknown = 'sent';
+    const api = {
+      call(...args: unknown[]): Promise<unknown> {
+        calls.push(args);
+        return Promise.resolve(answer);
+      },
+    };
+    const start = startWorkCaller('mac', { api });
+    expect(start).not.toBeNull();
+    expect(await start?.(next)).toBe('sent');
+    expect(calls).toEqual([[START_WORK_METHOD, next]]);
+    answer = 'junk';
+    expect(await start?.(next)).toBeNull();
+    const failing = startWorkCaller('mac', { api: { call: () => Promise.reject(new Error('denied')) } });
+    expect(await failing?.(next)).toBeNull();
+  });
+
+  test('the command is copied before startWork is called, and the toast is the hand-off\'s for each outcome', async () => {
+    const cases: Array<[HandoffOutcome | null, string]> = [
+      ['drafted', 'Opened a draft in T3 Code'],
+      ['sent', 'Sent to T3 Code'],
+      ['no-github-remote', 'No GitHub remote; copied /factory next'],
+      ['copy-only', 'Copied /factory next'],
+      [null, 'Copied /factory next'],
+    ];
+    for (const [outcome, text] of cases) {
+      const order: string[] = [];
+      const write = async (c: string): Promise<boolean> => (order.push(`copy ${c}`), true);
+      const start = async (r: StartWorkRequest): Promise<HandoffOutcome | null> => (order.push(`start ${r.action}`), outcome);
+      expect(await copyThenStart(write, start, next, NEXT_COMMAND)).toEqual({ text, ok: true });
+      expect(order).toEqual(['copy /factory next', 'start next']);
+    }
+    const failed = await copyThenStart(async () => false, async () => 'copy-only', next, NEXT_COMMAND);
+    expect(failed).toEqual({ text: COPY_FAILED, ok: false });
+  });
+
+  test('in a plain browser every action only copies its command and says "Copied …"', async () => {
+    const copied: string[] = [];
+    const write = async (c: string): Promise<boolean> => (copied.push(c), true);
+    const start = startWorkCaller('browser', { api: { call: async () => 'sent' } });
+    const items = [nextStart(PID), ...toBacklog(backlogBody()).queued.map((i) => queuedStart(PID, i))].filter((x): x is StartItem => x !== null);
+    for (const i of items) expect(await copyThenStart(write, start, i.req, i.command)).toEqual({ text: `Copied ${i.command}`, ok: true });
+    expect(copied).toEqual(items.map((i) => i.command));
+  });
+});

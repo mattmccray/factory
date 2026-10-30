@@ -3,7 +3,7 @@ import { find } from './find';
 import { buildLanes } from './lanes';
 import { ALL, boardJobs } from './projects';
 import { sidebarModel, subtitle, title } from './sidebar';
-import { applyEvent, applyFetched, applyFetchedRelease, applySettled, emptyState, releaseRev, revOf, settledCurrent, startSettled, toSummary, wantsSettled } from './state';
+import { applyBacklog, applyEvent, applyFetched, applyFetchedRelease, applySettled, emptyState, releaseRev, revOf, settledCurrent, startBacklog, startSettled, toSummary, wantsSettled } from './state';
 import { projectRelease, releaseBody } from './fixtures';
 import type { UiState } from './state';
 
@@ -277,5 +277,50 @@ describe('the release slot (059 AC6, AC7)', () => {
     expect(applyFetchedRelease(had, 0, { ok: true, data: { running: 7 } }).release.info).toBeNull();
     const none = twoProjects();
     expect(applyFetchedRelease(none, 0, { ok: false, reason: 'not found' })).toBe(none);
+  });
+});
+
+describe('067: backlog counts and lists', () => {
+  test('AC1: a narrow board (by event or fetched) carries its backlog counts; absent or malformed is none', () => {
+    let s = applyEvent(emptyState(), 'projects', { projects: [P1, P2] });
+    expect(s.boards[P1.id]?.backlog).toEqual({ queued: 0, exploring: 0 });
+    s = applyEvent(s, 'board', { project: P1.id, jobs: [], config: config([]), backlog: { queued: 3, exploring: 1 } });
+    expect(s.boards[P1.id]?.backlog).toEqual({ queued: 3, exploring: 1 });
+    s = applyFetched(s, P2.id, revOf(s, P2.id), { ok: true, data: { jobs: [], config: config([]), backlog: { queued: 2, exploring: 0 } } });
+    expect(s.boards[P2.id]?.backlog).toEqual({ queued: 2, exploring: 0 });
+    s = applyEvent(s, 'board', { project: P1.id, jobs: [], config: config([]) });
+    expect(s.boards[P1.id]?.backlog).toEqual({ queued: 0, exploring: 0 });
+    s = applyEvent(s, 'board', { project: P1.id, jobs: [], config: config([]), backlog: { queued: 'three' } });
+    expect(s.boards[P1.id]?.backlog).toEqual({ queued: 0, exploring: 0 });
+    // an error keeps the last counts, as it keeps the last board
+    s = applyEvent(s, 'error', { project: P2.id, reason: 'config.json: bad' });
+    expect(s.boards[P2.id]?.backlog).toEqual({ queued: 2, exploring: 0 });
+    // a `backlog` event carries no list: it changes no state by itself
+    expect(applyEvent(s, 'backlog', { project: P1.id })).toBe(s);
+  });
+
+  test('AC3: each fetch replaces the list; an older response never overwrites a newer one; a failure keeps the last list and says why', () => {
+    let s = applyEvent(emptyState(), 'projects', { projects: [P1, P2] });
+    expect(emptyState().backlogs).toEqual({});
+    const first = startBacklog(s, P1.id);
+    s = first.state;
+    expect(s.backlogs[P1.id]).toEqual({ status: 'loading', queued: null, exploring: null, reason: null, rev: 1 });
+    const second = startBacklog(s, P1.id);
+    s = second.state;
+    const newer = { queued: [{ kind: 'text', slug: null, title: 'newer', done: null, status: null, members: null, abandoned: [] }], exploring: [] };
+    const older = { queued: [{ kind: 'text', slug: null, title: 'older', done: null, status: null, members: null, abandoned: [] }], exploring: [] };
+    s = applyBacklog(s, P1.id, second.rev, { ok: true, data: newer });
+    s = applyBacklog(s, P1.id, first.rev, { ok: true, data: older }); // the slower, older response
+    expect(s.backlogs[P1.id]?.queued?.map((i) => i.title)).toEqual(['newer']);
+    expect(s.backlogs[P1.id]?.status).toBe('loaded');
+    const third = startBacklog(s, P1.id);
+    s = applyBacklog(third.state, P1.id, third.rev, { ok: false, reason: 'HTTP 500' });
+    expect(s.backlogs[P1.id]).toMatchObject({ status: 'failed', reason: 'HTTP 500' });
+    expect(s.backlogs[P1.id]?.queued?.map((i) => i.title)).toEqual(['newer']);
+    expect(s.backlogs[P2.id]).toBeUndefined(); // the other project is untouched
+    // an unlisted project is never started; a project that leaves drops its list
+    expect(startBacklog(s, 'nobody').state).toBe(s);
+    expect(applyEvent(s, 'projects', { projects: [P2] }).backlogs).toEqual({});
+    expect(applyEvent(s, 'projects', { projects: [P1] }).backlogs[P1.id]).toBe(s.backlogs[P1.id]);
   });
 });

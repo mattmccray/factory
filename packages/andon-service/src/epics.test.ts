@@ -203,7 +203,7 @@ describe('epics on the board and board events (AC1)', () => {
     const p = await plain.next(isReview, fromP);
     const n = await narrow.next(isReview, fromN);
     expect(Object.keys(isRec(p.data) ? p.data : {})).toEqual(['project', 'jobs', 'config', 'epics']);
-    expect(Object.keys(isRec(n.data) ? n.data : {})).toEqual(['project', 'jobs', 'config', 'settled', 'epics']);
+    expect(Object.keys(isRec(n.data) ? n.data : {})).toEqual(['project', 'jobs', 'config', 'settled', 'epics', 'backlog']);
     expect(field(p.data, 'epics')).toEqual([e]);
     expect(field(n.data, 'epics')).toEqual([e]);
     plain.close();

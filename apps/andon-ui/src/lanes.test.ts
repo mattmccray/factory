@@ -226,13 +226,13 @@ describe('gutter and crowded cells (AC4)', () => {
       at({ id: '004-a', stage: 'merged', endedAt: before(30 * HOUR) }),
     ];
     const [lane] = buildLanes([P1], jobs, NOW, false);
-    expect(lane?.meta).toEqual({ active: '3 active · 11h 40m', trouble: { tone: 'red', text: '1 at Andon' }, settled: 1 });
+    expect(lane?.meta).toEqual({ active: '3 active · 11h 40m', trouble: { tone: 'red', text: '1 at Andon' }, settled: 1, queued: 0 });
     expect(lane?.dot).toBe('red');
     const [failed] = buildLanes([P1], jobs.filter((b) => b.job.id !== '002-a'), NOW, false);
     expect(failed?.meta.trouble).toEqual({ tone: 'orange', text: '1 sent back' });
     expect(failed?.dot).toBe('orange');
     const [calm] = buildLanes([P1], [at({ id: '005-a', stage: 'spec' })], NOW, false);
-    expect(calm?.meta).toEqual({ active: '1 active', trouble: null, settled: 0 }); // a legacy job has no claim time
+    expect(calm?.meta).toEqual({ active: '1 active', trouble: null, settled: 0, queued: 0 }); // a legacy job has no claim time
   });
 
   test('the gutter header reads "N active · M idle", and each column has a count and a role', () => {
@@ -869,5 +869,32 @@ describe('063 AC3: the board with the Merged column hidden', () => {
     const css = readFileSync(join(import.meta.dir, 'app.css'), 'utf8');
     expect(css).toContain('.matrix { --cols: 148px repeat(var(--n, 6), minmax(150px, 1fr)); min-width: calc(148px + var(--n, 6) * 150px);');
     expect(css).toContain('.lines.focus .matrix { --cols: 180px repeat(var(--n, 6), minmax(150px, 1fr)); min-width: calc(180px + var(--n, 6) * 150px); }');
+  });
+});
+
+describe('067 AC1: the "N queued" gutter link', () => {
+  const P2 = { id: 'p2', name: 'two' };
+  const jobs = [at({ id: '001-a', stage: 'build', startedAt: before(HOUR) }), at({ id: '002-b', stage: 'spec' }, P2)];
+
+  test('the gutter meta carries the board\'s queued count; nothing else on the lane changes', () => {
+    const without = buildLanes([P1, P2], jobs, NOW, false, {}, [], false, false);
+    const withCounts = buildLanes([P1, P2], jobs, NOW, false, {}, [], false, false, { p1: { queued: 3, exploring: 1 } });
+    expect(withCounts.map((l) => l.meta.queued)).toEqual([3, 0]);
+    expect(without.map((l) => l.meta.queued)).toEqual([0, 0]);
+    const strip = (l: Lane) => ({ ...l, meta: { ...l.meta, queued: 0 } });
+    expect(withCounts.map(strip)).toEqual(without);
+    // an idle lane carries it too
+    const [idle] = buildLanes([P2], [], NOW, false, {}, [], false, false, { p2: { queued: 2, exploring: 0 } });
+    expect([idle?.idle, idle?.meta.queued]).toEqual([true, 2]);
+  });
+
+  test('the lane shows the link beside "N settled" only when queued > 0, and it opens the sheet filtered to the project', () => {
+    const lane = readFileSync(join(import.meta.dir, 'Lane.svelte'), 'utf8');
+    expect(lane).toContain('{#if lane.meta.queued > 0}');
+    expect(lane).toContain('onclick={() => onbacklog(lane.project.id)}>{lane.meta.queued} queued</button>');
+    expect(lane).toContain('onclick={() => onbacklog(lane.project.id)}>Queued <b>{lane.meta.queued}</b></button>');
+    const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
+    expect(app).toContain('onbacklog={openBacklog}');
+    expect(app).toContain('backlogCounts = $derived(Object.fromEntries(ui.projects.map((p): [string, BacklogCounts] => [p.id, ui.boards[p.id]?.backlog ?? NO_BACKLOG])))');
   });
 });

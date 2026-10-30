@@ -12,6 +12,7 @@
 // The Mac app's "Show Merged column" setting (063) can hide the Merged column: the header, every
 // lane, and every sub-lane then have the other five, and a merged job shows only in the Settled
 // sheet and a focused project's recent activity.
+import type { BacklogCounts } from './backlog';
 import { chipRounds, isEpicSettled, isEpicTerminal, isSettled, mergedAt, roundKeys } from './board';
 import type { BoardEpic, BoardJob } from './board';
 import { epicName } from './job';
@@ -363,6 +364,7 @@ export interface GutterMeta {
   active: string; // "2 active · 11h 40m" (the oldest claim among active jobs)
   trouble: { tone: 'red' | 'orange'; text: string } | null; // "1 at Andon", else "1 sent back"
   settled: number; // the "N settled" link: the summary's count plus held jobs that settled on screen
+  queued: number; // the "N queued" link beside it (brief andon-backlog-ui): the board's backlog `queued` count; 0 shows none
 }
 
 /** An epic's dot: the project dots, plus green while it lands or after it landed. */
@@ -507,6 +509,7 @@ function laneOf(
   epics: readonly BoardEpic[],
   needs: boolean,
   mergedHidden: boolean,
+  queued: number,
 ): Lane {
   const columns = boardColumns(mergedHidden);
   const kinds = new Map(jobs.map((b) => [b.key, kindOf(b, now)]));
@@ -542,6 +545,7 @@ function laneOf(
     active: `${ownActive.length} active${oldest !== null ? ` · ${age(now - oldest)}` : ''}`,
     trouble: ownHuman > 0 ? { tone: 'red', text: `${ownHuman} at Andon` } : ownFailed > 0 ? { tone: 'orange', text: `${ownFailed} sent back` } : null,
     settled,
+    queued,
   };
 
   const merges = [...jobs.filter((b) => b.job.stage === 'merged').map((b) => mergedAt(b.job)), summary.lastMergedAt === null ? 0 : time(summary.lastMergedAt)].filter((t) => t > 0);
@@ -582,7 +586,9 @@ function laneOf(
  * start first, holding its jobs (a job whose epic isn't among them stays in the project's cells).
  * `needs` is Needs Me: a lane shown only for its sub-lanes collapses to a one-line header.
  * `mergedHidden` drops the Merged column: every lane's and sub-lane's cells are the other five, and a
- * lane whose only live jobs are merged is idle.
+ * lane whose only live jobs are merged is idle. `backlogs` are the projects' narrow-board backlog
+ * counts (a missing one is none): each lane's gutter meta carries its `queued` count, for the
+ * "N queued" link; nothing else on the lane depends on it.
  */
 export function buildLanes(
   projects: ReadonlyArray<{ id: string; name: string }>,
@@ -593,6 +599,7 @@ export function buildLanes(
   epics: readonly BoardEpic[] = [],
   needs = false,
   mergedHidden = false,
+  backlogs: Readonly<Record<string, BacklogCounts>> = {},
 ): Lane[] {
   return projects.map((p, i) =>
     laneOf(
@@ -605,6 +612,7 @@ export function buildLanes(
       epics.filter((e) => e.project.id === p.id),
       needs,
       mergedHidden,
+      backlogs[p.id]?.queued ?? 0,
     ),
   );
 }

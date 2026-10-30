@@ -3,14 +3,19 @@
 //   project=<id>                    the focused project (absent: All Projects)
 //   job=<project>/<job id>          the open inspector's job
 //   epic=<project>/<slug>           the open inspector's epic page (instead of a job; it wins over job=)
+//   brief=<project>/<slug>          the open inspector's brief page (instead of a job or an epic)
+//   plan=<project>/<slug>           the open inspector's plan page (instead of a job or an epic)
 //   file=<path|timing>              its selected file (only with job= or epic=)
 //   settled  or  settled=<project>  the Settled sheet, optionally filtered to one project
+//   backlog  or  backlog=<project>  the Backlog sheet, optionally filtered to one project
 //   whats-new  or  whats-new=<project>  the What's New sheet: every release, or the ones a project is missing
 //   needs                           the Needs Me filter
 // The Rework, Abandon, and shortcut sheets, and an inspector open with nothing selected, have no
 // hash form: they ride in `history.state`. Opening a layer pushes a history entry, so Back closes
 // it; every other change (a file, the focus, Needs Me) replaces the entry. Pure: App.svelte reads
 // and writes `location` and `history` with what this returns. `?shell=mac` stays in the query.
+import { isSlug } from './backlog';
+import type { DocRef } from './backlog';
 import { TIMING } from './docs';
 import { isRecord } from './job';
 
@@ -35,15 +40,17 @@ export interface View {
   inspector: boolean; // the inspector is open (with `job` or `epic`, or "Nothing selected")
   job: JobRef | null;
   epic?: EpicRef | undefined; // the epic page; absent (or undefined): none. Never set together with `job`.
+  page?: DocRef | undefined; // a brief's or plan's page; absent (or undefined): none. Never set together with `job` or `epic`.
   file: string | null; // a doc path, or TIMING; null: the inspector picks
   settled: { project: string | null } | null; // the Settled sheet and its project filter
+  backlog: { project: string | null } | null; // the Backlog sheet and its project filter
   whatsNew: { project: string | null } | null; // the What's New sheet: whole (null), or scoped to one project
   sheet: SheetName | null;
   needs: boolean;
 }
 
 /** The default view: All Projects, nothing open. */
-export const defaultView = (): View => ({ project: null, inspector: false, job: null, file: null, settled: null, whatsNew: null, sheet: null, needs: false });
+export const defaultView = (): View => ({ project: null, inspector: false, job: null, file: null, settled: null, backlog: null, whatsNew: null, sheet: null, needs: false });
 
 /** The board's key for a job (`projects.ts` `boardJobs`). */
 export const jobKey = (ref: JobRef): string => `${ref.project}/${ref.id}`;
@@ -51,8 +58,11 @@ export const jobKey = (ref: JobRef): string => `${ref.project}/${ref.id}`;
 /** The board's key for an epic (`projects.ts` `boardEpics`). */
 export const epicKey = (ref: EpicRef): string => `${ref.project}/${ref.slug}`;
 
-/** Whether a view's inspector shows something: a job or an epic. */
-const named = (v: View): boolean => v.job !== null || v.epic !== undefined;
+/** Whether a view's inspector shows something: a job, an epic, or a brief's or plan's page. */
+const named = (v: View): boolean => v.job !== null || v.epic !== undefined || v.page !== undefined;
+
+/** Whether a view's inspector shows a job or an epic: the subjects with files. */
+const withFiles = (v: View): boolean => v.page === undefined && (v.job !== null || v.epic !== undefined);
 
 const enc = encodeURIComponent;
 
@@ -68,10 +78,12 @@ function dec(s: string): string | null {
 export function formatHash(v: View): string {
   const parts: string[] = [];
   if (v.project !== null) parts.push(`project=${enc(v.project)}`);
-  if (v.epic !== undefined) parts.push(`epic=${enc(v.epic.project)}/${enc(v.epic.slug)}`);
+  if (v.page !== undefined) parts.push(`${v.page.kind}=${enc(v.page.project)}/${enc(v.page.slug)}`);
+  else if (v.epic !== undefined) parts.push(`epic=${enc(v.epic.project)}/${enc(v.epic.slug)}`);
   else if (v.job !== null) parts.push(`job=${enc(v.job.project)}/${enc(v.job.id)}`);
-  if (named(v) && v.file !== null) parts.push(`file=${v.file === TIMING ? 'timing' : enc(v.file)}`);
+  if (withFiles(v) && v.file !== null) parts.push(`file=${v.file === TIMING ? 'timing' : enc(v.file)}`);
   if (v.settled !== null) parts.push(v.settled.project === null ? 'settled' : `settled=${enc(v.settled.project)}`);
+  if (v.backlog !== null) parts.push(v.backlog.project === null ? 'backlog' : `backlog=${enc(v.backlog.project)}`);
   if (v.whatsNew !== null) parts.push(v.whatsNew.project === null ? 'whats-new' : `whats-new=${enc(v.whatsNew.project)}`);
   if (v.needs) parts.push('needs');
   return parts.length > 0 ? `#${parts.join('&')}` : '';
@@ -96,16 +108,25 @@ function parseEpic(value: string): EpicRef | null {
   return pair === null ? null : { project: pair[0], slug: pair[1] };
 }
 
+/** A brief's or plan's page: its slug must pass the slug rule, or the form is ignored. */
+function parsePage(kind: DocRef['kind'], value: string): DocRef | null {
+  const pair = parsePair(value);
+  return pair === null || !isSlug(pair[1]) ? null : { kind, project: pair[0], slug: pair[1] };
+}
+
 /**
  * The view a hash names (with or without its `#`). Unknown keys and malformed values are ignored,
  * so an empty or broken hash is the default view; it never throws. A file needs a job or an epic.
- * The inspector is open exactly when a job or an epic is named; an epic wins over a job.
+ * The inspector is open exactly when a job, an epic, or a page is named; one subject at a time: a
+ * brief or plan page wins over an epic, and an epic over a job (the last good `brief=` or `plan=` wins).
+ * A file needs a job or an epic, never a page.
  */
 export function parseHash(hash: string): View {
   const v = defaultView();
   const body = hash.startsWith('#') ? hash.slice(1) : hash;
   let file: string | null = null;
   let epic: EpicRef | null = null;
+  let page: DocRef | null = null;
   for (const part of body.split('&')) {
     if (part === '') continue;
     const eq = part.indexOf('=');
@@ -118,12 +139,20 @@ export function parseHash(hash: string): View {
       v.job = parseJob(raw) ?? v.job;
     } else if (key === 'epic' && raw !== null) {
       epic = parseEpic(raw) ?? epic;
+    } else if ((key === 'brief' || key === 'plan') && raw !== null) {
+      page = parsePage(key, raw) ?? page;
     } else if (key === 'file' && raw !== null) {
       const f = raw === 'timing' ? TIMING : dec(raw);
       if (f !== null && f !== '') file = f;
     } else if (key === 'settled') {
       const p = raw === null || raw === '' ? null : dec(raw);
       v.settled = { project: p };
+    } else if (key === 'backlog') {
+      if (raw === null || raw === '') v.backlog = { project: null };
+      else {
+        const p = dec(raw);
+        if (p !== null) v.backlog = { project: p }; // a malformed escape: the form is ignored
+      }
     } else if (key === 'whats-new') {
       if (raw === null || raw === '') v.whatsNew = { project: null };
       else {
@@ -134,12 +163,15 @@ export function parseHash(hash: string): View {
       v.needs = true;
     }
   }
-  if (epic !== null) {
+  if (page !== null) {
+    v.page = page;
+    v.job = null;
+  } else if (epic !== null) {
     v.epic = epic;
     v.job = null;
   }
   v.inspector = named(v);
-  v.file = named(v) ? file : null;
+  v.file = withFiles(v) ? file : null;
   return v;
 }
 
@@ -185,10 +217,11 @@ export function initialView(hash: string, stored: string, all: string, state: un
 
 export type Step = 'none' | 'push' | 'replace' | 'back';
 
-/** Whether `next` opens a layer that `prev` didn't have: the inspector, the Settled sheet, the What's New sheet, or another sheet. */
+/** Whether `next` opens a layer that `prev` didn't have: the inspector, the Settled or Backlog sheet, the What's New sheet, or another sheet. */
 export const opensLayer = (prev: View, next: View): boolean =>
   (!prev.inspector && next.inspector) ||
   (prev.settled === null && next.settled !== null) ||
+  (prev.backlog === null && next.backlog !== null) ||
   (prev.whatsNew === null && next.whatsNew !== null) ||
   (next.sheet !== null && next.sheet !== prev.sheet);
 

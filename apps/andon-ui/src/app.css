@@ -615,3 +615,40 @@ kbd { display: inline-block; min-width: 18px; padding: 0 5px; text-align: center
 .about .about-link a { color: var(--blue-ink); text-decoration: none; }
 .about .about-link a:hover { text-decoration: underline; }
 .about .about-copy { margin-top: 6px; font-size: 11px; color: var(--label3); }
+
+/* The backlog (brief andon-backlog-ui): the Backlog sheet reuses the Settled sheet's list and rows,
+   with project and group headings; a text line is a row with no page (not a button). A brief's or
+   plan's page reuses the epic page's header and member rows. The search's Backlog results drop
+   under the field. Every color is a token, so light and dark both follow the appearance. */
+.search { position: relative; }
+.blist .bproj { position: sticky; top: 0; z-index: 1; padding: 8px 12px 4px; font-size: 11.5px; font-weight: 600; color: var(--label); background: var(--raised); border-bottom: .5px solid var(--sep); }
+.blist .bgroup { padding: 7px 12px 3px; font-size: 10.5px; font-weight: 600; color: var(--label3); }
+.blist .srow .si { font-family: var(--sys); color: var(--label2); overflow-wrap: anywhere; }
+.blist .btext { cursor: default; }
+.blist .btext:hover { background: none; }
+/* Starting work (t3-start-work): a project's Run next and New exploration…, a row's action, a page's. */
+.blist .bproj { display: flex; align-items: center; gap: 8px; }
+.blist .bpname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.blist .bacts { display: flex; gap: 6px; flex: none; }
+.blist .brow { display: flex; align-items: flex-start; border-bottom: .5px solid var(--sep); }
+.blist li.brow:last-child { border-bottom: 0; }
+.blist .brow .srow { flex: 1; min-width: 0; border-bottom: 0; }
+.blist .bstart { flex: none; height: 22px; padding: 0 9px; font-size: 11.5px; }
+.blist .brow .bstart { margin: 6px 12px 0 0; }
+.dacts { margin-top: 8px; }
+.sp-doc { color: var(--label3); }
+.sp-doc-status { color: var(--label2); }
+.pmem { width: 100%; text-align: left; border: 0; background: none; font: inherit; color: inherit; }
+.pmem:hover { background: var(--ctl); }
+.mst.bs-ready, .mst.bs-done { color: var(--green-ink); background: var(--tint-green); }
+.mst.bs-draft { color: var(--blue-ink); background: none; box-shadow: inset 0 0 0 .5px var(--blue); }
+.mst.bs-abandoned, .mst.bs-none { color: var(--label3); background: none; box-shadow: inset 0 0 0 .5px var(--sep2); }
+.members .empty { padding: 4px 8px; font-size: 11.5px; color: var(--label3); }
+.md .empty.fail { color: var(--red-ink); overflow-wrap: anywhere; }
+.bhits { position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; width: max(100%, 320px); padding: 6px; border-radius: 10px; background: var(--raised); box-shadow: var(--shadow-raised); color: var(--label); }
+.bhits h3 { margin: 2px 6px 4px; font-size: 10.5px; font-weight: 600; color: var(--label3); }
+.bhits ul { list-style: none; margin: 0; padding: 0; }
+.bhits button { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 1px 0; width: 100%; text-align: left; border: 0; background: none; padding: 5px 6px; border-radius: 6px; color: inherit; font: inherit; }
+.bhits button:hover, .bhits button:focus-visible { background: var(--ctl); }
+.bhits .bt { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bhits .bp { grid-column: 2; font-size: 10.5px; color: var(--label3); }

@@ -1,7 +1,8 @@
 <script lang="ts">
   // One project's lane (design §5): the 148px gutter (the name, which focuses the project, its
   // status dot, "N active · <oldest claim>", "N at Andon" or "N sent back", and the "N settled"
-  // link, shown when focused too), then six cells of tokens, newest first, with "+N more" past the cap and the dashed
+  // link, shown when focused too, and beside it the "N queued" link to the Backlog sheet when the
+  // project has queued work), then six cells of tokens, newest first, with "+N more" past the cap and the dashed
   // ghosts of needs-human jobs. An idle lane collapses to one row in All Projects. A token that
   // changes column slides there in 250ms (a crossfade between the cells), then highlights. Under a
   // search, a lane with no match dims to 25% whole; in a lit lane, each token that misses dims.
@@ -31,9 +32,10 @@
     onopenepic: (key: string) => void;
     onfocus: (pid: string) => void;
     onsettled: (pid: string) => void;
+    onbacklog: (pid: string) => void;
     onhover: (key: string | null, el: HTMLElement | null) => void;
   }
-  let { lane, focused, found, selectedKey, selectedEpic, fresh, moved, onopen, onopenepic, onfocus, onsettled, onhover }: Props = $props();
+  let { lane, focused, found, selectedKey, selectedEpic, fresh, moved, onopen, onopenepic, onfocus, onsettled, onbacklog, onhover }: Props = $props();
 
   // Only a token that moves between two cells animates; one that appears or leaves has no partner and doesn't.
   const [send, receive] = crossfade({ duration: () => motionMs(250), easing: cubicOut, fallback: () => ({ duration: 0 }) });
@@ -55,6 +57,9 @@
       {#if lane.meta.settled > 0}
         <button class="settled-pill" type="button" aria-haspopup="dialog" onclick={() => onsettled(lane.project.id)}>Settled <b>{lane.meta.settled}</b></button>
       {/if}
+      {#if lane.meta.queued > 0}
+        <button class="settled-pill" type="button" aria-haspopup="dialog" onclick={() => onbacklog(lane.project.id)}>Queued <b>{lane.meta.queued}</b></button>
+      {/if}
     </div>
   </div>
   {@render subRows()}
@@ -65,11 +70,12 @@
         <span class="dot {lane.dot}" aria-hidden="true"></span><span class="pname">{name}</span>
       </button>
       <span class="meta" title="active jobs · oldest claim">{lane.meta.active}</span>
-      {#if lane.meta.trouble !== null || lane.meta.settled > 0}
+      {#if lane.meta.trouble !== null || lane.meta.settled > 0 || lane.meta.queued > 0}
         <span class="meta">
           {#if lane.meta.trouble !== null}<span class="t-{lane.meta.trouble.tone}">{lane.meta.trouble.text}</span>{/if}
           {#if lane.meta.trouble !== null && lane.meta.settled > 0}<span aria-hidden="true"> · </span>{/if}
           {#if lane.meta.settled > 0}<button class="slink" type="button" aria-haspopup="dialog" onclick={() => onsettled(lane.project.id)}>{lane.meta.settled} settled</button>{/if}
+          {#if lane.meta.queued > 0}{#if lane.meta.trouble !== null || lane.meta.settled > 0}<span aria-hidden="true"> · </span>{/if}<button class="slink" type="button" aria-haspopup="dialog" onclick={() => onbacklog(lane.project.id)}>{lane.meta.queued} queued</button>{/if}
         </span>
       {/if}
     </div>

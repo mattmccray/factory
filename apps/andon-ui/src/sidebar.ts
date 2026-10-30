@@ -221,7 +221,7 @@ export function appView(search: string): AppView {
 
 // ---- the Mac app's pushed events ----
 // The Mac app's View menu hides or shows the status bar and the Merged column and pushes each choice
-// to the page as an event; its other View items (Needs Me, Show Settled…, the sidebar, the
+// to the page as an event; its other View items (Needs Me, Show Settled…, Show Backlog…, the sidebar, the
 // inspector) push an event asking the page to act. In a browser there are no such events: the
 // status bar and the Merged column always show.
 
@@ -234,13 +234,14 @@ export const MERGED_EVENT = 'merged';
 // The View menu's page actions; their payloads are ignored.
 export const NEEDS_ME_EVENT = 'needsme';
 export const SETTLED_EVENT = 'settled';
+export const BACKLOG_EVENT = 'backlog'; // View → Show Backlog… (067): open the whole Backlog sheet
 export const SIDEBAR_EVENT = 'sidebar';
 export const INSPECTOR_EVENT = 'inspector';
 /** Every event the page subscribes to: tinyjs.json's api gate names each as `event.<name>`, in this order. */
-export const PUSHED_EVENTS: readonly string[] = [STATUS_BAR_EVENT, WHATS_NEW_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, INSPECTOR_EVENT];
+export const PUSHED_EVENTS: readonly string[] = [STATUS_BAR_EVENT, WHATS_NEW_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, BACKLOG_EVENT, SIDEBAR_EVENT, INSPECTOR_EVENT];
 
 /** What the page does for a View menu event. */
-export type MenuEventAction = 'toggle-needs' | 'open-settled' | 'toggle-sidebar' | 'toggle-inspector';
+export type MenuEventAction = 'toggle-needs' | 'open-settled' | 'open-backlog' | 'toggle-sidebar' | 'toggle-inspector';
 
 /** The page's action for a View menu page event; null for any other event. */
 export function menuEventAction(event: string): MenuEventAction | null {
@@ -249,6 +250,8 @@ export function menuEventAction(event: string): MenuEventAction | null {
       return 'toggle-needs';
     case SETTLED_EVENT:
       return 'open-settled';
+    case BACKLOG_EVENT:
+      return 'open-backlog';
     case SIDEBAR_EVENT:
       return 'toggle-sidebar';
     case INSPECTOR_EVENT:
@@ -259,7 +262,7 @@ export function menuEventAction(event: string): MenuEventAction | null {
 }
 
 /** The View menu's page events, in menu order: App.svelte subscribes to each and acts by `menuEventAction`. */
-export const MENU_EVENTS: readonly string[] = [NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, INSPECTOR_EVENT];
+export const MENU_EVENTS: readonly string[] = [NEEDS_ME_EVENT, SETTLED_EVENT, BACKLOG_EVENT, SIDEBAR_EVENT, INSPECTOR_EVENT];
 
 /** Subscribe to one pushed event; returns the unsubscribe. */
 export type Subscribe = (event: string, fn: (data: unknown) => void) => () => void;

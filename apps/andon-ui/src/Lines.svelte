@@ -31,8 +31,9 @@
     onopenepic: (key: string) => void;
     onfocus: (pid: string) => void;
     onsettled: (pid: string) => void;
+    onbacklog: (pid: string) => void;
   }
-  let { lanes, header, jobs, focused, recent, now, found, selectedKey, selectedEpic, fresh, moved, onopen, onopenepic, onfocus, onsettled }: Props = $props();
+  let { lanes, header, jobs, focused, recent, now, found, selectedKey, selectedEpic, fresh, moved, onopen, onopenepic, onfocus, onsettled, onbacklog }: Props = $props();
 
   // The popover opens after 350ms over (or focused on) a token, and closes when it leaves.
   const HOVER_MS = 350;
@@ -84,7 +85,7 @@
     </div>
     {#each lanes as lane (lane.project.id)}
       <div class="lane-slot" animate:flip={{ duration: motionMs(250) }}>
-        <Lane {lane} {focused} {found} {selectedKey} {selectedEpic} {fresh} {moved} onopen={open} onopenepic={openEpic} {onfocus} {onsettled} {onhover} />
+        <Lane {lane} {focused} {found} {selectedKey} {selectedEpic} {fresh} {moved} onopen={open} onopenepic={openEpic} {onfocus} {onsettled} {onbacklog} {onhover} />
       </div>
     {/each}
   </div>

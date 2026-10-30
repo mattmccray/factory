@@ -2,20 +2,21 @@
 // (AC5), only backend.ts names Tiny or txiki (through Tiny's own vendored types, narrowed to
 // `MacApp`), the window loads the service on loopback with the page's Tiny API denied but for its
 // drag regions, the status bar event the Mac app pushes (AC6), the one project menu method, the
-// Settings window's two settings methods (035), the main window's hand-off method (036), and the
-// job menu method (040), the
+// Settings window's two settings methods (035), the main window's hand-off method (036), the
+// job menu method (040), and the main window's start method (068), the
 // Mac app pins the Tiny JS it was tested on, and the backend entry is the Bun bundle of backend.ts.
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BACKEND_OUT, appVersion, bundleBackend } from '../build';
 import { GET_ABOUT_METHOD } from './about';
-import { INSPECTOR_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, STATUS_BAR_EVENT, WHATS_NEW_EVENT } from './appmenu';
+import { BACKLOG_EVENT, INSPECTOR_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, STATUS_BAR_EVENT, WHATS_NEW_EVENT } from './appmenu';
 import { DEFAULT_PORT, pageUrl } from './autostart';
 import { PROJECT_MENU_METHOD } from './projectmenu';
 import { GET_SETTINGS_METHOD, SET_SETTING_METHOD, VIEW_STATE_METHOD } from './settings';
 import { HAND_OFF_METHOD } from './handoff';
 import { JOB_MENU_METHOD } from './jobmenu';
+import { START_WORK_METHOD } from './startwork';
 import { isRecord } from './state';
 
 const appDir = join(import.meta.dir, '..');
@@ -42,7 +43,7 @@ const readJson = (path: string): Record<string, unknown> => {
 describe('AC5: the Mac app runs no contract, service, or UI code', () => {
   test('the scan sees the logic modules and the adapter', () => {
     expect(sources).toContain(ADAPTER);
-    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts', 'appmenu.ts', 'projectmenu.ts', 'settings.ts', 'handoff.ts', 'jobmenu.ts', 'about.ts']) expect(sources).toContain(f);
+    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts', 'appmenu.ts', 'projectmenu.ts', 'settings.ts', 'handoff.ts', 'jobmenu.ts', 'about.ts', 'startwork.ts']) expect(sources).toContain(f);
   });
 
   test('the import matcher flags @factory/*, the UI, and the service, not the Mac app itself', () => {
@@ -200,6 +201,7 @@ describe('AC6: tinyjs.json', () => {
           'event.merged',
           'event.needsme',
           'event.settled',
+          'event.backlog',
           'event.sidebar',
           'event.inspector',
           'projectMenu',
@@ -209,6 +211,7 @@ describe('AC6: tinyjs.json', () => {
           'jobMenu',
           'setViewState',
           'getAbout',
+          'startWork',
         ],
       },
       about: 'menu',
@@ -239,7 +242,7 @@ describe('AC6: tinyjs.json', () => {
     expect(cfg.about).toBe('menu');
   });
 
-  test("the api gate denies every Tiny call for the page except its drag regions, the pushed events, projectMenu, the two settings methods, handOff, jobMenu, setViewState, and getAbout", () => {
+  test("the api gate denies every Tiny call for the page except its drag regions, the pushed events, projectMenu, the two settings methods, handOff, jobMenu, setViewState, getAbout, and startWork", () => {
     // Tiny's page runtime turns a mousedown on [data-tiny-drag] into `win.startDrag` (a double-click
     // into `win.zoom`), and the backend's gate checks both: they are the narrowest exception. The one
     // event the page may receive is the status bar state the backend pushes (`event.<name>` is how
@@ -266,30 +269,47 @@ describe('AC6: tinyjs.json', () => {
     // the About window, and no event.
     expect(GET_ABOUT_METHOD).toBe('getAbout');
     const after063 = [...after059, ...newEvents, VIEW_STATE_METHOD];
-    expect(cfg.api).toEqual({
-      disable: ['*'],
-      enable: ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`, `event.${WHATS_NEW_EVENT}`, ...newEvents, PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD, VIEW_STATE_METHOD, GET_ABOUT_METHOD],
-    });
+    // Show Backlog… (067) adds exactly one pushed event, `backlog`, right after `settled`, which the
+    // page only receives; no page-callable method is added.
+    expect(BACKLOG_EVENT).toBe('backlog');
+    const viewEvents = [`event.${MERGED_EVENT}`, `event.${NEEDS_ME_EVENT}`, `event.${SETTLED_EVENT}`, `event.${BACKLOG_EVENT}`, `event.${SIDEBAR_EVENT}`, `event.${INSPECTOR_EVENT}`];
+    // Starting work (068) adds exactly one page-callable method, `startWork`, answered only for the
+    // main window; it takes a project id, an action, and a slug, a free-text line's title, or an
+    // idea, never a command. No event is added.
+    expect(START_WORK_METHOD).toBe('startWork');
+    const after067 = ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`, `event.${WHATS_NEW_EVENT}`, ...viewEvents, PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD, VIEW_STATE_METHOD, GET_ABOUT_METHOD];
+    expect(cfg.api).toEqual({ disable: ['*'], enable: [...after067, START_WORK_METHOD] });
     const enable = isRecord(cfg.api) && Array.isArray(cfg.api.enable) ? cfg.api.enable : [];
     const events = (list: readonly unknown[]): unknown[] => list.filter((e) => typeof e === 'string' && e.startsWith('event.'));
     const methods = (list: readonly unknown[]): unknown[] => list.filter((e) => typeof e === 'string' && !e.startsWith('event.') && !e.startsWith('win.'));
     // 063: the 059 list, plus the new events, plus exactly one method
     expect(after063.filter((e) => !after059.includes(String(e)))).toEqual([...newEvents, VIEW_STATE_METHOD]);
-    // 065: the 063 list plus exactly one method, getAbout
-    expect(enable.filter((e) => !after063.includes(String(e)))).toEqual([GET_ABOUT_METHOD]);
-    expect(after063.every((e) => enable.includes(e))).toBe(true);
-    expect(enable).toHaveLength(after063.length + 1);
-    expect(methods(enable)).toEqual([...methods(after059), 'setViewState', 'getAbout']);
-    expect(events(enable)).toEqual(['event.statusbar', 'event.whatsnew', ...newEvents]);
+    // 065: the 063 list plus exactly one method, getAbout; 067: plus exactly one event, backlog
+    expect(after067.filter((e) => !after063.includes(String(e)))).toEqual([`event.${BACKLOG_EVENT}`, GET_ABOUT_METHOD]);
+    // 068: the 067 list plus exactly one method, startWork
+    expect(enable.filter((e) => !after067.includes(String(e)))).toEqual([START_WORK_METHOD]);
+    expect(after067.every((e) => enable.includes(e))).toBe(true);
+    expect(enable).toHaveLength(after067.length + 1);
+    expect(methods(enable)).toEqual([...methods(after059), 'setViewState', 'getAbout', 'startWork']);
+    expect(events(enable)).toEqual(['event.statusbar', 'event.whatsnew', ...viewEvents]);
     expect(cfg.inject).toBeUndefined();
   });
 
-  test('the backend exports exactly those seven api methods: one more than after 063, getAbout', () => {
+  test('the backend exports exactly those eight api methods: one more than after 065, startWork', () => {
     const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
     const block = /^export const api = \{\n([\s\S]*?)^\};$/m.exec(adapter)?.[1] ?? '';
-    const before = [PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD, VIEW_STATE_METHOD];
-    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([...before, GET_ABOUT_METHOD]);
-    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout']);
+    const before = [PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD, VIEW_STATE_METHOD, GET_ABOUT_METHOD];
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([...before, START_WORK_METHOD]);
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout', 'startWork']);
+  });
+
+  test('068 AC4: startWork checks the main window first, and the page starts work by the same method name', () => {
+    const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
+    const body = /export async function startWork\([^)]*\)[^{]*\{\n([^\n]*)/.exec(adapter)?.[1]?.trim();
+    expect(body).toBe('if (!fromMainWindow(meta)) return null;');
+    expect(adapter).toContain('  startWork: (params: unknown, app: MacApp, meta: unknown): Promise<HandoffOutcome | null> => startWork(params, app, meta),');
+    const ui = readFileSync(join(repoDir, 'apps', 'andon-ui', 'src', 'startwork.ts'), 'utf8');
+    expect(ui).toContain(`export const START_WORK_METHOD = '${START_WORK_METHOD}';`);
   });
 
   test('065 AC3: getAbout checks the About window first, takes no params, and the page asks by the same method name', () => {

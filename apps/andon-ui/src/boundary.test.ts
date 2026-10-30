@@ -122,7 +122,7 @@ describe('Andon never writes job state (026 AC5)', () => {
     }
   });
 
-  test("the page calls the Mac app's backend in six places only, each with its own fixed method names (032, 033, 035, 036, 040, 063, 065)", () => {
+  test("the page calls the Mac app's backend in seven places only, each with its own fixed method names (032, 033, 035, 036, 040, 063, 065, 068)", () => {
     // Every mention of Tiny's `api.call` (or a `'call'` key) across the page's sources.
     const hits: { file: string; hit: string }[] = [];
     for (const file of sources) {
@@ -135,6 +135,7 @@ describe('Andon never writes job state (026 AC5)', () => {
       { file: 'projectmenu.ts', hit: 'api.call' },
       { file: 'settings.ts', hit: 'api.call' },
       { file: 'sidebar.ts', hit: 'api.call' },
+      { file: 'startwork.ts', hit: 'api.call' },
     ]);
     const text = read(join(import.meta.dir, 'projectmenu.ts'));
     // The one method name, fixed; the one call site passes it and a `{ project }` and nothing else.
@@ -177,25 +178,32 @@ describe('Andon never writes job state (026 AC5)', () => {
     const about = read(join(import.meta.dir, 'about.ts'));
     expect(about).toContain("export const GET_ABOUT_METHOD = 'getAbout';");
     expect([...about.matchAll(/Reflect\.apply\(([^;]*?)\);/g)].map((m) => m[1])).toEqual(['call, api, [GET_ABOUT_METHOD, null]']);
+    // The start caller (068): its one fixed method name, and the one call site passes it and the
+    // request (a project id, an action, and a slug, a free-text line's title, or the idea:
+    // StartWorkRequest), never a command.
+    const startwork = read(join(import.meta.dir, 'startwork.ts'));
+    expect(startwork).toContain("export const START_WORK_METHOD = 'startWork';");
+    expect([...startwork.matchAll(/Reflect\.apply\(([^;]*?)\);/g)].map((m) => m[1])).toEqual(['call, api, [START_WORK_METHOD, req]']);
+    expect(startwork).toContain("export type StartWorkRequest = { project: string; action: 'next' } | { project: string; action: 'run'; slug: string } | { project: string; action: 'run'; title: string } | { project: string; action: 'epic' | 'explore'; slug: string } | { project: string; action: 'new-exploration'; idea: string };");
     // No other file reaches Tiny's api object: only sidebar.ts's push subscriber reads `api.on`.
     for (const file of sources) {
       const name = file.slice(import.meta.dir.length + 1);
-      if (name === 'projectmenu.ts' || name === 'jobmenu.ts' || name === 'sidebar.ts' || name === 'settings.ts' || name === 'handoff.ts' || name === 'about.ts') continue;
+      if (name === 'projectmenu.ts' || name === 'jobmenu.ts' || name === 'sidebar.ts' || name === 'settings.ts' || name === 'handoff.ts' || name === 'about.ts' || name === 'startwork.ts') continue;
       expect({ file: name, hit: /\bhost\.api\b|\btiny\.api\b|\bapi\.on\b/.exec(read(file))?.[0] ?? null }).toEqual({ file: name, hit: null });
     }
   });
 
-  test("the page hears exactly the Mac app's pushed events its api gate names: statusbar and whatsnew (059), and the View menu's (063)", () => {
+  test("the page hears exactly the Mac app's pushed events its api gate names: statusbar and whatsnew (059), the View menu's (063), and Show Backlog…'s (067)", () => {
     expect(STATUS_BAR_EVENT).toBe('statusbar');
     expect(WHATS_NEW_EVENT).toBe('whatsnew');
-    expect(PUSHED_EVENTS).toEqual(['statusbar', 'whatsnew', 'merged', 'needsme', 'settled', 'sidebar', 'inspector']);
+    expect(PUSHED_EVENTS).toEqual(['statusbar', 'whatsnew', 'merged', 'needsme', 'settled', 'backlog', 'sidebar', 'inspector']);
     const tiny: unknown = JSON.parse(read(join(app, '..', 'andon', 'tinyjs.json')));
     const gate = isRecord(tiny) && isRecord(tiny.api) && Array.isArray(tiny.api.enable) ? tiny.api.enable : [];
     expect(gate.filter((e): e is string => typeof e === 'string' && e.startsWith('event.'))).toEqual(PUSHED_EVENTS.map((e) => `event.${e}`));
     expect(gate).toContain('event.whatsnew');
     // Every subscription goes through pushSubscriber with one of those names, in App.svelte only.
     const subs = [...read(join(import.meta.dir, 'App.svelte')).matchAll(/subscribe\?\.\((\w+),/g)].map((m) => m[1]);
-    expect(subs).toEqual(['STATUS_BAR_EVENT', 'WHATS_NEW_EVENT', 'MERGED_EVENT', 'NEEDS_ME_EVENT', 'SETTLED_EVENT', 'SIDEBAR_EVENT', 'INSPECTOR_EVENT']);
+    expect(subs).toEqual(['STATUS_BAR_EVENT', 'WHATS_NEW_EVENT', 'MERGED_EVENT', 'NEEDS_ME_EVENT', 'SETTLED_EVENT', 'BACKLOG_EVENT', 'SIDEBAR_EVENT', 'INSPECTOR_EVENT']);
   });
 
   test('Fetcher stays path-only', () => {
@@ -214,9 +222,9 @@ describe('Andon never writes job state (026 AC5)', () => {
         if (line.match(command) === null) continue;
         const trimmed = line.trim();
         if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue; // a comment
-        if (file.endsWith('inspector.ts')) {
-          // inspector.ts builds the copied strings: each mention opens a template literal.
-          for (const m of line.matchAll(command)) expect({ file, line: trimmed, opensString: line[m.index - 1] === '`' }).toEqual({ file, line: trimmed, opensString: true });
+        if (file.endsWith('inspector.ts') || file.endsWith('startwork.ts')) {
+          // inspector.ts and startwork.ts (068) build the copied strings: each mention opens a string literal.
+          for (const m of line.matchAll(command)) expect({ file, line: trimmed, opensString: line[m.index - 1] === '`' || line[m.index - 1] === "'" }).toEqual({ file, line: trimmed, opensString: true });
           built++;
           continue;
         }
@@ -226,7 +234,7 @@ describe('Andon never writes job state (026 AC5)', () => {
         command.lastIndex = 0;
       }
     }
-    expect(built).toBe(5); // approve, rework, abandon, and an epic's resume and abandon
+    expect(built).toBe(10); // approve, rework, abandon, an epic's resume and abandon, and the five starts (068)
   });
 
   test('the drawer and the Settled dialog are gone', () => {
