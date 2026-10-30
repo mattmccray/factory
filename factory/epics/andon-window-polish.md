@@ -1,6 +1,6 @@
 # Andon window and menu polish
 
-- Status: draft
+- Status: ready
 - Sources: the explore request of 2026-10-30 (Matt's notes: a full-bleed About window as a child of main, ⌘W for Settings and About, New exploration in the app and context menus, a resizable inspector Files divider and sidebar, an epic right-click menu with Open in T3 Code); briefs `andon-about`, `settings-window-chrome`, `t3-start-work`, `job-context-menu`, `project-context-menu`
 - Date: 2026-10-30
 
