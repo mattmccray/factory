@@ -3,9 +3,15 @@
 // inside a job. It reads git history only (never job state), computes the next version from the
 // Conventional Commits on `main`'s first-parent history since the newest `v*` tag, writes it into
 // every `package.json`, prepends a section to `CHANGELOG.md`, commits `chore(release): vX.Y.Z`,
-// and tags `vX.Y.Z` (annotated). It never pushes and never runs `factory upgrade`.
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+// and tags `vX.Y.Z` (annotated). It then commits the release bundle (scripts/bundle.ts) onto the
+// `release` branch with git plumbing, never moving the checkout, and tags that commit
+// `release-vX.Y.Z` (annotated). The bundle is built first, from the tree the release is about to
+// commit (`HEAD` plus the new versions and changelog, staged in a temp dir), so a failed build
+// writes nothing at all. It never pushes (`bun run release:push` does) and never runs
+// `factory upgrade`.
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 export type Kind = 'breaking' | 'added' | 'fixed';
 
@@ -113,8 +119,17 @@ export function setVersion(text: string, version: string): string {
 }
 
 function git(repo: string, ...args: string[]): string {
-  const p = Bun.spawnSync(['git', '-C', repo, ...args], { stdout: 'pipe', stderr: 'pipe' });
-  if (p.exitCode !== 0) throw new Error(`git ${args.join(' ')}: ${p.stderr.toString().trim()}`);
+  return gitWith(repo, args);
+}
+
+function gitWith(repo: string, args: string[], opts: { env?: Record<string, string>; stdin?: string } = {}): string {
+  const p = Bun.spawnSync(['git', '-C', repo, ...args], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+    ...(opts.env === undefined ? {} : { env: { ...process.env, ...opts.env } }),
+    ...(opts.stdin === undefined ? {} : { stdin: Buffer.from(opts.stdin) }),
+  });
+  if (p.exitCode !== 0) throw new Error(`git ${args[0] ?? ''}: ${p.stderr.toString().trim().split('\n')[0] ?? ''}`);
   return p.stdout.toString();
 }
 
@@ -177,7 +192,7 @@ export function collect(repo: string, since: string | null): { entries: Entry[];
 }
 
 /** The newest `v*` release tag reachable from HEAD, or null. Non-`v*` tags are ignored. */
-function baseTag(repo: string): { tag: string; version: string } | null {
+export function baseTag(repo: string): { tag: string; version: string } | null {
   let best: { tag: string; version: string; key: [number, number, number] } | null = null;
   for (const tag of git(repo, 'tag', '--merged', 'HEAD', '--list', 'v*').split('\n')) {
     const version = TAG.exec(tag.trim())?.[1];
@@ -211,9 +226,121 @@ function localDate(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/** Builds the release bundle of the source tree at `tree` into the empty directory `out`; throws a one-line reason. */
+export type BuildBundle = (tree: string, out: string) => void;
+
 export interface ReleaseOptions {
   dryRun: boolean;
   today?: string; // YYYY-MM-DD; defaults to the local date
+  build?: BuildBundle; // defaults to the staged tree's own `scripts/bundle.ts`
+  modules?: string; // the checkout whose installed `node_modules` the staged tree borrows; defaults to `repo`
+}
+
+/** The release branch and its tags (brief decision 4): outside the `factory/` namespace, no `/` in a tag. */
+export const RELEASE_BRANCH = 'release';
+export const RELEASE_REF = `refs/heads/${RELEASE_BRANCH}`;
+export const releaseTag = (version: string): string => `release-v${version}`;
+/** The bundle's executable, which gets the executable mode in the `release` tree. */
+const BUNDLE_BIN = 'bin/factory.js';
+
+const firstLine = (text: string): string => text.trim().split('\n')[0] ?? '';
+
+/** The default build: the staged tree's own builder, `bun scripts/bundle.ts <out>`. */
+export const buildWithScript: BuildBundle = (tree, out) => {
+  const script = join(tree, 'scripts', 'bundle.ts');
+  if (!existsSync(script)) throw new Error('scripts/bundle.ts is missing from the tree');
+  const p = Bun.spawnSync([process.execPath, script, out], { cwd: tree, stdout: 'pipe', stderr: 'pipe' });
+  if (p.exitCode !== 0) throw new Error(firstLine(p.stderr.toString()) || firstLine(p.stdout.toString()) || `exit ${p.exitCode}`);
+};
+
+/**
+ * Mirrors an installed `node_modules` into the staged tree, so the staged sources resolve their
+ * dependencies without an install: a symlink is copied as it is (a workspace link, being relative,
+ * then points into the staged tree, at the staged, version-bumped package), a scope or `.bin`
+ * directory is mirrored, and anything else is linked to the checkout's copy.
+ */
+function mirrorModules(src: string, dst: string): void {
+  mkdirSync(dst, { recursive: true });
+  for (const e of readdirSync(src, { withFileTypes: true })) {
+    const from = join(src, e.name);
+    const to = join(dst, e.name);
+    if (e.isSymbolicLink()) symlinkSync(readlinkSync(from), to);
+    else if (e.isDirectory() && (e.name.startsWith('@') || e.name === '.bin')) mirrorModules(from, to);
+    else symlinkSync(from, to);
+  }
+}
+
+/** Every `node_modules` of a checkout: the root's and each workspace package's, repo-relative. */
+function moduleDirs(checkout: string): string[] {
+  const out = existsSync(join(checkout, 'node_modules')) ? ['node_modules'] : [];
+  for (const dir of ['packages', 'apps']) {
+    if (!existsSync(join(checkout, dir))) continue;
+    for (const name of readdirSync(join(checkout, dir)).sort()) if (existsSync(join(checkout, dir, name, 'node_modules'))) out.push(`${dir}/${name}/node_modules`);
+  }
+  return out;
+}
+
+/**
+ * Stages the tree the release is about to commit in `stage`: `HEAD`'s tree (the working tree is
+ * clean), with `writes` applied, and the checkout's `node_modules` mirrored in. Writes nothing to
+ * the repo.
+ */
+function stageTree(repo: string, stage: string, writes: readonly [string, string][], modules: string): void {
+  const tar = `${stage}.tar`;
+  git(repo, 'archive', '--format=tar', '-o', tar, 'HEAD');
+  mkdirSync(stage, { recursive: true });
+  const x = Bun.spawnSync(['tar', '-xf', tar, '-C', stage], { stdout: 'pipe', stderr: 'pipe' });
+  if (x.exitCode !== 0) throw new Error(`tar: ${firstLine(x.stderr.toString())}`);
+  for (const [path, text] of writes) {
+    mkdirSync(dirname(join(stage, path)), { recursive: true });
+    writeFileSync(join(stage, path), text);
+  }
+  for (const dir of moduleDirs(modules)) if (existsSync(dirname(join(stage, dir)))) mirrorModules(join(modules, dir), join(stage, dir));
+}
+
+/** Checks the built bundle is a package `bun add -g` can link: its `package.json` has `bin.factory`. */
+function checkBundle(out: string): void {
+  let pkg: unknown;
+  try {
+    pkg = JSON.parse(readFileSync(join(out, 'package.json'), 'utf8'));
+  } catch {
+    throw new Error('the bundle has no readable package.json');
+  }
+  const bin = typeof pkg === 'object' && pkg !== null && 'bin' in pkg ? pkg.bin : undefined;
+  const factory = typeof bin === 'object' && bin !== null && 'factory' in bin ? bin.factory : undefined;
+  if (typeof factory !== 'string') throw new Error('the bundle\'s package.json has no bin.factory');
+}
+
+/** Every file under `dir`, `/`-separated and sorted. */
+function filesUnder(dir: string, rel = ''): string[] {
+  const out: string[] = [];
+  for (const e of readdirSync(join(dir, rel), { withFileTypes: true })) {
+    const path = rel === '' ? e.name : `${rel}/${e.name}`;
+    if (e.isDirectory()) out.push(...filesUnder(dir, path));
+    else if (e.isFile()) out.push(path);
+  }
+  return out.sort();
+}
+
+/**
+ * Commits the bundle in `out` onto `release` with plumbing: its blobs, a tree built in a temp index
+ * (exactly the bundle), and a commit whose parent is the previous `release` commit (none for the
+ * first). The ref moves by a compare-and-swap `update-ref`; the checkout, `HEAD`, and the repo's
+ * index are never touched. Returns the new commit.
+ */
+function commitBundle(repo: string, out: string, index: string, message: string): string {
+  const files = filesUnder(out);
+  const shas = git(repo, 'hash-object', '-w', '--no-filters', '--', ...files.map((f) => join(out, f))).trim().split('\n');
+  if (shas.length !== files.length) throw new Error(`git hash-object returned ${shas.length} ids for ${files.length} files`);
+  const info = files.map((f, i) => `${f === BUNDLE_BIN ? '100755' : '100644'} ${shas[i] ?? ''}\t${f}\n`).join('');
+  const env = { GIT_INDEX_FILE: index };
+  gitWith(repo, ['update-index', '--add', '--index-info'], { env, stdin: info });
+  const tree = gitWith(repo, ['write-tree'], { env }).trim();
+  const parent = Bun.spawnSync(['git', '-C', repo, 'rev-parse', '--verify', '--quiet', `${RELEASE_REF}^{commit}`], { stdout: 'pipe', stderr: 'pipe' });
+  const tip = parent.exitCode === 0 ? parent.stdout.toString().trim() : null;
+  const commit = git(repo, 'commit-tree', tree, ...(tip === null ? [] : ['-p', tip]), '-m', message).trim();
+  git(repo, 'update-ref', '-m', message.split('\n')[0] ?? 'release', RELEASE_REF, commit, tip ?? '');
+  return commit;
 }
 
 /** Runs a release in `repo`. `out` is what to print; a non-zero `code` means nothing was written. */
@@ -233,6 +360,8 @@ export function release(repo: string, opts: ReleaseOptions): { code: number; out
     const version = base === null ? templatesVersion(repo) : bump(base.version, entries);
     const tag = `v${version}`;
     if (git(repo, 'tag', '--list', tag).trim() !== '') return { code: 1, out: `${notes}release refused: tag ${tag} already exists\n` };
+    const bundleTag = releaseTag(version);
+    if (git(repo, 'tag', '--list', bundleTag).trim() !== '') return { code: 1, out: `${notes}release refused: tag ${bundleTag} already exists\n` };
     const section = formatSection(version, opts.today ?? localDate(new Date()), entries);
     const head = `${tag}${base === null ? ' (baseline: no v* tag yet, no bump)' : ` (from ${base.tag})`}\n`;
     if (opts.dryRun) return { code: 0, out: `${head}${notes}dry run: nothing written\n\n${section}` };
@@ -247,14 +376,34 @@ export function release(repo: string, opts: ReleaseOptions): { code: number; out
     });
     const changelog = join(repo, 'CHANGELOG.md');
     writes.push(['CHANGELOG.md', prependChangelog(existsSync(changelog) ? readFileSync(changelog, 'utf8') : null, section)]);
-    for (const [path, text] of writes) writeFileSync(join(repo, path), text);
-    git(repo, 'add', '--', ...writes.map(([path]) => path));
-    git(repo, 'commit', '--quiet', '-m', `chore(release): ${tag}`);
-    git(repo, 'tag', '-a', tag, '-m', `factory ${tag}`);
-    return {
-      code: 0,
-      out: `${head}${notes}\n${section}\ncommitted chore(release): ${tag} and tagged ${tag}. Nothing was pushed.\nNext: factory upgrade, bun factory/cli.ts doctor, then commit chore(factory): promote …\n`,
-    };
+
+    // The bundle is built from the tree about to be committed, before the first write to the repo.
+    const work = mkdtempSync(join(tmpdir(), 'factory-release-'));
+    try {
+      const out = join(work, 'bundle');
+      try {
+        stageTree(repo, join(work, 'tree'), writes, opts.modules ?? repo);
+        mkdirSync(out);
+        (opts.build ?? buildWithScript)(join(work, 'tree'), out);
+        checkBundle(out);
+      } catch (e) {
+        return { code: 1, out: `release failed: bundle build: ${firstLine(e instanceof Error ? e.message : String(e))}\n` };
+      }
+
+      for (const [path, text] of writes) writeFileSync(join(repo, path), text);
+      git(repo, 'add', '--', ...writes.map(([path]) => path));
+      git(repo, 'commit', '--quiet', '-m', `chore(release): ${tag}`);
+      git(repo, 'tag', '-a', tag, '-m', `factory ${tag}`);
+      const main = git(repo, 'rev-parse', 'HEAD').trim();
+      const bundleCommit = commitBundle(repo, out, join(work, 'index'), `chore(release): bundle ${tag} from main ${main}\n\nThe release bundle (scripts/bundle.ts) built from main at ${main}, chore(release): ${tag}.`);
+      git(repo, 'tag', '-a', bundleTag, bundleCommit, '-m', `factory ${tag} bundle`);
+      return {
+        code: 0,
+        out: `${head}${notes}\n${section}\ncommitted chore(release): ${tag} and tagged ${tag}.\ncommitted the bundle onto ${RELEASE_BRANCH} (${bundleCommit.slice(0, 7)}) and tagged ${bundleTag}. Nothing was pushed.\nNext: factory upgrade, bun factory/cli.ts doctor, commit chore(factory): promote …, then bun run release:push\n`,
+      };
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
   } catch (e) {
     return { code: 1, out: `release failed: ${e instanceof Error ? e.message : String(e)}\n` };
   }
