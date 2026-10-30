@@ -9,4 +9,4 @@ One feature per line — what "done" looks like, not the history. Add lines with
 
 Lines are in dependency order. Fuzzy ones should go through `/factory explore` first.
 
-- [ ] Factory distribution — `bun add -g github:mattmccray/factory#release` gives a working `factory` on macOS and Linux (release branch built and pushed by `bun run release` / `release:push`), `factory service …` runs Andon under launchd/systemd, and `factory projects prune` cleans the registry — epic: factory/epics/factory-distribution.md
+- [x] Factory distribution — `bun add -g github:mattmccray/factory#release` gives a working `factory` on macOS and Linux (release branch built and pushed by `bun run release` / `release:push`), `factory service …` runs Andon under launchd/systemd, and `factory projects prune` cleans the registry — epic: factory/epics/factory-distribution.md → epic factory-distribution
