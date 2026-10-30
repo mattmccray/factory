@@ -1,6 +1,7 @@
 # Backlog in Andon, and starting work from it
 
-- Status: ready
+- Status: done
+- Landed: 691eaf5 (2026-10-30)
 - Sources: the explore request of 2026-10-29 (pre-1.0 notes: "Surface backlog/epics in Andon (read-only is fine at first)", "Deeper T3 Code integration … Start a backlog job, Start an epic, Start an exploration")
 - Date: 2026-10-30
 

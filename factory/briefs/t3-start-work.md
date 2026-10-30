@@ -1,6 +1,7 @@
 # Start work in T3 Code from Andon
 
-- Status: ready
+- Status: done
+- Job: 068-t3-start-work (merged bc0eeea via epic andon-backlog, 2026-10-30)
 - Sources: the explore request of 2026-10-29 (pre-1.0 notes: "Deeper T3 Code integration: (sends "/factory…" prompts to T3 Code) Start a backlog job, Start a epic, Start an exploration, (others?)"); brief `t3-handoff` (job 036); `apps/andon/src/handoff.ts`; `docs/design/andon-overview/design.md` §8; epic `factory/epics/andon-backlog.md`
 - Date: 2026-10-30
 

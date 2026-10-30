@@ -1,6 +1,7 @@
 # The Andon UI shows the backlog and explorations
 
-- Status: ready
+- Status: done
+- Job: 067-andon-backlog-ui (merged 5d0802d via epic andon-backlog, 2026-10-30)
 - Sources: the explore request of 2026-10-29 (pre-1.0 notes: "Surface backlog/epics in Andon (read-only is fine at first)"); `docs/contract/v1.md` "Andon service"; briefs `andon-epics-service`, `andon-epics-ui`, `settled-on-demand-ui`; epic `factory/epics/andon-backlog.md`
 - Date: 2026-10-30
 
