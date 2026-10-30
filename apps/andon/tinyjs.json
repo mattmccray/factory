@@ -4,6 +4,7 @@
   "title": "Andon",
   "size": "1280x820",
   "minSize": "1100x700",
+  "rememberWindows": true,
   "id": "dev.factory.andon",
   "version": "0.1.0",
   "minTinyjsVersion": "0.68.0",

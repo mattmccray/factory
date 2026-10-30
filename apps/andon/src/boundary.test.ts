@@ -250,6 +250,7 @@ describe('AC6: tinyjs.json', () => {
       title: 'Andon',
       size: '1280x820',
       minSize: '1100x700',
+      rememberWindows: true,
       id: 'dev.factory.andon',
       version: '0.1.0',
       minTinyjsVersion: '0.68.0',
@@ -283,6 +284,10 @@ describe('AC6: tinyjs.json', () => {
       about: 'menu',
       backend: 'build/backend.js',
     });
+  });
+
+  test('074 AC7: Tiny remembers each window\'s place and size, set explicitly', () => {
+    expect(cfg.rememberWindows).toBe(true);
   });
 
   test('the main window loads the service at http://127.0.0.1:<port>/?shell=mac, the same page the reload uses', () => {
