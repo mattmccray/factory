@@ -143,7 +143,8 @@ describe('usage and show (AC3)', () => {
       all: 'usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id>',
       init: 'usage: init [--force]',
       upgrade: 'usage: upgrade [--force]',
-      source: 'usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id> | doctor | init [--force] | upgrade [--force]',
+      version: 'usage: --version',
+      source: 'usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id> | doctor | init [--force] | upgrade [--force] | --version',
     });
   });
 
