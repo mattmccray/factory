@@ -1,5 +1,6 @@
 // The Mac app's menu bar: Andon (Settings…, which opens the Settings window), the stock Edit menu,
-// View (the status bar toggle), Window (Minimize, Zoom, Andon), and Help (the project on GitHub).
+// View (the status bar toggle), Window (Minimize, Zoom, Andon), and Help (What's New, which shows the
+// main window and asks the board to open its What's New sheet, and the project on GitHub).
 // The menu spec, its ids, the label for a status bar state, what a click does, how the stored status
 // bar choice reads, and the Settings window's id, title, size, page, and chrome all live here,
 // runtime-neutral; backend.ts sets the menu, opens the window, and carries out the actions.
@@ -10,6 +11,8 @@ export const GITHUB_URL = 'https://github.com/mattmccray/factory';
 
 /** The event the Mac app pushes to the page with the status bar state (`{ hidden }`). */
 export const STATUS_BAR_EVENT = 'statusbar';
+/** The event the Mac app pushes to the page when Help → What's New is chosen (`{}`): the page opens its whole What's New sheet. */
+export const WHATS_NEW_EVENT = 'whatsnew';
 /** The store key holding the status bar choice: `true` when hidden. */
 export const STATUS_BAR_KEY = 'statusBarHidden';
 
@@ -19,6 +22,7 @@ export const STATUS_BAR_ID = 'statusbar';
 export const MINIMIZE_ID = 'minimize';
 export const ZOOM_ID = 'zoom';
 export const SHOW_MAIN_ID = 'andon';
+export const WHATS_NEW_ID = 'whatsnew';
 export const GITHUB_ID = 'github';
 
 /** One menu item, in the shape the menu bar takes. */
@@ -52,7 +56,7 @@ export function appMenu(hidden: boolean): Menu[] {
       title: 'Window',
       items: [{ id: MINIMIZE_ID, label: 'Minimize', key: 'm' }, { id: ZOOM_ID, label: 'Zoom' }, { separator: true }, { id: SHOW_MAIN_ID, label: 'Andon', key: '0' }],
     },
-    { title: 'Help', role: 'help', items: [{ id: GITHUB_ID, label: 'Factory on GitHub' }] },
+    { title: 'Help', role: 'help', items: [{ id: WHATS_NEW_ID, label: "What's New" }, { id: GITHUB_ID, label: 'Factory on GitHub' }] },
   ];
 }
 
@@ -63,6 +67,7 @@ export type MenuAction =
   | { kind: 'minimize' }
   | { kind: 'zoom' }
   | { kind: 'show-main' }
+  | { kind: 'whats-new' } // show the main window, then push WHATS_NEW_EVENT: the page routes itself
   | { kind: 'open'; url: string };
 
 /** The action for a clicked id; null for any id that isn't ours. */
@@ -78,6 +83,8 @@ export function menuAction(id: string): MenuAction | null {
       return { kind: 'zoom' };
     case SHOW_MAIN_ID:
       return { kind: 'show-main' };
+    case WHATS_NEW_ID:
+      return { kind: 'whats-new' };
     case GITHUB_ID:
       return { kind: 'open', url: GITHUB_URL };
     default:
@@ -87,6 +94,9 @@ export function menuAction(id: string): MenuAction | null {
 
 /** The stored status bar choice: exactly `true` is hidden; missing or anything else is shown. */
 export const storedHidden = (value: unknown): boolean => value === true;
+
+/** The payload of the What's New event: nothing to carry, the page opens the whole sheet. */
+export const whatsNewPayload = (): Record<string, never> => ({});
 
 /** The payload of the status bar event. */
 export const statusBarPayload = (hidden: boolean): { hidden: boolean } => ({ hidden });
