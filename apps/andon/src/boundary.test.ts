@@ -9,10 +9,10 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BACKEND_OUT, bundleBackend } from '../build';
-import { STATUS_BAR_EVENT, WHATS_NEW_EVENT } from './appmenu';
+import { INSPECTOR_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, STATUS_BAR_EVENT, WHATS_NEW_EVENT } from './appmenu';
 import { DEFAULT_PORT, pageUrl } from './autostart';
 import { PROJECT_MENU_METHOD } from './projectmenu';
-import { GET_SETTINGS_METHOD, SET_SETTING_METHOD } from './settings';
+import { GET_SETTINGS_METHOD, SET_SETTING_METHOD, VIEW_STATE_METHOD } from './settings';
 import { HAND_OFF_METHOD } from './handoff';
 import { JOB_MENU_METHOD } from './jobmenu';
 import { isRecord } from './state';
@@ -184,7 +184,26 @@ describe('AC6: tinyjs.json', () => {
       icon: 'assets/icon.png',
       url: 'http://127.0.0.1:8766/?shell=mac',
       chrome: { frame: false, windowControls: true, windowControlsPos: { x: 18, y: 20 }, vibrancy: 'sidebar' },
-      api: { disable: ['*'], enable: ['win.startDrag', 'win.zoom', 'event.statusbar', 'event.whatsnew', 'projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu'] },
+      api: {
+        disable: ['*'],
+        enable: [
+          'win.startDrag',
+          'win.zoom',
+          'event.statusbar',
+          'event.whatsnew',
+          'event.merged',
+          'event.needsme',
+          'event.settled',
+          'event.sidebar',
+          'event.inspector',
+          'projectMenu',
+          'getSettings',
+          'setSetting',
+          'handOff',
+          'jobMenu',
+          'setViewState',
+        ],
+      },
       backend: 'build/backend.js',
     });
   });
@@ -208,7 +227,7 @@ describe('AC6: tinyjs.json', () => {
     expect(cfg.minSize).toBe('1100x700');
   });
 
-  test("the api gate denies every Tiny call for the page except its drag regions, the status bar and What's New events, projectMenu, the two settings methods, handOff, and jobMenu", () => {
+  test("the api gate denies every Tiny call for the page except its drag regions, the pushed events, projectMenu, the two settings methods, handOff, jobMenu, and setViewState", () => {
     // Tiny's page runtime turns a mousedown on [data-tiny-drag] into `win.startDrag` (a double-click
     // into `win.zoom`), and the backend's gate checks both: they are the narrowest exception. The one
     // event the page may receive is the status bar state the backend pushes (`event.<name>` is how
@@ -224,22 +243,44 @@ describe('AC6: tinyjs.json', () => {
     const after035 = ['win.startDrag', 'win.zoom', 'event.statusbar', 'projectMenu', 'getSettings', 'setSetting'];
     const after037 = [...after035, 'handOff'];
     const after040 = [...after037, 'jobMenu'];
+    // The View menu (063) adds five pushed events (the Merged column state, and the four page
+    // actions: Needs Me, the Settled sheet, the sidebar, the inspector), which the page only
+    // receives, and exactly one page-callable method, `setViewState`: the main window's page reports
+    // its three view booleans, answered only for the main window.
+    const after059 = ['win.startDrag', 'win.zoom', 'event.statusbar', 'event.whatsnew', ...after040.slice(3)];
+    const newEvents = [`event.${MERGED_EVENT}`, `event.${NEEDS_ME_EVENT}`, `event.${SETTLED_EVENT}`, `event.${SIDEBAR_EVENT}`, `event.${INSPECTOR_EVENT}`];
+    expect(newEvents).toEqual(['event.merged', 'event.needsme', 'event.settled', 'event.sidebar', 'event.inspector']);
     expect(cfg.api).toEqual({
       disable: ['*'],
-      enable: ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`, `event.${WHATS_NEW_EVENT}`, PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD],
+      enable: ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`, `event.${WHATS_NEW_EVENT}`, ...newEvents, PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD, VIEW_STATE_METHOD],
     });
-    expect(cfg.api).toEqual({ disable: ['*'], enable: ['win.startDrag', 'win.zoom', 'event.statusbar', 'event.whatsnew', ...after040.slice(3)] });
     const enable = isRecord(cfg.api) && Array.isArray(cfg.api.enable) ? cfg.api.enable : [];
-    expect(enable).toHaveLength(after040.length + 1);
-    expect(enable.filter((e) => typeof e === 'string' && e.startsWith('event.'))).toEqual(['event.statusbar', 'event.whatsnew']);
+    const events = (list: readonly unknown[]): unknown[] => list.filter((e) => typeof e === 'string' && e.startsWith('event.'));
+    const methods = (list: readonly unknown[]): unknown[] => list.filter((e) => typeof e === 'string' && !e.startsWith('event.') && !e.startsWith('win.'));
+    // the previous list, plus the new events, plus exactly one method
+    expect(enable.filter((e) => !after059.includes(String(e)))).toEqual([...newEvents, VIEW_STATE_METHOD]);
+    expect(after059.every((e) => enable.includes(e))).toBe(true);
+    expect(enable).toHaveLength(after059.length + newEvents.length + 1);
+    expect(methods(enable)).toEqual([...methods(after059), 'setViewState']);
+    expect(events(enable)).toEqual(['event.statusbar', 'event.whatsnew', ...newEvents]);
     expect(cfg.inject).toBeUndefined();
   });
 
-  test('the backend exports exactly those five api methods', () => {
+  test('the backend exports exactly those six api methods: one more than before 063, setViewState', () => {
     const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
     const block = /^export const api = \{\n([\s\S]*?)^\};$/m.exec(adapter)?.[1] ?? '';
-    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD]);
-    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu']);
+    const before = [PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD];
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([...before, VIEW_STATE_METHOD]);
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState']);
+  });
+
+  test('the view-state method checks the main window first, and the page reports by the same method name', () => {
+    const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
+    const body = /export async function setViewState\([^)]*\)[^{]*\{\n([^\n]*)/.exec(adapter)?.[1]?.trim();
+    expect(body).toBe('if (!fromMainWindow(meta)) return null;');
+    expect(adapter).toContain('  setViewState: (params: unknown, app: MacApp, meta: unknown): Promise<ViewState | null> => setViewState(params, app, meta),');
+    const ui = readFileSync(join(repoDir, 'apps', 'andon-ui', 'src', 'sidebar.ts'), 'utf8');
+    expect(ui).toContain(`export const VIEW_STATE_METHOD = '${VIEW_STATE_METHOD}';`);
   });
 
   test('the job menu takes only the params and the app, and the page asks by the same method name', () => {

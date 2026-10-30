@@ -1,5 +1,6 @@
 // The Mac app's menu bar: Andon (Settings…, which opens the Settings window), the stock Edit menu,
-// View (the status bar toggle), Window (Minimize, Zoom, Andon), and Help (What's New, which shows the
+// View (the board's view toggles: Needs Me, the Settled sheet, the sidebar, the inspector, the status
+// bar, and the Merged column; labels flip, Finder-style, to name what choosing them does), Window (Minimize, Zoom, Andon), and Help (What's New, which shows the
 // main window and asks the board to open its What's New sheet, and the project on GitHub).
 // The menu spec, its ids, the label for a status bar state, what a click does, how the stored status
 // bar choice reads, and the Settings window's id, title, size, page, and chrome all live here,
@@ -15,10 +16,27 @@ export const STATUS_BAR_EVENT = 'statusbar';
 export const WHATS_NEW_EVENT = 'whatsnew';
 /** The store key holding the status bar choice: `true` when hidden. */
 export const STATUS_BAR_KEY = 'statusBarHidden';
+/** The event the Mac app pushes to the page with the Merged column state (`{ hidden }`). */
+export const MERGED_EVENT = 'merged';
+/** The store key holding the Merged column choice: `true` when hidden. */
+export const MERGED_KEY = 'mergedHidden';
+// The events the Mac app pushes to the main window's page for the View menu's page actions (`{}`):
+// the page toggles Needs Me, opens the Settled sheet, toggles the sidebar, or toggles the inspector.
+export const NEEDS_ME_EVENT = 'needsme';
+export const SETTLED_EVENT = 'settled';
+export const SIDEBAR_EVENT = 'sidebar';
+export const INSPECTOR_EVENT = 'inspector';
+/** A View menu action the page carries out: one of the four events above. */
+export type PageEvent = typeof NEEDS_ME_EVENT | typeof SETTLED_EVENT | typeof SIDEBAR_EVENT | typeof INSPECTOR_EVENT;
 
 // The ids of the clickable items.
 export const SETTINGS_ID = 'settings';
 export const STATUS_BAR_ID = 'statusbar';
+export const NEEDS_ME_ID = 'needsme';
+export const SETTLED_ID = 'settled';
+export const SIDEBAR_ID = 'sidebar';
+export const INSPECTOR_ID = 'inspector';
+export const MERGED_ID = 'merged';
 export const MINIMIZE_ID = 'minimize';
 export const ZOOM_ID = 'zoom';
 export const SHOW_MAIN_ID = 'andon';
@@ -43,15 +61,64 @@ export interface Menu {
   items?: MenuItem[];
 }
 
-/** The View menu's toggle label: it names what choosing it does. */
-export const statusBarLabel = (hidden: boolean): string => (hidden ? 'Show Status Bar' : 'Hide Status Bar');
+/** The main window's view state, as its page reports it (the view-state method): whether Needs Me
+ *  is on, whether the sidebar is shown (the effective state, the narrow-window rule included), and
+ *  whether the inspector is open. Not stored: the page reports it again after every load. */
+export interface ViewState {
+  needsMe: boolean;
+  sidebarShown: boolean;
+  inspectorOpen: boolean;
+}
 
-/** The whole menu bar, in bar order, for a status bar state. */
-export function appMenu(hidden: boolean): Menu[] {
+/** The page's view on load, before it reports: everything, the sidebar shown, no inspector. */
+export const DEFAULT_VIEW: Readonly<ViewState> = { needsMe: false, sidebarShown: true, inspectorOpen: false };
+
+/** Everything the menu bar's labels depend on: the two stored choices and the page's view state. */
+export interface MenuState {
+  statusBarHidden: boolean;
+  mergedHidden: boolean;
+  view: ViewState;
+}
+
+// The View menu's toggle labels: each names what choosing it does.
+export const statusBarLabel = (hidden: boolean): string => (hidden ? 'Show Status Bar' : 'Hide Status Bar');
+export const mergedLabel = (hidden: boolean): string => (hidden ? 'Show Merged Column' : 'Hide Merged Column');
+export const needsMeLabel = (on: boolean): string => (on ? 'Show All Jobs' : 'Show Only Needs Me');
+export const sidebarLabel = (shown: boolean): string => (shown ? 'Hide Sidebar' : 'Show Sidebar');
+export const inspectorLabel = (open: boolean): string => (open ? 'Hide Inspector' : 'Show Inspector');
+/** "Show Settled…" opens the sheet; its label never flips. */
+export const SETTLED_LABEL = 'Show Settled…';
+
+/** The View menu, in order, for a state. Tiny's key spelling: an uppercase letter carries its own
+ *  shift ('N' is ⇧⌘N), and `alt+`/`ctrl+` add ⌥/⌃ to ⌘. */
+export function viewMenu(s: MenuState): MenuItem[] {
+  return [
+    { id: NEEDS_ME_ID, label: needsMeLabel(s.view.needsMe), key: 'N' },
+    { id: SETTLED_ID, label: SETTLED_LABEL, key: 'S' },
+    { separator: true },
+    { id: SIDEBAR_ID, label: sidebarLabel(s.view.sidebarShown), key: 'ctrl+s' },
+    { id: INSPECTOR_ID, label: inspectorLabel(s.view.inspectorOpen), key: 'alt+i' },
+    { separator: true },
+    { id: STATUS_BAR_ID, label: statusBarLabel(s.statusBarHidden), key: '/' },
+    { id: MERGED_ID, label: mergedLabel(s.mergedHidden) },
+  ];
+}
+
+/** The labels a view state change touches: each item whose boolean differs, with its new label. */
+export function viewLabelUpdates(prev: ViewState, next: ViewState): Array<{ id: string; label: string }> {
+  const out: Array<{ id: string; label: string }> = [];
+  if (prev.needsMe !== next.needsMe) out.push({ id: NEEDS_ME_ID, label: needsMeLabel(next.needsMe) });
+  if (prev.sidebarShown !== next.sidebarShown) out.push({ id: SIDEBAR_ID, label: sidebarLabel(next.sidebarShown) });
+  if (prev.inspectorOpen !== next.inspectorOpen) out.push({ id: INSPECTOR_ID, label: inspectorLabel(next.inspectorOpen) });
+  return out;
+}
+
+/** The whole menu bar, in bar order, for a state. */
+export function appMenu(s: MenuState): Menu[] {
   return [
     { role: 'app', items: [{ id: SETTINGS_ID, label: 'Settings…', key: ',', enabled: true }] },
     { role: 'edit' },
-    { title: 'View', items: [{ id: STATUS_BAR_ID, label: statusBarLabel(hidden), key: '/' }] },
+    { title: 'View', items: viewMenu(s) },
     {
       title: 'Window',
       items: [{ id: MINIMIZE_ID, label: 'Minimize', key: 'm' }, { id: ZOOM_ID, label: 'Zoom' }, { separator: true }, { id: SHOW_MAIN_ID, label: 'Andon', key: '0' }],
@@ -64,6 +131,8 @@ export function appMenu(hidden: boolean): Menu[] {
 export type MenuAction =
   | { kind: 'open-settings' }
   | { kind: 'toggle-status-bar' }
+  | { kind: 'toggle-merged' }
+  | { kind: 'page'; event: PageEvent; show: boolean } // push `event` to the page; `show`: show the main window first
   | { kind: 'minimize' }
   | { kind: 'zoom' }
   | { kind: 'show-main' }
@@ -77,6 +146,16 @@ export function menuAction(id: string): MenuAction | null {
       return { kind: 'open-settings' };
     case STATUS_BAR_ID:
       return { kind: 'toggle-status-bar' };
+    case MERGED_ID:
+      return { kind: 'toggle-merged' };
+    case NEEDS_ME_ID:
+      return { kind: 'page', event: NEEDS_ME_EVENT, show: false };
+    case SETTLED_ID:
+      return { kind: 'page', event: SETTLED_EVENT, show: true }; // a sheet: show the board, as What's New does
+    case SIDEBAR_ID:
+      return { kind: 'page', event: SIDEBAR_EVENT, show: false };
+    case INSPECTOR_ID:
+      return { kind: 'page', event: INSPECTOR_EVENT, show: false };
     case MINIMIZE_ID:
       return { kind: 'minimize' };
     case ZOOM_ID:
@@ -100,6 +179,12 @@ export const whatsNewPayload = (): Record<string, never> => ({});
 
 /** The payload of the status bar event. */
 export const statusBarPayload = (hidden: boolean): { hidden: boolean } => ({ hidden });
+
+/** The payload of the Merged column event. */
+export const mergedPayload = (hidden: boolean): { hidden: boolean } => ({ hidden });
+
+/** The payload of a page action event: nothing to carry, the page toggles (or opens) on its own state. */
+export const pageEventPayload = (): Record<string, never> => ({});
 
 // ---- the Settings window ----
 

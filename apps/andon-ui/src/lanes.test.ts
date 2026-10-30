@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BoardJob } from './board';
 import { HOUR, MINUTE, NOW, before, epic, fleetJobs, inEpic, job, narrowBoard, reviewerSpan, stageSpans, stopped, tag, tagEpic } from './fixtures';
-import { COLUMNS, activity, age, buildLanes, columnOf, epicGutter, ghostOf, headerOf, isReviewFailed, kindOf, orderLanes, popoverOf, tagOf, tokenOf } from './lanes';
+import { COLUMNS, activity, age, boardColumns, buildLanes, columnOf, epicGutter, ghostOf, headerOf, isReviewFailed, kindOf, orderLanes, popoverOf, tagOf, tokenOf } from './lanes';
 import { MARK_LEGEND } from './sidebar';
 import type { Kind, Lane } from './lanes';
 import { ALL, withSettled } from './projects';
@@ -808,5 +808,66 @@ describe('epics and trouble first in the lanes (056 AC5)', () => {
     expect(buildLanes([P1], [], NOW, false, {}, [tagEpic(hot)], false)[0]?.header).toBe(false); // only under Needs Me
     const focused = buildLanes([P1], [inEpic({ id: '052-b', stage: 'build' }, auth)], NOW, true, {}, [tagEpic(auth), tagEpic(hot)])[0];
     expect([focused?.idle, focused?.header, focused?.subs.map((s) => s.key)]).toEqual([false, false, ['p1/auth', 'p1/hot']]);
+  });
+});
+
+// ---- the Merged column switch (063) ----
+
+describe('063 AC3: the board with the Merged column hidden', () => {
+  const merged = at({ id: '090-done', stage: 'merged', endedAt: before(2 * HOUR), note: 'merged 3c9e01a' });
+  const building = at({ id: '091-wip', stage: 'build', stageEnteredAt: before(HOUR) });
+  const five = COLUMNS.filter((c) => c.key !== 'merged').map((c) => c.key);
+  const keysIn = (cells: Lane['cells']): string[] => cells.flatMap((c) => c.tokens.map((t) => `${c.column}:${t.num}`));
+
+  test('the columns: all six shown, or the other five when hidden', () => {
+    expect(boardColumns(false)).toEqual(COLUMNS);
+    expect(boardColumns(true).map((c) => c.key)).toEqual(['andon', 'spec', 'build', 'review', 'approve']);
+  });
+
+  test('hidden: the header and every lane have the other five columns, and a merged job sits in none', () => {
+    const lanes = buildLanes([P1], [merged, building], NOW, false, {}, [], false, true);
+    expect(lanes[0]?.cells.map((c) => c.column)).toEqual(five);
+    expect(keysIn(lanes[0]?.cells ?? [])).toEqual(['build:091']);
+    const h = headerOf(lanes, [24], true);
+    expect(h.columns.map((c) => c.key)).toEqual(five);
+    expect(h.columns.map((c) => c.count)).toEqual([0, 0, 1, 0, 0]);
+    // shown (the default): six columns, the merged job in Merged
+    const shown = buildLanes([P1], [merged, building], NOW, false);
+    expect(shown[0]?.cells.map((c) => c.column)).toEqual(COLUMNS.map((c) => c.key));
+    expect(keysIn(shown[0]?.cells ?? []).sort()).toEqual(['build:091', 'merged:090']);
+    expect(headerOf(shown, [24]).columns.map((c) => c.count)).toEqual([0, 0, 1, 0, 0, 1]);
+  });
+
+  test("hidden: an epic's sub-lane has the other five columns too, without its merged members", () => {
+    const auth = epic({ slug: 'auth', startedAt: before(3 * HOUR) });
+    const jobs = [inEpic({ id: '051-a', stage: 'merged', endedAt: before(HOUR) }, auth), inEpic({ id: '052-b', stage: 'review', round: 1, reviews: { code: 'pending' }, stageEnteredAt: before(MINUTE) }, auth)];
+    const sub = buildLanes([P1], jobs, NOW, false, {}, [tagEpic(auth)], false, true)[0]?.subs[0];
+    expect(sub?.cells.map((c) => c.column)).toEqual(five);
+    expect(keysIn(sub?.cells ?? [])).toEqual(['review:052']);
+    const h = headerOf(buildLanes([P1], jobs, NOW, false, {}, [tagEpic(auth)], false, true), [24], true);
+    expect(h.columns.map((c) => c.count)).toEqual([0, 0, 0, 1, 0]);
+  });
+
+  test('hidden: a project whose only live job is merged is idle; its gutter still counts its settled jobs', () => {
+    const [lane] = buildLanes([P1], [merged], NOW, false, { p1: { count: 2, lastMergedAt: null } }, [], false, true);
+    expect(lane?.idle).toBe(true);
+    expect(lane?.rows).toBe(0);
+    expect(lane?.idleText).toBe('Idle · last merge 2h 0m ago');
+    expect(lane?.meta.settled).toBe(2);
+    expect(buildLanes([P1], [merged], NOW, false)[0]?.idle).toBe(false); // shown: it sits in Merged
+  });
+
+  test("hidden: a focused project's recent activity still lists the merge, and the Settled sheet's jobs are untouched", () => {
+    expect(activity([merged]).map((a) => a.text)).toContain('merged 3c9e01a');
+    const [lane] = buildLanes([P1], [merged, building], NOW, true, {}, [], false, true);
+    expect(lane?.cells.map((c) => c.column)).toEqual(five);
+  });
+
+  test('Lines.svelte sizes the matrix by the header: the others share the hidden column\'s width', () => {
+    const lines = readFileSync(join(import.meta.dir, 'Lines.svelte'), 'utf8');
+    expect(lines).toContain('style:--n={header.columns.length}');
+    const css = readFileSync(join(import.meta.dir, 'app.css'), 'utf8');
+    expect(css).toContain('.matrix { --cols: 148px repeat(var(--n, 6), minmax(150px, 1fr)); min-width: calc(148px + var(--n, 6) * 150px);');
+    expect(css).toContain('.lines.focus .matrix { --cols: 180px repeat(var(--n, 6), minmax(150px, 1fr)); min-width: calc(180px + var(--n, 6) * 150px); }');
   });
 });

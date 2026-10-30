@@ -12,6 +12,9 @@
   // Factory releases (brief andon-version-ui) are quiet: a behind project's sidebar glyph opens the
   // What's New sheet scoped to it, the footer's version (or Help → What's New in the Mac app) opens it
   // whole, and the footer's restart note copies the restart command. Andon runs neither command.
+  // The Mac app's View menu (063) asks the page to toggle Needs Me, open the Settled sheet, or toggle
+  // the sidebar or inspector, and hides or shows the Merged column; the page reports its Needs Me,
+  // sidebar, and inspector state back so the menu's labels follow it. A browser has none of this.
   import { onMount, untrack } from 'svelte';
   import type { Fetcher } from './api';
   import { buildBoard, movement } from './board';
@@ -65,7 +68,28 @@
   import ShortcutSheet from './ShortcutSheet.svelte';
   import WhatsNewSheet from './WhatsNewSheet.svelte';
   import Sidebar from './Sidebar.svelte';
-  import { STATUS_BAR_EVENT, WHATS_NEW_EVENT, footer, frame, pushSubscriber, settleHours, settleText, shellMode, sidebarModel, statusBarHidden, subtitle, title } from './sidebar';
+  import {
+    INSPECTOR_EVENT,
+    MERGED_EVENT,
+    NEEDS_ME_EVENT,
+    SETTLED_EVENT,
+    SIDEBAR_EVENT,
+    STATUS_BAR_EVENT,
+    WHATS_NEW_EVENT,
+    footer,
+    frame,
+    menuEventAction,
+    mergedHidden,
+    pushSubscriber,
+    settleHours,
+    settleText,
+    shellMode,
+    sidebarModel,
+    statusBarHidden,
+    subtitle,
+    title,
+    viewStateCaller,
+  } from './sidebar';
   import StatusBar from './StatusBar.svelte';
   import Toolbar from './Toolbar.svelte';
   import { NO_SETTLED, emptyState } from './state';
@@ -110,6 +134,8 @@
   const mode = shellMode(window.location.search);
   // The Mac app's View menu hides the status bar and tells the page; a browser always shows it.
   let statusBarOff = $state(false);
+  // The Mac app's "Show Merged column" setting (Settings or the View menu); a browser always shows it.
+  let mergedOff = $state(false);
 
   let live: Live | null = null;
   onMount(() => {
@@ -130,6 +156,15 @@
     });
     // Help → What's New: the Mac app shows this window and asks for the whole sheet; the focus stays.
     const offWhatsNew = subscribe?.(WHATS_NEW_EVENT, () => openWhatsNew(null));
+    const offMerged = subscribe?.(MERGED_EVENT, (data) => {
+      const hidden = mergedHidden(data);
+      if (hidden !== null) mergedOff = hidden;
+    });
+    // The View menu's page actions: the payload is ignored, the page acts on its own state.
+    const offNeedsMe = subscribe?.(NEEDS_ME_EVENT, () => onmenu(NEEDS_ME_EVENT));
+    const offSettled = subscribe?.(SETTLED_EVENT, () => onmenu(SETTLED_EVENT));
+    const offSidebar = subscribe?.(SIDEBAR_EVENT, () => onmenu(SIDEBAR_EVENT));
+    const offInspector = subscribe?.(INSPECTOR_EVENT, () => onmenu(INSPECTOR_EVENT));
     // The Mac app's right-click menu on a project row or gutter, or on a board job token: armed for
     // the project or job under the pointer, and a control-click there doesn't click through
     // (projectmenu.ts, jobmenu.ts). A browser: nothing.
@@ -160,6 +195,11 @@
       }
       offStatusBar?.();
       offWhatsNew?.();
+      offMerged?.();
+      offNeedsMe?.();
+      offSettled?.();
+      offSidebar?.();
+      offInspector?.();
       started.stop();
       live = null;
       clearInterval(timer);
@@ -187,13 +227,13 @@
   const shownProjects = $derived((needed?.projects ?? ui.projects).filter((p) => !focused || p.id === sel));
   let laneOrder: LaneOrder | null = null;
   const summaries = $derived(Object.fromEntries(ui.projects.map((p): [string, SettledSummary] => [p.id, ui.boards[p.id]?.settled ?? NO_SETTLED])));
-  const lines = $derived(orderLanes(buildLanes(shownProjects, jobs, now, focused, summaries, epics, needs), loaded && !focused && !needs ? laneOrder : null));
+  const lines = $derived(orderLanes(buildLanes(shownProjects, jobs, now, focused, summaries, epics, needs, mergedOff), loaded && !focused && !needs ? laneOrder : null));
   $effect(() => {
     if (loaded && !focused && !needs) laneOrder = lines.order;
   });
   // Search dims the tokens and lanes that don't match; it hides nothing.
   const found = $derived(find(shownProjects, jobs, query, now, epics));
-  const header = $derived(headerOf(lines.lanes, settleHours(ui, sel)));
+  const header = $derived(headerOf(lines.lanes, settleHours(ui, sel), mergedOff));
   // Recent activity draws on the focused project's settled jobs too, once its list has loaded.
   const recent = $derived(focused ? activity(needs ? jobs : withSettled(ui, sel)) : []);
 
@@ -206,6 +246,13 @@
 
   // An open inspector hides the sidebar below 1640px; closing it restores the user's own choice.
   const sidebarOpen = $derived(sidebarShown(sidebar, innerWidth, inspectorOpen));
+  // The Mac app's View menu labels follow the page: report Needs Me, the effective sidebar, and the
+  // inspector whenever one changes, for any reason (the menu, `n`, closing the inspector, a narrow
+  // window hiding the sidebar). A browser has no caller.
+  const reportView = viewStateCaller(mode, Reflect.get(window, 'tiny'));
+  $effect(() => {
+    reportView?.({ needsMe: needs, sidebarShown: sidebarOpen, inspectorOpen });
+  });
   const win = $derived(frame(mode, sidebarOpen));
   const side = $derived(sidebarModel(ui, sel));
   const foot = $derived(footer(status, ui.projects.length, ui.release.info));
@@ -333,6 +380,28 @@
   function toggleInspector(): void {
     if (inspectorOpen) closeInspector();
     else inspectorOpen = true;
+  }
+  function toggleSide(): void {
+    sidebar = toggleSidebar(sidebar, innerWidth, inspectorOpen);
+  }
+  /** A View menu page event from the Mac app (sidebar.ts `menuEventAction`). */
+  function onmenu(event: string): void {
+    switch (menuEventAction(event)) {
+      case 'toggle-needs':
+        needs = !needs;
+        return;
+      case 'open-settled':
+        openSettled(null);
+        return;
+      case 'toggle-sidebar':
+        toggleSide();
+        return;
+      case 'toggle-inspector':
+        toggleInspector();
+        return;
+      case null:
+        return;
+    }
   }
 
   // Copying shows a HUD toast for 1.6s. A failed write says so; the command stays on screen to select.
@@ -507,7 +576,7 @@
       bind:searchFocused
       {needs}
       ontoggleneeds={() => (needs = !needs)}
-      ontogglesidebar={() => (sidebar = toggleSidebar(sidebar, innerWidth, inspectorOpen))}
+      ontogglesidebar={toggleSide}
       onback={() => select(ALL)}
       ontoggleinspector={toggleInspector}
       onsettled={() => openSettled(null)}
@@ -592,7 +661,7 @@
   oncopy={copy}
   onclose={() => (sheet = null)}
 />
-<ShortcutSheet open={keysOpen} onclose={() => (keysOpen = false)} />
+<ShortcutSheet open={keysOpen} mac={mode === 'mac'} onclose={() => (keysOpen = false)} />
 <WhatsNewSheet model={whatsNewModel} open={whatsNewOpen} onshowall={() => (whatsNewProject = null)} oncopy={copy} onclose={() => (whatsNewOpen = false)} />
 <div class="hud" class:on={toast !== null} class:fail={toast !== null && !toast.ok} role="status" aria-live="polite">
   {#if toast !== null}

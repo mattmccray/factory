@@ -6,7 +6,7 @@ import { HOUR, NOW, before, job, projectRelease, releaseBody, tag } from './fixt
 import { kindOf } from './lanes';
 import type { Status } from './live';
 import { ALL, SELECTION_KEY, boardJobs, hotEpics, loadSelection, resolveSelection, saveSelection } from './projects';
-import { LEGEND, MAC_INSET, STATUS_BAR_EVENT, WHATS_NEW_EVENT, footer, footerLine, footerRelease, frame, isActive, projectStatus, pushSubscriber, reviewFailed, settleHours, settleText, shellMode, sidebarModel, statusBarHidden, subtitle, subtitleText, title } from './sidebar';
+import { INSPECTOR_EVENT, LEGEND, MAC_INSET, MENU_EVENTS, MERGED_EVENT, NEEDS_ME_EVENT, PUSHED_EVENTS, SETTLED_EVENT, SIDEBAR_EVENT, STATUS_BAR_EVENT, VIEW_STATE_METHOD, WHATS_NEW_EVENT, footer, footerLine, footerRelease, frame, isActive, projectStatus, pushSubscriber, reviewFailed, settleHours, settleText, shellMode, sidebarModel, statusBarHidden, mergedHidden, menuEventAction, viewStateCaller, subtitle, subtitleText, title } from './sidebar';
 import { applyEvent, emptyState } from './state';
 import type { UiState } from './state';
 
@@ -529,5 +529,90 @@ describe("the Mac app's What's New event (059 AC8)", () => {
     expect(pushSubscriber('browser', host)).toBeNull();
     const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
     expect(app).toContain("subscribe?.(WHATS_NEW_EVENT, () => openWhatsNew(null));");
+  });
+});
+
+describe("063: the Mac app's View menu events", () => {
+  test('AC4: the event names, and each page event maps to its action; anything else does nothing', () => {
+    expect([MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, INSPECTOR_EVENT]).toEqual(['merged', 'needsme', 'settled', 'sidebar', 'inspector']);
+    expect(PUSHED_EVENTS).toEqual(['statusbar', 'whatsnew', 'merged', 'needsme', 'settled', 'sidebar', 'inspector']);
+    expect(MENU_EVENTS).toEqual(['needsme', 'settled', 'sidebar', 'inspector']);
+    expect(MENU_EVENTS.map(menuEventAction)).toEqual(['toggle-needs', 'open-settled', 'toggle-sidebar', 'toggle-inspector']);
+    for (const e of ['statusbar', 'whatsnew', 'merged', 'NEEDSME', 'needs-me', '', 'settle']) expect({ e, a: menuEventAction(e) }).toEqual({ e, a: null });
+  });
+
+  test('AC3: the Merged event: hidden true hides, false shows, a malformed payload changes nothing', () => {
+    expect(mergedHidden({ hidden: true })).toBe(true);
+    expect(mergedHidden({ hidden: false })).toBe(false);
+    for (const d of [undefined, null, true, {}, { hidden: 'true' }, { hidden: 1 }, { shown: true }]) expect({ d, h: mergedHidden(d) }).toEqual({ d, h: null });
+  });
+
+  test('AC4: App.svelte subscribes to each page event and acts on it', () => {
+    const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
+    for (const name of ['NEEDS_ME_EVENT', 'SETTLED_EVENT', 'SIDEBAR_EVENT', 'INSPECTOR_EVENT']) expect(app).toContain(`subscribe?.(${name}, () => onmenu(${name}));`);
+    expect(app).toMatch(/case 'toggle-needs':\s*needs = !needs;/);
+    expect(app).toMatch(/case 'open-settled':\s*openSettled\(null\);/);
+    expect(app).toMatch(/case 'toggle-sidebar':\s*toggleSide\(\);/);
+    expect(app).toMatch(/case 'toggle-inspector':\s*toggleInspector\(\);/);
+    expect(app).toContain('if (hidden !== null) mergedOff = hidden;');
+    expect(app).toContain('buildLanes(shownProjects, jobs, now, focused, summaries, epics, needs, mergedOff)');
+    expect(app).toContain('headerOf(lines.lanes, settleHours(ui, sel), mergedOff)');
+  });
+});
+
+describe('063 AC5/AC7: the view-state report', () => {
+  const host = (calls: unknown[][], answer: () => unknown = async () => null) => ({
+    api: {
+      call: (method: string, params: unknown) => {
+        calls.push([method, params]);
+        return answer();
+      },
+    },
+  });
+
+  test('the main window reports the three booleans by the one fixed method, only when they change', () => {
+    expect(VIEW_STATE_METHOD).toBe('setViewState');
+    const calls: unknown[][] = [];
+    const report = viewStateCaller('mac', host(calls));
+    if (report === null) throw new Error('no reporter');
+    report({ needsMe: false, sidebarShown: true, inspectorOpen: false });
+    report({ needsMe: false, sidebarShown: true, inspectorOpen: false }); // unchanged: not sent again
+    report({ needsMe: true, sidebarShown: true, inspectorOpen: false }); // n
+    report({ needsMe: true, sidebarShown: false, inspectorOpen: true }); // the inspector opened in a narrow window
+    expect(calls).toEqual([
+      ['setViewState', { needsMe: false, sidebarShown: true, inspectorOpen: false }],
+      ['setViewState', { needsMe: true, sidebarShown: true, inspectorOpen: false }],
+      ['setViewState', { needsMe: true, sidebarShown: false, inspectorOpen: true }],
+    ]);
+  });
+
+  test('it sends only the three booleans, even from a wider object', () => {
+    const calls: unknown[][] = [];
+    const wide = { needsMe: true, sidebarShown: true, inspectorOpen: true, extra: 'x' };
+    viewStateCaller('mac', host(calls))?.(wide);
+    expect(calls).toEqual([['setViewState', { needsMe: true, sidebarShown: true, inspectorOpen: true }]]);
+  });
+
+  test('a call that throws or rejects is ignored', async () => {
+    const calls: unknown[][] = [];
+    const throwing = viewStateCaller('mac', host(calls, () => { throw new Error('gone'); }));
+    expect(() => throwing?.({ needsMe: true, sidebarShown: true, inspectorOpen: false })).not.toThrow();
+    const rejecting = viewStateCaller('mac', host(calls, () => Promise.reject(new Error('denied'))));
+    expect(() => rejecting?.({ needsMe: true, sidebarShown: true, inspectorOpen: false })).not.toThrow();
+    await new Promise((r) => setTimeout(r, 1));
+    expect(calls).toHaveLength(2);
+  });
+
+  test('AC7: in a browser, or without a usable window.tiny, nothing reports', () => {
+    expect(viewStateCaller('browser', host([]))).toBeNull();
+    expect(viewStateCaller(shellMode(''), host([]))).toBeNull();
+    for (const h of [undefined, null, {}, { api: null }, { api: {} }, { api: { call: 'x' } }]) expect({ h, r: viewStateCaller('mac', h) }).toEqual({ h, r: null });
+  });
+
+  test('App.svelte reports on every change of Needs Me, the effective sidebar, and the inspector', () => {
+    const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
+    expect(app).toContain("const reportView = viewStateCaller(mode, Reflect.get(window, 'tiny'));");
+    expect(app).toMatch(/\$effect\(\(\) => \{\s*reportView\?\.\(\{ needsMe: needs, sidebarShown: sidebarOpen, inspectorOpen \}\);\s*\}\);/);
+    expect(app).toContain('const sidebarOpen = $derived(sidebarShown(sidebar, innerWidth, inspectorOpen));');
   });
 });

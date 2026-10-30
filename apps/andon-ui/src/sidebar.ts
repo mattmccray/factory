@@ -3,7 +3,8 @@
 // glyph when it is behind, and a hover line for every state), the connection footer (with the
 // machine's release, or a restart note), the toolbar's title and
 // subtitle, the status bar's legend and settle text, the shell mode and view read from the page URL,
-// and the Mac app's status bar event.
+// the Mac app's pushed events (the status bar, the Merged column, What's New, and the View menu's
+// page actions), and the main window's view-state report back to the Mac app.
 // Nothing here touches the DOM; App.svelte and the frame components only lay it out.
 import { isRecord } from './job';
 import type { Epic, Job } from './job';
@@ -216,16 +217,47 @@ export function appView(search: string): AppView {
   return shellMode(search) === 'mac' && new URLSearchParams(search).get('view') === 'settings' ? 'settings' : 'board';
 }
 
-// ---- the Mac app's status bar choice ----
-// The Mac app's View menu hides or shows the status bar and pushes the choice to the page as one
-// event; the page only listens (it never calls the Mac app). In a browser there is no such event.
+// ---- the Mac app's pushed events ----
+// The Mac app's View menu hides or shows the status bar and the Merged column and pushes each choice
+// to the page as an event; its other View items (Needs Me, Show Settled…, the sidebar, the
+// inspector) push an event asking the page to act. In a browser there are no such events: the
+// status bar and the Merged column always show.
 
 /** The event the Mac app pushes with the status bar state: `{ hidden: boolean }`. */
 export const STATUS_BAR_EVENT = 'statusbar';
 /** The event the Mac app pushes when Help → What's New is chosen: the page opens the whole What's New sheet. Its payload is ignored. */
 export const WHATS_NEW_EVENT = 'whatsnew';
-/** Every event the page subscribes to: tinyjs.json's api gate names each as `event.<name>`. */
-export const PUSHED_EVENTS: readonly string[] = [STATUS_BAR_EVENT, WHATS_NEW_EVENT];
+/** The event the Mac app pushes with the Merged column state: `{ hidden: boolean }`. */
+export const MERGED_EVENT = 'merged';
+// The View menu's page actions; their payloads are ignored.
+export const NEEDS_ME_EVENT = 'needsme';
+export const SETTLED_EVENT = 'settled';
+export const SIDEBAR_EVENT = 'sidebar';
+export const INSPECTOR_EVENT = 'inspector';
+/** Every event the page subscribes to: tinyjs.json's api gate names each as `event.<name>`, in this order. */
+export const PUSHED_EVENTS: readonly string[] = [STATUS_BAR_EVENT, WHATS_NEW_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, INSPECTOR_EVENT];
+
+/** What the page does for a View menu event. */
+export type MenuEventAction = 'toggle-needs' | 'open-settled' | 'toggle-sidebar' | 'toggle-inspector';
+
+/** The page's action for a View menu page event; null for any other event. */
+export function menuEventAction(event: string): MenuEventAction | null {
+  switch (event) {
+    case NEEDS_ME_EVENT:
+      return 'toggle-needs';
+    case SETTLED_EVENT:
+      return 'open-settled';
+    case SIDEBAR_EVENT:
+      return 'toggle-sidebar';
+    case INSPECTOR_EVENT:
+      return 'toggle-inspector';
+    default:
+      return null;
+  }
+}
+
+/** The View menu's page events, in menu order: App.svelte subscribes to each and acts by `menuEventAction`. */
+export const MENU_EVENTS: readonly string[] = [NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, INSPECTOR_EVENT];
 
 /** Subscribe to one pushed event; returns the unsubscribe. */
 export type Subscribe = (event: string, fn: (data: unknown) => void) => () => void;
@@ -248,6 +280,52 @@ export function pushSubscriber(mode: ShellMode, host: unknown): Subscribe | null
 /** The status bar event's `hidden`, or null for a malformed payload (which changes nothing). */
 export function statusBarHidden(data: unknown): boolean | null {
   return isRecord(data) && typeof data.hidden === 'boolean' ? data.hidden : null;
+}
+
+/** The Merged column event's `hidden`, or null for a malformed payload (which changes nothing). */
+export const mergedHidden = (data: unknown): boolean | null => statusBarHidden(data);
+
+// ---- the main window's view state, reported to the Mac app ----
+// The View menu's Needs Me, sidebar, and inspector labels follow the page: whenever one of those
+// booleans changes, for any reason (a menu item, `n`, closing the inspector, a narrow window hiding
+// the sidebar), the main window's page reports all three through the one view-state method, which
+// the Mac app answers only for the main window. In a browser, and in the Settings window, nothing is sent.
+
+/** The one Mac app backend method the main window's page calls with its view state. */
+export const VIEW_STATE_METHOD = 'setViewState';
+
+/** The main window's view state: Needs Me, the effective sidebar (`sidebarShown`), and the inspector. */
+export interface ViewState {
+  needsMe: boolean;
+  sidebarShown: boolean;
+  inspectorOpen: boolean;
+}
+
+/** Report one view state; a failed or refused call is ignored. */
+export type ViewReporter = (v: ViewState) => void;
+
+/**
+ * How the main window's page reports its view state: Tiny's backend call, found by narrowing the
+ * page's `window.tiny` (passed in as `unknown`), with the one fixed method name and only the three
+ * booleans. A report equal to the last one is not sent again. Null in a browser, or when it isn't there.
+ */
+export function viewStateCaller(mode: ShellMode, host: unknown): ViewReporter | null {
+  if (mode !== 'mac' || !isRecord(host) || !isRecord(host.api)) return null;
+  const api = host.api;
+  const call = api.call;
+  if (typeof call !== 'function') return null;
+  let last: ViewState | null = null;
+  return (v) => {
+    if (last !== null && last.needsMe === v.needsMe && last.sidebarShown === v.sidebarShown && last.inspectorOpen === v.inspectorOpen) return;
+    last = { needsMe: v.needsMe, sidebarShown: v.sidebarShown, inspectorOpen: v.inspectorOpen };
+    const { needsMe, sidebarShown, inspectorOpen } = last;
+    try {
+      const r: unknown = Reflect.apply(call, api, [VIEW_STATE_METHOD, { needsMe, sidebarShown, inspectorOpen }]);
+      if (r instanceof Promise) r.catch(() => undefined);
+    } catch {
+      // the Mac app couldn't take it: the labels stay as they were
+    }
+  };
 }
 
 export interface Frame {

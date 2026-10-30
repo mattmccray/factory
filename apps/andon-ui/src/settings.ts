@@ -2,7 +2,8 @@
 // see sidebar.ts `appView`). The settings are the Mac app's (its backend stores them and keeps the
 // menu bar and every window in step); the page reads them and asks for one change at a time, through
 // the two settings methods it may call, which the backend answers only for the Settings window. The
-// page hears changes made elsewhere (the View menu, ⌘/) through the pushed status bar event. The T3
+// page hears changes made elsewhere (the View menu, ⌘/) through the pushed status bar and Merged
+// column events. "Show Merged column" (063) shows or hides the board's Merged column. The T3
 // Code choice (036) says what the needs-human box's Approve and the sheets' Copy do besides copying;
 // the answer also says whether the Mac app found `t3`, and without it the choices are grayed out.
 // In a browser nothing here does anything. Nothing here touches the DOM; Settings.svelte lays it out.
@@ -30,19 +31,23 @@ const isHandoffMode = (v: unknown): v is HandoffMode => HANDOFF_CHOICES.some((c)
 export interface Settings {
   statusBarHidden: boolean;
   t3Handoff: HandoffMode;
+  mergedHidden: boolean;
   t3Found: boolean;
 }
 
 /** The settings in a backend answer, or null for anything malformed (or a refused call's null). */
 export function narrowSettings(data: unknown): Settings | null {
   if (!isRecord(data)) return null;
-  const { statusBarHidden, t3Handoff, t3Found } = data;
-  if (typeof statusBarHidden !== 'boolean' || !isHandoffMode(t3Handoff) || typeof t3Found !== 'boolean') return null;
-  return { statusBarHidden, t3Handoff, t3Found };
+  const { statusBarHidden, t3Handoff, mergedHidden, t3Found } = data;
+  if (typeof statusBarHidden !== 'boolean' || !isHandoffMode(t3Handoff) || typeof mergedHidden !== 'boolean' || typeof t3Found !== 'boolean') return null;
+  return { statusBarHidden, t3Handoff, mergedHidden, t3Found };
 }
 
 /** "Show status bar" is checked when the status bar isn't hidden. */
 export const showsStatusBar = (s: Settings): boolean => !s.statusBarHidden;
+
+/** "Show Merged column" is checked when the Merged column isn't hidden. */
+export const showsMerged = (s: Settings): boolean => !s.mergedHidden;
 
 export interface SettingsApi {
   /** The current settings; null when the backend refuses or fails. */
@@ -51,6 +56,8 @@ export interface SettingsApi {
   setStatusBarHidden(hidden: boolean): Promise<Settings | null>;
   /** Set the T3 Code choice; resolves with the settings after, or null. */
   setT3Handoff(mode: HandoffMode): Promise<Settings | null>;
+  /** Set whether the Merged column is hidden; resolves with the settings after, or null. */
+  setMergedHidden(hidden: boolean): Promise<Settings | null>;
 }
 
 /**
@@ -76,5 +83,6 @@ export function settingsCaller(mode: ShellMode, host: unknown): SettingsApi | nu
     get: () => answer(() => Reflect.apply(call, api, [GET_SETTINGS_METHOD, null])),
     setStatusBarHidden: (hidden) => answer(() => Reflect.apply(call, api, [SET_SETTING_METHOD, { key: 'statusBarHidden', value: hidden }])),
     setT3Handoff: (mode) => answer(() => Reflect.apply(call, api, [SET_SETTING_METHOD, { key: 't3Handoff', value: mode }])),
+    setMergedHidden: (hidden) => answer(() => Reflect.apply(call, api, [SET_SETTING_METHOD, { key: 'mergedHidden', value: hidden }])),
   };
 }

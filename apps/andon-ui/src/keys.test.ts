@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { initialKeys, reduceKey, topSheet } from './keys';
+import { SHORTCUTS, initialKeys, reduceKey, shortcutsFor, topSheet } from './keys';
 import type { KeyAction, KeyInput, KeyState, Layers } from './keys';
 
 const NONE: Layers = { sheet: false, inspector: false, searchText: false, searchFocused: false };
@@ -123,5 +123,31 @@ describe("Esc closes What's New as the topmost sheet (059 AC5)", () => {
     const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
     expect(app).toContain('sheet: settledOpen || whatsNewOpen || sheet !== null || keysOpen');
     expect(app).toContain('switch (topSheet({ whatsNew: whatsNewOpen, keys: keysOpen, command: sheet !== null, settled: settledOpen }))');
+  });
+});
+
+describe('063 AC7: the shortcut sheet lists the View menu shortcuts', () => {
+  const menuKeys = ['⇧⌘N', '⇧⌘S', '⌃⌘S', '⌥⌘I', '⌘/'];
+
+  test('SHORTCUTS lists ⇧⌘N, ⇧⌘S, ⌃⌘S, ⌥⌘I, and ⌘/, in menu order, after the page keys', () => {
+    expect(SHORTCUTS.filter((s) => s.menu === true).map((s) => s.keys)).toEqual(menuKeys.map((k) => [k]));
+    expect(SHORTCUTS.slice(0, 6).every((s) => s.menu !== true)).toBe(true);
+    expect(new Set(SHORTCUTS.map((s) => s.text)).size).toBe(SHORTCUTS.length); // the sheet keys its rows by text
+  });
+
+  test('the Mac app shows every row; a plain browser, only the page keys (nothing new appears)', () => {
+    expect(shortcutsFor(true)).toEqual(SHORTCUTS);
+    const browser = shortcutsFor(false);
+    expect(browser.map((s) => s.keys.join(' '))).toEqual(['/', 'esc', '↑ ↓', 'g a', 'n', '?']);
+    expect(browser.some((s) => menuKeys.includes(s.keys[0] ?? ''))).toBe(false);
+    const sheet = readFileSync(join(import.meta.dir, 'ShortcutSheet.svelte'), 'utf8');
+    expect(sheet).toContain('const rows = $derived(shortcutsFor(mac));');
+    const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
+    expect(app).toContain("<ShortcutSheet open={keysOpen} mac={mode === 'mac'} onclose={() => (keysOpen = false)} />");
+  });
+
+  test('n still toggles Needs Me, and the menu shortcuts (a modifier held) are never the page reducer\'s', () => {
+    expect(run([ev('n')])).toEqual(['toggle-needs']);
+    expect(run([ev('N', { mod: true }), ev('S', { mod: true }), ev('s', { mod: true }), ev('i', { mod: true }), ev('/', { mod: true })])).toEqual([null, null, null, null, null]);
   });
 });

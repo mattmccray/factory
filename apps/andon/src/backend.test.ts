@@ -3,13 +3,14 @@
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { api, assetPath, checkApps, checkFound, dockIcon, findAppBundle, findT3, lookupIcon, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runJobItem, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, showProjectMenu, trayIcon } from './backend';
+import { api, assetPath, checkApps, checkFound, dockIcon, findAppBundle, findT3, lookupIcon, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runJobItem, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, setViewState, showProjectMenu, trayIcon } from './backend';
 import type { HandoffHost, JobMenuHost, MacApp, MacNavEvent, MacTraySpec, MacWinState, RunResult } from './backend';
 import { itemId, projectMenuItems } from './projectmenu';
 import { jobItemId, jobMenuItems } from './jobmenu';
 import type { Availability, MenuProject } from './projectmenu';
 import type { HandoffMode, Settings } from './settings';
-import { GITHUB_ID, MINIMIZE_ID, SETTINGS_ID, SETTINGS_SIZE, SHOW_MAIN_ID, STATUS_BAR_ID, WHATS_NEW_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
+import { DEFAULT_VIEW, GITHUB_ID, INSPECTOR_ID, MERGED_ID, MINIMIZE_ID, NEEDS_ME_ID, SETTINGS_ID, SETTINGS_SIZE, SETTLED_ID, SHOW_MAIN_ID, SIDEBAR_ID, STATUS_BAR_ID, WHATS_NEW_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
+import type { MenuState } from './appmenu';
 import { QUIT_ID, trayNotice, traySpec } from './badge';
 import { INSTALL_NOTICE } from './autostart';
 
@@ -357,14 +358,16 @@ async function initMenu(stored: unknown): Promise<ReturnType<typeof menuApp>> {
 }
 
 const menuSet = (log: unknown[][]): unknown[][] => log.filter((e) => e[0] === 'menu.set');
+/** The menu bar for a status bar and Merged column state, with the page's default view. */
+const bar = (statusBarHidden: boolean, mergedHidden = false): ReturnType<typeof appMenu> => appMenu({ statusBarHidden, mergedHidden, view: { ...DEFAULT_VIEW } } satisfies MenuState);
 
 test('AC3: init sets the menu bar with the label for the stored state', async () => {
   const shown = await initMenu(null);
-  expect(menuSet(shown.log)).toEqual([['menu.set', appMenu(false)]]);
+  expect(menuSet(shown.log)).toEqual([['menu.set', bar(false)]]);
   const hidden = await initMenu(true);
-  expect(menuSet(hidden.log)).toEqual([['menu.set', appMenu(true)]]);
+  expect(menuSet(hidden.log)).toEqual([['menu.set', bar(true)]]);
   const malformed = await initMenu('yes');
-  expect(menuSet(malformed.log)).toEqual([['menu.set', appMenu(false)]]);
+  expect(menuSet(malformed.log)).toEqual([['menu.set', bar(false)]]);
 });
 
 test('AC3: init still sets the menu bar (status bar shown) when the store cannot be read', async () => {
@@ -376,7 +379,7 @@ test('AC3: init still sets the menu bar (status bar shown) when the store cannot
   };
   init(m.app);
   for (let i = 0; i < 50 && menuSet(m.log).length === 0; i++) await new Promise((r) => setTimeout(r, 1));
-  expect(menuSet(m.log)).toEqual([['menu.set', appMenu(false)]]);
+  expect(menuSet(m.log)).toEqual([['menu.set', bar(false)]]);
 });
 
 test('AC3: the toggle flips the state, relabels the item, pushes the new state, and stores it', async () => {
@@ -567,7 +570,7 @@ test('037: a main window that throws on show still lets Settings… open Setting
 
 const SETTINGS_META = { window: 'settings', origin: 'http://127.0.0.1:8766' };
 /** The settings with the status bar choice, the default T3 Code choice, and no `t3` (the fake `tjs` has no files). */
-const snap = (hidden: boolean, t3Handoff: HandoffMode = 'draft', t3Found = false): Settings => ({ statusBarHidden: hidden, t3Handoff, t3Found });
+const snap = (hidden: boolean, t3Handoff: HandoffMode = 'draft', t3Found = false, mergedHidden = false): Settings => ({ statusBarHidden: hidden, t3Handoff, mergedHidden, t3Found });
 
 test('035 AC2: from any window but Settings, getSettings and setSetting answer null and change nothing', async () => {
   const m = await initMenu(true);
@@ -640,7 +643,7 @@ test('035 AC4: the choice survives a relaunch: init reads what setSetting stored
   const m = await initMenu(null);
   await setSetting({ key: 'statusBarHidden', value: true }, m.app, SETTINGS_META);
   const again = await initMenu(m.store.get('statusBarHidden'));
-  expect(menuSet(again.log)).toEqual([['menu.set', appMenu(true)]]);
+  expect(menuSet(again.log)).toEqual([['menu.set', bar(true)]]);
   expect(await getSettings(again.app, SETTINGS_META)).toEqual(snap(true));
 });
 
@@ -683,7 +686,9 @@ test("AC3: when the main window's main frame finishes loading, the current state
   await onNavigate({ window: 'main', kind: 'finish' }, m.app);
   expect(m.log).toEqual([
     ['push', 'statusbar', { hidden: true }],
+    ['push', 'merged', { hidden: false }],
     ['push', 'statusbar', { hidden: true }],
+    ['push', 'merged', { hidden: false }],
   ]);
   m.log.length = 0;
   const others: MacNavEvent['kind'][] = ['policy', 'start', 'commit', 'fail', 'crash'];
@@ -701,7 +706,150 @@ test('AC3: a page that finishes loading before the store is read gets the stored
   const m = menuApp(true);
   init(m.app);
   await onNavigate({ window: 'main', kind: 'finish', isMainFrame: true }, m.app);
-  expect(m.log.filter((e) => e[0] === 'push')).toEqual([['push', 'statusbar', { hidden: true }]]);
+  expect(m.log.filter((e) => e[0] === 'push')).toEqual([
+    ['push', 'statusbar', { hidden: true }],
+    ['push', 'merged', { hidden: false }],
+  ]);
+});
+
+// ---- the View menu (063) ----
+
+test('063 AC3: init reads the stored Merged choice into the menu bar: exactly true is hidden', async () => {
+  for (const [stored, hidden] of [[true, true], [false, false], [null, false], ['true', false], [1, false]] as const) {
+    const hung: FakeProcess = { stdout: new ReadableStream<Uint8Array>(), kill: () => undefined, wait: never };
+    fakeGlobals(() => hung);
+    const m = menuApp(null);
+    m.store.set('mergedHidden', stored);
+    init(m.app);
+    for (let i = 0; i < 50 && menuSet(m.log).length === 0; i++) await new Promise((r) => setTimeout(r, 1));
+    expect({ stored, set: menuSet(m.log) }).toEqual({ stored, set: [['menu.set', bar(false, hidden)]] });
+    expect({ stored, s: await getSettings(m.app, SETTINGS_META) }).toEqual({ stored, s: snap(false, 'draft', false, hidden) });
+  }
+});
+
+test('063 AC3: the View menu item and the Settings checkbox share one path: store, relabel, push merged, and Settings reads it', async () => {
+  const m = await initMenu(null);
+  m.log.length = 0;
+  await onMenu(MERGED_ID, m.app);
+  expect(m.log).toEqual([
+    ['store.set', 'mergedHidden', true],
+    ['menu.update', MERGED_ID, { label: 'Show Merged Column' }],
+    ['push', 'merged', { hidden: true }],
+  ]);
+  expect(await getSettings(m.app, SETTINGS_META)).toEqual(snap(false, 'draft', false, true));
+  m.log.length = 0;
+  expect(await api.setSetting({ key: 'mergedHidden', value: false }, m.app, SETTINGS_META)).toEqual(snap(false, 'draft', false, false));
+  expect(m.log).toEqual([
+    ['store.set', 'mergedHidden', false],
+    ['menu.update', MERGED_ID, { label: 'Hide Merged Column' }],
+    ['push', 'merged', { hidden: false }],
+  ]);
+  // the value it already holds flips nothing
+  m.log.length = 0;
+  expect(await setSetting({ key: 'mergedHidden', value: false }, m.app, SETTINGS_META)).toEqual(snap(false));
+  expect(m.log).toEqual([]);
+  // the menu toggle starts from the Settings change
+  expect(await setSetting({ key: 'mergedHidden', value: true }, m.app, SETTINGS_META)).toEqual(snap(false, 'draft', false, true));
+  m.log.length = 0;
+  await onMenu(MERGED_ID, m.app);
+  expect(m.log[0]).toEqual(['store.set', 'mergedHidden', false]);
+  // the status bar is untouched throughout
+  expect(m.store.get('statusBarHidden')).toBeNull();
+});
+
+test('063 AC3: a malformed Merged change, or one from another window, changes nothing', async () => {
+  const m = await initMenu(null);
+  m.log.length = 0;
+  for (const params of [{ key: 'mergedHidden', value: 'yes' }, { key: 'mergedHidden', value: 1 }, { key: 'mergedHidden', value: true, extra: 1 }, { key: 'mergedHidden' }]) {
+    expect({ params, r: await setSetting(params, m.app, SETTINGS_META) }).toEqual({ params, r: null });
+  }
+  for (const meta of [MAIN_META, { window: 'other' }, null]) expect(await setSetting({ key: 'mergedHidden', value: true }, m.app, meta)).toBeNull();
+  expect(m.log).toEqual([]);
+  expect(m.store.has('mergedHidden')).toBe(false);
+});
+
+test('063 AC3: the Merged choice survives a relaunch', async () => {
+  const m = await initMenu(null);
+  await setSetting({ key: 'mergedHidden', value: true }, m.app, SETTINGS_META);
+  const hung: FakeProcess = { stdout: new ReadableStream<Uint8Array>(), kill: () => undefined, wait: never };
+  fakeGlobals(() => hung);
+  const again = menuApp(null);
+  again.store.set('mergedHidden', m.store.get('mergedHidden'));
+  init(again.app);
+  for (let i = 0; i < 50 && menuSet(again.log).length === 0; i++) await new Promise((r) => setTimeout(r, 1));
+  expect(menuSet(again.log)).toEqual([['menu.set', bar(false, true)]]);
+  again.log.length = 0;
+  await onNavigate({ window: 'main', kind: 'finish', isMainFrame: true }, again.app);
+  expect(again.log).toEqual([
+    ['push', 'statusbar', { hidden: false }],
+    ['push', 'merged', { hidden: true }],
+  ]);
+});
+
+test('063 AC4: Needs Me, the sidebar, and the inspector push their event to the page; Show Settled… shows the board first', async () => {
+  const m = await initMenu(null);
+  m.log.length = 0;
+  await onMenu(NEEDS_ME_ID, m.app);
+  await onMenu(SIDEBAR_ID, m.app);
+  await onMenu(INSPECTOR_ID, m.app);
+  expect(m.log).toEqual([
+    ['push', 'needsme', {}],
+    ['push', 'sidebar', {}],
+    ['push', 'inspector', {}],
+  ]);
+  m.log.length = 0;
+  await onMenu(SETTLED_ID, m.app);
+  expect(m.log).toEqual([['main.allSpaces', true], ['main.show'], ['main.allSpaces', false], ['push', 'settled', {}]]);
+  // the page actions store nothing and relabel nothing: the page reports its state back
+  expect(m.store.has('needsMe')).toBe(false);
+});
+
+test('063 AC5: the main window reports its view state; the backend relabels only the items that changed and answers the state', async () => {
+  const m = await initMenu(null);
+  m.log.length = 0;
+  expect(await setViewState({ needsMe: false, sidebarShown: true, inspectorOpen: false }, m.app, MAIN_META)).toEqual({ needsMe: false, sidebarShown: true, inspectorOpen: false });
+  expect(m.log).toEqual([]); // the default view: nothing to flip
+  expect(await api.setViewState({ needsMe: true, sidebarShown: true, inspectorOpen: false }, m.app, MAIN_META)).toEqual({ needsMe: true, sidebarShown: true, inspectorOpen: false });
+  expect(m.log).toEqual([['menu.update', NEEDS_ME_ID, { label: 'Show All Jobs' }]]);
+  m.log.length = 0;
+  // the inspector opens and the narrow-window rule hides the sidebar in the same change
+  await api.setViewState({ needsMe: true, sidebarShown: false, inspectorOpen: true }, m.app, MAIN_META);
+  expect(m.log).toEqual([
+    ['menu.update', SIDEBAR_ID, { label: 'Show Sidebar' }],
+    ['menu.update', INSPECTOR_ID, { label: 'Hide Inspector' }],
+  ]);
+  m.log.length = 0;
+  await api.setViewState({ needsMe: false, sidebarShown: true, inspectorOpen: false }, m.app, MAIN_META);
+  expect(m.log).toEqual([
+    ['menu.update', NEEDS_ME_ID, { label: 'Show Only Needs Me' }],
+    ['menu.update', SIDEBAR_ID, { label: 'Hide Sidebar' }],
+    ['menu.update', INSPECTOR_ID, { label: 'Show Inspector' }],
+  ]);
+  expect([...m.store.keys()]).toEqual(['statusBarHidden']); // never stored
+});
+
+test('063 AC5: a relaunch starts the menu from the default view, whatever the page last reported', async () => {
+  const m = await initMenu(null);
+  await setViewState({ needsMe: true, sidebarShown: false, inspectorOpen: true }, m.app, MAIN_META);
+  const again = await initMenu(null);
+  expect(menuSet(again.log)).toEqual([['menu.set', bar(false)]]);
+});
+
+test('063 AC6: setViewState from any window but main, or with any params but the three booleans, answers null and relabels nothing', async () => {
+  const m = await initMenu(null);
+  m.log.length = 0;
+  const ok = { needsMe: true, sidebarShown: false, inspectorOpen: true };
+  for (const meta of [SETTINGS_META, { window: 'settings' }, { window: 'other' }, { window: 'Main' }, {}, null, undefined, 'main', { window: ['main'] }]) {
+    expect({ meta, r: await setViewState(ok, m.app, meta) }).toEqual({ meta, r: null });
+    expect({ meta, r: await api.setViewState(ok, m.app, meta) }).toEqual({ meta, r: null });
+  }
+  for (const params of [null, undefined, {}, [], 'x', { ...ok, extra: 1 }, { needsMe: true, sidebarShown: false }, { ...ok, needsMe: 'yes' }, { ...ok, inspectorOpen: 1 }]) {
+    expect({ params, r: await api.setViewState(params, m.app, MAIN_META) }).toEqual({ params, r: null });
+  }
+  expect(m.log).toEqual([]);
+  // still the default view: the next good report flips all three
+  await setViewState(ok, m.app, MAIN_META);
+  expect(m.log.map((e) => e[1])).toEqual([NEEDS_ME_ID, SIDEBAR_ID, INSPECTOR_ID]);
 });
 
 // ---- a project's right-click menu ----
@@ -820,7 +968,7 @@ test("AC2: a newer request wins over an older one's slower app check", async () 
 });
 
 test('AC2: the api names its methods, and with the app not following the service it lists no project', async () => {
-  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu']);
+  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState']);
   fakeMachine([], []);
   const { app, log } = contextApp();
   await api.projectMenu({ project: PID }, app);

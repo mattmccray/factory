@@ -1,6 +1,18 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  DEFAULT_VIEW,
   GITHUB_ID,
+  INSPECTOR_EVENT,
+  INSPECTOR_ID,
+  MERGED_EVENT,
+  MERGED_ID,
+  MERGED_KEY,
+  NEEDS_ME_EVENT,
+  NEEDS_ME_ID,
+  SETTLED_EVENT,
+  SETTLED_ID,
+  SIDEBAR_EVENT,
+  SIDEBAR_ID,
   GITHUB_URL,
   MINIMIZE_ID,
   SETTINGS_ID,
@@ -15,19 +27,37 @@ import {
   ZOOM_ID,
   appMenu,
   menuAction,
+  mergedPayload,
+  pageEventPayload,
   settingsUrl,
   settingsWindow,
   statusBarLabel,
   statusBarPayload,
   storedHidden,
+  viewLabelUpdates,
   whatsNewPayload,
 } from './appmenu';
-import type { Menu } from './appmenu';
+import type { Menu, MenuItem, MenuState, ViewState } from './appmenu';
+
+/** A menu state: the defaults (everything shown, Needs Me off, no inspector), with `over` on top. */
+const ms = (over: Partial<Omit<MenuState, 'view'>> = {}, view: Partial<ViewState> = {}): MenuState => ({ statusBarHidden: false, mergedHidden: false, ...over, view: { ...DEFAULT_VIEW, ...view } });
+
+/** The View menu's items, for its labels. */
+const viewItems = (needs: string, sidebar: string, inspector: string, bar: string, merged: string): MenuItem[] => [
+  { id: NEEDS_ME_ID, label: needs, key: 'N' },
+  { id: SETTLED_ID, label: 'Show Settled…', key: 'S' },
+  { separator: true },
+  { id: SIDEBAR_ID, label: sidebar, key: 'ctrl+s' },
+  { id: INSPECTOR_ID, label: inspector, key: 'alt+i' },
+  { separator: true },
+  { id: STATUS_BAR_ID, label: bar, key: '/' },
+  { id: MERGED_ID, label: merged },
+];
 
 const expected = (toggle: string): Menu[] => [
   { role: 'app', items: [{ id: SETTINGS_ID, label: 'Settings…', key: ',', enabled: true }] },
   { role: 'edit' },
-  { title: 'View', items: [{ id: STATUS_BAR_ID, label: toggle, key: '/' }] },
+  { title: 'View', items: viewItems('Show Only Needs Me', 'Hide Sidebar', 'Show Inspector', toggle, 'Hide Merged Column') },
   {
     title: 'Window',
     items: [{ id: MINIMIZE_ID, label: 'Minimize', key: 'm' }, { id: ZOOM_ID, label: 'Zoom' }, { separator: true }, { id: SHOW_MAIN_ID, label: 'Andon', key: '0' }],
@@ -37,21 +67,21 @@ const expected = (toggle: string): Menu[] => [
 
 describe('AC1: the menu spec', () => {
   test('shown: the bar is Andon, Edit, View (Hide Status Bar), Window, Help, exactly', () => {
-    expect(appMenu(false)).toEqual(expected('Hide Status Bar'));
+    expect(appMenu(ms())).toEqual(expected('Hide Status Bar'));
   });
 
   test('hidden: the same bar, with the toggle reading Show Status Bar', () => {
-    expect(appMenu(true)).toEqual(expected('Show Status Bar'));
+    expect(appMenu(ms({ statusBarHidden: true }))).toEqual(expected('Show Status Bar'));
     expect(statusBarLabel(true)).toBe('Show Status Bar');
     expect(statusBarLabel(false)).toBe('Hide Status Bar');
   });
 
   test('every clickable item has a unique id', () => {
-    const items = appMenu(false).flatMap((m) => m.items ?? []).filter((i) => i.separator !== true);
+    const items = appMenu(ms()).flatMap((m) => m.items ?? []).filter((i) => i.separator !== true);
     const ids = items.map((i) => i.id);
     expect(ids.every((id) => typeof id === 'string' && id.length > 0)).toBe(true);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).toHaveLength(7);
+    expect(ids).toHaveLength(12);
   });
 });
 
@@ -82,7 +112,7 @@ describe('AC2: clicks and the stored value', () => {
 describe('035 AC1: Settings… and the Settings window', () => {
   test('Settings… is enabled with ⌘, for either status bar state', () => {
     for (const hidden of [false, true]) {
-      const item = appMenu(hidden)[0]?.items?.[0];
+      const item = appMenu(ms({ statusBarHidden: hidden }))[0]?.items?.[0];
       expect(item).toEqual({ id: SETTINGS_ID, label: 'Settings…', key: ',', enabled: true });
     }
   });
@@ -107,7 +137,7 @@ describe('035 AC1: Settings… and the Settings window', () => {
 describe("059 AC8: Help → What's New", () => {
   test("Help lists What's New above Factory on GitHub, for either status bar state", () => {
     for (const hidden of [false, true]) {
-      const help = appMenu(hidden).find((m) => m.title === 'Help');
+      const help = appMenu(ms({ statusBarHidden: hidden })).find((m) => m.title === 'Help');
       expect(help).toEqual({ title: 'Help', role: 'help', items: [{ id: WHATS_NEW_ID, label: "What's New" }, { id: GITHUB_ID, label: 'Factory on GitHub' }] });
     }
   });
@@ -118,5 +148,75 @@ describe("059 AC8: Help → What's New", () => {
     expect(WHATS_NEW_EVENT).toBe('whatsnew');
     expect(whatsNewPayload()).toEqual({});
     for (const id of ['whats-new', 'WhatsNew', 'changelog']) expect({ id, action: menuAction(id) }).toEqual({ id, action: null });
+  });
+});
+
+describe('063 AC1: the View menu', () => {
+  const viewOf = (s: MenuState): MenuItem[] | undefined => appMenu(s).find((m) => m.title === 'View')?.items;
+
+  test('the items, in order, with separators after Show Settled… and after the inspector item, for every state', () => {
+    for (const statusBarHidden of [false, true]) {
+      for (const mergedHidden of [false, true]) {
+        for (const needsMe of [false, true]) {
+          for (const sidebarShown of [false, true]) {
+            for (const inspectorOpen of [false, true]) {
+              const state = ms({ statusBarHidden, mergedHidden }, { needsMe, sidebarShown, inspectorOpen });
+              expect({ state, items: viewOf(state) }).toEqual({
+                state,
+                items: viewItems(
+                  needsMe ? 'Show All Jobs' : 'Show Only Needs Me',
+                  sidebarShown ? 'Hide Sidebar' : 'Show Sidebar',
+                  inspectorOpen ? 'Hide Inspector' : 'Show Inspector',
+                  statusBarHidden ? 'Show Status Bar' : 'Hide Status Bar',
+                  mergedHidden ? 'Show Merged Column' : 'Hide Merged Column',
+                ),
+              });
+            }
+          }
+        }
+      }
+    }
+  });
+
+  test('the shortcuts: ⇧⌘N, ⇧⌘S, ⌃⌘S, ⌥⌘I, ⌘/, and none for the Merged item', () => {
+    const keys = (viewOf(ms()) ?? []).filter((i) => i.separator !== true).map((i) => [i.id, i.key]);
+    expect(keys).toEqual([
+      [NEEDS_ME_ID, 'N'],
+      [SETTLED_ID, 'S'],
+      [SIDEBAR_ID, 'ctrl+s'],
+      [INSPECTOR_ID, 'alt+i'],
+      [STATUS_BAR_ID, '/'],
+      [MERGED_ID, undefined],
+    ]);
+    expect(viewOf(ms())?.find((i) => i.id === MERGED_ID)).not.toHaveProperty('key');
+  });
+
+  test('the bar around View is unchanged: Andon, Edit, View, Window, Help', () => {
+    expect(appMenu(ms({ mergedHidden: true }, { needsMe: true })).map((m) => m.title ?? m.role)).toEqual(['app', 'edit', 'View', 'Window', 'Help']);
+  });
+
+  test('each new id maps to its action; the page actions push their event, and Show Settled… shows the window first', () => {
+    expect(menuAction(MERGED_ID)).toEqual({ kind: 'toggle-merged' });
+    expect(menuAction(NEEDS_ME_ID)).toEqual({ kind: 'page', event: NEEDS_ME_EVENT, show: false });
+    expect(menuAction(SETTLED_ID)).toEqual({ kind: 'page', event: SETTLED_EVENT, show: true });
+    expect(menuAction(SIDEBAR_ID)).toEqual({ kind: 'page', event: SIDEBAR_EVENT, show: false });
+    expect(menuAction(INSPECTOR_ID)).toEqual({ kind: 'page', event: INSPECTOR_EVENT, show: false });
+    expect([NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, INSPECTOR_EVENT, MERGED_EVENT]).toEqual(['needsme', 'settled', 'sidebar', 'inspector', 'merged']);
+    expect(pageEventPayload()).toEqual({});
+    expect(mergedPayload(true)).toEqual({ hidden: true });
+    expect(mergedPayload(false)).toEqual({ hidden: false });
+    expect(MERGED_KEY).toBe('mergedHidden');
+    for (const id of ['Merged', 'needs-me', 'NEEDSME', 'settled-sheet', 'Sidebar', 'inspect', 'view']) expect({ id, action: menuAction(id) }).toEqual({ id, action: null });
+  });
+
+  test('a view state change relabels only the items whose state changed', () => {
+    expect(viewLabelUpdates(DEFAULT_VIEW, DEFAULT_VIEW)).toEqual([]);
+    expect(viewLabelUpdates(DEFAULT_VIEW, { needsMe: true, sidebarShown: false, inspectorOpen: true })).toEqual([
+      { id: NEEDS_ME_ID, label: 'Show All Jobs' },
+      { id: SIDEBAR_ID, label: 'Show Sidebar' },
+      { id: INSPECTOR_ID, label: 'Hide Inspector' },
+    ]);
+    expect(viewLabelUpdates({ needsMe: true, sidebarShown: false, inspectorOpen: true }, { needsMe: true, sidebarShown: true, inspectorOpen: true })).toEqual([{ id: SIDEBAR_ID, label: 'Hide Sidebar' }]);
+    expect(DEFAULT_VIEW).toEqual({ needsMe: false, sidebarShown: true, inspectorOpen: false });
   });
 });

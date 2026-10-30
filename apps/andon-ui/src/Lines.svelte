@@ -1,5 +1,6 @@
 <script lang="ts">
-  // The Assembly Lines matrix (design §3, §5–§7): a 148px project gutter and six station columns,
+  // The Assembly Lines matrix (design §3, §5–§7): a 148px project gutter and six station columns
+  // (five with the Merged column hidden, 063: the header's columns set the count),
   // under a sticky, blurred header (each column's square, name, count badge, and role, and the
   // gutter's "N active · M idle"). One lane per project, in the order lanes.ts gives; a lane that
   // changes place slides there in 250ms, its epics' sub-lanes with it. A focused project adds its Recent activity list. The
@@ -67,7 +68,7 @@
 </script>
 
 <div class="lines" class:focus={focused} onscroll={() => onhover(null, null)}>
-  <div class="matrix" role="table" aria-label={focused ? `${projectName}, by station` : 'Projects by station'}>
+  <div class="matrix" style:--n={header.columns.length} role="table" aria-label={focused ? `${projectName}, by station` : 'Projects by station'}>
     <div class="row head" role="row">
       <div class="corner" role="columnheader">{header.corner}</div>
       {#each header.columns as c (c.key)}
