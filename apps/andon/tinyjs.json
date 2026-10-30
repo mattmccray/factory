@@ -4,13 +4,14 @@
   "title": "Andon",
   "size": "1280x820",
   "minSize": "1100x700",
+  "rememberWindows": true,
   "id": "dev.factory.andon",
   "version": "0.1.0",
   "minTinyjsVersion": "0.68.0",
   "icon": "assets/icon.png",
   "url": "http://127.0.0.1:8766/?shell=mac",
   "chrome": { "frame": false, "windowControls": true, "windowControlsPos": { "x": 18, "y": 20 }, "vibrancy": "sidebar" },
-  "api": { "disable": ["*"], "enable": ["win.startDrag", "win.zoom", "event.statusbar", "event.whatsnew", "event.merged", "event.needsme", "event.settled", "event.backlog", "event.sidebar", "event.inspector", "projectMenu", "getSettings", "setSetting", "handOff", "jobMenu", "setViewState", "getAbout", "startWork"] },
+  "api": { "disable": ["*"], "enable": ["win.startDrag", "win.zoom", "event.statusbar", "event.whatsnew", "event.merged", "event.needsme", "event.settled", "event.backlog", "event.sidebar", "event.inspector", "event.startwork", "projectMenu", "getSettings", "setSetting", "handOff", "jobMenu", "setViewState", "getAbout", "startWork", "closeAbout", "epicMenu"] },
   "about": "menu",
   "backend": "build/backend.js"
 }

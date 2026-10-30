@@ -35,6 +35,12 @@ import {
   settingsUrl,
   settingsWindow,
   ABOUT_ID,
+  CLOSE_WINDOW_ID,
+  NEW_EXPLORATION_ID,
+  START_WORK_EVENT,
+  startWorkPayload,
+  closeWindowStep,
+  fileMenu,
   ABOUT_QUERY,
   ABOUT_SIZE,
   ABOUT_TITLE,
@@ -47,7 +53,7 @@ import {
   viewLabelUpdates,
   whatsNewPayload,
 } from './appmenu';
-import type { Menu, MenuItem, MenuState, ViewState } from './appmenu';
+import type { Menu, MenuItem, MenuState, StartWorkPush, ViewState } from './appmenu';
 
 /** A menu state: the defaults (everything shown, Needs Me off, no inspector), with `over` on top. */
 const ms = (over: Partial<Omit<MenuState, 'view'>> = {}, view: Partial<ViewState> = {}): MenuState => ({ statusBarHidden: false, mergedHidden: false, ...over, view: { ...DEFAULT_VIEW, ...view } });
@@ -67,6 +73,13 @@ const viewItems = (needs: string, sidebar: string, inspector: string, bar: strin
 
 const expected = (toggle: string): Menu[] => [
   { role: 'app', items: [{ id: SETTINGS_ID, label: 'Settings…', key: ',', enabled: true }] },
+  {
+    title: 'File',
+    items: [
+      { id: NEW_EXPLORATION_ID, label: 'New Exploration…', key: 'n' }, // 075 AC1
+      { id: CLOSE_WINDOW_ID, label: 'Close Window', key: 'w' }, // 073 AC3
+    ],
+  },
   { role: 'edit' },
   { title: 'View', items: viewItems('Show Only Needs Me', 'Hide Sidebar', 'Show Inspector', toggle, 'Hide Merged Column') },
   {
@@ -77,7 +90,7 @@ const expected = (toggle: string): Menu[] => [
 ];
 
 describe('AC1: the menu spec', () => {
-  test('shown: the bar is Andon, Edit, View (Hide Status Bar), Window, Help, exactly', () => {
+  test('shown: the bar is Andon, File, Edit, View (Hide Status Bar), Window, Help, exactly', () => {
     expect(appMenu(ms())).toEqual(expected('Hide Status Bar'));
   });
 
@@ -92,7 +105,7 @@ describe('AC1: the menu spec', () => {
     const ids = items.map((i) => i.id);
     expect(ids.every((id) => typeof id === 'string' && id.length > 0)).toBe(true);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).toHaveLength(13); // 067: Show Backlog…
+    expect(ids).toHaveLength(15); // 067: Show Backlog…; 073: Close Window; 075: New Exploration…
   });
 });
 
@@ -203,8 +216,8 @@ describe('063 AC1: the View menu', () => {
     expect(viewOf(ms())?.find((i) => i.id === MERGED_ID)).not.toHaveProperty('key');
   });
 
-  test('the bar around View is unchanged: Andon, Edit, View, Window, Help', () => {
-    expect(appMenu(ms({ mergedHidden: true }, { needsMe: true })).map((m) => m.title ?? m.role)).toEqual(['app', 'edit', 'View', 'Window', 'Help']);
+  test('the bar around View is unchanged: Andon, File (073), Edit, View, Window, Help', () => {
+    expect(appMenu(ms({ mergedHidden: true }, { needsMe: true })).map((m) => m.title ?? m.role)).toEqual(['app', 'File', 'edit', 'View', 'Window', 'Help']);
   });
 
   test('each new id maps to its action; the page actions push their event, and Show Settled… shows the window first', () => {
@@ -262,15 +275,83 @@ describe('065 AC2: the About window', () => {
     expect(aboutUrl(9123)).toBe('http://127.0.0.1:9123/?shell=mac&view=about');
   });
 
-  test('a fixed size (size equals minSize), a standard frame with only the close button, not a child of main', () => {
+  test('073 AC1: a fixed size (size equals minSize), frameless with only the close button at its default spot, a child of main', () => {
     expect(ABOUT_SIZE).toMatch(/^\d+x\d+$/);
+    expect(ABOUT_SIZE).toBe('440x400'); // unchanged
     expect(aboutWindow(9123)).toEqual({
       page: 'http://127.0.0.1:9123/?shell=mac&view=about',
       title: 'About Andon',
       size: ABOUT_SIZE,
       minSize: ABOUT_SIZE,
-      chrome: { frame: true, windowControls: ['close'] },
+      chrome: { frame: false, windowControls: ['close'] },
+      parent: 'main',
     });
-    expect('parent' in aboutWindow(8766)).toBe(false);
+    expect('windowControlsPos' in aboutWindow(8766).chrome).toBe(false);
+  });
+});
+
+describe('073 AC3: File → Close Window (⌘W)', () => {
+  test('the File menu comes right after the app menu and ends with Close Window, ⌘W', () => {
+    for (const hidden of [false, true]) {
+      const bar = appMenu(ms({ statusBarHidden: hidden }));
+      expect(bar.map((m) => m.title ?? m.role)).toEqual(['app', 'File', 'edit', 'View', 'Window', 'Help']);
+      expect(bar[1]).toEqual({ title: 'File', items: fileMenu() });
+    }
+    expect(fileMenu().at(-1)).toEqual({ id: CLOSE_WINDOW_ID, label: 'Close Window', key: 'w' });
+  });
+
+  test('its id maps to the close-window action; near misses do nothing', () => {
+    expect(CLOSE_WINDOW_ID).toBe('closewindow');
+    expect(menuAction(CLOSE_WINDOW_ID)).toEqual({ kind: 'close-window' });
+    for (const id of ['close', 'close-window', 'CloseWindow', 'w', 'file']) expect({ id, action: menuAction(id) }).toEqual({ id, action: null });
+  });
+});
+
+describe('073 AC4: what Close Window does to the focused window', () => {
+  test('Settings and About close, main hides; only Andon windows count', () => {
+    expect(closeWindowStep(['settings'])).toEqual({ id: 'settings', step: 'close' });
+    expect(closeWindowStep(['about'])).toEqual({ id: 'about', step: 'close' });
+    expect(closeWindowStep(['main'])).toEqual({ id: 'main', step: 'hide' });
+    expect(closeWindowStep(['other', 'about'])).toEqual({ id: 'about', step: 'close' });
+  });
+
+  test('no focused Andon window, or more than one claiming focus, does nothing: it never guesses', () => {
+    expect(closeWindowStep([])).toBeNull();
+    expect(closeWindowStep(['other', 'Settings', 'About', 'MAIN'])).toBeNull();
+    expect(closeWindowStep(['main', 'settings'])).toBeNull();
+    expect(closeWindowStep(['about', 'settings'])).toBeNull();
+  });
+});
+
+describe('075 AC1: File → New Exploration… (⌘N)', () => {
+  test('the File menu is exactly New Exploration… (⌘N), then Close Window (⌘W)', () => {
+    expect(NEW_EXPLORATION_ID).toBe('newexploration');
+    expect(fileMenu()).toEqual([
+      { id: NEW_EXPLORATION_ID, label: 'New Exploration…', key: 'n' },
+      { id: CLOSE_WINDOW_ID, label: 'Close Window', key: 'w' },
+    ]);
+  });
+
+  test('no other menu changes: ⌘N is free, the View menu keeps ⇧⌘N for Needs Me', () => {
+    const keys = appMenu(ms())
+      .flatMap((m) => m.items ?? [])
+      .map((i) => i.key)
+      .filter((k) => k !== undefined);
+    expect(keys.filter((k) => k === 'n')).toEqual(['n']);
+    expect(appMenu(ms())).toEqual(expected('Hide Status Bar'));
+  });
+
+  test('its click shows the main window, then pushes startwork with { action: new-exploration, project: null }', () => {
+    expect(START_WORK_EVENT).toBe('startwork');
+    expect(menuAction(NEW_EXPLORATION_ID)).toEqual({ kind: 'start-work', payload: { action: 'new-exploration', project: null } });
+    for (const id of ['new-exploration', 'NewExploration', 'n', 'explore', 'startwork']) expect({ id, action: menuAction(id) }).toEqual({ id, action: null });
+  });
+
+  test('the payload builder carries exactly the action and the project', () => {
+    expect(startWorkPayload({ action: 'new-exploration', project: null })).toEqual({ action: 'new-exploration', project: null });
+    expect(startWorkPayload({ action: 'new-exploration', project: 'aaaaaaaaaaaa' })).toEqual({ action: 'new-exploration', project: 'aaaaaaaaaaaa' });
+    expect(startWorkPayload({ action: 'next', project: 'aaaaaaaaaaaa' })).toEqual({ action: 'next', project: 'aaaaaaaaaaaa' });
+    const extra: StartWorkPush & { command: string } = { action: 'next', project: 'aaaaaaaaaaaa', command: '/factory next' };
+    expect(Object.keys(startWorkPayload(extra))).toEqual(['action', 'project']);
   });
 });

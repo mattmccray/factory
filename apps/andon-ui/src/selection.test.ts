@@ -1,6 +1,7 @@
 // Text selection (034 AC2): off by default on the root and inherited, so a right-click or a drag
 // never selects the board's words; on only in the inspector's rendered document (`.doc`), the
-// command boxes (`.cmd code`, whole-command), and text fields. Each rule sets both the WebKit-
+// command boxes (`.cmd code`, whole-command), text fields, and the About window's text
+// (`.about .about-text`, 073: its art band is the drag area, the text below stays selectable). Each rule sets both the WebKit-
 // prefixed and the unprefixed property, so the Mac app and a plain browser behave the same.
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
@@ -43,7 +44,7 @@ describe('text selection (034 AC2)', () => {
   });
 
   test('the rendered document and text fields turn it back on', () => {
-    for (const selector of ['.doc', 'input', 'textarea']) expect({ selector, ...selection(selector) }).toEqual({ selector, webkit: 'text', plain: 'text' });
+    for (const selector of ['.doc', 'input', 'textarea', '.about .about-text']) expect({ selector, ...selection(selector) }).toEqual({ selector, webkit: 'text', plain: 'text' });
   });
 
   test('a command box selects the whole command on click', () => {
@@ -51,7 +52,7 @@ describe('text selection (034 AC2)', () => {
   });
 
   test('no other rule turns selection back on', () => {
-    const allowed = new Set(['.doc', 'input', 'textarea', '.cmd code']);
+    const allowed = new Set(['.doc', 'input', 'textarea', '.cmd code', '.about .about-text']);
     const on = rules
       .filter((r) => [value(r.body, '-webkit-user-select'), value(r.body, 'user-select')].some((v) => v !== null && v !== 'none'))
       .map((r) => r.selectors.filter((s) => !allowed.has(s)))

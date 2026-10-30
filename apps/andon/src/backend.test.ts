@@ -3,13 +3,14 @@
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { getAbout, api, startWork, assetPath, checkApps, checkFound, dockIcon, findAppBundle, findT3, lookupIcon, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runJobItem, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, setViewState, showProjectMenu, trayIcon } from './backend';
+import { closeAbout, getAbout, api, startWork, assetPath, checkApps, checkFound, dockIcon, findAppBundle, findT3, lookupIcon, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runEpicItem, runJobItem, showEpicMenu, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, setViewState, showProjectMenu, trayIcon } from './backend';
 import type { HandoffHost, JobMenuHost, StartWorkHost, MacApp, MacNavEvent, MacTraySpec, MacWinState, RunResult } from './backend';
 import { itemId, projectMenuItems } from './projectmenu';
-import { jobItemId, jobMenuItems } from './jobmenu';
+import { epicItemId, epicMenuItems } from './epicmenu';
+import { jobItemId, jobMenuItems, threadLink } from './jobmenu';
 import type { Availability, MenuProject } from './projectmenu';
 import type { HandoffMode, Settings } from './settings';
-import { ABOUT_ID, ABOUT_SIZE, GITHUB_URL, aboutWindow, DEFAULT_VIEW, GITHUB_ID, INSPECTOR_ID, MERGED_ID, MINIMIZE_ID, NEEDS_ME_ID, SETTINGS_ID, SETTINGS_SIZE, SETTLED_ID, SHOW_MAIN_ID, SIDEBAR_ID, STATUS_BAR_ID, WHATS_NEW_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
+import { ABOUT_ID, ABOUT_SIZE, CLOSE_WINDOW_ID, NEW_EXPLORATION_ID, GITHUB_URL, aboutWindow, DEFAULT_VIEW, GITHUB_ID, INSPECTOR_ID, MERGED_ID, MINIMIZE_ID, NEEDS_ME_ID, SETTINGS_ID, SETTINGS_SIZE, SETTLED_ID, SHOW_MAIN_ID, SIDEBAR_ID, STATUS_BAR_ID, WHATS_NEW_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
 import type { MenuState } from './appmenu';
 import { QUIT_ID, trayNotice, traySpec } from './badge';
 import { INSTALL_NOTICE, PROBE_MS } from './autostart';
@@ -49,6 +50,8 @@ function fakeApp(state: MacWinState | null, fail: Failures = {}): { app: MacApp;
       minimize: () => calls.push(`${id}.minimize`),
       zoom: () => calls.push(`${id}.zoom`),
       setResizable: (on) => calls.push(`${id}.resizable(${on})`),
+      close: () => calls.push(`${id}.close`),
+      hide: (opts) => calls.push(`${id}.hide(${JSON.stringify(opts)})`),
     }),
     windows: async () => ['main'],
     win: { open: (id) => calls.push(`win.open(${id})`) },
@@ -85,8 +88,8 @@ function fakeApp(state: MacWinState | null, fail: Failures = {}): { app: MacApp;
 
 // The tray click reads only `minimized`, `fullscreen`, and `allSpaces`; Tiny's `visible` and `focused`
 // play no part in it (rework 2), so a window in front and one hidden look the same to it. Settings…'s
-// bring-back step also reads `visible` (037).
-const st = (minimized: boolean, fullscreen = false, visible = true): MacWinState => ({ minimized, fullscreen, allSpaces: false, visible });
+// bring-back step also reads `visible` (037). Close Window reads `focused` (073), set per window by menuApp's `focus`.
+const st = (minimized: boolean, fullscreen = false, visible = true): MacWinState => ({ minimized, fullscreen, allSpaces: false, visible, focused: false });
 /** Show on the Space the user is on: join every Space, show, then pin it back to one. */
 const showHere = (...mid: string[]): string[] => ['main.getState', 'main.allSpaces(true)', ...mid, 'main.show', 'main.allSpaces(false)'];
 
@@ -439,10 +442,12 @@ test('071 AC5: a Quit before the first miss loads no page', async () => {
 
 /** The main window's state as the menu fake reports it: a state, null, or `'fail'` (`getState` rejects). */
 type MainState = { current: MacWinState | null | 'fail' };
+/** Which windows report `focused: true` (073): every window reads main's state, with its own focus. */
+type FocusState = { ids: Set<string> };
 
 /** A fake app that records the menu bar, the store, the pushes, and the shell, with `stored` as the
  *  status bar choice in the store, and `main.current` as the main window's state. */
-function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<string, unknown>; open: Set<string>; main: MainState } {
+function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<string, unknown>; open: Set<string>; main: MainState; focus: FocusState } {
   const log: unknown[][] = [];
   const store = new Map<string, unknown>([['statusBarHidden', stored]]);
   const { app } = fakeApp(st(false));
@@ -460,6 +465,7 @@ function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<s
     },
   };
   app.push = (event, data) => void log.push(['push', event, data]);
+  app.quit = () => void log.push(['quit']);
   app.shell = {
     open: async (target) => {
       log.push(['shell.open', target]);
@@ -471,11 +477,12 @@ function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<s
     },
   };
   const main: MainState = { current: st(false) };
+  const focus: FocusState = { ids: new Set() };
   app.window = (id) => ({
     getState: async () => {
       const state = main.current;
       if (state === 'fail') throw new Error(`${id}.getState failed`);
-      return state;
+      return state === null ? null : { ...state, focused: focus.ids.has(id) };
     },
     restore: () => log.push([`${id}.restore`]),
     setAllSpaces: (on) => log.push([`${id}.allSpaces`, on]),
@@ -484,6 +491,11 @@ function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<s
     minimize: () => log.push([`${id}.minimize`]),
     zoom: () => log.push([`${id}.zoom`]),
     setResizable: (on) => log.push([`${id}.resizable`, on]),
+    close: () => {
+      open.delete(id);
+      log.push([`${id}.close`]);
+    },
+    hide: (opts) => log.push([`${id}.hide`, opts]),
   });
   const open = new Set<string>(['main']);
   app.windows = async () => [...open];
@@ -493,7 +505,7 @@ function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<s
       log.push(['win.open', id, opts]);
     },
   };
-  return { app, log, store, open, main };
+  return { app, log, store, open, main, focus };
 }
 
 /** init, with the service never answering, then let the stored choice be read. */
@@ -579,6 +591,21 @@ test("059 AC8: Help → What's New shows the main window as the tray click does,
   expect(m.log).toEqual([['main.allSpaces', true], ['main.show'], ['main.allSpaces', false], ['push', 'whatsnew', {}]]);
 });
 
+test('075 AC1: File → New Exploration… shows the main window as the tray click does, then pushes startwork { new-exploration, null }, and nothing else', async () => {
+  const m = await initMenu(null);
+  m.log.length = 0;
+  await onMenu(NEW_EXPLORATION_ID, m.app);
+  expect(m.log).toEqual([['main.allSpaces', true], ['main.show'], ['main.allSpaces', false], ['push', 'startwork', { action: 'new-exploration', project: null }]]);
+});
+
+test('075 AC1: with the main window minimized, New Exploration… restores it before the push', async () => {
+  const m = await initMenu(null);
+  m.main.current = st(true, false, false);
+  m.log.length = 0;
+  await onMenu(NEW_EXPLORATION_ID, m.app);
+  expect(m.log).toEqual([['main.allSpaces', true], ['main.restore'], ['main.show'], ['main.allSpaces', false], ['push', 'startwork', { action: 'new-exploration', project: null }]]);
+});
+
 test('AC3: unknown ids do nothing', async () => {
   const m = await initMenu(null);
   m.log.length = 0;
@@ -635,7 +662,7 @@ test('065 AC2: About Andon opens the About window on the service port, not resiz
   m.log.length = 0;
   await onMenu(ABOUT_ID, m.app);
   expect(m.log).toEqual([
-    ['win.open', 'about', { page: 'http://127.0.0.1:8766/?shell=mac&view=about', title: 'About Andon', size: ABOUT_SIZE, minSize: ABOUT_SIZE, chrome: { frame: true, windowControls: ['close'] } }],
+    ['win.open', 'about', { page: 'http://127.0.0.1:8766/?shell=mac&view=about', title: 'About Andon', size: ABOUT_SIZE, minSize: ABOUT_SIZE, chrome: { frame: false, windowControls: ['close'] }, parent: 'main' }],
     ['about.resizable', false],
   ]);
   m.log.length = 0;
@@ -654,18 +681,149 @@ test('065 AC2: the About window loads from the port init resolved, and two quick
   expect(m.log.filter((e) => e[0] === 'win.open')).toEqual([['win.open', 'about', aboutWindow(9123)]]);
 });
 
-test('065 AC2: About leaves the main window alone, and opens again once closed', async () => {
-  for (const state of [st(false, false, false), st(true, false, false)]) {
-    const m = await initMenu(null);
+// ---- About Andon brings the main window back first (073) ----
+
+const aboutOpen = (port = 8766): unknown[] => ['win.open', 'about', aboutWindow(port)];
+
+test('073 AC2: with the main window up, About Andon opens About and leaves main alone; it opens again once closed', async () => {
+  const m = await initMenu(null);
+  m.main.current = st(false, false, true);
+  m.log.length = 0;
+  await onMenu(ABOUT_ID, m.app);
+  expect(m.log).toEqual([aboutOpen(), ['about.resizable', false]]);
+  m.open.delete('about');
+  m.log.length = 0;
+  await onMenu(ABOUT_ID, m.app);
+  expect(m.log).toEqual([aboutOpen(), ['about.resizable', false]]);
+});
+
+test('073 AC2: with the main window hidden, About Andon shows it, then opens About; once open, shows main, then About', async () => {
+  const m = await initMenu(null);
+  m.main.current = st(false, false, false);
+  m.log.length = 0;
+  await onMenu(ABOUT_ID, m.app);
+  expect(m.log).toEqual([['main.show'], aboutOpen(), ['about.resizable', false]]);
+  m.log.length = 0;
+  await onMenu(ABOUT_ID, m.app);
+  expect(m.log).toEqual([['main.show'], ['about.show']]);
+});
+
+test('073 AC2: with the main window minimized, About Andon restores and shows it, then opens About; once open, then shows About', async () => {
+  const m = await initMenu(null);
+  m.main.current = st(true, false, false);
+  m.log.length = 0;
+  await onMenu(ABOUT_ID, m.app);
+  expect(m.log).toEqual([['main.restore'], ['main.show'], aboutOpen(), ['about.resizable', false]]);
+  m.log.length = 0;
+  await onMenu(ABOUT_ID, m.app);
+  expect(m.log).toEqual([['main.restore'], ['main.show'], ['about.show']]);
+});
+
+test('073 AC2: with About open, About Andon never opens a second window: main is brought back, then About shown and focused', async () => {
+  const m = await initMenu(null);
+  await onMenu(ABOUT_ID, m.app);
+  for (const state of [st(false, false, false), st(true, false, false), st(false, false, true)]) {
     m.main.current = state;
     m.log.length = 0;
     await onMenu(ABOUT_ID, m.app);
-    expect(m.log.some((e) => typeof e[0] === 'string' && e[0].startsWith('main.'))).toBe(false);
-    m.open.delete('about');
+    expect(m.log.filter((e) => e[0] === 'win.open')).toEqual([]);
+    expect(m.log.at(-1)).toEqual(['about.show']);
+    expect(m.log.filter((e) => e[0] === 'about.show')).toHaveLength(1);
+  }
+});
+
+test('073 AC2: when the main window state cannot be read (rejects or null), About Andon shows main, no restore, and still opens or shows About', async () => {
+  for (const current of ['fail', null] as const) {
+    const m = await initMenu(null);
+    m.main.current = current;
     m.log.length = 0;
     await onMenu(ABOUT_ID, m.app);
-    expect(m.log.map((e) => e[0])).toEqual(['win.open', 'about.resizable']);
+    expect(m.log).toEqual([['main.show'], aboutOpen(), ['about.resizable', false]]);
+    m.log.length = 0;
+    await onMenu(ABOUT_ID, m.app);
+    expect(m.log).toEqual([['main.show'], ['about.show']]);
   }
+});
+
+test('073 AC2: two quick clicks with the main window minimized open one About window and bring main back once', async () => {
+  const m = await initMenu(null);
+  m.main.current = st(true, false, false);
+  m.log.length = 0;
+  await Promise.all([onMenu(ABOUT_ID, m.app), onMenu(ABOUT_ID, m.app)]);
+  expect(m.log).toEqual([['main.restore'], ['main.show'], aboutOpen(), ['about.resizable', false]]);
+});
+
+// ---- File → Close Window (073) ----
+
+/** The menu app with main, Settings, and About open, the main window up, and `focused` the windows reporting focus. */
+async function closeApp(focused: string[]): Promise<ReturnType<typeof menuApp>> {
+  const m = await initMenu(null);
+  m.open.add('settings');
+  m.open.add('about');
+  for (const id of focused) m.focus.ids.add(id);
+  m.log.length = 0;
+  return m;
+}
+const closes = (log: unknown[][]): unknown[][] => log.filter((e) => typeof e[0] === 'string' && /\.(close|hide|show|restore|minimize)$|^quit$/.test(e[0]));
+
+test('073 AC4: with Settings focused, Close Window closes only Settings', async () => {
+  const m = await closeApp(['settings']);
+  await onMenu(CLOSE_WINDOW_ID, m.app);
+  expect(closes(m.log)).toEqual([['settings.close']]);
+  expect([...m.open].sort()).toEqual(['about', 'main']);
+});
+
+test('073 AC4: with About focused, Close Window closes only About', async () => {
+  const m = await closeApp(['about']);
+  await onMenu(CLOSE_WINDOW_ID, m.app);
+  expect(closes(m.log)).toEqual([['about.close']]);
+  expect([...m.open].sort()).toEqual(['main', 'settings']);
+});
+
+test('073 AC4: with main focused, Close Window hides main alone (as its close button does), never closing or quitting it', async () => {
+  const m = await closeApp(['main']);
+  await onMenu(CLOSE_WINDOW_ID, m.app);
+  expect(closes(m.log)).toEqual([['main.hide', { app: false }]]);
+  expect(m.log.some((e) => e[0] === 'main.close' || e[0] === 'quit')).toBe(false);
+  expect(m.open.has('main')).toBe(true);
+  // with only main open, too
+  const only = await initMenu(null);
+  only.focus.ids.add('main');
+  only.log.length = 0;
+  await onMenu(CLOSE_WINDOW_ID, only.app);
+  expect(closes(only.log)).toEqual([['main.hide', { app: false }]]);
+});
+
+test('073 AC4: with no Andon window focused, Close Window does nothing', async () => {
+  const m = await closeApp([]);
+  await onMenu(CLOSE_WINDOW_ID, m.app);
+  expect(closes(m.log)).toEqual([]);
+  expect([...m.open].sort()).toEqual(['about', 'main', 'settings']);
+});
+
+test('073 AC4: with the window state unreadable (rejects or null), or the windows unlisted, Close Window does nothing', async () => {
+  for (const current of ['fail', null] as const) {
+    const m = await closeApp(['settings', 'about', 'main']);
+    m.main.current = current;
+    await onMenu(CLOSE_WINDOW_ID, m.app);
+    expect({ current, log: closes(m.log) }).toEqual({ current, log: [] });
+  }
+  const m = await closeApp(['about']);
+  m.app.windows = async () => {
+    throw new Error('no windows');
+  };
+  await onMenu(CLOSE_WINDOW_ID, m.app);
+  expect(closes(m.log)).toEqual([]);
+});
+
+test('073 AC4: a window not open, or not an Andon window, is never read or closed', async () => {
+  const m = await initMenu(null);
+  m.open.add('other');
+  m.focus.ids.add('other');
+  m.focus.ids.add('about'); // reports focus, but it isn't open
+  m.log.length = 0;
+  await onMenu(CLOSE_WINDOW_ID, m.app);
+  expect(closes(m.log)).toEqual([]);
 });
 
 const ABOUT_META = { window: 'about', origin: 'http://127.0.0.1:8766' };
@@ -692,6 +850,33 @@ test('065 AC3: from any window but About (main, Settings, none), getAbout answer
   for (const meta of [{ window: 'main' }, { window: 'settings' }, { window: 'other' }, { window: 'About' }, {}, null, undefined, 'about']) {
     expect({ meta, r: await getAbout(meta) }).toEqual({ meta, r: null });
     expect({ meta, r: await api.getAbout({ window: 'about' }, m.app, meta) }).toEqual({ meta, r: null });
+  }
+  expect(m.log).toEqual([]);
+});
+
+test('073 AC5: closeAbout from the About window, with no params, closes only the About window', async () => {
+  for (const params of [null, undefined]) {
+    const m = menuApp(null);
+    m.open.add('about');
+    m.open.add('settings');
+    expect(await closeAbout(params, m.app, ABOUT_META)).toBe(true);
+    expect(m.log).toEqual([['about.close']]);
+    m.open.add('about');
+    m.log.length = 0;
+    expect(await api.closeAbout(params, m.app, ABOUT_META)).toBe(true);
+    expect(m.log).toEqual([['about.close']]);
+  }
+});
+
+test('073 AC5: closeAbout from any window but About, with malformed meta, or with params supplied, closes nothing', async () => {
+  const m = menuApp(null);
+  m.open.add('about');
+  for (const meta of [{ window: 'main' }, { window: 'settings' }, { window: 'other' }, { window: 'About' }, {}, null, undefined, 'about', ['about']]) {
+    expect({ meta, r: await closeAbout(null, m.app, meta) }).toEqual({ meta, r: false });
+    expect({ meta, r: await api.closeAbout({ window: 'about' }, m.app, meta) }).toEqual({ meta, r: false });
+  }
+  for (const params of [{}, { window: 'about' }, 'about', 0, false, [], ['main']]) {
+    expect({ params, r: await closeAbout(params, m.app, ABOUT_META) }).toEqual({ params, r: false });
   }
   expect(m.log).toEqual([]);
 });
@@ -1185,7 +1370,7 @@ test("AC2: a newer request wins over an older one's slower app check", async () 
 });
 
 test('AC2: the api names its methods, and with the app not following the service it lists no project', async () => {
-  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout', 'startWork']);
+  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout', 'startWork', 'closeAbout', 'epicMenu']);
   fakeMachine([], []);
   const { app, log } = contextApp();
   await api.projectMenu({ project: PID }, app);
@@ -1214,6 +1399,33 @@ test('AC2: each item runs its action on the looked-up root, and a success shows 
     ['/Users/me/.t3/bin/t3', 'app', ROOT],
     ['open', '-a', 'Ghostty', ROOT],
   ]);
+});
+
+test('075 AC3: New Exploration… shows the main window, then pushes startwork for the project; Run Next only pushes; nothing runs or notifies', async () => {
+  const m = menuApp(null);
+  const ran: string[][] = [];
+  const runner = async (argv: string[]): Promise<RunResult> => {
+    ran.push(argv);
+    return ok();
+  };
+  await runProjectItem(itemId('explore', PID), m.app, PROJECTS, '/x/t3', runner);
+  expect(m.log).toEqual([['main.allSpaces', true], ['main.show'], ['main.allSpaces', false], ['push', 'startwork', { action: 'new-exploration', project: PID }]]);
+  m.log.length = 0;
+  m.main.current = st(true, false, false); // minimized: brought back before the push
+  await runProjectItem(itemId('explore', PID), m.app, PROJECTS, null, runner);
+  expect(m.log).toEqual([['main.allSpaces', true], ['main.restore'], ['main.show'], ['main.allSpaces', false], ['push', 'startwork', { action: 'new-exploration', project: PID }]]);
+  m.log.length = 0;
+  await runProjectItem(itemId('next', PID), m.app, PROJECTS, null, runner);
+  expect(m.log).toEqual([['push', 'startwork', { action: 'next', project: PID }]]);
+  expect(ran).toEqual([]);
+});
+
+test('075 AC3: New Exploration… or Run Next on an unlisted or rootless project does nothing', async () => {
+  const m = menuApp(null);
+  for (const item of ['explore', 'next'] satisfies Parameters<typeof itemId>[0][]) {
+    for (const pid of ['zzzzzzzzzzzz', 'bbbbbbbbbbbb']) await runProjectItem(itemId(item, pid), m.app, PROJECTS, '/x/t3');
+  }
+  expect(m.log).toEqual([]);
 });
 
 test('AC2: an unknown project, a rootless one, an unknown item, or a non-string id runs nothing', async () => {
@@ -1920,6 +2132,219 @@ test('040: a newer ask of either menu wins over a slower board fetch', async () 
   release();
   await slow;
   expect(contexts(log)).toEqual([jobMenuItems(PID, MENU_JOB, false), null]);
+});
+
+// ---- an epic's right-click menu (076) ----
+
+const MENU_EPIC = 'andon-window-polish';
+const EPIC_SESSION = { app: 't3code', environment: 'env-1', thread: 'thread-E' };
+const EPIC_LINK = 't3code://threads/env-1/thread-E';
+const MAIN = { window: 'main' };
+
+/** A fake epic menu host (the job menu's host shape): a board whose `epics` hold the epic's `epic.json`. */
+function epicHost(opts: { board?: unknown; boardError?: Error; t3?: string | null } = {}): { host: JobMenuHost; fetched: string[] } {
+  const fetched: string[] = [];
+  const host: JobMenuHost = {
+    projects: () => PROJECTS,
+    board: async (pid) => {
+      fetched.push(pid);
+      if (opts.boardError !== undefined) throw opts.boardError;
+      return opts.board === undefined
+        ? { jobs: [{ id: '076-epic-context-menu', epic: MENU_EPIC, session: GOOD_SESSION }], epics: [{ slug: 'other-epic', session: { app: 't3code', environment: 'env-9', thread: 'other' } }, { slug: MENU_EPIC, state: 'running', session: EPIC_SESSION }] }
+        : opts.board;
+    },
+    findT3: async () => (opts.t3 === undefined ? T3 : opts.t3),
+  };
+  return { host, fetched };
+}
+
+test('076 AC1: an epic with a session and t3 found gets Open in T3 Code (enabled), a separator, and Copy Epic Name', async () => {
+  const { app, log } = jobApp();
+  const h = epicHost();
+  await showEpicMenu({ project: PID, epic: MENU_EPIC }, app, MAIN, h.host);
+  expect(h.fetched).toEqual([PID]);
+  expect(contexts(log)).toEqual([epicMenuItems(PID, MENU_EPIC, false), epicMenuItems(PID, MENU_EPIC, true)]);
+  expect(contexts(log).at(-1)).toEqual([
+    { id: `epic-menu:t3:${PID}:${MENU_EPIC}`, label: 'Open in T3 Code', enabled: true },
+    { separator: true },
+    { id: `epic-menu:copy:${PID}:${MENU_EPIC}`, label: 'Copy Epic Name' },
+  ]);
+  // the opening press asks again: the menu stays as it is
+  log.length = 0;
+  await showEpicMenu({ project: PID, epic: MENU_EPIC }, app, MAIN, h.host);
+  expect(contexts(log)).toEqual([]);
+});
+
+test('076 AC1: a null, missing, or malformed session, or no t3, grays Open in T3 Code out; Copy Epic Name stays; the grayed item opens nothing', async () => {
+  const sessions: unknown[] = [undefined, null, { ...EPIC_SESSION, app: 'codex' }, { ...EPIC_SESSION, extra: 'x' }, { ...EPIC_SESSION, thread: 'thread/E' }, { ...EPIC_SESSION, environment: '' }, { app: 't3code', environment: 'env-1' }, 't3code:env-1/thread-E'];
+  const cases: { label: string; h: ReturnType<typeof epicHost> }[] = sessions.map((session) => ({
+    label: JSON.stringify(session) ?? 'undefined',
+    h: epicHost({ board: { jobs: [], epics: [session === undefined ? { slug: MENU_EPIC } : { slug: MENU_EPIC, session }] } }),
+  }));
+  cases.push({ label: 'no t3', h: epicHost({ t3: null }) });
+  for (const c of cases) {
+    const { app, log } = jobApp();
+    await quietly(async () => {
+      await showEpicMenu(null, app, MAIN, c.h.host); // disarm: the last case armed this same epic
+      log.length = 0;
+      await showEpicMenu({ project: PID, epic: MENU_EPIC }, app, MAIN, c.h.host);
+      expect({ c: c.label, menu: contexts(log).at(-1) }).toEqual({ c: c.label, menu: epicMenuItems(PID, MENU_EPIC, false) });
+      await runEpicItem(epicItemId('t3', PID, MENU_EPIC), app, c.h.host);
+      expect({ c: c.label, opened: opened(log) }).toEqual({ c: c.label, opened: [] });
+      await runEpicItem(epicItemId('copy', PID, MENU_EPIC), app, c.h.host);
+    });
+    expect(log.filter((e) => e[0] === 'clipboard.write')).toEqual([['clipboard.write', { text: MENU_EPIC }]]);
+  }
+});
+
+test("076 AC1: a failed board fetch keeps the menu with Open grayed out", async () => {
+  const { app, log } = jobApp();
+  await showEpicMenu(null, app, MAIN, epicHost().host); // disarm: an earlier test armed this same epic
+  log.length = 0;
+  const logged = await quietly(() => showEpicMenu({ project: PID, epic: MENU_EPIC }, app, MAIN, epicHost({ boardError: new Error('connection refused') }).host));
+  expect(contexts(log)).toEqual([epicMenuItems(PID, MENU_EPIC, false)]);
+  expect(logged).toEqual([`andon: could not fetch the board for the epic menu of ${MENU_EPIC} (connection refused)`]);
+});
+
+test('076 AC2: Open in T3 Code opens the link from a fresh board, built by threadLink; Copy Epic Name copies the slug', async () => {
+  const { app, log } = jobApp();
+  let board: unknown = { epics: [{ slug: MENU_EPIC, session: EPIC_SESSION }] };
+  const fetched: string[] = [];
+  const host: JobMenuHost = { projects: () => PROJECTS, board: async (pid) => (fetched.push(pid), board), findT3: async () => T3 };
+  await showEpicMenu({ project: PID, epic: MENU_EPIC }, app, MAIN, host);
+  log.length = 0;
+  fetched.length = 0;
+  await runEpicItem(epicItemId('t3', PID, MENU_EPIC), app, host);
+  await runEpicItem(epicItemId('copy', PID, MENU_EPIC), app, host);
+  expect(log).toEqual([
+    ['shell.open', EPIC_LINK],
+    ['clipboard.write', { text: MENU_EPIC }],
+  ]);
+  expect(EPIC_LINK).toBe(threadLink({ app: 't3code', environment: 'env-1', thread: 'thread-E' }));
+  expect(fetched).toEqual([PID]); // the click fetched the board again; the copy needs none
+  // the board changed since the menu: the click uses the fresh one
+  board = { epics: [{ slug: MENU_EPIC, session: { app: 't3code', environment: 'env-2', thread: 'thread-F' } }] };
+  log.length = 0;
+  await runEpicItem(epicItemId('t3', PID, MENU_EPIC), app, host);
+  expect(opened(log)).toEqual(['t3code://threads/env-2/thread-F']);
+});
+
+test('076 AC2: a missing epic, a missing or malformed session, a failed fetch, a failed open, or a refused copy each notifies once with its reason', async () => {
+  const cases: { c: ReturnType<typeof jobApp>; h: ReturnType<typeof epicHost>; item: 't3' | 'copy'; text: string }[] = [
+    { c: jobApp(), h: epicHost({ board: { epics: [] } }), item: 't3', text: `Couldn't open the epic ${MENU_EPIC} in T3 Code: the epic is not on its board` },
+    { c: jobApp(), h: epicHost({ board: { epics: [{ slug: MENU_EPIC, session: null }] } }), item: 't3', text: `Couldn't open the epic ${MENU_EPIC} in T3 Code: the epic has no T3 Code thread recorded` },
+    { c: jobApp(), h: epicHost({ board: { epics: [{ slug: MENU_EPIC }] } }), item: 't3', text: `Couldn't open the epic ${MENU_EPIC} in T3 Code: the epic has no T3 Code thread recorded` },
+    { c: jobApp(), h: epicHost({ board: { epics: [{ slug: MENU_EPIC, session: { ...EPIC_SESSION, thread: '../../evil' } }] } }), item: 't3', text: `Couldn't open the epic ${MENU_EPIC} in T3 Code: the epic has no T3 Code thread recorded` },
+    { c: jobApp(), h: epicHost({ boardError: new Error('HTTP 500') }), item: 't3', text: `Couldn't open the epic ${MENU_EPIC} in T3 Code: HTTP 500` },
+    { c: jobApp({ open: new Error('no application knows t3code:') }), h: epicHost(), item: 't3', text: `Couldn't open the epic ${MENU_EPIC} in T3 Code: no application knows t3code:` },
+    { c: jobApp({ open: 'false' }), h: epicHost(), item: 't3', text: `Couldn't open the epic ${MENU_EPIC} in T3 Code: T3 Code did not open the link` },
+    { c: jobApp({ clipboard: false }), h: epicHost(), item: 'copy', text: `Couldn't copy the epic name ${MENU_EPIC}: the clipboard refused the write` },
+    { c: jobApp({ clipboard: new Error('pasteboard busy') }), h: epicHost(), item: 'copy', text: `Couldn't copy the epic name ${MENU_EPIC}: pasteboard busy` },
+  ];
+  for (const { c, h, item, text } of cases) {
+    const logged = await quietly(() => runEpicItem(epicItemId(item, PID, MENU_EPIC), c.app, h.host));
+    expect({ text, notified: c.log.filter((e) => e[0] === 'notify') }).toEqual({ text, notified: [['notify', 'Andon', text]] });
+    expect(logged).toEqual([`andon: ${text}`]);
+    if (item === 't3' && !text.endsWith('did not open the link') && !text.includes('no application')) expect(opened(c.log)).toEqual([]);
+  }
+});
+
+test('076 AC3: another window, or no meta, is not answered: no menu set, nothing fetched', async () => {
+  for (const meta of [undefined, null, {}, { window: 'settings' }, { window: 'about' }, 'main', { window: 'Main' }]) {
+    const { app, log } = jobApp();
+    const h = epicHost();
+    await showEpicMenu({ project: PID, epic: MENU_EPIC }, app, meta, h.host);
+    expect({ meta, log }).toEqual({ meta, log: [] });
+    expect(h.fetched).toEqual([]);
+  }
+});
+
+test("076 AC3: extra fields, an unlisted project, or a malformed or over-long slug restore WebKit's menu and fetch nothing", async () => {
+  for (const params of [
+    { project: 'zzzzzzzzzzzz', epic: MENU_EPIC },
+    { project: PID, epic: 'Bad_Slug' },
+    { project: PID, epic: 'a'.repeat(41) },
+    { project: PID, epic: '../x' },
+    { project: PID, epic: '076-epic-context-menu' },
+    { project: PID, epic: MENU_EPIC, thread: 'thread-B' },
+    { project: PID, epic: MENU_EPIC, url: 't3code://threads/evil/x' },
+    { project: PID, epic: MENU_EPIC, session: EPIC_SESSION },
+    { project: PID },
+    { project: PID, job: '076-epic-context-menu' },
+    null,
+    'x',
+  ]) {
+    const { app, log } = jobApp();
+    const h = epicHost();
+    await showEpicMenu(params, app, MAIN, h.host);
+    expect({ params, log }).toEqual({ params, log: [['menu.setContext', null]] });
+    expect(h.fetched).toEqual([]);
+  }
+});
+
+test("076 AC3: a slug not in the board's epics restores WebKit's menu", async () => {
+  const { app, log } = jobApp();
+  // a job with that name on the board is not an epic
+  await showEpicMenu({ project: PID, epic: 'missing-epic' }, app, MAIN, epicHost({ board: { jobs: [{ id: 'missing-epic' }], epics: [{ slug: MENU_EPIC, session: EPIC_SESSION }] } }).host);
+  expect(contexts(log)).toEqual([epicMenuItems(PID, 'missing-epic', false), null]);
+});
+
+test('076 AC3: a forged or unresolvable item id does nothing', async () => {
+  for (const id of [epicItemId('t3', 'zzzzzzzzzzzz', MENU_EPIC), epicItemId('copy', 'zzzzzzzzzzzz', MENU_EPIC), `epic-menu:t3:${PID}:Bad`, `epic-menu:t3:${PID}:${MENU_EPIC}:${EPIC_LINK}`, `epic-menu:open:${PID}:${MENU_EPIC}`, `epic-menu:copy:${PID}:${'a'.repeat(41)}`, null, 7]) {
+    const { app, log } = jobApp();
+    const h = epicHost();
+    await runEpicItem(id, app, h.host);
+    expect({ id, log }).toEqual({ id, log: [] });
+    expect(h.fetched).toEqual([]);
+  }
+  // no t3 found: Open in T3 Code does nothing
+  const { app, log } = jobApp();
+  await runEpicItem(epicItemId('t3', PID, MENU_EPIC), app, epicHost({ t3: null }).host);
+  expect(log).toEqual([]);
+});
+
+test('076 AC4: onContextMenu sends epic-menu ids to the epic menu, job-menu ids to the job menu, and every other id to the project menu', async () => {
+  fakeMachine([], []);
+  const { app, log } = jobApp();
+  // with the app not following the service, no project is listed: no menu runs anything
+  await onContextMenu(epicItemId('copy', PID, MENU_EPIC), app);
+  await onContextMenu(jobItemId('copy', PID, MENU_JOB), app);
+  await onContextMenu(itemId('copy', PID), app);
+  expect(log).toEqual([]);
+  // the real api answers only the main window, and with no listed project sets WebKit's menu
+  await api.epicMenu({ project: PID, epic: MENU_EPIC }, app, { window: 'settings' });
+  expect(log).toEqual([]);
+  await api.epicMenu({ project: PID, epic: MENU_EPIC }, app, MAIN);
+  expect(log).toEqual([['menu.setContext', null]]);
+  const src = await Bun.file(join(import.meta.dir, 'backend.ts')).text();
+  const body = /export async function onContextMenu\([^)]*\)[^{]*\{\n([\s\S]*?)\n\}/.exec(src)?.[1]?.split('\n').map((l) => l.trim());
+  expect(body).toEqual(['if (isEpicItemId(id)) return runEpicItem(id, app);', 'if (isJobItemId(id)) return runJobItem(id, app);', 'await runProjectItem(id, app, listedProjects(), apps?.t3 ?? null);']);
+});
+
+test('076: a newer ask of any menu wins over a slower epic board fetch, and an epic ask wins over a slower job fetch', async () => {
+  const { app, log } = jobApp();
+  let release: () => void = () => undefined;
+  const host: JobMenuHost = {
+    projects: () => PROJECTS,
+    board: () => new Promise((r) => (release = () => r({ jobs: [{ id: MENU_JOB, session: GOOD_SESSION }], epics: [{ slug: MENU_EPIC, session: EPIC_SESSION }] }))),
+    findT3: async () => T3,
+  };
+  fakeMachine([], []);
+  const slow = showEpicMenu({ project: PID, epic: MENU_EPIC }, app, MAIN, host);
+  await showProjectMenu({ project: null }, app, PROJECTS);
+  release();
+  await slow;
+  expect(contexts(log)).toEqual([epicMenuItems(PID, MENU_EPIC, false), null]);
+  log.length = 0;
+  const slowJob = showJobMenu({ project: PID, job: MENU_JOB }, app, host);
+  const releaseJob = release;
+  const epicAsk = showEpicMenu({ project: PID, epic: MENU_EPIC }, app, MAIN, host);
+  const releaseEpic = release;
+  releaseJob();
+  releaseEpic();
+  await slowJob;
+  await epicAsk;
+  expect(contexts(log)).toEqual([jobMenuItems(PID, MENU_JOB, false), epicMenuItems(PID, MENU_EPIC, false), epicMenuItems(PID, MENU_EPIC, true)]);
 });
 
 // ---- the Open in apps' own icons (043) ----

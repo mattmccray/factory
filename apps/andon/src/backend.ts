@@ -3,15 +3,16 @@
 // `app.badge`, `app.notify`, `app.menu`, `app.store`, `app.push`, `app.shell`, `app.clipboard`,
 // `app.thumbnail` (the Open in apps' icons), `app.reload` (the no-service page: see noservice.ts), the
 // `app.win.open` and `app.windows` (the Settings and About windows), the `onTray`, `onMenu`, `onNavigate`, and
-// `onContextMenu` hooks, and the eight custom `api` methods, and to
+// `onContextMenu` hooks, and the ten custom `api` methods, and to
 // txiki's `tjs.spawn`, `tjs.stat`, and `tjs.remove` (for curl: see curl.ts, for a project's
 // right-click menu: see projectmenu.ts, for a job's: see jobmenu.ts, for the T3 Code hand-off:
 // see handoff.ts, and for starting work in T3 Code: see startwork.ts). `bun run
 // andon:build` bundles it into build/backend.js, the plain-JS entry tinyjs.json names.
 // The windows' pages (the service-served UI) get no Tiny API but the two calls the drag regions make
 // (`win.startDrag`, `win.zoom`), the events this adapter pushes (`event.statusbar`, `event.merged`,
-// `event.whatsnew` for Help → What's New, and the View menu's `event.needsme`, `event.settled`,
-// `event.sidebar`, and `event.inspector`),
+// `event.whatsnew` for Help → What's New, the View menu's `event.needsme`, `event.settled`,
+// `event.sidebar`, and `event.inspector`, and `event.startwork` for File → New Exploration… and a
+// project's right-click New Exploration… and Run Next: a request the page checks, never a command),
 // `projectMenu`, which takes a project id (or null) and nothing else, the Settings window's
 // `getSettings` and `setSetting` (see settings.ts), which answer only when Tiny's api meta names the
 // Settings window, and `handOff` (see handoff.ts), which takes a project id, a job id, an action, and
@@ -20,8 +21,11 @@
 // page reporting its Needs Me, sidebar, and inspector booleans, answered only for the main window),
 // the About window's `getAbout` (see about.ts), which answers only when the meta names the
 // About window, and `startWork` (see startwork.ts), which takes a project id, an action, and a slug,
-// a free-text line's title, or an idea, and answers only when the meta names the main window:
-// tinyjs.json's `api` gate denies the rest.
+// a free-text line's title, or an idea, and answers only when the meta names the main window, and
+// the About window's `closeAbout` (Escape), which takes no params and closes only the About window
+// when the meta names it, and `epicMenu` (see epicmenu.ts), which takes a project id and an epic
+// slug and nothing else, and answers only when the meta names the main window: tinyjs.json's `api`
+// gate denies the rest.
 /// <reference path="../types/tiny.d.ts" />
 /// <reference path="../types/tjs.d.ts" />
 import { QUIT_ID, SHOW_ID, trayNotice } from './badge';
@@ -31,6 +35,7 @@ import { curlArgv, responseFromCurl } from './curl';
 import { getJson, reason as errorReason } from './http';
 import type { Http } from './http';
 import { boardPath } from './follow';
+import { EPIC_NOT_ON_BOARD, EPIC_NO_SESSION, boardEpic, epicCopyFailureText, epicMenuItems, epicMenuRequest, epicOpenFailureText, epicSession, isEpicItemId, parseEpicItemId } from './epicmenu';
 import { NOT_ON_BOARD, NO_SESSION, boardJob, copyFailureText, isJobItemId, jobMenuItems, jobMenuRequest, jobSession, openFailureText, parseJobItemId, threadLink } from './jobmenu';
 import type { DockLook } from './lantern';
 import { startApp } from './app';
@@ -40,6 +45,7 @@ import { bringBackAction, oneAtATime, trayClickAction } from './trayclick';
 import {
   ABOUT_WINDOW_ID,
   DEFAULT_VIEW,
+  closeWindowStep,
   MERGED_EVENT,
   MERGED_ID,
   MERGED_KEY,
@@ -47,6 +53,7 @@ import {
   STATUS_BAR_EVENT,
   STATUS_BAR_ID,
   STATUS_BAR_KEY,
+  START_WORK_EVENT,
   WHATS_NEW_EVENT,
   aboutWindow,
   appMenu,
@@ -62,7 +69,7 @@ import {
   whatsNewPayload,
 } from './appmenu';
 import type { AboutWindowOptions, SettingsWindowOptions, ViewState } from './appmenu';
-import { aboutAnswer, fromAboutWindow } from './about';
+import { aboutAnswer, fromAboutWindow, noParams } from './about';
 import type { About } from './about';
 import { DEFAULT_HANDOFF_MODE, T3_HANDOFF_KEY, fromSettingsWindow, settingChange, settingsSnapshot, storedMode, viewStateParams } from './settings';
 import type { HandoffMode, Settings } from './settings';
@@ -78,10 +85,10 @@ import type { AppIcons, Availability, MenuProject, OpenInApp, ProjectAction } fr
 // picks the members the Mac app calls, so its whole dependence on Tiny is listed here, in one place,
 // and the test fakes stay small.
 
-/** The fields of the main window's state the tray click and Settings…'s bring-back step read. */
-export type MacWinState = Pick<TinyWinState, 'minimized' | 'fullscreen' | 'allSpaces' | 'visible'>;
+/** The fields of a window's state the tray click, the bring-back step, and Close Window read. */
+export type MacWinState = Pick<TinyWinState, 'minimized' | 'fullscreen' | 'allSpaces' | 'visible' | 'focused'>;
 /** The window ops the adapter calls. `getState` resolves null when there is no state to give. */
-export type MacWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpaces' | 'eval' | 'minimize' | 'zoom' | 'setResizable'> & {
+export type MacWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpaces' | 'eval' | 'minimize' | 'zoom' | 'setResizable' | 'close' | 'hide'> & {
   getState(): Promise<MacWinState | null>;
 };
 /** The backend `app` object Tiny passes to `init` and the hooks, narrowed to what the Mac app uses.
@@ -381,7 +388,7 @@ export async function onTray(id: string | null, app: MacApp): Promise<void> {
   }
 }
 
-/** Settings…'s first step: bring the main window back, restoring it if minimized and showing it if
+/** Settings…'s and About Andon's first step: bring the main window back, restoring it if minimized and showing it if
  *  hidden, so its child, the Settings window, is visible too. No state: show it as is. A step that
  *  throws is logged, and Settings… still goes on. */
 async function bringBackMain(app: MacApp): Promise<void> {
@@ -422,10 +429,11 @@ const openSettings = oneAtATime(async (app: MacApp): Promise<void> => {
   app.window(SETTINGS_WINDOW_ID).setResizable(false);
 });
 
-/** About Andon: open the About window, or, when it is already open, bring it forward and focus it.
- *  One click at a time, so a quick second click can't open a second window. The main window is
- *  left as it is. */
+/** About Andon: bring the main window back (About is its child, as Settings is), then open the About
+ *  window, or, when it is already open, show and focus it. One click at a time, so a quick second
+ *  click can't open a second window. */
 const openAbout = oneAtATime(async (app: MacApp): Promise<void> => {
+  await bringBackMain(app);
   let open: string[];
   try {
     open = await app.windows();
@@ -441,6 +449,39 @@ const openAbout = oneAtATime(async (app: MacApp): Promise<void> => {
   app.window(ABOUT_WINDOW_ID).setResizable(false);
 });
 
+/** File → Close Window (⌘W): close the focused Settings or About window, or hide the focused main
+ *  window as its close button does (this window alone, never the app, and never `close`, which on
+ *  main quits). Focus is read from each open Andon window's `getState().focused`: a menu shortcut
+ *  fires while an Andon window holds focus. No window reporting focus (or no state to read): nothing
+ *  happens, never a guess. */
+async function closeFrontWindow(app: MacApp): Promise<void> {
+  let open: string[];
+  try {
+    open = await app.windows();
+  } catch (err) {
+    console.log(`andon: could not list the windows (${String(err)}); Close Window does nothing`);
+    return;
+  }
+  const focused: string[] = [];
+  for (const id of ['main', SETTINGS_WINDOW_ID, ABOUT_WINDOW_ID]) {
+    if (!open.includes(id)) continue;
+    try {
+      const state = await app.window(id).getState();
+      if (state !== null && state.focused === true) focused.push(id);
+    } catch (err) {
+      console.log(`andon: window state unavailable for ${id} (${String(err)})`);
+    }
+  }
+  const step = closeWindowStep(focused);
+  if (step === null) return;
+  try {
+    if (step.step === 'hide') app.window(step.id).hide({ app: false });
+    else app.window(step.id).close();
+  } catch (err) {
+    console.log(`andon: could not close the ${step.id} window (${String(err)})`);
+  }
+}
+
 /** A click in the menu bar. An id that isn't ours does nothing. */
 export async function onMenu(id: string, app: MacApp): Promise<void> {
   const action = menuAction(id);
@@ -450,6 +491,8 @@ export async function onMenu(id: string, app: MacApp): Promise<void> {
       return openAbout(app);
     case 'open-settings':
       return openSettings(app);
+    case 'close-window':
+      return closeFrontWindow(app);
     case 'toggle-status-bar':
       return toggleStatusBar(app);
     case 'toggle-merged':
@@ -471,6 +514,12 @@ export async function onMenu(id: string, app: MacApp): Promise<void> {
       // itself (its hash and history) and keeps its focused project. Nothing else is sent.
       await showMain(app);
       app.push(WHATS_NEW_EVENT, whatsNewPayload());
+      return;
+    case 'start-work':
+      // File → New Exploration…: show the board as the tray click does (back from hidden or
+      // minimized), then ask its page to open the New exploration sheet; the page picks the project.
+      await showMain(app);
+      app.push(START_WORK_EVENT, action.payload);
       return;
     case 'open':
       await app.shell.open(action.url);
@@ -500,11 +549,14 @@ const listedProjects = (): readonly MenuProject[] => andon?.state().projects ?? 
 let apps: Availability | null = null;
 /** The project menu set now (its project id and the request that set it), or null when another menu (or none) is. */
 let armedProject: { pid: string; seq: number } | null = null;
-/** Bumped by every request (project or job), so a slower app check or board fetch can't set an older menu. */
+/** Bumped by every request (project, job, or epic), so a slower app check or board fetch can't set an older menu. */
 let menuSeq = 0;
 /** The job menu set now (its `<pid>/<job id>` and whether Open in T3 Code is enabled), or null when
  *  another menu (or none) is. */
 let armedJob: { key: string; canOpen: boolean } | null = null;
+/** The epic menu set now (its `<pid>/<slug>` and whether Open in T3 Code is enabled), or null when
+ *  another menu (or none) is. */
+let armedEpic: { key: string; canOpen: boolean } | null = null;
 
 export interface RunResult {
   ok: boolean;
@@ -713,6 +765,7 @@ export async function showProjectMenu(params: unknown, app: MacApp, projects: re
   if (req === null) return;
   const seq = ++menuSeq;
   armedJob = null;
+  armedEpic = null;
   armedProject = null;
   const p = req.project === null ? null : menuProject(projects, req.project);
   if (p === null) {
@@ -730,6 +783,12 @@ export async function showProjectMenu(params: unknown, app: MacApp, projects: re
 /** The failure reason of an action, or null when it worked. */
 async function perform(app: MacApp, action: ProjectAction, runner: (argv: string[]) => Promise<RunResult>): Promise<string | null> {
   switch (action.kind) {
+    case 'push':
+      // New Exploration… shows the board first; then the page is asked to act. It checks the request
+      // and starts work only through `startWork`, which reports its own failures.
+      if (action.show) await showMain(app);
+      app.push(START_WORK_EVENT, action.payload);
+      return null;
     case 'copy':
       try {
         return app.clipboard.write({ text: action.root }) ? null : 'the clipboard refused the write';
@@ -985,6 +1044,7 @@ const isListedProject = (projects: readonly MenuProject[], pid: string): boolean
 export async function showJobMenu(params: unknown, app: MacApp, host: JobMenuHost = hostJobMenu): Promise<void> {
   const seq = ++menuSeq;
   armedProject = null;
+  armedEpic = null;
   const req = jobMenuRequest(params);
   if (req === null || !isListedProject(host.projects(), req.project)) {
     armedJob = null;
@@ -1069,7 +1129,112 @@ export async function runJobItem(id: unknown, app: MacApp, host: JobMenuHost = h
   if (failed !== null) await notifyFailure(app, openFailureText(job, failed));
 }
 
-// ---- the About window's one method ----
+// ---- an epic's right-click menu (076) ----
+// The job menu's twin, on an epic's name in its sub-lane: the page names the epic by its project id
+// and slug (`epicMenu({ project, epic })`), and nothing else, and only the main window is answered.
+// The epic and its `session` come from the project's board (its `epics`, each the epic's
+// `epic.json`), fetched from the service as the job menu does, and the link is built only from that
+// `session`, by the job menu's own check and `threadLink`. A click fetches the board again and
+// checks everything again.
+
+/**
+ * The main window's epic menu ask: for a listed project and an epic slug of the contract's form, the
+ * menu (Open in T3 Code grayed out until the board and the `t3` lookup say it can open), then, once
+ * the board is fetched, Open in T3 Code enabled only when `t3` is found and the epic's `session`
+ * passes the check. An epic missing from the board, a malformed request, or an unknown project
+ * restores WebKit's menu; a failed fetch keeps the menu grayed. Any other window (or no meta) is not
+ * answered at all. A newer ask (of any menu) wins over a slower fetch.
+ */
+export async function showEpicMenu(params: unknown, app: MacApp, meta: unknown, host: JobMenuHost = hostJobMenu): Promise<void> {
+  if (!fromMainWindow(meta)) return;
+  const seq = ++menuSeq;
+  armedProject = null;
+  armedJob = null;
+  const req = epicMenuRequest(params);
+  if (req === null || !isListedProject(host.projects(), req.project)) {
+    armedEpic = null;
+    app.menu.setContext(null);
+    return;
+  }
+  const key = `${req.project}/${req.epic}`;
+  // The same epic asked again (the opening press): keep its menu as it is until the fresh answer.
+  if (armedEpic?.key !== key) setEpicMenu(app, req.project, req.epic, false);
+  const [fetched, t3] = await Promise.all([
+    host.board(req.project).then(
+      (board): { ok: true; board: unknown } => ({ ok: true, board }),
+      (err: unknown): { ok: false } => {
+        console.log(`andon: could not fetch the board for the epic menu of ${req.epic} (${errorReason(err)})`);
+        return { ok: false };
+      },
+    ),
+    host.findT3().catch(() => null),
+  ]);
+  if (seq !== menuSeq) return;
+  // A board that answered without the epic: no such epic to name, so WebKit's menu. A failed fetch
+  // keeps the menu, grayed out (Copy Epic Name still works).
+  const epic = fetched.ok ? boardEpic(fetched.board, req.epic) : null;
+  if (fetched.ok && epic === null) {
+    armedEpic = null;
+    app.menu.setContext(null);
+    return;
+  }
+  const canOpen = t3 !== null && epic !== null && epicSession(epic) !== null;
+  if (armedEpic?.key !== key || armedEpic.canOpen !== canOpen) setEpicMenu(app, req.project, req.epic, canOpen);
+}
+
+function setEpicMenu(app: MacApp, pid: string, epic: string, canOpen: boolean): void {
+  armedEpic = { key: `${pid}/${epic}`, canOpen };
+  app.menu.setContext(epicMenuItems(pid, epic, canOpen));
+}
+
+/** The thread link for an epic, from a freshly fetched board, or the reason there is none. */
+async function freshEpicLink(host: JobMenuHost, pid: string, slug: string): Promise<{ link: string } | { reason: string }> {
+  let board: unknown;
+  try {
+    board = await host.board(pid);
+  } catch (err) {
+    return { reason: errorReason(err) };
+  }
+  const e = boardEpic(board, slug);
+  if (e === null) return { reason: EPIC_NOT_ON_BOARD };
+  const session = epicSession(e);
+  if (session === null) return { reason: EPIC_NO_SESSION };
+  return { link: threadLink(session) };
+}
+
+/**
+ * A clicked epic menu item. Its id is checked (ours, a listed project, an epic slug of the contract's
+ * form), then Copy Epic Name writes that slug, and Open in T3 Code, with `t3` found, fetches the board
+ * again, checks the epic's `session` again, and opens the link built from it. A failure shows one
+ * notification and logs a line; an id that resolves to nothing, or no `t3` found, does nothing.
+ */
+export async function runEpicItem(id: unknown, app: MacApp, host: JobMenuHost = hostJobMenu): Promise<void> {
+  const parsed = parseEpicItemId(id);
+  if (parsed === null || !isListedProject(host.projects(), parsed.pid)) return;
+  const { item, pid, epic } = parsed;
+  if (item === 'copy') {
+    let failed: string | null;
+    try {
+      failed = app.clipboard.write({ text: epic }) ? null : 'the clipboard refused the write';
+    } catch (err) {
+      failed = errorReason(err);
+    }
+    if (failed !== null) await notifyFailure(app, epicCopyFailureText(epic, failed));
+    return;
+  }
+  if ((await host.findT3().catch(() => null)) === null) return;
+  const found = await freshEpicLink(host, pid, epic);
+  if ('reason' in found) return notifyFailure(app, epicOpenFailureText(epic, found.reason));
+  let failed: string | null;
+  try {
+    failed = (await app.shell.open(found.link)) === true ? null : 'T3 Code did not open the link';
+  } catch (err) {
+    failed = errorReason(err);
+  }
+  if (failed !== null) await notifyFailure(app, epicOpenFailureText(epic, failed));
+}
+
+// ---- the About window's two methods ----
 
 /** The Mac app's version and the GitHub URL; null for any window but About. */
 export async function getAbout(meta: unknown): Promise<About | null> {
@@ -1077,7 +1242,16 @@ export async function getAbout(meta: unknown): Promise<About | null> {
   return aboutAnswer(__ANDON_VERSION__);
 }
 
-/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, `handOff`, `jobMenu`, `setViewState`, `getAbout`, and `startWork` (tinyjs.json's gate enables each by name). */
+/** Escape on the about view: close the About window, only for a call from it, with no params.
+ *  True when it closed; false when refused (any other window, malformed meta, or params). */
+export async function closeAbout(params: unknown, app: MacApp, meta: unknown): Promise<boolean> {
+  if (!fromAboutWindow(meta)) return false;
+  if (!noParams(params)) return false;
+  app.window(ABOUT_WINDOW_ID).close();
+  return true;
+}
+
+/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, `handOff`, `jobMenu`, `setViewState`, `getAbout`, `startWork`, `closeAbout`, and `epicMenu` (tinyjs.json's gate enables each by name). */
 export const api = {
   projectMenu: (params: unknown, app: MacApp): Promise<void> => showProjectMenu(params, app, listedProjects()),
   getSettings: (_params: unknown, app: MacApp, meta: unknown): Promise<Settings | null> => getSettings(app, meta),
@@ -1087,10 +1261,14 @@ export const api = {
   setViewState: (params: unknown, app: MacApp, meta: unknown): Promise<ViewState | null> => setViewState(params, app, meta),
   getAbout: (_params: unknown, _app: MacApp, meta: unknown): Promise<About | null> => getAbout(meta),
   startWork: (params: unknown, app: MacApp, meta: unknown): Promise<HandoffOutcome | null> => startWork(params, app, meta),
+  closeAbout: (params: unknown, app: MacApp, meta: unknown): Promise<boolean> => closeAbout(params, app, meta),
+  epicMenu: (params: unknown, app: MacApp, meta: unknown): Promise<void> => showEpicMenu(params, app, meta),
 };
 
-/** A click in the right-click menu: a `job-menu:` id goes to the job menu, every other id to the project menu. */
+/** A click in the right-click menu: an `epic-menu:` id goes to the epic menu, a `job-menu:` id to the
+ *  job menu, every other id to the project menu. */
 export async function onContextMenu(id: string, app: MacApp): Promise<void> {
+  if (isEpicItemId(id)) return runEpicItem(id, app);
   if (isJobItemId(id)) return runJobItem(id, app);
   await runProjectItem(id, app, listedProjects(), apps?.t3 ?? null);
 }

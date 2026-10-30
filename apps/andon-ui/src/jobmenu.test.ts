@@ -214,6 +214,6 @@ describe("AC6: the page's job menu call", () => {
 
   test('App wires the job caller into the armer', () => {
     const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
-    expect(app).toContain("menuArmer(mode, ask, jobMenuCaller(mode, Reflect.get(window, 'tiny')))");
+    expect(app).toContain("menuArmer(mode, ask, jobMenuCaller(mode, Reflect.get(window, 'tiny')),");
   });
 });

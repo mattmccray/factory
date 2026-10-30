@@ -17,6 +17,9 @@
   // Its action (brief t3-start-work) is the one its item has in the project's live backlog, read when
   // the page opens: Run, Start epic, or Continue exploring; none when the item is in neither group.
   // It copies the command and, in the Mac app, starts it in T3 Code as Settings say (`onstart`).
+  // In the job view a grip between the Files list and the document sets the list's height
+  // (`filesHeight`, reported by `onfilesresize`; brief andon-resizable-panes): drag it, or focus it
+  // and use ↑ and ↓; double-click returns the list to fitting its files. Limits are in panes.ts.
   import { tick, untrack } from 'svelte';
   import { fetchBacklog, fetchBrief, fetchDocs, fetchEpicDocs, fetchPage } from './api';
   import { docKey, docPage, planMembers, toBacklog } from './backlog';
@@ -31,6 +34,7 @@
   import { INSPECTOR_MAX, INSPECTOR_MIN, approveCommand, clampWidth, epicFileModel, epicLinkOf, epicPage, fileModel, stepFile } from './inspector';
   import type { SheetKind } from './inspector';
   import { landing } from './job';
+  import { FILES_FIT, clampFiles, filesKey, filesShown, paneStep } from './panes';
   import { KIND_LABELS, kindOf } from './lanes';
   import { markdown } from './markdown';
   import TimingView from './TimingView.svelte';
@@ -44,12 +48,14 @@
     pageProject: string; // its project's name
     open: boolean;
     width: number;
+    filesHeight: number | null; // the job view's Files list height; null: it fits its files (up to 38%)
     now: number;
     fetcher: Fetcher;
     file: string | null; // the chosen file; null: the latest
     onfile: (path: string) => void;
     onclose: () => void;
     onresize: (width: number) => void;
+    onfilesresize: (height: number | null) => void; // null: back to fitting its files
     oncopy: (command: string) => void; // the copy icon: copy only
     onhandoff: (req: HandoffRequest, command: string) => void; // Approve: copy, then hand off
     onsheet: (kind: SheetKind) => void;
@@ -58,14 +64,14 @@
     onopenpage: (ref: DocRef) => void; // a plan member's brief
     onstart: (item: StartItem) => void; // a brief's or plan's action: copy, then start in T3 Code
   }
-  let { item, epic, epicJobs, page: docRef, pageProject, onopenpage, onstart, open, width, now, fetcher, file, onfile, onclose, onresize, oncopy, onhandoff, onsheet, onopenjob, onopenepic }: Props = $props();
+  let { item, epic, epicJobs, page: docRef, pageProject, onopenpage, onstart, open, width, filesHeight, now, fetcher, file, onfile, onclose, onresize, onfilesresize, oncopy, onhandoff, onsheet, onopenjob, onopenepic }: Props = $props();
 
   const key = $derived(item !== null ? item.key : epic !== null ? `epic:${epic.key}` : docRef !== null ? docKey(docRef) : null);
   const updated = $derived(item !== null ? item.job.updated : (epic?.epic.updated ?? null));
 
   let files = $state<DocFile[]>([]);
   let aside = $state<HTMLElement>();
-  let docPane = $state<HTMLDivElement>();
+  let docPane = $state<HTMLDivElement | null>(null); // bind:this sets null when its element unmounts
   let closeBtn = $state<HTMLButtonElement>();
   let loadedKey: string | null = null;
 
@@ -78,7 +84,7 @@
     if (key !== loadedKey) {
       loadedKey = key;
       files = [];
-      if (docPane !== undefined) docPane.scrollTop = 0;
+      if (docPane instanceof HTMLElement) docPane.scrollTop = 0;
     }
     let live = true;
     const read = job !== null ? fetchDocs(fetcher, job) : ep !== null ? fetchEpicDocs(fetcher, ep.project.id, ep.epic.slug) : Promise.resolve([]);
@@ -166,7 +172,7 @@
   async function choose(path: string | null, focus: boolean): Promise<void> {
     if (path === null) return;
     onfile(path);
-    if (docPane !== undefined && page === null) docPane.scrollTop = 0;
+    if (docPane instanceof HTMLElement && page === null) docPane.scrollTop = 0;
     if (!focus) return;
     await tick();
     const row = aside?.querySelector<HTMLButtonElement>('.file.on');
@@ -201,7 +207,7 @@
     dragging = false;
   }
   function nudge(e: KeyboardEvent): void {
-    const step = e.shiftKey ? 64 : 16;
+    const step = paneStep(e.shiftKey);
     if (e.key === 'ArrowLeft') onresize(clampWidth(width + step));
     else if (e.key === 'ArrowRight') onresize(clampWidth(width - step));
     else if (e.key === 'Home') onresize(INSPECTOR_MAX);
@@ -209,11 +215,54 @@
     else return;
     e.preventDefault();
   }
+
+  // The grip between the Files list and the document (the job view only). `room` is the height
+  // the two share; the list's height is clamped against it, so a kept height that no longer fits
+  // is shown smaller and kept as is.
+  let filesEl = $state<HTMLElement | null>(null); // bind:this sets null when the job view unmounts
+  let room = $state(0);
+  let filesPx = $state(0); // the list's height as rendered
+  const measure = (): number => (filesEl instanceof HTMLElement && docPane instanceof HTMLElement ? filesEl.offsetHeight + docPane.offsetHeight : 0);
+  $effect(() => {
+    const f = filesEl;
+    const d = docPane;
+    if (!(f instanceof HTMLElement) || !(d instanceof HTMLElement) || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      room = measure();
+      filesPx = f.offsetHeight;
+    });
+    ro.observe(f);
+    ro.observe(d);
+    return () => ro.disconnect();
+  });
+  const filesShownPx = $derived(filesShown(filesHeight, room));
+  let fdragging = $state(false);
+  let fstart = { y: 0, h: 0, room: 0 };
+  function fgrab(e: PointerEvent): void {
+    if (e.button !== 0 || !(e.currentTarget instanceof HTMLElement) || !(filesEl instanceof HTMLElement)) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    fstart = { y: e.clientY, h: filesEl.offsetHeight, room: measure() };
+    fdragging = true;
+  }
+  function fdrag(e: PointerEvent): void {
+    if (fdragging) onfilesresize(clampFiles(fstart.h + e.clientY - fstart.y, fstart.room));
+  }
+  function fdrop(): void {
+    fdragging = false;
+  }
+  function fnudge(e: KeyboardEvent): void {
+    if (!(filesEl instanceof HTMLElement)) return;
+    const next = filesKey(filesEl.offsetHeight, e.key, e.shiftKey, measure());
+    if (next === null) return;
+    e.preventDefault();
+    onfilesresize(next);
+  }
 </script>
 
 <svelte:window {onkeydown} />
 
-<aside class="inspector" class:open class:dragging id="inspector" aria-label="Inspector" inert={!open} bind:this={aside} style:--insw="{width}px">
+<aside class="inspector" class:open class:dragging class:fdragging id="inspector" aria-label="Inspector" inert={!open} bind:this={aside} style:--insw="{width}px">
   <!-- A focusable separator with a value is the ARIA window-splitter pattern (an interactive widget); Svelte's lint treats every separator as static. -->
   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
   <div
@@ -394,7 +443,25 @@
       {:else if job.stage === 'abandoned'}
         <section class="callout gray" aria-label="Abandoned"><div class="why"><span>Abandoned: {job.note || 'no reason recorded.'}</span></div></section>
       {/if}
-      {@render fileList('Job files')}
+      {@render fileList('Job files', true)}
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+      <div
+        class="fgrip"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize the Files list"
+        aria-valuemin={room > 0 ? clampFiles(0, room) : undefined}
+        aria-valuemax={room > 0 ? clampFiles(room, room) : undefined}
+        aria-valuenow={filesPx > 0 ? filesPx : undefined}
+        title="Drag to resize; double-click to fit the files"
+        tabindex="0"
+        onpointerdown={fgrab}
+        onpointermove={fdrag}
+        onpointerup={fdrop}
+        onpointercancel={fdrop}
+        onkeydown={fnudge}
+        ondblclick={() => onfilesresize(FILES_FIT)}
+      ></div>
       <div class="doc" bind:this={docPane}>
         {@render documentView()}
       </div>
@@ -402,8 +469,14 @@
   </div>
 </aside>
 
-{#snippet fileList(label: string)}
-  <nav class="files" aria-label={label}>
+{#snippet fileList(label: string, sized: boolean = false)}
+  <!-- Only the job view's list is measured and sized by the Files grip. -->
+  <nav class="files" class:sized={sized && filesShownPx !== null} aria-label={label} bind:this={() => (sized ? filesEl : null), (el) => { if (sized) filesEl = el; }} style:height={sized && filesShownPx !== null ? `${filesShownPx}px` : undefined}>
+    {@render fileRows()}
+  </nav>
+{/snippet}
+
+{#snippet fileRows()}
     {#if model.groups.length === 0}<div class="empty">No files yet.</div>{/if}
     {#each model.groups as g (g.name)}
       <h3><span>{g.name}</span>{#if g.current}<span>current</span>{/if}</h3>
@@ -423,7 +496,6 @@
         {/each}
       </ul>
     {/each}
-  </nav>
 {/snippet}
 
 {#snippet documentView()}

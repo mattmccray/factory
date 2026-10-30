@@ -7,7 +7,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import config from '../vite.config';
 import { isRecord } from './job';
-import { PUSHED_EVENTS, STATUS_BAR_EVENT, VIEW_STATE_METHOD, WHATS_NEW_EVENT } from './sidebar';
+import { PUSHED_EVENTS, START_WORK_EVENT, STATUS_BAR_EVENT, VIEW_STATE_METHOD, WHATS_NEW_EVENT } from './sidebar';
 
 const app = join(import.meta.dir, '..');
 
@@ -122,7 +122,7 @@ describe('Andon never writes job state (026 AC5)', () => {
     }
   });
 
-  test("the page calls the Mac app's backend in seven places only, each with its own fixed method names (032, 033, 035, 036, 040, 063, 065, 068)", () => {
+  test("the page calls the Mac app's backend in eight places only, each with its own fixed method names (032, 033, 035, 036, 040, 063, 065, 068, 076)", () => {
     // Every mention of Tiny's `api.call` (or a `'call'` key) across the page's sources.
     const hits: { file: string; hit: string }[] = [];
     for (const file of sources) {
@@ -130,6 +130,7 @@ describe('Andon never writes job state (026 AC5)', () => {
     }
     expect(hits.sort((a, b) => a.file.localeCompare(b.file))).toEqual([
       { file: 'about.ts', hit: 'api.call' },
+      { file: 'epicmenu.ts', hit: 'api.call' },
       { file: 'handoff.ts', hit: 'api.call' },
       { file: 'jobmenu.ts', hit: 'api.call' },
       { file: 'projectmenu.ts', hit: 'api.call' },
@@ -173,11 +174,17 @@ describe('Andon never writes job state (026 AC5)', () => {
     const jobmenu = read(join(import.meta.dir, 'jobmenu.ts'));
     expect(jobmenu).toContain("export const JOB_MENU_METHOD = 'jobMenu';");
     expect([...jobmenu.matchAll(/Reflect\.apply\(([^;]*)\);/g)].map((m) => m[1])).toEqual(['call, api, [JOB_MENU_METHOD, { project, job }]', 'el.getAttribute, el, [name]']);
+    // The epic menu caller (076): its one fixed method name, and the one call site passes it and a
+    // `{ project, epic }` and nothing else (never a thread id, a link, or a path).
+    const epicmenu = read(join(import.meta.dir, 'epicmenu.ts'));
+    expect(epicmenu).toContain("export const EPIC_MENU_METHOD = 'epicMenu';");
+    expect([...epicmenu.matchAll(/Reflect\.apply\(([^;]*)\);/g)].map((m) => m[1])).toEqual(['call, api, [EPIC_MENU_METHOD, { project, epic }]', 'el.getAttribute, el, [name]']);
     expect(handoff).toContain("export type HandoffRequest = { project: string; job: string; action: 'approve' } | { project: string; job: string; action: 'rework' | 'abandon'; note: string };");
-    // The about caller (065): its one fixed method name, and the one call site passes it and no params.
+    // The about callers (065, 073): their two fixed method names, and each call site passes one and no params.
     const about = read(join(import.meta.dir, 'about.ts'));
     expect(about).toContain("export const GET_ABOUT_METHOD = 'getAbout';");
-    expect([...about.matchAll(/Reflect\.apply\(([^;]*?)\);/g)].map((m) => m[1])).toEqual(['call, api, [GET_ABOUT_METHOD, null]']);
+    expect(about).toContain("export const CLOSE_ABOUT_METHOD = 'closeAbout';");
+    expect([...about.matchAll(/Reflect\.apply\(([^;]*?)\);/g)].map((m) => m[1])).toEqual(['call, api, [GET_ABOUT_METHOD, null]', 'call, api, [CLOSE_ABOUT_METHOD, null]']);
     // The start caller (068): its one fixed method name, and the one call site passes it and the
     // request (a project id, an action, and a slug, a free-text line's title, or the idea:
     // StartWorkRequest), never a command.
@@ -188,22 +195,23 @@ describe('Andon never writes job state (026 AC5)', () => {
     // No other file reaches Tiny's api object: only sidebar.ts's push subscriber reads `api.on`.
     for (const file of sources) {
       const name = file.slice(import.meta.dir.length + 1);
-      if (name === 'projectmenu.ts' || name === 'jobmenu.ts' || name === 'sidebar.ts' || name === 'settings.ts' || name === 'handoff.ts' || name === 'about.ts' || name === 'startwork.ts') continue;
+      if (name === 'projectmenu.ts' || name === 'jobmenu.ts' || name === 'epicmenu.ts' || name === 'sidebar.ts' || name === 'settings.ts' || name === 'handoff.ts' || name === 'about.ts' || name === 'startwork.ts') continue;
       expect({ file: name, hit: /\bhost\.api\b|\btiny\.api\b|\bapi\.on\b/.exec(read(file))?.[0] ?? null }).toEqual({ file: name, hit: null });
     }
   });
 
-  test("the page hears exactly the Mac app's pushed events its api gate names: statusbar and whatsnew (059), the View menu's (063), and Show Backlog…'s (067)", () => {
+  test("the page hears exactly the Mac app's pushed events its api gate names: statusbar and whatsnew (059), the View menu's (063), Show Backlog…'s (067), and startwork (075)", () => {
     expect(STATUS_BAR_EVENT).toBe('statusbar');
     expect(WHATS_NEW_EVENT).toBe('whatsnew');
-    expect(PUSHED_EVENTS).toEqual(['statusbar', 'whatsnew', 'merged', 'needsme', 'settled', 'backlog', 'sidebar', 'inspector']);
+    expect(START_WORK_EVENT).toBe('startwork');
+    expect(PUSHED_EVENTS).toEqual(['statusbar', 'whatsnew', 'merged', 'needsme', 'settled', 'backlog', 'sidebar', 'inspector', 'startwork']);
     const tiny: unknown = JSON.parse(read(join(app, '..', 'andon', 'tinyjs.json')));
     const gate = isRecord(tiny) && isRecord(tiny.api) && Array.isArray(tiny.api.enable) ? tiny.api.enable : [];
     expect(gate.filter((e): e is string => typeof e === 'string' && e.startsWith('event.'))).toEqual(PUSHED_EVENTS.map((e) => `event.${e}`));
     expect(gate).toContain('event.whatsnew');
     // Every subscription goes through pushSubscriber with one of those names, in App.svelte only.
     const subs = [...read(join(import.meta.dir, 'App.svelte')).matchAll(/subscribe\?\.\((\w+),/g)].map((m) => m[1]);
-    expect(subs).toEqual(['STATUS_BAR_EVENT', 'WHATS_NEW_EVENT', 'MERGED_EVENT', 'NEEDS_ME_EVENT', 'SETTLED_EVENT', 'BACKLOG_EVENT', 'SIDEBAR_EVENT', 'INSPECTOR_EVENT']);
+    expect(subs).toEqual(['STATUS_BAR_EVENT', 'WHATS_NEW_EVENT', 'MERGED_EVENT', 'NEEDS_ME_EVENT', 'SETTLED_EVENT', 'BACKLOG_EVENT', 'SIDEBAR_EVENT', 'INSPECTOR_EVENT', 'START_WORK_EVENT']);
   });
 
   test('Fetcher stays path-only', () => {

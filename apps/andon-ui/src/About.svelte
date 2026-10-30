@@ -3,18 +3,25 @@
   // "Andon", "Version X.Y.Z", the service's release when it differs ("Service X.Y.Z", with
   // "· restart needed" when its clone has moved on), the "Factory on GitHub" link (target=_blank:
   // Tiny hands it to the default browser), and the copyright. about.ts holds the logic; this only
-  // lays it out. The window has a standard title bar, so the board's frame doesn't apply here.
+  // lays it out. The window is frameless: the art runs to the top edge, with only the close button
+  // over it, and the art band is the drag area (data-tiny-drag); the text below stays selectable and
+  // the link clickable. Escape closes the window (in the Mac app; in a browser it does nothing).
   import { onMount } from 'svelte';
-  import { aboutCaller, aboutModel } from './about';
+  import { aboutCaller, aboutModel, closeAboutCaller, isCloseKey } from './about';
   import { fetchRelease } from './api';
   import type { Fetcher } from './api';
   import { shellMode } from './sidebar';
 
   const api = aboutCaller(shellMode(window.location.search), Reflect.get(window, 'tiny'));
+  const close = closeAboutCaller(shellMode(window.location.search), Reflect.get(window, 'tiny'));
   const fetcher: Fetcher = (path) => fetch(path, { cache: 'no-store' });
   let app = $state<unknown>(null);
   let release = $state<unknown>(null);
   const m = $derived(aboutModel(app, release));
+
+  function onkeydown(e: KeyboardEvent): void {
+    if (isCloseKey(e)) void close?.();
+  }
 
   onMount(() => {
     void api?.().then((a) => (app = a));
@@ -25,9 +32,12 @@
 </script>
 
 <svelte:head><title>About Andon</title></svelte:head>
+<svelte:window {onkeydown} />
 
 <main class="about">
-  <img class="about-art" src={m.art} alt="Paper lanterns rising over a river at dusk" />
+  <div class="about-band" data-tiny-drag>
+    <img class="about-art" src={m.art} alt="Paper lanterns rising over a river at dusk" draggable="false" />
+  </div>
   <div class="about-text">
     <h1>{m.name}</h1>
     {#if m.version !== null}<p class="about-ver">{m.version}</p>{/if}
