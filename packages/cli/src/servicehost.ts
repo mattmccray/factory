@@ -2,10 +2,11 @@
 // env; `Bun.spawn` (never a shell) for launchctl, systemctl, and loginctl; `lsof` (or `ss` on Linux)
 // for the port holder; the filesystem; `fetch` for the HTTP probe; and entry.ts `serve`.
 // `main.ts` (source) and `release-main.ts` (the release bundle) both build theirs here.
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, realpath, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { serve } from '@factory/andon-service/entry';
 import type { Ran, ServiceHost } from './service';
 
@@ -65,6 +66,34 @@ export async function factoryCommand(main: string, candidates: readonly (string 
   return main;
 }
 
+/** A fresh, unpredictable temp path beside `unit`, for `writeUnitFile`. */
+export function unitTempPath(unit: string): string {
+  return join(dirname(unit), `.${basename(unit)}.${randomUUID()}.tmp`);
+}
+
+/**
+ * Writes the unit file: `mkdir -p` its directory, write `text` to a temp file created
+ * exclusively (`wx`: an existing file or symlink at `tmp` is never followed or overwritten),
+ * mode 0644, then rename it over `unit`, so a reader never sees a partial unit. The temp file is
+ * removed when the write or the rename fails. `tmp` is a seam for tests; the default is fresh.
+ */
+export async function writeUnitFile(unit: string, text: string, tmp: string = unitTempPath(unit)): Promise<void> {
+  await mkdir(dirname(unit), { recursive: true });
+  const fh = await open(tmp, 'wx', 0o644); // fails on anything already at tmp: nothing of ours to remove
+  try {
+    try {
+      await fh.writeFile(text, 'utf8');
+      await fh.chmod(0o644); // exactly 0644, whatever the umask
+    } finally {
+      await fh.close();
+    }
+    await rename(tmp, unit);
+  } catch (e) {
+    await rm(tmp, { force: true });
+    throw e;
+  }
+}
+
 /** A systemd `--user` manager is there: systemd is the init (`/run/systemd/system`), `systemctl` is on PATH, and the user manager's socket exists. */
 function systemdUser(uid: number, env: Readonly<Record<string, string | undefined>>): boolean {
   const runtime = env.XDG_RUNTIME_DIR ?? `/run/user/${uid}`;
@@ -94,12 +123,7 @@ export async function realServiceHost(stdout: (line: string) => void): Promise<S
           throw e;
         }
       },
-      write: async (path, text) => {
-        await mkdir(dirname(path), { recursive: true });
-        const tmp = `${path}.${process.pid}.tmp`;
-        await writeFile(tmp, text, { mode: 0o644 });
-        await rename(tmp, path);
-      },
+      write: (path, text) => writeUnitFile(path, text),
       mkdir: async (path) => {
         await mkdir(path, { recursive: true });
       },
