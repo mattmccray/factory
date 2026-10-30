@@ -9,7 +9,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BACKEND_OUT, appVersion, bundleBackend } from '../build';
-import { GET_ABOUT_METHOD } from './about';
+import { CLOSE_ABOUT_METHOD, GET_ABOUT_METHOD } from './about';
 import { BACKLOG_EVENT, INSPECTOR_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, STATUS_BAR_EVENT, WHATS_NEW_EVENT } from './appmenu';
 import { DEFAULT_PORT, pageUrl } from './autostart';
 import { PROJECT_MENU_METHOD } from './projectmenu';
@@ -277,6 +277,7 @@ describe('AC6: tinyjs.json', () => {
           'setViewState',
           'getAbout',
           'startWork',
+          'closeAbout',
         ],
       },
       about: 'menu',
@@ -307,7 +308,7 @@ describe('AC6: tinyjs.json', () => {
     expect(cfg.about).toBe('menu');
   });
 
-  test("the api gate denies every Tiny call for the page except its drag regions, the pushed events, projectMenu, the two settings methods, handOff, jobMenu, setViewState, getAbout, and startWork", () => {
+  test("the api gate denies every Tiny call for the page except its drag regions, the pushed events, projectMenu, the two settings methods, handOff, jobMenu, setViewState, getAbout, startWork, and closeAbout", () => {
     // Tiny's page runtime turns a mousedown on [data-tiny-drag] into `win.startDrag` (a double-click
     // into `win.zoom`), and the backend's gate checks both: they are the narrowest exception. The one
     // event the page may receive is the status bar state the backend pushes (`event.<name>` is how
@@ -343,7 +344,12 @@ describe('AC6: tinyjs.json', () => {
     // idea, never a command. No event is added.
     expect(START_WORK_METHOD).toBe('startWork');
     const after067 = ['win.startDrag', 'win.zoom', `event.${STATUS_BAR_EVENT}`, `event.${WHATS_NEW_EVENT}`, ...viewEvents, PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD, VIEW_STATE_METHOD, GET_ABOUT_METHOD];
-    expect(cfg.api).toEqual({ disable: ['*'], enable: [...after067, START_WORK_METHOD] });
+    // Close on Escape (073) adds exactly one page-callable method, `closeAbout`, answered only for the
+    // About window, with no params; it closes only that window. `win.close` stays disabled: on the
+    // main window it quits the app. No event is added.
+    expect(CLOSE_ABOUT_METHOD).toBe('closeAbout');
+    const after068 = [...after067, START_WORK_METHOD];
+    expect(cfg.api).toEqual({ disable: ['*'], enable: [...after068, CLOSE_ABOUT_METHOD] });
     const enable = isRecord(cfg.api) && Array.isArray(cfg.api.enable) ? cfg.api.enable : [];
     const events = (list: readonly unknown[]): unknown[] => list.filter((e) => typeof e === 'string' && e.startsWith('event.'));
     const methods = (list: readonly unknown[]): unknown[] => list.filter((e) => typeof e === 'string' && !e.startsWith('event.') && !e.startsWith('win.'));
@@ -352,20 +358,34 @@ describe('AC6: tinyjs.json', () => {
     // 065: the 063 list plus exactly one method, getAbout; 067: plus exactly one event, backlog
     expect(after067.filter((e) => !after063.includes(String(e)))).toEqual([`event.${BACKLOG_EVENT}`, GET_ABOUT_METHOD]);
     // 068: the 067 list plus exactly one method, startWork
-    expect(enable.filter((e) => !after067.includes(String(e)))).toEqual([START_WORK_METHOD]);
-    expect(after067.every((e) => enable.includes(e))).toBe(true);
-    expect(enable).toHaveLength(after067.length + 1);
-    expect(methods(enable)).toEqual([...methods(after059), 'setViewState', 'getAbout', 'startWork']);
+    expect(after068.filter((e) => !after067.includes(String(e)))).toEqual([START_WORK_METHOD]);
+    // 073: the 068 list plus exactly one method, closeAbout
+    expect(enable.filter((e) => !after068.includes(String(e)))).toEqual([CLOSE_ABOUT_METHOD]);
+    expect(after068.every((e) => enable.includes(e))).toBe(true);
+    expect(enable).toHaveLength(after068.length + 1);
+    expect(enable).not.toContain('win.close');
+    expect(enable.filter((e) => typeof e === 'string' && e.startsWith('win.'))).toEqual(['win.startDrag', 'win.zoom']);
+    expect(methods(enable)).toEqual([...methods(after059), 'setViewState', 'getAbout', 'startWork', 'closeAbout']);
     expect(events(enable)).toEqual(['event.statusbar', 'event.whatsnew', ...viewEvents]);
     expect(cfg.inject).toBeUndefined();
   });
 
-  test('the backend exports exactly those eight api methods: one more than after 065, startWork', () => {
+  test('the backend exports exactly those nine api methods: one more than after 068, closeAbout', () => {
     const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
     const block = /^export const api = \{\n([\s\S]*?)^\};$/m.exec(adapter)?.[1] ?? '';
-    const before = [PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD, VIEW_STATE_METHOD, GET_ABOUT_METHOD];
-    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([...before, START_WORK_METHOD]);
-    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout', 'startWork']);
+    const before = [PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD, VIEW_STATE_METHOD, GET_ABOUT_METHOD, START_WORK_METHOD];
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([...before, CLOSE_ABOUT_METHOD]);
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout', 'startWork', 'closeAbout']);
+  });
+
+  test('073 AC5: closeAbout checks the About window first, then that no params came, and the page closes by the same method name', () => {
+    const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
+    const body = /export async function closeAbout\([^)]*\)[^{]*\{\n([^\n]*)\n([^\n]*)/.exec(adapter);
+    expect(body?.[1]?.trim()).toBe('if (!fromAboutWindow(meta)) return false;');
+    expect(body?.[2]?.trim()).toBe('if (!noParams(params)) return false;');
+    expect(adapter).toContain('  closeAbout: (params: unknown, app: MacApp, meta: unknown): Promise<boolean> => closeAbout(params, app, meta),');
+    const ui = readFileSync(join(repoDir, 'apps', 'andon-ui', 'src', 'about.ts'), 'utf8');
+    expect(ui).toContain(`export const CLOSE_ABOUT_METHOD = '${CLOSE_ABOUT_METHOD}';`);
   });
 
   test('068 AC4: startWork checks the main window first, and the page starts work by the same method name', () => {

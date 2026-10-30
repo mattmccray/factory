@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { UI_CSP, startService } from '../../../packages/andon-service/src/index';
 import config from '../vite.config';
-import { ART_PATH, GET_ABOUT_METHOD, aboutCaller, aboutModel, narrowAbout } from './about';
+import { ART_PATH, CLOSE_ABOUT_METHOD, GET_ABOUT_METHOD, aboutCaller, aboutModel, closeAboutCaller, isCloseKey, narrowAbout } from './about';
+import type { KeyLike } from './about';
 import { isRecord } from './job';
 import { appView, shellMode } from './sidebar';
 
@@ -67,6 +68,61 @@ describe('065: the about caller', () => {
       },
     });
     expect(await throws?.()).toBeNull();
+  });
+});
+
+describe('073 AC6: Escape closes the About window', () => {
+  const key = (over: Partial<KeyLike> = {}): KeyLike => ({ key: 'Escape', metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, isComposing: false, repeat: false, ...over });
+
+  test('the close caller calls only closeAbout, with no params; a throw or rejection is swallowed', async () => {
+    const calls: unknown[][] = [];
+    const host = {
+      api: {
+        call: async (...args: unknown[]) => {
+          calls.push(args);
+          return true;
+        },
+      },
+    };
+    const close = closeAboutCaller('mac', host);
+    expect(close).not.toBeNull();
+    await close?.();
+    expect(calls).toEqual([[CLOSE_ABOUT_METHOD, null]]);
+    expect(CLOSE_ABOUT_METHOD).toBe('closeAbout');
+    const rejects = closeAboutCaller('mac', { api: { call: async () => Promise.reject(new Error('no')) } });
+    expect(await rejects?.()).toBeUndefined();
+    const throws = closeAboutCaller('mac', {
+      api: {
+        call: () => {
+          throw new Error('no');
+        },
+      },
+    });
+    expect(await throws?.()).toBeUndefined();
+  });
+
+  test('a plain browser (no ?shell=mac, or no window.tiny) has no close caller: Escape does nothing', () => {
+    const host = { api: { call: async () => true } };
+    expect(closeAboutCaller(shellMode('?view=about'), host)).toBeNull();
+    expect(closeAboutCaller(shellMode(''), host)).toBeNull();
+    expect(closeAboutCaller('browser', host)).toBeNull();
+    for (const h of [undefined, null, {}, { api: {} }, { api: { call: 'x' } }, 'tiny']) expect({ h, c: closeAboutCaller('mac', h) }).toEqual({ h, c: null });
+  });
+
+  test('only a bare Escape is the close key', () => {
+    expect(isCloseKey(key())).toBe(true);
+    for (const k of [key({ key: 'Esc' }), key({ key: 'escape' }), key({ key: 'w' }), key({ key: 'Enter' }), key({ metaKey: true }), key({ ctrlKey: true }), key({ altKey: true }), key({ shiftKey: true }), key({ isComposing: true }), key({ repeat: true })]) {
+      expect({ k, close: isCloseKey(k) }).toEqual({ k, close: false });
+    }
+  });
+
+  test('About.svelte calls the close caller on the close key only, and marks the art band as the drag area', () => {
+    const view = readFileSync(join(import.meta.dir, 'About.svelte'), 'utf8');
+    expect(view).toContain('closeAboutCaller(shellMode(window.location.search), Reflect.get(window, \'tiny\'))');
+    expect(view).toContain('if (isCloseKey(e)) void close?.();');
+    expect(view).toContain('<svelte:window {onkeydown} />');
+    expect(view).toMatch(/<div class="about-band" data-tiny-drag>/);
+    expect(view).not.toContain('standard title bar');
   });
 });
 

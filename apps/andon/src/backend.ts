@@ -3,7 +3,7 @@
 // `app.badge`, `app.notify`, `app.menu`, `app.store`, `app.push`, `app.shell`, `app.clipboard`,
 // `app.thumbnail` (the Open in apps' icons), `app.reload` (the no-service page: see noservice.ts), the
 // `app.win.open` and `app.windows` (the Settings and About windows), the `onTray`, `onMenu`, `onNavigate`, and
-// `onContextMenu` hooks, and the eight custom `api` methods, and to
+// `onContextMenu` hooks, and the nine custom `api` methods, and to
 // txiki's `tjs.spawn`, `tjs.stat`, and `tjs.remove` (for curl: see curl.ts, for a project's
 // right-click menu: see projectmenu.ts, for a job's: see jobmenu.ts, for the T3 Code hand-off:
 // see handoff.ts, and for starting work in T3 Code: see startwork.ts). `bun run
@@ -20,8 +20,9 @@
 // page reporting its Needs Me, sidebar, and inspector booleans, answered only for the main window),
 // the About window's `getAbout` (see about.ts), which answers only when the meta names the
 // About window, and `startWork` (see startwork.ts), which takes a project id, an action, and a slug,
-// a free-text line's title, or an idea, and answers only when the meta names the main window:
-// tinyjs.json's `api` gate denies the rest.
+// a free-text line's title, or an idea, and answers only when the meta names the main window, and
+// the About window's `closeAbout` (Escape), which takes no params and closes only the About window
+// when the meta names it: tinyjs.json's `api` gate denies the rest.
 /// <reference path="../types/tiny.d.ts" />
 /// <reference path="../types/tjs.d.ts" />
 import { QUIT_ID, SHOW_ID, trayNotice } from './badge';
@@ -40,6 +41,7 @@ import { bringBackAction, oneAtATime, trayClickAction } from './trayclick';
 import {
   ABOUT_WINDOW_ID,
   DEFAULT_VIEW,
+  closeWindowStep,
   MERGED_EVENT,
   MERGED_ID,
   MERGED_KEY,
@@ -62,7 +64,7 @@ import {
   whatsNewPayload,
 } from './appmenu';
 import type { AboutWindowOptions, SettingsWindowOptions, ViewState } from './appmenu';
-import { aboutAnswer, fromAboutWindow } from './about';
+import { aboutAnswer, fromAboutWindow, noParams } from './about';
 import type { About } from './about';
 import { DEFAULT_HANDOFF_MODE, T3_HANDOFF_KEY, fromSettingsWindow, settingChange, settingsSnapshot, storedMode, viewStateParams } from './settings';
 import type { HandoffMode, Settings } from './settings';
@@ -78,10 +80,10 @@ import type { AppIcons, Availability, MenuProject, OpenInApp, ProjectAction } fr
 // picks the members the Mac app calls, so its whole dependence on Tiny is listed here, in one place,
 // and the test fakes stay small.
 
-/** The fields of the main window's state the tray click and Settings…'s bring-back step read. */
-export type MacWinState = Pick<TinyWinState, 'minimized' | 'fullscreen' | 'allSpaces' | 'visible'>;
+/** The fields of a window's state the tray click, the bring-back step, and Close Window read. */
+export type MacWinState = Pick<TinyWinState, 'minimized' | 'fullscreen' | 'allSpaces' | 'visible' | 'focused'>;
 /** The window ops the adapter calls. `getState` resolves null when there is no state to give. */
-export type MacWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpaces' | 'eval' | 'minimize' | 'zoom' | 'setResizable'> & {
+export type MacWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpaces' | 'eval' | 'minimize' | 'zoom' | 'setResizable' | 'close' | 'hide'> & {
   getState(): Promise<MacWinState | null>;
 };
 /** The backend `app` object Tiny passes to `init` and the hooks, narrowed to what the Mac app uses.
@@ -381,7 +383,7 @@ export async function onTray(id: string | null, app: MacApp): Promise<void> {
   }
 }
 
-/** Settings…'s first step: bring the main window back, restoring it if minimized and showing it if
+/** Settings…'s and About Andon's first step: bring the main window back, restoring it if minimized and showing it if
  *  hidden, so its child, the Settings window, is visible too. No state: show it as is. A step that
  *  throws is logged, and Settings… still goes on. */
 async function bringBackMain(app: MacApp): Promise<void> {
@@ -422,10 +424,11 @@ const openSettings = oneAtATime(async (app: MacApp): Promise<void> => {
   app.window(SETTINGS_WINDOW_ID).setResizable(false);
 });
 
-/** About Andon: open the About window, or, when it is already open, bring it forward and focus it.
- *  One click at a time, so a quick second click can't open a second window. The main window is
- *  left as it is. */
+/** About Andon: bring the main window back (About is its child, as Settings is), then open the About
+ *  window, or, when it is already open, show and focus it. One click at a time, so a quick second
+ *  click can't open a second window. */
 const openAbout = oneAtATime(async (app: MacApp): Promise<void> => {
+  await bringBackMain(app);
   let open: string[];
   try {
     open = await app.windows();
@@ -441,6 +444,39 @@ const openAbout = oneAtATime(async (app: MacApp): Promise<void> => {
   app.window(ABOUT_WINDOW_ID).setResizable(false);
 });
 
+/** File → Close Window (⌘W): close the focused Settings or About window, or hide the focused main
+ *  window as its close button does (this window alone, never the app, and never `close`, which on
+ *  main quits). Focus is read from each open Andon window's `getState().focused`: a menu shortcut
+ *  fires while an Andon window holds focus. No window reporting focus (or no state to read): nothing
+ *  happens, never a guess. */
+async function closeFrontWindow(app: MacApp): Promise<void> {
+  let open: string[];
+  try {
+    open = await app.windows();
+  } catch (err) {
+    console.log(`andon: could not list the windows (${String(err)}); Close Window does nothing`);
+    return;
+  }
+  const focused: string[] = [];
+  for (const id of ['main', SETTINGS_WINDOW_ID, ABOUT_WINDOW_ID]) {
+    if (!open.includes(id)) continue;
+    try {
+      const state = await app.window(id).getState();
+      if (state !== null && state.focused === true) focused.push(id);
+    } catch (err) {
+      console.log(`andon: window state unavailable for ${id} (${String(err)})`);
+    }
+  }
+  const step = closeWindowStep(focused);
+  if (step === null) return;
+  try {
+    if (step.step === 'hide') app.window(step.id).hide({ app: false });
+    else app.window(step.id).close();
+  } catch (err) {
+    console.log(`andon: could not close the ${step.id} window (${String(err)})`);
+  }
+}
+
 /** A click in the menu bar. An id that isn't ours does nothing. */
 export async function onMenu(id: string, app: MacApp): Promise<void> {
   const action = menuAction(id);
@@ -450,6 +486,8 @@ export async function onMenu(id: string, app: MacApp): Promise<void> {
       return openAbout(app);
     case 'open-settings':
       return openSettings(app);
+    case 'close-window':
+      return closeFrontWindow(app);
     case 'toggle-status-bar':
       return toggleStatusBar(app);
     case 'toggle-merged':
@@ -1069,7 +1107,7 @@ export async function runJobItem(id: unknown, app: MacApp, host: JobMenuHost = h
   if (failed !== null) await notifyFailure(app, openFailureText(job, failed));
 }
 
-// ---- the About window's one method ----
+// ---- the About window's two methods ----
 
 /** The Mac app's version and the GitHub URL; null for any window but About. */
 export async function getAbout(meta: unknown): Promise<About | null> {
@@ -1077,7 +1115,16 @@ export async function getAbout(meta: unknown): Promise<About | null> {
   return aboutAnswer(__ANDON_VERSION__);
 }
 
-/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, `handOff`, `jobMenu`, `setViewState`, `getAbout`, and `startWork` (tinyjs.json's gate enables each by name). */
+/** Escape on the about view: close the About window, only for a call from it, with no params.
+ *  True when it closed; false when refused (any other window, malformed meta, or params). */
+export async function closeAbout(params: unknown, app: MacApp, meta: unknown): Promise<boolean> {
+  if (!fromAboutWindow(meta)) return false;
+  if (!noParams(params)) return false;
+  app.window(ABOUT_WINDOW_ID).close();
+  return true;
+}
+
+/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, `handOff`, `jobMenu`, `setViewState`, `getAbout`, `startWork`, and `closeAbout` (tinyjs.json's gate enables each by name). */
 export const api = {
   projectMenu: (params: unknown, app: MacApp): Promise<void> => showProjectMenu(params, app, listedProjects()),
   getSettings: (_params: unknown, app: MacApp, meta: unknown): Promise<Settings | null> => getSettings(app, meta),
@@ -1087,6 +1134,7 @@ export const api = {
   setViewState: (params: unknown, app: MacApp, meta: unknown): Promise<ViewState | null> => setViewState(params, app, meta),
   getAbout: (_params: unknown, _app: MacApp, meta: unknown): Promise<About | null> => getAbout(meta),
   startWork: (params: unknown, app: MacApp, meta: unknown): Promise<HandoffOutcome | null> => startWork(params, app, meta),
+  closeAbout: (params: unknown, app: MacApp, meta: unknown): Promise<boolean> => closeAbout(params, app, meta),
 };
 
 /** A click in the right-click menu: a `job-menu:` id goes to the job menu, every other id to the project menu. */

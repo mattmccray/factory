@@ -174,10 +174,11 @@ describe('Andon never writes job state (026 AC5)', () => {
     expect(jobmenu).toContain("export const JOB_MENU_METHOD = 'jobMenu';");
     expect([...jobmenu.matchAll(/Reflect\.apply\(([^;]*)\);/g)].map((m) => m[1])).toEqual(['call, api, [JOB_MENU_METHOD, { project, job }]', 'el.getAttribute, el, [name]']);
     expect(handoff).toContain("export type HandoffRequest = { project: string; job: string; action: 'approve' } | { project: string; job: string; action: 'rework' | 'abandon'; note: string };");
-    // The about caller (065): its one fixed method name, and the one call site passes it and no params.
+    // The about callers (065, 073): their two fixed method names, and each call site passes one and no params.
     const about = read(join(import.meta.dir, 'about.ts'));
     expect(about).toContain("export const GET_ABOUT_METHOD = 'getAbout';");
-    expect([...about.matchAll(/Reflect\.apply\(([^;]*?)\);/g)].map((m) => m[1])).toEqual(['call, api, [GET_ABOUT_METHOD, null]']);
+    expect(about).toContain("export const CLOSE_ABOUT_METHOD = 'closeAbout';");
+    expect([...about.matchAll(/Reflect\.apply\(([^;]*?)\);/g)].map((m) => m[1])).toEqual(['call, api, [GET_ABOUT_METHOD, null]', 'call, api, [CLOSE_ABOUT_METHOD, null]']);
     // The start caller (068): its one fixed method name, and the one call site passes it and the
     // request (a project id, an action, and a slug, a free-text line's title, or the idea:
     // StartWorkRequest), never a command.
