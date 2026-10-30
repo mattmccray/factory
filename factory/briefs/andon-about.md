@@ -1,6 +1,7 @@
 # An About window for Andon
 
-- Status: ready
+- Status: done
+- Job: 065-andon-about-window (merged 793092e, 2026-10-30)
 - Sources: the explore request of 2026-10-29 (pre-1.0 notes: "Add custom About dialog … paper lanterns drifting upwards over a river at dusk … Show the version number and whether there's an update available (eventually)"); briefs `andon-settings`, `andon-version-ui`; `apps/andon/src/appmenu.ts`
 - Date: 2026-10-30
 
