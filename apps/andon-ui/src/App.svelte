@@ -31,7 +31,8 @@
   import { buildBoard, movement } from './board';
   import CommandSheet from './CommandSheet.svelte';
   import Inspector from './Inspector.svelte';
-  import { INSPECTOR_DEFAULT, TOAST_MS, copiedText, sidebarShown, toggleSidebar } from './inspector';
+  import { FILES_KEY, INSPECTOR_KEY, SIDEBAR_KEY, loadFilesHeight, loadInspectorWidth, loadSidebarWidth, savePane } from './panes';
+  import { TOAST_MS, copiedText, sidebarShown, toggleSidebar } from './inspector';
   import type { SheetKind, SidebarChoice } from './inspector';
   import { backlogHits, find, needsFilter } from './find';
   import { COPY_FAILED, handOffCaller, handoffToast } from './handoff';
@@ -138,7 +139,24 @@
   let openDoc = $state<DocRef | null>(start.page ?? null); // a brief's or plan's page, instead of a job or an epic
   let sidebar = $state<SidebarChoice>({ user: true, override: false });
   let inspectorOpen = $state(start.inspector); // open with no job: "Nothing selected"
-  let inspectorWidth = $state(INSPECTOR_DEFAULT); // not kept across reloads
+  // The three pane sizes, kept in localStorage (panes.ts): the inspector's width, the sidebar's
+  // width (kept while it is hidden), and the job inspector's Files height (null: fits its files).
+  let inspectorWidth = $state(loadInspectorWidth(storage()));
+  let sidebarWidth = $state(loadSidebarWidth(storage()));
+  let filesHeight = $state<number | null>(loadFilesHeight(storage()));
+  let sidebarDragging = $state(false);
+  function resizeInspector(w: number): void {
+    inspectorWidth = w;
+    savePane(storage(), INSPECTOR_KEY, w);
+  }
+  function resizeSidebar(w: number): void {
+    sidebarWidth = w;
+    savePane(storage(), SIDEBAR_KEY, w);
+  }
+  function resizeFiles(h: number | null): void {
+    filesHeight = h;
+    savePane(storage(), FILES_KEY, h);
+  }
   let sheet = $state<SheetKind | null>(start.sheet === 'rework' || start.sheet === 'abandon' || start.sheet === 'epic-abandon' ? start.sheet : null); // the open Rework… or Abandon… sheet (a job's or an epic's)
   let keysOpen = $state(start.sheet === 'keys'); // the shortcut sheet
   let exploreProject = $state<{ id: string; name: string } | null>(null); // the New exploration sheet's project (null: closed)
@@ -643,8 +661,8 @@
 
 <svelte:window {onkeydown} bind:innerWidth />
 
-<div class="window" class:mac={mode === 'mac'} class:nosb={!sidebarOpen} style:--inset="{win.inset}px" style:--toolbar-inset="{win.toolbarInset}px">
-  <Sidebar model={side} {foot} {status} drag={win.drag} onselect={select} onwhatsnew={openWhatsNew} oncopy={copy} />
+<div class="window" class:mac={mode === 'mac'} class:nosb={!sidebarOpen} class:sbdrag={sidebarDragging} style:--sbset="{sidebarWidth}px" style:--inset="{win.inset}px" style:--toolbar-inset="{win.toolbarInset}px">
+  <Sidebar model={side} {foot} {status} drag={win.drag} onselect={select} onwhatsnew={openWhatsNew} oncopy={copy} width={sidebarWidth} onresize={resizeSidebar} ondragging={(d) => (sidebarDragging = d)} />
   <div class="main">
     <Toolbar
       title={title(ui, sel)}
@@ -721,12 +739,14 @@
     onstart={copyAndStart}
     open={inspectorOpen}
     width={inspectorWidth}
+    {filesHeight}
     {now}
     {fetcher}
     file={openFile}
     onfile={(f) => (openFile = f)}
     onclose={closeInspector}
-    onresize={(w) => (inspectorWidth = w)}
+    onresize={resizeInspector}
+    onfilesresize={resizeFiles}
     oncopy={copy}
     onhandoff={copyAndHandOff}
     onsheet={(k) => (sheet = k)}

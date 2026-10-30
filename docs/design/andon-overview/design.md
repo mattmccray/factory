@@ -38,16 +38,18 @@ project, inside a **native-feeling macOS app** (sidebar, toolbar, inspector). On
 ```
 ┌──────────┬──────────────────────────────────────────────────────────┬────────────┐
 │ sidebar  │ toolbar (52px, drag region)                              │ inspector  │
-│ 216px    ├──────────────────────────────────────────────────────────┤ 392px,     │
-│ vibrancy │ board: header row (sticky) + one lane per project        │ resizable, │
-│          │                                                          │ pushes the │
+│ 216px,   ├──────────────────────────────────────────────────────────┤ 392px,     │
+│ resizable│ board: header row (sticky) + one lane per project        │ resizable, │
+│ vibrancy │                                                          │ pushes the │
 │          │                                                          │ board      │
 │ service ●├──────────────────────────────────────────────────────────┤            │
 │          │ status bar (28px)                                        │            │
 └──────────┴──────────────────────────────────────────────────────────┴────────────┘
 ```
 
-**Sidebar** (216px, collapsible with the toolbar's sidebar button):
+**Sidebar** (216px by default, 180–320 with the right-edge grip: drag, or focus it and use ← →,
+Home and End; double-click resets it to 216; width persisted, and a sidebar hidden and shown
+again comes back at the width last set; collapsible with the toolbar's sidebar button):
 - **Overview**: "All Projects", with a red badge for the total needs-human count.
 - **Projects**: every registered project, sorted by name. Each row has a status dot (its worst
   state: red needs-human, orange review failed, blue working, gray idle), the name, and a badge
@@ -85,7 +87,8 @@ hours", using the smallest `settleAfterHours` shown). The gutter header reads "1
 - A live clock.
 - "? shortcuts".
 
-**Inspector** (392px by default, 320–560 with the left-edge grip, width persisted). It opens
+**Inspector** (392px by default, 320–560 with the left-edge grip, width persisted in
+`localStorage` with the sidebar width and the Files height). It opens
 beside the board and **pushes** it; it never covers it. When the window is narrower than 1640px,
 opening the inspector auto-hides the sidebar, and closing it brings the sidebar back.
 
@@ -269,6 +272,11 @@ It replaces the drawer. From top to bottom:
    - **Round N**: one row per reviewer ("security review"), with a green or orange verdict dot;
      the latest round is marked "current".
    - The default file is today's `pickFile()`, and the selected row has the accent fill.
+   - In the job view, a grip on the line between the Files list and the document sets the list's
+     height (brief andon-resizable-panes): drag it, or focus it and use ↑ ↓, from about two file
+     rows up to what leaves the document about 120px. Until dragged, the list fits its files, up
+     to 38%; double-clicking the grip returns it to that. A dragged height is persisted. The epic,
+     brief, and plan pages scroll as one column and have no divider.
 5. **Document**: the markdown, rendered with today's `markdown()`, in system type. The first line
    (`VERDICT: …`, `APPROVE`, or `ESCALATE`) renders as a colored pill. **Timing** is today's
    `TimingView`, restyled: the stage bar, its legend, the Stages table, and the Agents table.

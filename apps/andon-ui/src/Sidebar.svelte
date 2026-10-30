@@ -8,7 +8,10 @@
   // muted "update available" glyph, its own button beside the row's (never inside it), that opens
   // What's New scoped to it. The footer adds the machine's release (opening What's New), or a
   // restart note that copies the restart command when the service's clone has moved.
+  // Its right edge is a grip (brief andon-resizable-panes): drag it, or focus it and use ← and →
+  // (Home and End to the limits), within 180–320 px; double-click resets it to 216 (panes.ts).
   import type { Status } from './live';
+  import { SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, clampSidebar, sidebarKey } from './panes';
   import { ALL } from './projects';
   import type { Selection } from './projects';
   import { STATE_LABELS } from './sidebar';
@@ -22,8 +25,37 @@
     onselect: (sel: Selection) => void;
     onwhatsnew: (project: string | null) => void; // the What's New sheet: whole (null), or scoped to a project
     oncopy: (command: string) => void; // the restart note: copy and toast
+    width: number; // the width last set, kept while the sidebar is hidden
+    onresize: (width: number) => void;
+    ondragging: (dragging: boolean) => void; // the frame doesn't animate while the grip is dragged
   }
-  let { model, foot, status, drag, onselect, onwhatsnew, oncopy }: Props = $props();
+  let { model, foot, status, drag, onselect, onwhatsnew, oncopy, width, onresize, ondragging }: Props = $props();
+
+  // The right-edge grip.
+  let dragging = false;
+  let start = { x: 0, w: 0 };
+  function grab(e: PointerEvent): void {
+    if (e.button !== 0 || !(e.currentTarget instanceof HTMLElement)) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    start = { x: e.clientX, w: width };
+    dragging = true;
+    ondragging(true);
+  }
+  function move(e: PointerEvent): void {
+    if (dragging) onresize(clampSidebar(start.w + e.clientX - start.x));
+  }
+  function drop(): void {
+    if (!dragging) return;
+    dragging = false;
+    ondragging(false);
+  }
+  function nudge(e: KeyboardEvent): void {
+    const next = sidebarKey(width, e.key, e.shiftKey);
+    if (next === null) return;
+    e.preventDefault();
+    onresize(next);
+  }
 
   // A row's accessible name: the name, then what its dot and badge show ("minerva, needs a human, 1 needs a human").
   const label = (name: string, state: string | null, badge: Badge | null): string => [name, state, badge?.label].filter((x) => x !== null && x !== undefined).join(', ');
@@ -33,6 +65,24 @@
 </script>
 
 <aside class="sidebar" id="sidebar" aria-label="Sidebar">
+  <!-- A focusable separator with a value is the ARIA window-splitter pattern (an interactive widget); Svelte's lint treats every separator as static. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+  <div
+    class="sbgrip"
+    role="separator"
+    aria-orientation="vertical"
+    aria-label="Resize the sidebar"
+    aria-valuemin={SIDEBAR_MIN}
+    aria-valuemax={SIDEBAR_MAX}
+    aria-valuenow={width}
+    tabindex="0"
+    onpointerdown={grab}
+    onpointermove={move}
+    onpointerup={drop}
+    onpointercancel={drop}
+    onkeydown={nudge}
+    ondblclick={() => onresize(SIDEBAR_DEFAULT)}
+  ></div>
   <div class="sb-top" data-tiny-drag={drag ? '' : undefined}></div>
   <nav class="srclist" aria-label="Projects">
     <h2>Overview</h2>
