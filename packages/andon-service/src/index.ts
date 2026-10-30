@@ -4,14 +4,18 @@
 //   GET /projects                        → { projects: [{ id, name, root, release }] } (name: config.json's `name`, else basename(root))
 //   GET /projects/<pid>/board            → { jobs, config, epics } (a bad config is a 500 carrying the reason);
 //                                          epics: the on-board (unsettled) epics' epic.json, in slug order
-//   GET /projects/<pid>/board?settled=summary → { jobs, config, settled, epics }: unsettled jobs only, plus
+//   GET /projects/<pid>/board?settled=summary → { jobs, config, settled, epics, backlog }: unsettled jobs only, plus
 //                                          settled: { count, lastMergedAt, epics } (only the exact value `summary` opts in)
+//                                          and backlog: { queued, exploring }, the two counts
 //   GET /projects/<pid>/settled          → { jobs, epics }, the project's settled jobs and epics only (errors as for board)
 //   GET /projects/<pid>/jobs/<id>/docs   → { files: [{ path, text }] }, that job's markdown in reading order
 //   GET /projects/<pid>/epics/<slug>/docs → { files: [{ path, text }] }, the epic's plan, then its member briefs in plan order
-//   GET /events                          → text/event-stream of `projects`, `release`, `board`, and `error` events
+//   GET /projects/<pid>/backlog          → { queued, exploring }, the backlog's open lines and the draft briefs and plans (backlog.ts)
+//   GET /projects/<pid>/briefs/<slug>    → { path, text }, `briefs/<slug>.md`
+//   GET /projects/<pid>/plans/<slug>     → { path, text }, `epics/<slug>.md`
+//   GET /events                          → text/event-stream of `projects`, `release`, `board`, `backlog`, and `error` events
 //   GET /events?settled=summary          → the same stream, with each `board` event narrow
-//                                          ({ project, jobs, config, settled, epics }, as for the narrow board)
+//                                          ({ project, jobs, config, settled, epics, backlog }, as for the narrow board)
 //   GET /, GET /<asset>                  → the built Andon UI (`uiDir`), read-only; a path outside it is a 404
 // `board` (endpoint and event) and `docs` also serve jobs found only on the project's
 // `factory/archive` branch, in the same shapes: re-projected from the archived `events.jsonl` (a
@@ -24,8 +28,10 @@
 // `projectEpic` from its archived log and plan and the board's jobs; a local epic dir always wins.
 // Changes are found with fs.watch, never by polling: one recursive watch on each project's
 // `factory/jobs/` (epic runtime state included), one non-recursive watch on its `factory/` (for
-// `config.json`), one non-recursive watch on its `factory/epics/` (plan edits), and one on the
-// registry file's directory. The archive ref is watched in the git common dir (so a linked
+// `config.json` and `backlog.md`), one non-recursive watch on its `factory/epics/` (plan edits), one
+// non-recursive watch on its `factory/briefs/` (brief edits), and one on the registry file's directory.
+// A change to `backlog.md`, a brief, or a plan sends one `backlog` event `{ project }` per burst to
+// every client, and a fresh narrow `board` event (its `backlog` counts) to narrow clients. The archive ref is watched in the git common dir (so a linked
 // worktree's project works too): non-recursive watches on `refs/heads/factory/`, on `refs/heads/`
 // (for `factory/` appearing), and on the common dir itself for `packed-refs` only.
 // `.worktrees/` and `.lock/` are never watched or served.
@@ -57,6 +63,8 @@ import { EMPTY_ARCHIVE, archiveTip, gitCommonDir, projectArchivedEpic, readArchi
 import type { ArchiveCache, GitRunner } from './archive';
 import { SOURCE_VERSION_FILE, readInstalled, readRelease, readTemplatesVersion, releaseState } from './release';
 import type { ProjectRelease, ReleaseInfo } from './release';
+import { buildBacklog, isBacklogSlug } from './backlog';
+import type { Backlog } from './backlog';
 import { MAX_DELAY_MS, nextSettle, partition, summarize } from './settled';
 import type { SettledSummary } from './settled';
 
@@ -103,7 +111,10 @@ interface Project {
   factoryWatcher: FSWatcher | null;
   jobsWatcher: FSWatcher | null;
   epicsWatcher: FSWatcher | null; // `factory/epics/` (plan files), non-recursive
+  briefsWatcher: FSWatcher | null; // `factory/briefs/` (brief files), non-recursive
   timer: ReturnType<typeof setTimeout> | null;
+  pendingBoard: boolean; // the burst under `timer` touched the board
+  pendingBacklog: boolean; // the burst under `timer` touched backlog.md, a brief, or a plan
   settleTimer: ReturnType<typeof setTimeout> | null; // armed only while a narrow `/events` client is connected
   settleDue: number; // when the settle timer's job crosses the line (ms since the epoch)
   closed: boolean;
@@ -217,12 +228,14 @@ function plain(b: Board, now: number): { jobs: Job[]; config: Config; epics: Job
   return { jobs: b.jobs, config: b.config, epics: unsettledEpics };
 }
 
-// The narrow form of a board: its unsettled jobs, its config, the settled summary, and the
-// on-board epics, by the system clock.
-function narrow(b: Board, now: number): { jobs: Job[]; config: Config; settled: SettledSummary; epics: Job[] } {
+// The narrow form of a board: its unsettled jobs, its config, the settled summary, the
+// on-board epics, by the system clock, and the backlog's counts.
+function narrow(b: Board, now: number, backlog: BacklogCounts): { jobs: Job[]; config: Config; settled: SettledSummary; epics: Job[]; backlog: BacklogCounts } {
   const { unsettled, settled, unsettledEpics, settledEpics } = partition(b.jobs, b.epics, b.config.dashboard.settleAfterHours, now);
-  return { jobs: unsettled, config: b.config, settled: summarize(settled, settledEpics), epics: unsettledEpics };
+  return { jobs: unsettled, config: b.config, settled: summarize(settled, settledEpics), epics: unsettledEpics, backlog };
 }
+
+type BacklogCounts = { queued: number; exploring: number };
 
 // The settled side: the settled jobs and epics.
 function settledOf(b: Board, now: number): { jobs: Job[]; epics: Job[] } {
@@ -242,6 +255,31 @@ async function readInside(p: Project, rel: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+// The `.md` files of `factory/<dir>/` named by a slug, as regular files inside `factory/`, by slug.
+async function readDocs(p: Project, dir: 'briefs' | 'epics'): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const d of await entries(join(p.factory, dir))) {
+    if (!d.isFile() || !d.name.endsWith('.md')) continue;
+    const slug = d.name.slice(0, -'.md'.length);
+    if (!isBacklogSlug(slug)) continue; // checked before any path is built
+    const text = await readInside(p, `${dir}/${slug}.md`);
+    if (text !== null) out.set(slug, text);
+  }
+  return out;
+}
+
+// The project's backlog: `backlog.md`'s open lines and the draft briefs and plans (backlog.ts).
+// Read per request from fixed paths only; a missing or unreadable file is no file, never an error.
+async function backlogOf(p: Project): Promise<Backlog> {
+  const [backlog, briefs, plans] = await Promise.all([readInside(p, 'backlog.md'), readDocs(p, 'briefs'), readDocs(p, 'epics')]);
+  return buildBacklog({ backlog, briefs, plans });
+}
+
+async function backlogCounts(p: Project): Promise<BacklogCounts> {
+  const b = await backlogOf(p);
+  return { queued: b.queued.length, exploring: b.exploring.length };
 }
 
 // An epic's docs: its plan (`epics/<slug>.md`, locally when that is a regular file, else the
@@ -479,7 +517,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       const b = await board(p);
       if (p.closed) return;
       const now = Date.now();
-      if (now >= p.settleDue) broadcast('board', { project: p.info.id, ...narrow(b, now) }, 'narrow');
+      if (now >= p.settleDue) broadcast('board', { project: p.info.id, ...narrow(b, now, await backlogCounts(p)) }, 'narrow');
       armSettle(p, b);
     } catch {
       clearSettle(p);
@@ -511,32 +549,49 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
   }
   const archiveReady = (p: Project): Promise<void> => (p.archiveDirty ? refreshArchive(p) : p.archiveTask);
 
-  async function emitBoard(p: Project): Promise<void> {
+  // One burst's events: a `backlog` event to every client when backlog.md, a brief, or a plan
+  // changed; then the board, to plain clients when the board changed and to narrow clients when
+  // either did (their `backlog` counts ride the narrow board).
+  async function emitBoard(p: Project, boardChanged: boolean, backlogChanged: boolean): Promise<void> {
     if (p.closed || clients.size === 0) return;
+    if (backlogChanged) broadcast('backlog', { project: p.info.id });
+    const toPlain = boardChanged && hasForm('plain');
+    const toNarrow = hasForm('narrow');
+    if (!toPlain && !toNarrow) return;
     try {
       await archiveReady(p);
       const b = await board(p);
+      const counts = toNarrow ? await backlogCounts(p) : null;
       if (!p.closed) {
         // Each form is built only when a client of that form is connected.
         const now = Date.now();
-        if (hasForm('plain')) broadcast('board', { project: p.info.id, ...plain(b, now) }, 'plain');
-        if (hasForm('narrow')) broadcast('board', { project: p.info.id, ...narrow(b, now) }, 'narrow');
+        if (toPlain) broadcast('board', { project: p.info.id, ...plain(b, now) }, 'plain');
+        if (counts !== null) broadcast('board', { project: p.info.id, ...narrow(b, now, counts) }, 'narrow');
         armSettle(p, b);
       }
     } catch (e) {
       clearSettle(p);
-      if (!p.closed) broadcast('error', { project: p.info.id, reason: `config.json: ${message(e)}` });
+      // A backlog-only burst sends no error: the config change itself sends that.
+      if (!p.closed && boardChanged) broadcast('error', { project: p.info.id, reason: `config.json: ${message(e)}` });
     }
     // A config.json edit may have changed the project's resolved name, a managed.json write its release.
     if (!p.closed) await announce(false);
   }
 
-  // One `board` event per project per burst: the first change starts the window, the rest join it.
-  function schedule(p: Project): void {
-    if (p.closed || p.timer !== null) return;
+  // One burst per project: the first change starts the window, the rest join it, and each marks
+  // what it touched (`board`, the default, or `backlog`).
+  function schedule(p: Project, what: 'board' | 'backlog' | 'both' = 'board'): void {
+    if (p.closed) return;
+    if (what !== 'backlog') p.pendingBoard = true;
+    if (what !== 'board') p.pendingBacklog = true;
+    if (p.timer !== null) return;
     p.timer = setTimeout(() => {
       p.timer = null;
-      void emitBoard(p);
+      const boardChanged = p.pendingBoard;
+      const backlogChanged = p.pendingBacklog;
+      p.pendingBoard = false;
+      p.pendingBacklog = false;
+      void emitBoard(p, boardChanged, backlogChanged);
     }, debounceMs);
   }
 
@@ -557,8 +612,16 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
   // Plan files: a non-recursive watch on `factory/epics/`, attached when it appears.
   function watchEpics(p: Project): void {
     if (p.closed || p.epicsWatcher !== null) return;
-    p.epicsWatcher = watchDir(join(p.factory, 'epics'), () => schedule(p), (w) => {
+    p.epicsWatcher = watchDir(join(p.factory, 'epics'), () => schedule(p, 'both'), (w) => {
       if (p.epicsWatcher === w) p.epicsWatcher = null;
+    });
+  }
+
+  // Brief files: a non-recursive watch on `factory/briefs/`, attached when it appears.
+  function watchBriefs(p: Project): void {
+    if (p.closed || p.briefsWatcher !== null) return;
+    p.briefsWatcher = watchDir(join(p.factory, 'briefs'), () => schedule(p, 'backlog'), (w) => {
+      if (p.briefsWatcher === w) p.briefsWatcher = null;
     });
   }
 
@@ -627,7 +690,10 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       factoryWatcher: null,
       jobsWatcher: null,
       epicsWatcher: null,
+      briefsWatcher: null,
       timer: null,
+      pendingBoard: false,
+      pendingBacklog: false,
       settleTimer: null,
       settleDue: 0,
       closed: false,
@@ -640,13 +706,17 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     };
     p.archiveTask = openArchive(p);
     try {
-      // Non-recursive: sees config.json, managed.json, and jobs/ appearing, never anything inside
-      // .worktrees/ or .lock/. Dot-named entries (those two, and temp files) are ignored.
+      // Non-recursive: sees config.json, managed.json, backlog.md, and jobs/, epics/, and briefs/
+      // appearing, never anything inside .worktrees/ or .lock/. Dot-named entries (those two, and
+      // temp files) are ignored.
       const w = watch(p.factory, (_event, filename) => {
         if (filename !== null && filename.startsWith('.')) return;
         if (filename === null || filename === 'jobs') watchJobs(p);
         if (filename === null || filename === 'epics') watchEpics(p);
-        schedule(p);
+        if (filename === null || filename === 'briefs') watchBriefs(p);
+        if (filename === 'backlog.md' || filename === 'briefs') schedule(p, 'backlog');
+        else if (filename === null || filename === 'epics') schedule(p, 'both');
+        else schedule(p);
       });
       w.on('error', () => {
         w.close();
@@ -658,6 +728,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     }
     watchJobs(p);
     watchEpics(p);
+    watchBriefs(p);
     return p;
   }
 
@@ -666,9 +737,11 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     p.factoryWatcher?.close();
     p.jobsWatcher?.close();
     p.epicsWatcher?.close();
+    p.briefsWatcher?.close();
     p.factoryWatcher = null;
     p.jobsWatcher = null;
     p.epicsWatcher = null;
+    p.briefsWatcher = null;
     for (const w of [p.refs.common, p.refs.heads, p.refs.factory]) w?.close();
     p.refs = { common: null, heads: null, factory: null };
     if (p.timer !== null) clearTimeout(p.timer);
@@ -832,7 +905,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
         const full = await board(p);
         const now = Date.now();
         if (b[2] === 'settled') return json(settledOf(full, now));
-        return json(summary ? narrow(full, now) : plain(full, now));
+        return json(summary ? narrow(full, now, await backlogCounts(p)) : plain(full, now));
       } catch (e) {
         return text(`config.json: ${message(e)}`, 500);
       }
@@ -863,6 +936,24 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       } catch (e) {
         return text(`epic docs: ${message(e)}`, 500);
       }
+    }
+
+    const bl = pathname.match(/^\/projects\/([^/]+)\/backlog$/);
+    if (bl !== null) {
+      const p = projects.get(bl[1] ?? '');
+      return p === undefined ? notFound() : json(await backlogOf(p));
+    }
+
+    // A brief's or plan's text. The slug is checked (on the raw path, never decoded) before any
+    // path is built, and the file is read only as a regular file inside factory/.
+    const f = pathname.match(/^\/projects\/([^/]+)\/(briefs|plans)\/([^/]+)$/);
+    if (f !== null) {
+      const p = projects.get(f[1] ?? '');
+      const slug = f[3] ?? '';
+      if (p === undefined || !isBacklogSlug(slug)) return notFound();
+      const path = `${f[2] === 'briefs' ? 'briefs' : 'epics'}/${slug}.md`;
+      const body = await readInside(p, path);
+      return body === null ? notFound() : json({ path, text: body });
     }
     if (opts.uiDir !== undefined) return (await uiFile(opts.uiDir, pathname)) ?? notFound();
     return notFound();

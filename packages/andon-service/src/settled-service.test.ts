@@ -228,7 +228,7 @@ describe('the narrow board (AC2)', () => {
     const narrow = await get(`${url}/projects/${pid}/board?settled=summary`);
     expect(narrow.status).toBe(200);
     expect(narrow.cache).toBe('no-store');
-    expect(Object.keys(isRec(narrow.body) ? narrow.body : {})).toEqual(['jobs', 'config', 'settled', 'epics']);
+    expect(Object.keys(isRec(narrow.body) ? narrow.body : {})).toEqual(['jobs', 'config', 'settled', 'epics', 'backlog']);
     expect(idsOf(narrow.body)).toEqual(['003-recent-merged', '004-no-end', '006-working', '007-needs-human']);
     expect(field(narrow.body, 'config')).toEqual(field(plain.body, 'config'));
     // Same entries as on the plain board, unknown fields included.
@@ -278,7 +278,7 @@ describe('narrow and plain clients at once (AC3)', () => {
     await writeJob(root, job('006-working', 'review', null));
     const isReview = (e: Sse): boolean => e.event === 'board' && jobsOf(e.data).some((j) => field(j, 'stage') === 'review');
     const n = await narrow.next(isReview, fromN);
-    expect(Object.keys(isRec(n.data) ? n.data : {})).toEqual(['project', 'jobs', 'config', 'settled', 'epics']);
+    expect(Object.keys(isRec(n.data) ? n.data : {})).toEqual(['project', 'jobs', 'config', 'settled', 'epics', 'backlog']);
     expect(field(n.data, 'project')).toBe(pid);
     expect(idsOf(n.data)).toEqual(['003-recent-merged', '004-no-end', '006-working', '007-needs-human']);
     expect(field(n.data, 'config')).toEqual(parseConfig(CONFIG));
