@@ -18,5 +18,5 @@ export default defineConfig({
   base: '/',
   build: { outDir: 'dist', emptyOutDir: true },
   // Loopback only, and no CORS: the dev server is as local as the service it proxies to.
-  server: { host: '127.0.0.1', cors: false, proxy: { '/projects': toService, '/events': toService } },
+  server: { host: '127.0.0.1', cors: false, proxy: { '/projects': toService, '/events': toService, '/release': toService } },
 });

@@ -9,7 +9,7 @@ import { itemId, projectMenuItems } from './projectmenu';
 import { jobItemId, jobMenuItems } from './jobmenu';
 import type { Availability, MenuProject } from './projectmenu';
 import type { HandoffMode, Settings } from './settings';
-import { GITHUB_ID, MINIMIZE_ID, SETTINGS_ID, SETTINGS_SIZE, SHOW_MAIN_ID, STATUS_BAR_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
+import { GITHUB_ID, MINIMIZE_ID, SETTINGS_ID, SETTINGS_SIZE, SHOW_MAIN_ID, STATUS_BAR_ID, WHATS_NEW_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
 import { trayNotice, traySpec } from './badge';
 
 /** Which window ops fail. Mutable, so a test can heal the window between clicks. Each failing op is
@@ -408,6 +408,13 @@ test('AC3: Window and Help items minimize, zoom, show the window as the tray cli
   m.log.length = 0;
   await onMenu(GITHUB_ID, m.app);
   expect(m.log).toEqual([['shell.open', 'https://github.com/mattmccray/factory']]);
+});
+
+test("059 AC8: Help → What's New shows the main window as the tray click does, then pushes the whatsnew event, and nothing else", async () => {
+  const m = await initMenu(null);
+  m.log.length = 0;
+  await onMenu(WHATS_NEW_ID, m.app);
+  expect(m.log).toEqual([['main.allSpaces', true], ['main.show'], ['main.allSpaces', false], ['push', 'whatsnew', {}]]);
 });
 
 test('AC3: unknown ids do nothing', async () => {

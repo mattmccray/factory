@@ -4,11 +4,13 @@
 // Settled jobs are fetched on demand: `watch` names the projects whose settled lists an open view
 // needs, and each is fetched once its board has loaded, then again whenever its settled summary
 // changes, for as long as it is watched. A project no view needs is never fetched.
+// Each `projects` event also fetches `GET /release` once; `release` events keep it current after
+// that, and a fetch that resolves after a newer `release` event is dropped.
 import type { Fetcher } from './api';
-import { fetchBoard, fetchSettled } from './api';
+import { fetchBoard, fetchRelease, fetchSettled } from './api';
 import { isRecord } from './job';
 import { EVENTS_PATH } from './projects';
-import { applyEvent, applyFetched, applySettled, emptyState, revOf, startSettled, wantsSettled } from './state';
+import { applyEvent, applyFetched, applyFetchedRelease, applySettled, emptyState, releaseRev, revOf, startSettled, wantsSettled } from './state';
 import type { UiState } from './state';
 
 /** The slice of `EventSource` used here, so tests can drive it. */
@@ -84,17 +86,27 @@ export function startLive(opts: {
     update(applyFetched(state, pid, rev, result));
   }
 
+  async function loadRelease(): Promise<void> {
+    const rev = releaseRev(state);
+    const result = await fetchRelease(opts.fetcher);
+    set(applyFetchedRelease(state, rev, result));
+  }
+
   const on = (event: string) => (e: unknown) => {
     const msg = parse(e);
     if (!msg.ok) return;
     update(applyEvent(state, event, msg.data));
-    if (event === 'projects') for (const p of state.projects) void load(p.id);
+    if (event === 'projects') {
+      for (const p of state.projects) void load(p.id);
+      void loadRelease();
+    }
   };
   function open(): void {
     const src = opts.connect(EVENTS_PATH);
     source = src;
     src.addEventListener('projects', on('projects'));
     src.addEventListener('board', on('board'));
+    src.addEventListener('release', on('release'));
     // `error` is both the service's named event (a MessageEvent with data) and EventSource's own
     // connection error (no data): the first updates a project, the second marks the service down.
     src.addEventListener('error', (e) => {

@@ -1,7 +1,7 @@
 // Reads from the Andon service. The fetch function is passed in, so tests can fake the service.
 import type { BoardJob } from './board';
 import { isRecord } from './job';
-import { boardPath, docsPath, epicDocsPath, settledPath } from './projects';
+import { RELEASE_PATH, boardPath, docsPath, epicDocsPath, settledPath } from './projects';
 
 export interface FetchResponse {
   ok: boolean;
@@ -35,6 +35,9 @@ export const fetchBoard = (fetcher: Fetcher, pid: string): Promise<Fetched> => f
 
 /** One project's settled jobs and epics (`{ jobs, epics }`), or the reason they couldn't be read (the first line of the error body). */
 export const fetchSettled = (fetcher: Fetcher, pid: string): Promise<Fetched> => fetchJson(fetcher, settledPath(pid));
+
+/** The service's release (`GET /release`), or the reason it couldn't be read (a 404 from an older service). */
+export const fetchRelease = (fetcher: Fetcher): Promise<Fetched> => fetchJson(fetcher, RELEASE_PATH);
 
 export interface DocFile {
   path: string; // relative to the project's factory/

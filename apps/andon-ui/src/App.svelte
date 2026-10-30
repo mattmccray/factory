@@ -9,6 +9,9 @@
   // only while a view needs them: the Settled sheet, a settled job or epic in the inspector, or a focused project.
   // Epics (docs/design/epics/design.md decision 9) ride on the boards: each gets a sub-lane under its
   // project's lane, its name opens the epic page, and an epic waiting on you counts as needs-human.
+  // Factory releases (brief andon-version-ui) are quiet: a behind project's sidebar glyph opens the
+  // What's New sheet scoped to it, the footer's version (or Help → What's New in the Mac app) opens it
+  // whole, and the footer's restart note copies the restart command. Andon runs neither command.
   import { onMount, untrack } from 'svelte';
   import type { Fetcher } from './api';
   import { buildBoard, movement } from './board';
@@ -19,7 +22,7 @@
   import { find, needsFilter } from './find';
   import { COPY_FAILED, handOffCaller, handoffToast } from './handoff';
   import type { HandoffRequest } from './handoff';
-  import { initialKeys, reduceKey } from './keys';
+  import { initialKeys, reduceKey, topSheet } from './keys';
   import type { KeyAction } from './keys';
   import { activity, buildLanes, headerOf, orderLanes } from './lanes';
   import type { LaneOrder } from './lanes';
@@ -56,11 +59,13 @@
   } from './projects';
   import type { BoardEpic, BoardJob } from './board';
   import { epicName } from './job';
+  import { whatsNew } from './release';
   import type { Selection } from './projects';
   import SettledSheet from './SettledSheet.svelte';
   import ShortcutSheet from './ShortcutSheet.svelte';
+  import WhatsNewSheet from './WhatsNewSheet.svelte';
   import Sidebar from './Sidebar.svelte';
-  import { STATUS_BAR_EVENT, footer, frame, pushSubscriber, settleHours, settleText, shellMode, sidebarModel, statusBarHidden, subtitle, title } from './sidebar';
+  import { STATUS_BAR_EVENT, WHATS_NEW_EVENT, footer, frame, pushSubscriber, settleHours, settleText, shellMode, sidebarModel, statusBarHidden, subtitle, title } from './sidebar';
   import StatusBar from './StatusBar.svelte';
   import Toolbar from './Toolbar.svelte';
   import { NO_SETTLED, emptyState } from './state';
@@ -93,6 +98,8 @@
   let inspectorWidth = $state(INSPECTOR_DEFAULT); // not kept across reloads
   let sheet = $state<SheetKind | null>(start.sheet === 'rework' || start.sheet === 'abandon' || start.sheet === 'epic-abandon' ? start.sheet : null); // the open Rework… or Abandon… sheet (a job's or an epic's)
   let keysOpen = $state(start.sheet === 'keys'); // the shortcut sheet
+  let whatsNewOpen = $state(start.whatsNew !== null); // the What's New sheet
+  let whatsNewProject = $state<string | null>(start.whatsNew?.project ?? null); // its scope: a project id, or null for every release
   let needs = $state(start.needs); // Needs Me
   let query = $state(''); // search; not kept in the hash
   let searchEl = $state<HTMLInputElement>();
@@ -116,10 +123,13 @@
     };
     document.addEventListener('visibilitychange', visible);
     window.addEventListener('popstate', onpopstate);
-    const offStatusBar = pushSubscriber(mode, Reflect.get(window, 'tiny'))?.(STATUS_BAR_EVENT, (data) => {
+    const subscribe = pushSubscriber(mode, Reflect.get(window, 'tiny'));
+    const offStatusBar = subscribe?.(STATUS_BAR_EVENT, (data) => {
       const hidden = statusBarHidden(data);
       if (hidden !== null) statusBarOff = hidden;
     });
+    // Help → What's New: the Mac app shows this window and asks for the whole sheet; the focus stays.
+    const offWhatsNew = subscribe?.(WHATS_NEW_EVENT, () => openWhatsNew(null));
     // The Mac app's right-click menu on a project row or gutter, or on a board job token: armed for
     // the project or job under the pointer, and a control-click there doesn't click through
     // (projectmenu.ts, jobmenu.ts). A browser: nothing.
@@ -149,6 +159,7 @@
         window.removeEventListener('click', onclickcapture, true);
       }
       offStatusBar?.();
+      offWhatsNew?.();
       started.stop();
       live = null;
       clearInterval(timer);
@@ -197,7 +208,12 @@
   const sidebarOpen = $derived(sidebarShown(sidebar, innerWidth, inspectorOpen));
   const win = $derived(frame(mode, sidebarOpen));
   const side = $derived(sidebarModel(ui, sel));
-  const foot = $derived(footer(status, ui.projects.length));
+  const foot = $derived(footer(status, ui.projects.length, ui.release.info));
+  // The What's New sheet's model: every release, or the ones its project is missing (live: a
+  // `projects` or `release` event updates it while it is open).
+  const whatsNewModel = $derived(
+    whatsNew(ui.release.info, whatsNewProject === null ? null : { id: whatsNewProject, project: ui.projects.find((p) => p.id === whatsNewProject) ?? null }),
+  );
   // "M waiting on you" counts each epic waiting on you too.
   const sub = $derived(subtitle(ui, sel, board.running, board.waiting + hotEpics(ui, sel)));
   const settle = $derived(settleText(settleHours(ui, sel)));
@@ -282,6 +298,10 @@
     settledProject = pid;
     settledOpen = true;
   }
+  function openWhatsNew(pid: string | null): void {
+    whatsNewProject = pid;
+    whatsNewOpen = true;
+  }
   function openJob(key: string): void {
     const b = boardJobs(ui, ALL).find((x) => x.key === key) ?? fetchedSettled(ui, ALL).find((x) => x.key === key);
     if (b === undefined) return;
@@ -358,6 +378,7 @@
     epic: openEpic ?? undefined,
     file: openRef === null && openEpic === null ? null : openFile,
     settled: settledOpen ? { project: settledProject } : null,
+    whatsNew: whatsNewOpen ? { project: whatsNewProject } : null,
     sheet: keysOpen ? 'keys' : sheet,
     needs,
   });
@@ -371,6 +392,8 @@
     if (!v.inspector) sidebar = { user: sidebar.user, override: false };
     settledOpen = v.settled !== null;
     settledProject = v.settled?.project ?? null;
+    whatsNewOpen = v.whatsNew !== null;
+    whatsNewProject = v.whatsNew?.project ?? null;
     sheet = v.sheet === 'rework' || v.sheet === 'abandon' || v.sheet === 'epic-abandon' ? v.sheet : null;
     keysOpen = v.sheet === 'keys';
     needs = v.needs;
@@ -408,7 +431,7 @@
   const inField = (el: Element | null): boolean => el instanceof HTMLElement && (el.isContentEditable || el.matches('input, textarea, select'));
   function onkeydown(e: KeyboardEvent): void {
     if (e.defaultPrevented) return;
-    const layers = { sheet: settledOpen || sheet !== null || keysOpen, inspector: inspectorOpen, searchText: query !== '', searchFocused };
+    const layers = { sheet: settledOpen || whatsNewOpen || sheet !== null || keysOpen, inspector: inspectorOpen, searchText: query !== '', searchFocused };
     const r = reduceKey(keyState, { key: e.key, mod: e.ctrlKey || e.metaKey || e.altKey, inField: inField(document.activeElement) }, layers);
     keyState = r.state;
     // Escape's default is always suppressed: Chromium's ("stop loading") also aborts the event stream.
@@ -433,10 +456,24 @@
         select(ALL);
         return;
       case 'close-sheet':
-        // the topmost first: a command sheet or the shortcuts open over the Settled sheet's place
-        if (keysOpen) keysOpen = false;
-        else if (sheet !== null) sheet = null;
-        else settledOpen = false;
+        // the topmost first (keys.ts `topSheet`): What's New, then a command sheet or the shortcuts
+        // (which open over the Settled sheet's place), then the Settled sheet
+        switch (topSheet({ whatsNew: whatsNewOpen, keys: keysOpen, command: sheet !== null, settled: settledOpen })) {
+          case 'whatsNew':
+            whatsNewOpen = false;
+            return;
+          case 'keys':
+            keysOpen = false;
+            return;
+          case 'command':
+            sheet = null;
+            return;
+          case 'settled':
+            settledOpen = false;
+            return;
+          case null:
+            return;
+        }
         return;
       case 'close-inspector':
         closeInspector();
@@ -454,7 +491,7 @@
 <svelte:window {onkeydown} bind:innerWidth />
 
 <div class="window" class:mac={mode === 'mac'} class:nosb={!sidebarOpen} style:--inset="{win.inset}px" style:--toolbar-inset="{win.toolbarInset}px">
-  <Sidebar model={side} {foot} {status} drag={win.drag} onselect={select} />
+  <Sidebar model={side} {foot} {status} drag={win.drag} onselect={select} onwhatsnew={openWhatsNew} oncopy={copy} />
   <div class="main">
     <Toolbar
       title={title(ui, sel)}
@@ -556,6 +593,7 @@
   onclose={() => (sheet = null)}
 />
 <ShortcutSheet open={keysOpen} onclose={() => (keysOpen = false)} />
+<WhatsNewSheet model={whatsNewModel} open={whatsNewOpen} onshowall={() => (whatsNewProject = null)} oncopy={copy} onclose={() => (whatsNewOpen = false)} />
 <div class="hud" class:on={toast !== null} class:fail={toast !== null && !toast.ok} role="status" aria-live="polite">
   {#if toast !== null}
     {#if toast.ok}<svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" /></svg>{/if}
