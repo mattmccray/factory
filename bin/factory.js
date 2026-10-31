@@ -2,7 +2,7 @@
 // @bun
 
 // packages/cli/src/release-main.ts
-import { join as join19 } from "path";
+import { join as join20 } from "path";
 
 // packages/contract/src/contract.ts
 var WORKING_STAGES = ["claimed", "spec", "build", "review", "approve"];
@@ -1870,16 +1870,153 @@ async function removeRoot(path, root) {
   await writeRegistry(path, next);
   return next;
 }
+// packages/contract/src/peers.ts
+import { mkdir as mkdir5, open as open2, readFile as readFile4, rename as rename4, rm as rm4 } from "fs/promises";
+import { homedir as homedir2 } from "os";
+import { basename as basename2, dirname as dirname3, join as join4 } from "path";
+var SCHEMA4 = "factory/v1";
+var isRecord5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isNotFound3 = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "ENOENT";
+function peersPath(andonHome) {
+  return join4(andonHome !== undefined && andonHome !== "" ? andonHome : join4(homedir2(), ".andon"), "peers.json");
+}
+var MACHINE_NAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+var isMachineName = (name) => MACHINE_NAME.test(name);
+function machineName(host) {
+  const label = (host.split(".")[0] ?? "").toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "");
+  return label === "" ? "local" : label;
+}
+function normalizePeerUrl(raw) {
+  const shown = JSON.stringify(raw);
+  if (/[\s\0]/.test(raw))
+    throw new Error(`peers: ${shown} must not contain whitespace or NUL`);
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new Error(`peers: ${shown} is not a URL; give an https://<host>[:<port>] URL`);
+  }
+  if (u.protocol !== "https:")
+    throw new Error(`peers: ${shown} must be an https:// URL`);
+  if (u.username !== "" || u.password !== "")
+    throw new Error(`peers: ${shown} must not carry a user or password`);
+  if (u.pathname !== "/" && u.pathname !== "")
+    throw new Error(`peers: ${shown} must have no path`);
+  if (u.search !== "" || raw.includes("?"))
+    throw new Error(`peers: ${shown} must have no query`);
+  if (u.hash !== "" || raw.includes("#"))
+    throw new Error(`peers: ${shown} must have no fragment`);
+  if (u.hostname === "")
+    throw new Error(`peers: ${shown} has no host`);
+  return `https://${u.host}`.toLowerCase();
+}
+function peerLabel(url) {
+  try {
+    return (new URL(url).hostname.split(".")[0] ?? "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+function parsePeers(raw) {
+  if (!isRecord5(raw))
+    throw new Error("peers: must be a JSON object");
+  const extra = Object.keys(raw).filter((k) => k !== "schema" && k !== "peers");
+  if (extra.length)
+    throw new Error(`peers: unknown key ${extra.map((k) => `'${k}'`).join(", ")}`);
+  if (raw.schema !== SCHEMA4)
+    throw new Error(`peers: schema must be "${SCHEMA4}"`);
+  if (!Array.isArray(raw.peers))
+    throw new Error("peers: peers must be an array");
+  const peers = [];
+  const seen = new Set;
+  for (const [i, p] of raw.peers.entries()) {
+    if (!isRecord5(p))
+      throw new Error(`peers: peers[${i}] must be an object`);
+    const pExtra = Object.keys(p).filter((k) => k !== "url");
+    if (pExtra.length)
+      throw new Error(`peers: peers[${i}]: unknown key ${pExtra.map((k) => `'${k}'`).join(", ")}`);
+    if (typeof p.url !== "string")
+      throw new Error(`peers: peers[${i}].url must be a string`);
+    let norm;
+    try {
+      norm = normalizePeerUrl(p.url);
+    } catch (e) {
+      throw new Error(`peers: peers[${i}]: ${(e instanceof Error ? e.message : String(e)).replace(/^peers: /, "")}`);
+    }
+    if (norm !== p.url)
+      throw new Error(`peers: peers[${i}]: url ${JSON.stringify(p.url)} must be normalized (${JSON.stringify(norm)})`);
+    if (seen.has(p.url))
+      throw new Error(`peers: peers[${i}]: url ${JSON.stringify(p.url)} is listed twice`);
+    seen.add(p.url);
+    peers.push({ url: p.url });
+  }
+  return { schema: SCHEMA4, peers };
+}
+async function readPeers(path) {
+  let text;
+  try {
+    text = await readFile4(path, "utf8");
+  } catch (e) {
+    if (isNotFound3(e))
+      return { schema: SCHEMA4, peers: [] };
+    throw new Error(`peers: cannot read ${path}: ${(e instanceof Error ? e.message : String(e)).split(`
+`)[0] ?? ""}`);
+  }
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    throw new Error("peers: not valid JSON");
+  }
+  return parsePeers(raw);
+}
+var peersText = (p) => `${JSON.stringify(p, null, 2)}
+`;
+async function writePeers(path, p) {
+  await mkdir5(dirname3(path), { recursive: true });
+  const tmp = join4(dirname3(path), `.${basename2(path)}.${process.pid}.${Date.now()}.tmp`);
+  const fh = await open2(tmp, "wx");
+  try {
+    await fh.writeFile(peersText(p), "utf8");
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+  try {
+    await rename4(tmp, path);
+  } catch (e) {
+    await rm4(tmp, { force: true });
+    throw e;
+  }
+}
+async function addPeer(path, url) {
+  const norm = normalizePeerUrl(url);
+  const current = await readPeers(path);
+  if (current.peers.some((p) => p.url === norm))
+    return current;
+  const next = { schema: SCHEMA4, peers: [...current.peers, { url: norm }] };
+  await writePeers(path, next);
+  return next;
+}
+async function removePeer(path, url) {
+  const norm = normalizePeerUrl(url);
+  const current = await readPeers(path);
+  if (!current.peers.some((p) => p.url === norm))
+    return current;
+  const next = { schema: SCHEMA4, peers: current.peers.filter((p) => p.url !== norm) };
+  await writePeers(path, next);
+  return next;
+}
 // packages/cli/src/bundle.ts
-import { readFile as readFile4 } from "fs/promises";
-import { join as join4 } from "path";
+import { readFile as readFile5 } from "fs/promises";
+import { join as join5 } from "path";
 
 // packages/templates/src/index.ts
 import { createHash } from "crypto";
 // packages/templates/package.json
 var package_default = {
   name: "@factory/templates",
-  version: "0.2.0",
+  version: "0.3.0",
   private: true,
   type: "module",
   main: "src/index.ts",
@@ -2579,9 +2716,9 @@ ${text}`;
 }
 
 // packages/cli/src/bundle.ts
-var SOURCE_ROOT = join4(import.meta.dir, "..", "..", "..");
+var SOURCE_ROOT = join5(import.meta.dir, "..", "..", "..");
 var ENTRY = "packages/cli/src/installed.ts";
-var CONTRACT = join4(SOURCE_ROOT, "docs", "contract", "v1.md");
+var CONTRACT = join5(SOURCE_ROOT, "docs", "contract", "v1.md");
 var BAKED_DIR = "managed";
 var BAKED_CLI = "cli.ts";
 var BAKED_CONTRACT = "CONTRACT.md";
@@ -2608,13 +2745,13 @@ function installedCli() {
   return cliCache;
 }
 async function installedContract() {
-  return stampContract(await readFile4(CONTRACT, "utf8"));
+  return stampContract(await readFile5(CONTRACT, "utf8"));
 }
 var SOURCE_RELEASE = { cli: installedCli, contract: installedContract };
 function bakedRelease(bundleRoot) {
   const read = (name) => async () => {
     try {
-      return await readFile4(join4(bundleRoot, BAKED_DIR, name), "utf8");
+      return await readFile5(join5(bundleRoot, BAKED_DIR, name), "utf8");
     } catch (e) {
       throw new Error(`bundle: ${BAKED_DIR}/${name}: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -2628,13 +2765,15 @@ async function buildRelease(config, from = SOURCE_RELEASE) {
 }
 
 // packages/andon-service/src/entry.ts
-import { join as join7 } from "path";
+import { hostname as hostname2 } from "os";
+import { join as join8 } from "path";
 
 // packages/andon-service/src/index.ts
 import { createHash as createHash2 } from "crypto";
 import { watch } from "fs";
-import { lstat as lstat2, mkdir as mkdir5, readFile as readFile6, readdir as readdir3, realpath, stat as stat3 } from "fs/promises";
-import { basename as basename2, dirname as dirname3, join as join6, resolve as resolve2, sep } from "path";
+import { lstat as lstat2, mkdir as mkdir6, readFile as readFile7, readdir as readdir3, realpath, stat as stat3 } from "fs/promises";
+import { hostname } from "os";
+import { basename as basename3, dirname as dirname4, join as join7, resolve as resolve2, sep } from "path";
 
 // packages/andon-service/src/archive.ts
 var ARCHIVE_REF = "refs/heads/factory/archive";
@@ -2665,7 +2804,7 @@ var TOP_MD = /^(feature|spec|build|decision|rework-\d+|conflict-\d+)\.md$/;
 var ROUND_MD = /^round-\d+\/[^/]+\.md$/;
 var REGULAR = /^100(644|755)$/;
 var decoder = new TextDecoder("utf-8", { ignoreBOM: true });
-var isRecord5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord6 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var message = (e) => (e instanceof Error ? e.message : String(e)).split(`
 `)[0] ?? "";
 var wanted = (rel) => rel === "events.jsonl" || rel === "job.json" || TOP_MD.test(rel) || ROUND_MD.test(rel);
@@ -2750,7 +2889,7 @@ function snapshot(id, files) {
   const log = files.get("events.jsonl");
   if (log !== undefined) {
     const snap = JSON.parse(JSON.stringify(project2(parseLog(log))));
-    if (!isRecord5(snap))
+    if (!isRecord6(snap))
       throw new Error("projection is not an object");
     if (snap.id !== id)
       throw new Error(`events.jsonl claims ${JSON.stringify(snap.id)}`);
@@ -2760,7 +2899,7 @@ function snapshot(id, files) {
   if (legacy === undefined)
     throw new Error("no events.jsonl and no job.json");
   const job = JSON.parse(legacy);
-  if (!isRecord5(job))
+  if (!isRecord6(job))
     throw new Error("job.json is not a JSON object");
   return job;
 }
@@ -2859,14 +2998,14 @@ function epicJob(job, slug) {
 function projectArchivedEpic(epic, jobs) {
   const mine = jobs.map((j) => epicJob(j, epic.slug)).filter((j) => j !== null).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const snap = JSON.parse(JSON.stringify(projectEpic(epic.log, epic.members, mine, epic.planError)));
-  if (!isRecord5(snap))
+  if (!isRecord6(snap))
     throw new Error("projection is not an object");
   return snap;
 }
 
 // packages/andon-service/src/release.ts
-import { readFile as readFile5 } from "fs/promises";
-import { join as join5 } from "path";
+import { readFile as readFile6 } from "fs/promises";
+import { join as join6 } from "path";
 var SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 var JOB_ID3 = /^\d{3}-[a-z0-9-]+$/;
 var isSemver = (v) => SEMVER.test(v);
@@ -2891,7 +3030,7 @@ function releaseState(installed, running) {
 }
 async function readInstalled(factory) {
   try {
-    return parseManifest(JSON.parse(await readFile5(join5(factory, "managed.json"), "utf8"))).version;
+    return parseManifest(JSON.parse(await readFile6(join6(factory, "managed.json"), "utf8"))).version;
   } catch {
     return null;
   }
@@ -2902,7 +3041,7 @@ async function readTemplatesVersion(cloneRoot, versionFile = SOURCE_VERSION_FILE
   if (cloneRoot === undefined)
     return null;
   try {
-    const pkg = JSON.parse(await readFile5(join5(cloneRoot, versionFile), "utf8"));
+    const pkg = JSON.parse(await readFile6(join6(cloneRoot, versionFile), "utf8"));
     if (typeof pkg !== "object" || pkg === null || Array.isArray(pkg) || !("version" in pkg))
       return null;
     return typeof pkg.version === "string" ? pkg.version : null;
@@ -2972,7 +3111,7 @@ async function readChangelog(cloneRoot) {
   if (cloneRoot === undefined)
     return [];
   try {
-    return parseChangelog(await readFile5(join5(cloneRoot, "CHANGELOG.md"), "utf8"));
+    return parseChangelog(await readFile6(join6(cloneRoot, "CHANGELOG.md"), "utf8"));
   } catch {
     return [];
   }
@@ -2980,6 +3119,115 @@ async function readChangelog(cloneRoot) {
 async function readRelease(cloneRoot, running, versionFile = SOURCE_VERSION_FILE) {
   const [onDisk, changelog] = await Promise.all([readTemplatesVersion(cloneRoot, versionFile), readChangelog(cloneRoot)]);
   return { running, onDisk, changelog };
+}
+
+// packages/andon-service/src/backlog.ts
+var isBacklogSlug = (slug) => SLUG_PATTERN.test(slug);
+var OPEN = "- [ ] ";
+var SEP = " \u2014 ";
+var POINTER = /^(brief|epic): factory\/(briefs|epics)\/([^/]*)\.md$/;
+function pointer(part) {
+  const m = POINTER.exec(part.trim());
+  if (m === null)
+    return null;
+  const [, key, dir, slug = ""] = m;
+  if (!isBacklogSlug(slug))
+    return null;
+  if (key === "brief" && dir === "briefs")
+    return { kind: "brief", slug };
+  if (key === "epic" && dir === "epics")
+    return { kind: "epic", slug };
+  return null;
+}
+function parseBacklogLines(text) {
+  const out = [];
+  for (const raw of text.split(`
+`)) {
+    const line = raw.trimEnd();
+    if (!line.startsWith(OPEN))
+      continue;
+    const body = line.slice(OPEN.length).trim();
+    const parts = body.split(SEP);
+    const [title = "", ...rest] = parts;
+    if (rest.length === 0) {
+      out.push({ kind: "text", slug: null, title: body, done: null });
+      continue;
+    }
+    const last = rest[rest.length - 1] ?? "";
+    const ptr = pointer(last);
+    if (ptr === null) {
+      out.push({ kind: "text", slug: null, title: title.trim(), done: rest.join(SEP).trim() });
+      continue;
+    }
+    const done = rest.slice(0, -1).join(SEP).trim();
+    out.push({ kind: ptr.kind, slug: ptr.slug, title: title.trim(), done: done === "" ? null : done });
+  }
+  return out;
+}
+function docMeta(slug, text) {
+  let title = slug;
+  const abandoned = [];
+  let titled = false;
+  for (const raw of text.split(`
+`)) {
+    const line = raw.trimEnd();
+    if (!titled && line.startsWith("# ")) {
+      const t = line.slice(2).trim();
+      if (t !== "")
+        title = t;
+      titled = true;
+    }
+    if (line.startsWith("- Abandoned: "))
+      abandoned.push(line.slice("- Abandoned: ".length).trim());
+  }
+  let status = null;
+  try {
+    status = statusLine(text);
+  } catch {
+    status = null;
+  }
+  let members = 0;
+  try {
+    members = parsePlan(text).members.length;
+  } catch {
+    members = 0;
+  }
+  return { title, status, abandoned, members };
+}
+var bySlug = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+function buildBacklog(input) {
+  const lines = input.backlog === null ? [] : parseBacklogLines(input.backlog);
+  const pointed = { brief: new Set, epic: new Set };
+  const queued = lines.map((l) => {
+    if (l.kind === "text" || l.slug === null)
+      return { ...l, status: null, members: null, abandoned: [] };
+    if (l.kind === "brief")
+      pointed.brief.add(l.slug);
+    else
+      pointed.epic.add(l.slug);
+    const text = (l.kind === "brief" ? input.briefs : input.plans).get(l.slug);
+    const meta = text === undefined ? null : docMeta(l.slug, text);
+    return {
+      ...l,
+      status: meta?.status ?? null,
+      members: l.kind === "epic" ? meta?.members ?? 0 : null,
+      abandoned: meta?.abandoned ?? []
+    };
+  });
+  const exploring = [];
+  const drafts = (docs, kind, skip) => {
+    for (const slug of [...docs.keys()].sort(bySlug)) {
+      if (!isBacklogSlug(slug) || skip.has(slug))
+        continue;
+      const meta = docMeta(slug, docs.get(slug) ?? "");
+      if (meta.status !== "draft")
+        continue;
+      exploring.push({ kind, slug, title: meta.title, done: null, status: meta.status, members: kind === "epic" ? meta.members : null, abandoned: meta.abandoned });
+    }
+  };
+  drafts(input.briefs, "brief", pointed.brief);
+  drafts(input.plans, "epic", pointed.epic);
+  return { queued, exploring };
 }
 
 // packages/andon-service/src/settled.ts
@@ -3041,48 +3289,483 @@ function nextSettle(jobs, epics, hours, now) {
   return next;
 }
 
+// packages/andon-service/src/peers.ts
+var FIRST_BACKOFF_MS = 3000;
+var MAX_BACKOFF_MS = 60000;
+var PEER_TIMEOUT_MS = 1e4;
+var MAX_FRAME = 32 * 2 ** 20;
+var backoff = (n) => Math.min(FIRST_BACKOFF_MS * 2 ** Math.min(n, 30), MAX_BACKOFF_MS);
+var PID = /^[0-9a-f]{12}$/;
+var isPid = (s) => PID.test(s);
+var UPGRADE = "run factory upgrade and factory service restart on that machine";
+var isRecord7 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var message2 = (e) => (e instanceof Error ? e.message : String(e)).split(`
+`)[0] ?? "";
+
+class PeerFailure extends Error {
+  state;
+  constructor(state, reason) {
+    super(reason);
+    this.state = state;
+  }
+}
+function parseBlock(block) {
+  let event = "message";
+  const data = [];
+  for (const line of block.split(`
+`)) {
+    if (line === "" || line.startsWith(":"))
+      continue;
+    const colon = line.indexOf(":");
+    const key = colon === -1 ? line : line.slice(0, colon);
+    const value = colon === -1 ? "" : line.slice(colon + 1).replace(/^ /, "");
+    if (key === "event")
+      event = value;
+    else if (key === "data")
+      data.push(value);
+  }
+  return data.length > 0 ? { event, data: data.join(`
+`) } : null;
+}
+function sseReader() {
+  let buf = "";
+  let scanned = 0;
+  let cr = false;
+  return {
+    push(chunk) {
+      let t = cr ? `\r${chunk}` : chunk;
+      cr = t.endsWith("\r");
+      if (cr)
+        t = t.slice(0, -1);
+      buf += t.replace(/\r\n?/g, `
+`);
+      const frames = [];
+      let i = buf.indexOf(`
+
+`, Math.max(0, scanned - 1));
+      while (i !== -1) {
+        const f = parseBlock(buf.slice(0, i));
+        if (f !== null)
+          frames.push(f);
+        buf = buf.slice(i + 2);
+        i = buf.indexOf(`
+
+`);
+      }
+      scanned = buf.length;
+      return frames;
+    },
+    pending: () => buf.length
+  };
+}
+var NO_STORE = { "cache-control": "no-store" };
+var FORMS = ["plain", "narrow"];
+function createFollower(opts) {
+  const { url, transport, timers, hooks } = opts;
+  const now = opts.now ?? (() => new Date);
+  const label = peerLabel(url);
+  let learned = null;
+  let state = "connecting";
+  let since = now().toISOString();
+  let reason = null;
+  let release = null;
+  let clashedBy = null;
+  let stopped = false;
+  let generation = 0;
+  let attempts = 0;
+  let retry = null;
+  let ctl = null;
+  let list = [];
+  let listText = "[]";
+  const boards = new Map;
+  const name = () => learned ?? label;
+  const merged = () => state !== "error" && learned !== null;
+  function set(next, why) {
+    if (next === state && why === reason)
+      return;
+    if (next !== state)
+      since = now().toISOString();
+    state = next;
+    reason = why;
+    hooks.changed();
+  }
+  function dropProjects() {
+    const had = list.length > 0;
+    list = [];
+    listText = "[]";
+    boards.clear();
+    if (had)
+      hooks.projects();
+  }
+  function abort() {
+    generation++;
+    ctl?.abort();
+    ctl = null;
+  }
+  function schedule() {
+    if (stopped || clashedBy !== null || retry !== null)
+      return;
+    const ms = backoff(attempts);
+    attempts++;
+    retry = timers.set(() => {
+      retry = null;
+      attempt();
+    }, ms);
+  }
+  function fail(gen, e) {
+    if (gen !== generation || stopped)
+      return;
+    abort();
+    const f = e instanceof PeerFailure ? e : new PeerFailure("down", message2(e));
+    if (f.state === "error")
+      dropProjects();
+    set(f.state, f.message);
+    schedule();
+  }
+  async function request(path, signal, kind) {
+    const stream = kind === "stream";
+    const limit = new AbortController;
+    const timer = setTimeout(() => limit.abort(new Error(`GET ${path}: no answer within ${PEER_TIMEOUT_MS / 1000} s`)), PEER_TIMEOUT_MS);
+    let res;
+    try {
+      res = await transport(`${url}${path}`, { redirect: "manual", signal: AbortSignal.any([signal, limit.signal]), headers: { accept: stream ? "text/event-stream" : "application/json" } });
+    } catch (e) {
+      clearTimeout(timer);
+      throw limit.signal.aborted && !signal.aborted ? new PeerFailure("down", message2(limit.signal.reason)) : e;
+    }
+    if (stream)
+      clearTimeout(timer);
+    else
+      timer.unref();
+    if (res.status >= 300 && res.status < 400)
+      throw new PeerFailure("error", `GET ${path} answered with a redirect (HTTP ${res.status}), which is never followed`);
+    if (res.status >= 500 && kind !== "read")
+      throw new PeerFailure("down", `GET ${path}: HTTP ${res.status}`);
+    return res;
+  }
+  async function body(res, path) {
+    if (res.body === null)
+      return new Uint8Array;
+    const reader = res.body.getReader();
+    const parts = [];
+    let size = 0;
+    let chunk = await reader.read();
+    while (!chunk.done) {
+      size += chunk.value.byteLength;
+      if (size > MAX_FRAME) {
+        reader.cancel().catch(() => {
+          return;
+        });
+        throw new PeerFailure("error", `GET ${path}: an answer larger than ${MAX_FRAME / 2 ** 20} MiB`);
+      }
+      parts.push(chunk.value);
+      chunk = await reader.read();
+    }
+    const out = new Uint8Array(size);
+    let at = 0;
+    for (const p of parts) {
+      out.set(p, at);
+      at += p.byteLength;
+    }
+    return out;
+  }
+  const textOf = async (res, path) => new TextDecoder().decode(await body(res, path));
+  async function getJson(path, signal) {
+    const res = await request(path, signal, "probe");
+    if (res.status === 404 && path === "/machines")
+      throw new PeerFailure("error", `its Andon service is from before peers (no GET /machines); ${UPGRADE}`);
+    if (!res.ok)
+      throw new PeerFailure("error", `not an Andon service (GET ${path}: HTTP ${res.status})`);
+    try {
+      const parsed = JSON.parse(await textOf(res, path));
+      return parsed;
+    } catch (e) {
+      if (signal.aborted || e instanceof PeerFailure)
+        throw e;
+      throw new PeerFailure("error", `not an Andon service (GET ${path} is not JSON)`);
+    }
+  }
+  function readProjects(data) {
+    if (!isRecord7(data) || !Array.isArray(data.projects))
+      throw new PeerFailure("error", "not an Andon service (its projects event is not { projects: [...] })");
+    const out = [];
+    for (const p of data.projects) {
+      if (!isRecord7(p) || typeof p.id !== "string")
+        throw new PeerFailure("error", "not an Andon service (a project with no id)");
+      if (p.id.includes("@") || typeof p.machine !== "string")
+        throw new PeerFailure("error", `its Andon service is from before peers (its projects ${p.id.includes("@") ? "are not scope=local" : "carry no machine"}); ${UPGRADE}`);
+      if (!isPid(p.id))
+        throw new PeerFailure("error", `not an Andon service (project id ${JSON.stringify(p.id)})`);
+      out.push(p);
+    }
+    return out;
+  }
+  function rewrite(data) {
+    if (!isRecord7(data) || typeof data.project !== "string")
+      return null;
+    const pid = data.project;
+    if (!list.some((p) => p.id === pid))
+      return null;
+    return { pid, data: { ...data, project: `${pid}@${name()}` } };
+  }
+  function keepBoard(pid, form, body) {
+    const rest = { ...body };
+    delete rest.project;
+    const b = boards.get(pid) ?? {};
+    b[form] = rest;
+    boards.set(pid, b);
+  }
+  function onFrame(gen, form, frame, ready) {
+    if (gen !== generation || stopped)
+      return;
+    let data;
+    try {
+      data = JSON.parse(frame.data);
+    } catch {
+      return;
+    }
+    if (frame.event === "projects") {
+      const next = readProjects(data);
+      const text = JSON.stringify(next);
+      if (text !== listText) {
+        list = next;
+        listText = text;
+        for (const pid of [...boards.keys()])
+          if (!next.some((p) => p.id === pid))
+            boards.delete(pid);
+        if (state === "live")
+          hooks.projects();
+      }
+      ready();
+      return;
+    }
+    if (frame.event !== "board" && frame.event !== "backlog" && frame.event !== "error")
+      return;
+    const r = rewrite(data);
+    if (r === null)
+      return;
+    if (frame.event === "board")
+      keepBoard(r.pid, form, r.data);
+    if (state === "live")
+      hooks.event(form, frame.event, r.data);
+  }
+  async function open(gen, path, form, signal) {
+    const res = await request(path, signal, "stream");
+    if (res.status !== 200 || !(res.headers.get("content-type") ?? "").startsWith("text/event-stream") || res.body === null) {
+      throw new PeerFailure("error", `not an Andon service (GET ${path}: HTTP ${res.status})`);
+    }
+    const reader = res.body.getReader();
+    let first = () => {
+      return;
+    };
+    let firstFail = () => {
+      return;
+    };
+    const ready = new Promise((resolve, reject) => {
+      first = resolve;
+      firstFail = reject;
+    });
+    const decoder = new TextDecoder;
+    const sse = sseReader();
+    (async () => {
+      try {
+        let chunk = await reader.read();
+        while (!chunk.done) {
+          const frames = sse.push(decoder.decode(chunk.value, { stream: true }));
+          if (sse.pending() > MAX_FRAME)
+            throw new PeerFailure("error", `not an Andon service (an event larger than ${MAX_FRAME / 2 ** 20} MiB)`);
+          for (const f of frames)
+            onFrame(gen, form, f, first);
+          chunk = await reader.read();
+        }
+        throw new PeerFailure("down", "its event stream closed");
+      } catch (e) {
+        firstFail(e);
+        fail(gen, e);
+      } finally {
+        reader.cancel().catch(() => {
+          return;
+        });
+      }
+    })();
+    const timer = setTimeout(() => firstFail(new PeerFailure("down", `GET ${path}: no projects event within ${PEER_TIMEOUT_MS / 1000} s`)), PEER_TIMEOUT_MS);
+    try {
+      await ready;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  async function freshBoards(gen, signal) {
+    await Promise.all(list.flatMap((p) => FORMS.map(async (form) => {
+      const pid = String(p.id);
+      try {
+        const path = `/projects/${pid}/board${form === "narrow" ? "?settled=summary" : ""}`;
+        const res = await request(path, signal, "read");
+        if (!res.ok)
+          return;
+        const board = JSON.parse(await textOf(res, path));
+        if (gen !== generation || stopped || !isRecord7(board) || !list.some((q) => q.id === pid))
+          return;
+        const data = { project: `${pid}@${name()}`, ...board };
+        keepBoard(pid, form, data);
+        if (state === "live")
+          hooks.event(form, "board", data);
+      } catch {}
+    })));
+  }
+  async function attempt() {
+    if (stopped || clashedBy !== null)
+      return;
+    abort();
+    const gen = generation;
+    const c = new AbortController;
+    ctl = c;
+    try {
+      const machines = await getJson("/machines", c.signal);
+      const first = isRecord7(machines) && Array.isArray(machines.machines) ? machines.machines[0] : undefined;
+      if (!isRecord7(first) || typeof first.name !== "string" || !isMachineName(first.name))
+        throw new PeerFailure("error", "not an Andon service (GET /machines is not { machines: [{ name, \u2026 }] })");
+      if (gen !== generation || stopped)
+        return;
+      const reported = first.name;
+      const clash = hooks.claim(self, reported);
+      if (clash !== null) {
+        clashNow(clash);
+        return;
+      }
+      if (learned !== null && learned !== reported)
+        dropProjects();
+      const rel = typeof first.release === "string" ? first.release : null;
+      const renamed = learned !== reported || rel !== release;
+      learned = reported;
+      release = rel;
+      if (state === "down")
+        set("connecting", null);
+      else if (state === "connecting" && (renamed || reason !== null)) {
+        reason = null;
+        hooks.changed();
+      } else if (renamed)
+        hooks.changed();
+      await Promise.all([open(gen, "/events?scope=local", "plain", c.signal), open(gen, "/events?scope=local&settled=summary", "narrow", c.signal)]);
+      if (gen !== generation || stopped)
+        return;
+      attempts = 0;
+      set("live", null);
+      hooks.projects();
+      await freshBoards(gen, c.signal);
+    } catch (e) {
+      fail(gen, e);
+    }
+  }
+  function clashNow(why) {
+    abort();
+    if (retry !== null)
+      timers.clear(retry);
+    retry = null;
+    clashedBy = why;
+    dropProjects();
+    set("error", why);
+  }
+  const self = {
+    url,
+    name,
+    entry: () => ({ name: name(), url, state, since, reason, release }),
+    merged,
+    projects: () => merged() ? list.map((p) => ({ ...p, id: `${String(p.id)}@${name()}`, machine: name() })) : [],
+    board: (pid, form) => boards.get(pid)?.[form],
+    async forward(path, search, form) {
+      const who = name();
+      if (state !== "live" || ctl === null)
+        return new Response(`${who} is ${state}${reason === null ? "" : `: ${reason}`}`, { status: 502, headers: NO_STORE });
+      try {
+        const res = await request(`${path}${search}`, ctl.signal, "read");
+        const read = await body(res, path);
+        const json = (res.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json");
+        const headers = { ...NO_STORE, "content-type": json ? "application/json;charset=utf-8" : "text/plain;charset=utf-8" };
+        if (res.status === 200 && form !== undefined) {
+          try {
+            const parsed = JSON.parse(new TextDecoder().decode(read));
+            const pid = path.split("/")[2] ?? "";
+            if (isRecord7(parsed))
+              keepBoard(pid, form, parsed);
+          } catch {}
+        }
+        return new Response(read, { status: res.status, headers });
+      } catch (e) {
+        return new Response(`${who}: ${message2(e)}`, { status: 502, headers: NO_STORE });
+      }
+    },
+    clash: clashNow,
+    clashed: () => clashedBy !== null,
+    start() {
+      attempt();
+    },
+    restart() {
+      if (stopped)
+        return;
+      clashedBy = null;
+      attempts = 0;
+      if (retry !== null)
+        timers.clear(retry);
+      retry = null;
+      attempt();
+    },
+    stop() {
+      stopped = true;
+      abort();
+      if (retry !== null)
+        timers.clear(retry);
+      retry = null;
+    }
+  };
+  return self;
+}
+
 // packages/andon-service/src/index.ts
 var HOSTNAME = "127.0.0.1";
+var DNS_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
+var DNS_NAME = new RegExp(`^(?=.{1,253}$)${DNS_LABEL}(?:\\.${DNS_LABEL})+$`);
+var isTailnetHost = (name) => DNS_NAME.test(name);
 var JOB_ID4 = /^\d{3}-[a-z0-9-]+$/;
 var BRIEF = /^factory\/briefs\/[\w.-]+\.md$/;
 var projectId = (root) => createHash2("sha256").update(root).digest("hex").slice(0, 12);
-var message2 = (e) => (e instanceof Error ? e.message : String(e)).split(`
+var message3 = (e) => (e instanceof Error ? e.message : String(e)).split(`
 `)[0] ?? "";
-var isRecord6 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord8 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 async function entries(dir) {
   return readdir3(dir, { withFileTypes: true }).catch(() => []);
 }
 async function readJob(p, id) {
   try {
-    const job = JSON.parse(await readFile6(join6(p.factory, "jobs", id, "job.json"), "utf8"));
-    if (isRecord6(job))
+    const job = JSON.parse(await readFile7(join7(p.factory, "jobs", id, "job.json"), "utf8"));
+    if (isRecord8(job))
       p.lastGood.set(id, { ...job });
   } catch {}
   return p.lastGood.get(id);
 }
 async function readEpic(p, slug) {
   try {
-    const epic = JSON.parse(await readFile6(join6(p.factory, "jobs", "epics", slug, "epic.json"), "utf8"));
-    if (isRecord6(epic))
+    const epic = JSON.parse(await readFile7(join7(p.factory, "jobs", "epics", slug, "epic.json"), "utf8"));
+    if (isRecord8(epic))
       p.lastGoodEpic.set(slug, { ...epic });
   } catch {}
   return p.lastGoodEpic.get(slug);
 }
 async function readConfig(p) {
-  return parseConfig(JSON.parse(await readFile6(join6(p.factory, "config.json"), "utf8")));
+  return parseConfig(JSON.parse(await readFile7(join7(p.factory, "config.json"), "utf8")));
 }
 async function resolveName(p) {
   try {
-    return (await readConfig(p)).name ?? basename2(p.info.root);
+    return (await readConfig(p)).name ?? basename3(p.info.root);
   } catch {
-    return basename2(p.info.root);
+    return basename3(p.info.root);
   }
 }
 var bySlugOrId = (a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 async function board(p) {
   const config = await readConfig(p);
   await p.archiveTask;
-  const ids = (await entries(join6(p.factory, "jobs"))).filter((d) => d.isDirectory() && JOB_ID4.test(d.name)).map((d) => d.name);
+  const ids = (await entries(join7(p.factory, "jobs"))).filter((d) => d.isDirectory() && JOB_ID4.test(d.name)).map((d) => d.name);
   const local = new Set(ids);
   const read = await Promise.all(ids.map(async (id) => ({ id, job: await readJob(p, id) })));
   for (const [id, a] of p.archive.jobs)
@@ -3090,7 +3773,7 @@ async function board(p) {
       read.push({ id, job: { ...a.job } });
   read.sort(bySlugOrId);
   const jobs = read.map((r) => r.job).filter((j) => j !== undefined);
-  const slugs = (await entries(join6(p.factory, "jobs", "epics"))).filter((d) => d.isDirectory() && isEpicSlug(d.name)).map((d) => d.name);
+  const slugs = (await entries(join7(p.factory, "jobs", "epics"))).filter((d) => d.isDirectory() && isEpicSlug(d.name)).map((d) => d.name);
   const localEpics = new Set(slugs);
   const epicRead = await Promise.all(slugs.map(async (id) => ({ id, epic: await readEpic(p, id) })));
   for (const [slug, a] of p.archive.epics) {
@@ -3102,7 +3785,7 @@ async function board(p) {
       const key = `${p.archive.tip ?? ""} ${slug}`;
       if (!p.epicFailures.has(key)) {
         p.epicFailures.add(key);
-        p.log(`andon: ${p.info.root}: factory/archive epics/${slug}: ${message2(e)}; left out`);
+        p.log(`andon: ${p.info.root}: factory/archive epics/${slug}: ${message3(e)}; left out`);
       }
     }
   }
@@ -3117,26 +3800,48 @@ function plain(b, now) {
   const { unsettledEpics } = partition([], b.epics, b.config.dashboard.settleAfterHours, now);
   return { jobs: b.jobs, config: b.config, epics: unsettledEpics };
 }
-function narrow(b, now) {
+function narrow(b, now, backlog) {
   const { unsettled, settled, unsettledEpics, settledEpics } = partition(b.jobs, b.epics, b.config.dashboard.settleAfterHours, now);
-  return { jobs: unsettled, config: b.config, settled: summarize(settled, settledEpics), epics: unsettledEpics };
+  return { jobs: unsettled, config: b.config, settled: summarize(settled, settledEpics), epics: unsettledEpics, backlog };
 }
 function settledOf(b, now) {
   const { settled, settledEpics } = partition(b.jobs, b.epics, b.config.dashboard.settleAfterHours, now);
   return { jobs: settled, epics: settledEpics };
 }
 async function readInside(p, rel) {
-  const path = join6(p.factory, rel);
+  const path = join7(p.factory, rel);
   try {
     if (!(await lstat2(path)).isFile())
       return null;
     const [root, real] = await Promise.all([realpath(p.factory), realpath(path)]);
     if (!real.startsWith(root + sep))
       return null;
-    return await readFile6(real, "utf8");
+    return await readFile7(real, "utf8");
   } catch {
     return null;
   }
+}
+async function readDocs(p, dir) {
+  const out = new Map;
+  for (const d of await entries(join7(p.factory, dir))) {
+    if (!d.isFile() || !d.name.endsWith(".md"))
+      continue;
+    const slug = d.name.slice(0, -".md".length);
+    if (!isBacklogSlug(slug))
+      continue;
+    const text = await readInside(p, `${dir}/${slug}.md`);
+    if (text !== null)
+      out.set(slug, text);
+  }
+  return out;
+}
+async function backlogOf(p) {
+  const [backlog, briefs, plans] = await Promise.all([readInside(p, "backlog.md"), readDocs(p, "briefs"), readDocs(p, "epics")]);
+  return buildBacklog({ backlog, briefs, plans });
+}
+async function backlogCounts(p) {
+  const b = await backlogOf(p);
+  return { queued: b.queued.length, exploring: b.exploring.length };
 }
 async function epicDocs(p, slug) {
   const path = `epics/${slug}.md`;
@@ -3177,12 +3882,12 @@ async function briefPath2(p, job) {
   if (typeof brief !== "string" || !BRIEF.test(brief))
     return null;
   const rel = brief.replace(/^factory\//, "");
-  const info = await lstat2(join6(p.factory, rel)).catch(() => null);
+  const info = await lstat2(join7(p.factory, rel)).catch(() => null);
   return info?.isFile() === true ? rel : null;
 }
 async function docs(p, id) {
   const { reviewers } = await readConfig(p);
-  const dir = join6(p.factory, "jobs", id);
+  const dir = join7(p.factory, "jobs", id);
   const info = await lstat2(dir).catch(() => null);
   if (info === null || !info.isDirectory()) {
     await p.archiveTask;
@@ -3203,7 +3908,7 @@ async function docs(p, id) {
     const files = readingOrder(top, rounds, reviewers).map((rel) => ({ path: `jobs/${id}/${rel}`, text: archived.files.get(rel) ?? "" }));
     const brief = await briefPath2(p, archived.job);
     if (brief !== null)
-      files.unshift({ path: brief, text: await readFile6(join6(p.factory, brief), "utf8") });
+      files.unshift({ path: brief, text: await readFile7(join7(p.factory, brief), "utf8") });
     return { files };
   }
   const top = (await entries(dir)).filter((d) => d.isFile()).map((d) => d.name);
@@ -3211,18 +3916,18 @@ async function docs(p, id) {
   for (const d of await entries(dir)) {
     if (!d.isDirectory() || !/^round-\d+$/.test(d.name))
       continue;
-    rounds.set(d.name, (await entries(join6(dir, d.name))).filter((f) => f.isFile()).map((f) => f.name));
+    rounds.set(d.name, (await entries(join7(dir, d.name))).filter((f) => f.isFile()).map((f) => f.name));
   }
   const paths = readingOrder(top, rounds, reviewers).map((rel) => `jobs/${id}/${rel}`);
   const brief = await briefPath2(p, await readJob(p, id));
   if (brief !== null)
     paths.unshift(brief);
-  const files = await Promise.all(paths.map(async (path) => ({ path, text: await readFile6(join6(p.factory, path), "utf8") })));
+  const files = await Promise.all(paths.map(async (path) => ({ path, text: await readFile7(join7(p.factory, path), "utf8") })));
   return { files };
 }
-var NO_STORE = { "cache-control": "no-store" };
-var json = (body) => Response.json(body, { headers: NO_STORE });
-var text = (body, status) => new Response(body, { status, headers: NO_STORE });
+var NO_STORE2 = { "cache-control": "no-store" };
+var json = (body) => Response.json(body, { headers: NO_STORE2 });
+var text = (body, status) => new Response(body, { status, headers: NO_STORE2 });
 var notFound = () => text("Not found", 404);
 var UI_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 async function uiFile(uiDir, pathname) {
@@ -3249,7 +3954,7 @@ async function uiFile(uiDir, pathname) {
   if ((await stat3(real).catch(() => null))?.isFile() !== true)
     return null;
   const file = Bun.file(real);
-  return new Response(file, { headers: { ...NO_STORE, "content-type": file.type, "content-security-policy": UI_CSP } });
+  return new Response(file, { headers: { ...NO_STORE2, "content-type": file.type, "content-security-policy": UI_CSP } });
 }
 var encoder = new TextEncoder;
 var frame = (event, data) => encoder.encode(`event: ${event}
@@ -3257,6 +3962,13 @@ data: ${JSON.stringify(data)}
 
 `);
 async function startService(opts) {
+  const tailnetHost = opts.tailnetHost;
+  if (tailnetHost !== undefined && !isTailnetHost(tailnetHost))
+    throw new Error(`andon: the tailnet host must be a lowercase DNS name, got ${JSON.stringify(tailnetHost)}`);
+  const machine = opts.machine ?? machineName(tailnetHost ?? hostname());
+  if (!isMachineName(machine))
+    throw new Error(`andon: the machine name must be lowercase letters, digits, and inner '-', got ${JSON.stringify(machine)}`);
+  const startedAt = new Date().toISOString();
   const debounceMs = opts.debounceMs ?? 50;
   const log = opts.log ?? ((line) => console.error(line));
   const git = opts.git ?? spawnGit;
@@ -3271,13 +3983,13 @@ async function startService(opts) {
     return { installed, state: releaseState(installed, running) };
   };
   let announcing = Promise.resolve();
-  function announce(force) {
+  function announce(force, peers = false) {
     const run = announcing.then(async () => {
       const open = [...projects.values()];
       const [names, releases] = await Promise.all([Promise.all(open.map(resolveName)), Promise.all(open.map(resolveRelease))]);
       let changed = force;
       const current = open.filter((p, i) => {
-        const name = names[i] ?? basename2(p.info.root);
+        const name = names[i] ?? basename3(p.info.root);
         if (name !== p.info.name) {
           p.info.name = name;
           changed = true;
@@ -3291,7 +4003,9 @@ async function startService(opts) {
       });
       const list = current.map((p) => ({ ...p.info, release: { ...p.info.release } }));
       if (changed)
-        broadcast("projects", { projects: list });
+        broadcast("projects", { projects: list }, undefined, "local");
+      if (changed || peers)
+        broadcast("projects", { projects: merged(list) }, undefined, "merged");
       return list;
     });
     announcing = run.catch(() => {
@@ -3299,7 +4013,7 @@ async function startService(opts) {
     });
     return run;
   }
-  const hasForm = (form) => [...clients.values()].includes(form);
+  const hasForm = (form) => [...clients.values()].some((c) => c.form === form);
   function removeClient(c) {
     if (!clients.delete(c))
       return;
@@ -3307,10 +4021,12 @@ async function startService(opts) {
       for (const p of projects.values())
         clearSettle(p);
   }
-  function broadcast(event, data, form) {
+  function broadcast(event, data, form, scope = "every") {
     const bytes = frame(event, data);
-    for (const [c, f] of [...clients]) {
-      if (form !== undefined && f !== form)
+    for (const [c, info] of [...clients]) {
+      if (form !== undefined && info.form !== form)
+        continue;
+      if (scope === "local" && !info.local || scope === "merged" && info.local)
         continue;
       try {
         c.enqueue(bytes);
@@ -3358,7 +4074,7 @@ async function startService(opts) {
         return;
       const now = Date.now();
       if (now >= p.settleDue)
-        broadcast("board", { project: p.info.id, ...narrow(b, now) }, "narrow");
+        broadcast("board", { project: p.info.id, ...narrow(b, now, await backlogCounts(p)) }, "narrow");
       armSettle(p, b);
     } catch {
       clearSettle(p);
@@ -3378,7 +4094,7 @@ async function startService(opts) {
       }
     } catch (e) {
       if (!p.closed)
-        log(`andon: ${p.info.root}: reading factory/archive: ${message2(e)}`);
+        log(`andon: ${p.info.root}: reading factory/archive: ${message3(e)}`);
     }
   }
   function refreshArchive(p) {
@@ -3387,41 +4103,58 @@ async function startService(opts) {
     return p.archiveTask;
   }
   const archiveReady = (p) => p.archiveDirty ? refreshArchive(p) : p.archiveTask;
-  async function emitBoard(p) {
+  async function emitBoard(p, boardChanged, backlogChanged) {
     if (p.closed || clients.size === 0)
+      return;
+    if (backlogChanged)
+      broadcast("backlog", { project: p.info.id });
+    const toPlain = boardChanged && hasForm("plain");
+    const toNarrow = hasForm("narrow");
+    if (!toPlain && !toNarrow)
       return;
     try {
       await archiveReady(p);
       const b = await board(p);
+      const counts = toNarrow ? await backlogCounts(p) : null;
       if (!p.closed) {
         const now = Date.now();
-        if (hasForm("plain"))
+        if (toPlain)
           broadcast("board", { project: p.info.id, ...plain(b, now) }, "plain");
-        if (hasForm("narrow"))
-          broadcast("board", { project: p.info.id, ...narrow(b, now) }, "narrow");
+        if (counts !== null)
+          broadcast("board", { project: p.info.id, ...narrow(b, now, counts) }, "narrow");
         armSettle(p, b);
       }
     } catch (e) {
       clearSettle(p);
-      if (!p.closed)
-        broadcast("error", { project: p.info.id, reason: `config.json: ${message2(e)}` });
+      if (!p.closed && boardChanged)
+        broadcast("error", { project: p.info.id, reason: `config.json: ${message3(e)}` });
     }
     if (!p.closed)
       await announce(false);
   }
-  function schedule(p) {
-    if (p.closed || p.timer !== null)
+  function schedule(p, what = "board") {
+    if (p.closed)
+      return;
+    if (what !== "backlog")
+      p.pendingBoard = true;
+    if (what !== "board")
+      p.pendingBacklog = true;
+    if (p.timer !== null)
       return;
     p.timer = setTimeout(() => {
       p.timer = null;
-      emitBoard(p);
+      const boardChanged = p.pendingBoard;
+      const backlogChanged = p.pendingBacklog;
+      p.pendingBoard = false;
+      p.pendingBacklog = false;
+      emitBoard(p, boardChanged, backlogChanged);
     }, debounceMs);
   }
   function watchJobs(p) {
     if (p.closed || p.jobsWatcher !== null)
       return;
     try {
-      const w = watch(join6(p.factory, "jobs"), { recursive: true }, () => schedule(p));
+      const w = watch(join7(p.factory, "jobs"), { recursive: true }, () => schedule(p));
       w.on("error", () => {
         w.close();
         if (p.jobsWatcher === w)
@@ -3433,9 +4166,17 @@ async function startService(opts) {
   function watchEpics(p) {
     if (p.closed || p.epicsWatcher !== null)
       return;
-    p.epicsWatcher = watchDir(join6(p.factory, "epics"), () => schedule(p), (w) => {
+    p.epicsWatcher = watchDir(join7(p.factory, "epics"), () => schedule(p, "both"), (w) => {
       if (p.epicsWatcher === w)
         p.epicsWatcher = null;
+    });
+  }
+  function watchBriefs(p) {
+    if (p.closed || p.briefsWatcher !== null)
+      return;
+    p.briefsWatcher = watchDir(join7(p.factory, "briefs"), () => schedule(p, "backlog"), (w) => {
+      if (p.briefsWatcher === w)
+        p.briefsWatcher = null;
     });
   }
   function refMoved(p) {
@@ -3458,7 +4199,7 @@ async function startService(opts) {
     if (p.closed)
       return;
     p.refs.factory?.close();
-    p.refs.factory = watchDir(join6(common, "refs", "heads", "factory"), () => refMoved(p), (w) => {
+    p.refs.factory = watchDir(join7(common, "refs", "heads", "factory"), () => refMoved(p), (w) => {
       if (p.refs.factory === w)
         p.refs.factory = null;
     });
@@ -3471,7 +4212,7 @@ async function startService(opts) {
       if (p.refs.common === w)
         p.refs.common = null;
     });
-    p.refs.heads = watchDir(join6(common, "refs", "heads"), (name) => {
+    p.refs.heads = watchDir(join7(common, "refs", "heads"), (name) => {
       if (name !== null && name !== "factory")
         return;
       watchFactoryRefs(p, common);
@@ -3491,14 +4232,17 @@ async function startService(opts) {
   }
   function openProject(root) {
     const p = {
-      info: { id: projectId(root), name: basename2(root), root, release: { installed: null, state: "unknown" } },
-      factory: join6(root, "factory"),
+      info: { id: projectId(root), name: basename3(root), root, release: { installed: null, state: "unknown" }, machine },
+      factory: join7(root, "factory"),
       lastGood: new Map,
       lastGoodEpic: new Map,
       factoryWatcher: null,
       jobsWatcher: null,
       epicsWatcher: null,
+      briefsWatcher: null,
       timer: null,
+      pendingBoard: false,
+      pendingBacklog: false,
       settleTimer: null,
       settleDue: 0,
       closed: false,
@@ -3518,7 +4262,14 @@ async function startService(opts) {
           watchJobs(p);
         if (filename === null || filename === "epics")
           watchEpics(p);
-        schedule(p);
+        if (filename === null || filename === "briefs")
+          watchBriefs(p);
+        if (filename === "backlog.md" || filename === "briefs")
+          schedule(p, "backlog");
+        else if (filename === null || filename === "epics")
+          schedule(p, "both");
+        else
+          schedule(p);
       });
       w.on("error", () => {
         w.close();
@@ -3529,6 +4280,7 @@ async function startService(opts) {
     } catch {}
     watchJobs(p);
     watchEpics(p);
+    watchBriefs(p);
     return p;
   }
   function closeProject(p) {
@@ -3536,9 +4288,11 @@ async function startService(opts) {
     p.factoryWatcher?.close();
     p.jobsWatcher?.close();
     p.epicsWatcher?.close();
+    p.briefsWatcher?.close();
     p.factoryWatcher = null;
     p.jobsWatcher = null;
     p.epicsWatcher = null;
+    p.briefsWatcher = null;
     for (const w of [p.refs.common, p.refs.heads, p.refs.factory])
       w?.close();
     p.refs = { common: null, heads: null, factory: null };
@@ -3554,7 +4308,7 @@ async function startService(opts) {
     try {
       roots = (await readRegistry(opts.registryPath)).projects.map((p) => p.root);
     } catch (e) {
-      log(`andon: ${opts.registryPath}: ${message2(e)}`);
+      log(`andon: ${opts.registryPath}: ${message3(e)}`);
       return;
     }
     if (stopped)
@@ -3597,15 +4351,155 @@ async function startService(opts) {
       reload();
     }, debounceMs);
   }
-  const registryDir = dirname3(opts.registryPath);
-  let registryWatcher = null;
-  try {
-    await mkdir5(registryDir, { recursive: true });
-    registryWatcher = watch(registryDir, () => scheduleRegistry());
-    registryWatcher.on("error", (e) => log(`andon: watching ${registryDir}: ${message2(e)}`));
-  } catch (e) {
-    log(`andon: cannot watch ${registryDir}: ${message2(e)}`);
+  const reconnectTimers = opts.reconnectTimers ?? { set: (fn, ms) => setTimeout(fn, ms), clear: (t) => clearTimeout(t) };
+  const transport = opts.transport ?? ((u, init) => fetch(u, init));
+  let followers = [];
+  const merged = (local) => [...local, ...followers.flatMap((f) => f.projects())];
+  let boundPort = 0;
+  const ownEntry = () => ({
+    name: machine,
+    url: tailnetHost === undefined ? `http://${HOSTNAME}:${boundPort}` : `https://${tailnetHost}:${boundPort}`,
+    state: "live",
+    since: startedAt,
+    reason: null,
+    release: running
+  });
+  const machinesBody = () => ({ machines: [ownEntry(), ...followers.map((f) => f.entry())] });
+  let machinesQueued = false;
+  function machinesChanged() {
+    if (stopped || machinesQueued)
+      return;
+    machinesQueued = true;
+    queueMicrotask(() => {
+      machinesQueued = false;
+      if (!stopped)
+        broadcast("machines", machinesBody(), undefined, "merged");
+    });
   }
+  function claim(f, name) {
+    if (name === machine)
+      return `${f.url} reports this hub's own machine name ${name}`;
+    const i = followers.indexOf(f);
+    for (const [j, g] of followers.entries()) {
+      if (g === f || g.entry().state === "error" || g.name() !== name || !g.merged())
+        continue;
+      if (j < i)
+        return `${f.url} reports the name ${name}, already the name of ${g.url}`;
+      g.clash(`${g.url} reports the name ${name}, already the name of ${f.url}`);
+    }
+    return null;
+  }
+  function follow(url) {
+    return createFollower({
+      url,
+      transport,
+      timers: reconnectTimers,
+      hooks: {
+        changed: machinesChanged,
+        projects: () => {
+          if (!stopped)
+            announce(false, true);
+        },
+        event: (form, event, data) => {
+          if (!stopped)
+            broadcast(event, data, form, "merged");
+        },
+        claim,
+        log
+      }
+    });
+  }
+  async function loadPeers() {
+    if (stopped || opts.peersPath === undefined)
+      return;
+    let urls;
+    try {
+      urls = (await readPeers(opts.peersPath)).peers.map((p) => p.url);
+    } catch (e) {
+      log(`andon: ${opts.peersPath}: ${message3(e)}; keeping the current peers`);
+      return;
+    }
+    if (stopped)
+      return;
+    const before = followers.map((f) => f.url).join(",");
+    if (urls.join(",") === before)
+      return;
+    const known = new Map(followers.map((f) => [f.url, f]));
+    const next = urls.map((u) => known.get(u) ?? follow(u));
+    for (const f of followers)
+      if (!urls.includes(f.url))
+        f.stop();
+    const fresh = next.filter((f) => !known.has(f.url));
+    followers = next;
+    for (const f of next)
+      if (f.clashed())
+        f.restart();
+    for (const f of fresh)
+      f.start();
+    broadcast("machines", machinesBody(), undefined, "merged");
+    await announce(false, true);
+  }
+  let peersLoading = Promise.resolve();
+  let peersTimer = null;
+  const reloadPeers = () => {
+    peersLoading = peersLoading.then(loadPeers);
+    return peersLoading;
+  };
+  function schedulePeers() {
+    if (stopped || opts.peersPath === undefined || peersTimer !== null)
+      return;
+    peersTimer = setTimeout(() => {
+      peersTimer = null;
+      reloadPeers();
+    }, debounceMs);
+  }
+  function target(raw) {
+    const id = raw.replace(/%40/gi, "@");
+    const at = id.indexOf("@");
+    if (at === -1) {
+      const p = projects.get(id);
+      return p === undefined ? null : { kind: "local", p };
+    }
+    const pid = id.slice(0, at);
+    const name = id.slice(at + 1);
+    if (!isPid(pid) || name === "" || name.includes("@"))
+      return null;
+    const f = followers.find((g) => g.entry().state !== "error" && g.name() === name);
+    return f === undefined ? null : { kind: "peer", f, pid };
+  }
+  async function peerBoard(f, pid, search, form) {
+    if (f.entry().state === "live")
+      return f.forward(`/projects/${pid}/board`, search, form);
+    const held = f.board(pid, form);
+    if (held !== undefined)
+      return json(held);
+    return text(`${f.name()} is ${f.entry().state}, and the hub holds no board for ${pid}@${f.name()}`, 502);
+  }
+  const registryDir = dirname4(opts.registryPath);
+  const peersDir = opts.peersPath === undefined ? null : dirname4(opts.peersPath);
+  const homeWatchers = [];
+  function watchHome(dir, on) {
+    try {
+      const w = watch(dir, () => on());
+      w.on("error", (e) => log(`andon: watching ${dir}: ${message3(e)}`));
+      homeWatchers.push(w);
+    } catch (e) {
+      log(`andon: cannot watch ${dir}: ${message3(e)}`);
+    }
+  }
+  const made = async (dir) => mkdir6(dir, { recursive: true }).then(() => true, (e) => {
+    log(`andon: cannot watch ${dir}: ${message3(e)}`);
+    return false;
+  });
+  if (await made(registryDir)) {
+    watchHome(registryDir, () => {
+      scheduleRegistry();
+      if (peersDir === registryDir)
+        schedulePeers();
+    });
+  }
+  if (peersDir !== null && peersDir !== registryDir && await made(peersDir))
+    watchHome(peersDir, schedulePeers);
   await reload();
   let releaseTimer = null;
   const releaseBody = () => readRelease(opts.cloneRoot, running, versionFile);
@@ -3636,16 +4530,18 @@ async function startService(opts) {
   if (opts.cloneRoot !== undefined) {
     const root = resolve2(opts.cloneRoot);
     const versionAt = resolve2(root, versionFile);
-    if (dirname3(versionAt) === root)
-      watchClone(root, ["CHANGELOG.md", basename2(versionAt)]);
+    if (dirname4(versionAt) === root)
+      watchClone(root, ["CHANGELOG.md", basename3(versionAt)]);
     else {
       watchClone(root, ["CHANGELOG.md"]);
-      watchClone(dirname3(versionAt), [basename2(versionAt)]);
+      watchClone(dirname4(versionAt), [basename3(versionAt)]);
     }
   }
-  async function events(req, form) {
-    const list = await announce(false);
+  async function events(req, form, local) {
+    const own = await announce(false);
+    const list = local ? own : merged(own);
     const release = await releaseBody();
+    const machinesNow = local ? { machines: [ownEntry()] } : machinesBody();
     let self = null;
     const drop = () => {
       if (self === null)
@@ -3659,9 +4555,10 @@ async function startService(opts) {
       start(c) {
         self = c;
         const first = form === "narrow" && !hasForm("narrow");
-        clients.set(c, form);
+        clients.set(c, { form, local });
         c.enqueue(frame("projects", { projects: list }));
         c.enqueue(frame("release", release));
+        c.enqueue(frame("machines", machinesNow));
         if (first)
           for (const p of projects.values())
             armFromBuild(p);
@@ -3674,14 +4571,16 @@ async function startService(opts) {
     req.signal.addEventListener("abort", drop);
     return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" } });
   }
-  let boundPort = 0;
   function trusted(req) {
-    const hosts = [`127.0.0.1:${boundPort}`, `localhost:${boundPort}`];
-    const host = req.headers.get("host");
-    if (host === null || !hosts.includes(host.toLowerCase()))
+    const loopback = [`127.0.0.1:${boundPort}`, `localhost:${boundPort}`];
+    const tailnet = tailnetHost === undefined ? [] : [`${tailnetHost}:${boundPort}`];
+    const host = req.headers.get("host")?.toLowerCase();
+    if (host === undefined || !(loopback.includes(host) || tailnet.includes(host)))
       return false;
-    const origin = req.headers.get("origin");
-    return origin === null || hosts.some((h) => origin.toLowerCase() === `http://${h}`);
+    const origin = req.headers.get("origin")?.toLowerCase();
+    if (origin === undefined)
+      return true;
+    return loopback.some((h) => origin === `http://${h}`) || tailnet.some((h) => origin === `https://${h}`);
   }
   async function handle(req) {
     if (!trusted(req))
@@ -3691,54 +4590,90 @@ async function startService(opts) {
     const url = new URL(req.url);
     const { pathname } = url;
     const summary = url.searchParams.get("settled") === "summary";
-    if (pathname === "/projects")
-      return json({ projects: await announce(false) });
+    const local = url.searchParams.get("scope") === "local";
+    if (pathname === "/projects") {
+      const own = await announce(false);
+      return json({ projects: local ? own : merged(own) });
+    }
     if (pathname === "/events")
-      return events(req, summary ? "narrow" : "plain");
+      return events(req, summary ? "narrow" : "plain", local);
     if (pathname === "/release")
       return json(await releaseBody());
+    if (pathname === "/machines")
+      return json(machinesBody());
     const b = pathname.match(/^\/projects\/([^/]+)\/(board|settled)$/);
     if (b !== null) {
-      const p = projects.get(b[1] ?? "");
-      if (p === undefined)
+      const t = target(b[1] ?? "");
+      if (t === null)
         return notFound();
+      if (t.kind === "peer")
+        return b[2] === "board" ? peerBoard(t.f, t.pid, url.search, summary ? "narrow" : "plain") : t.f.forward(`/projects/${t.pid}/settled`, url.search);
+      const p = t.p;
       try {
         await archiveReady(p);
         const full = await board(p);
         const now = Date.now();
         if (b[2] === "settled")
           return json(settledOf(full, now));
-        return json(summary ? narrow(full, now) : plain(full, now));
+        return json(summary ? narrow(full, now, await backlogCounts(p)) : plain(full, now));
       } catch (e) {
-        return text(`config.json: ${message2(e)}`, 500);
+        return text(`config.json: ${message3(e)}`, 500);
       }
     }
     const d = pathname.match(/^\/projects\/([^/]+)\/jobs\/([^/]+)\/docs$/);
     if (d !== null) {
-      const p = projects.get(d[1] ?? "");
+      const t = target(d[1] ?? "");
       const id = d[2] ?? "";
-      if (p === undefined || !JOB_ID4.test(id))
+      if (t === null || !JOB_ID4.test(id))
         return notFound();
+      if (t.kind === "peer")
+        return t.f.forward(`/projects/${t.pid}/jobs/${id}/docs`, url.search);
+      const p = t.p;
       try {
         await archiveReady(p);
         return json(await docs(p, id));
       } catch (e) {
-        return text(`config.json: ${message2(e)}`, 500);
+        return text(`config.json: ${message3(e)}`, 500);
       }
     }
     const e = pathname.match(/^\/projects\/([^/]+)\/epics\/([^/]+)\/docs$/);
     if (e !== null) {
-      const p = projects.get(e[1] ?? "");
+      const t = target(e[1] ?? "");
       const slug = e[2] ?? "";
-      if (p === undefined || !isEpicSlug(slug))
+      if (t === null || !isEpicSlug(slug))
         return notFound();
+      if (t.kind === "peer")
+        return t.f.forward(`/projects/${t.pid}/epics/${slug}/docs`, url.search);
+      const p = t.p;
       try {
         await archiveReady(p);
         const docs = await epicDocs(p, slug);
         return docs === null ? notFound() : json(docs);
       } catch (e) {
-        return text(`epic docs: ${message2(e)}`, 500);
+        return text(`epic docs: ${message3(e)}`, 500);
       }
+    }
+    const bl = pathname.match(/^\/projects\/([^/]+)\/backlog$/);
+    if (bl !== null) {
+      const t = target(bl[1] ?? "");
+      if (t === null)
+        return notFound();
+      if (t.kind === "peer")
+        return t.f.forward(`/projects/${t.pid}/backlog`, url.search);
+      return json(await backlogOf(t.p));
+    }
+    const f = pathname.match(/^\/projects\/([^/]+)\/(briefs|plans)\/([^/]+)$/);
+    if (f !== null) {
+      const t = target(f[1] ?? "");
+      const slug = f[3] ?? "";
+      if (t === null || !isBacklogSlug(slug))
+        return notFound();
+      if (t.kind === "peer")
+        return t.f.forward(`/projects/${t.pid}/${f[2] ?? ""}/${slug}`, url.search);
+      const p = t.p;
+      const path = `${f[2] === "briefs" ? "briefs" : "epics"}/${slug}.md`;
+      const body = await readInside(p, path);
+      return body === null ? notFound() : json({ path, text: body });
     }
     if (opts.uiDir !== undefined)
       return await uiFile(opts.uiDir, pathname) ?? notFound();
@@ -3751,13 +4686,19 @@ async function startService(opts) {
     fetch: handle
   });
   boundPort = server.port ?? 0;
+  await reloadPeers();
   return {
     url: `http://${HOSTNAME}:${server.port}`,
     async stop() {
       stopped = true;
       if (registryTimer !== null)
         clearTimeout(registryTimer);
-      registryWatcher?.close();
+      if (peersTimer !== null)
+        clearTimeout(peersTimer);
+      for (const w of homeWatchers)
+        w.close();
+      for (const f of followers)
+        f.stop();
       if (releaseTimer !== null)
         clearTimeout(releaseTimer);
       for (const w of cloneWatchers)
@@ -3777,10 +4718,9 @@ async function startService(opts) {
     }
   };
 }
-
 // packages/andon-service/src/entry.ts
-var sourceTree = (cloneRoot) => ({ uiDir: join7(cloneRoot, "apps", "andon-ui", "dist"), cloneRoot, versionFile: SOURCE_VERSION_FILE });
-var bundleTree = (bundleRoot) => ({ uiDir: join7(bundleRoot, "andon", "ui"), cloneRoot: bundleRoot, versionFile: BUNDLE_VERSION_FILE });
+var sourceTree = (cloneRoot) => ({ uiDir: join8(cloneRoot, "apps", "andon-ui", "dist"), cloneRoot, versionFile: SOURCE_VERSION_FILE });
+var bundleTree = (bundleRoot) => ({ uiDir: join8(bundleRoot, "andon", "ui"), cloneRoot: bundleRoot, versionFile: BUNDLE_VERSION_FILE });
 async function serve(tree) {
   const raw = process.env.ANDON_PORT ?? "8766";
   const port = Number(raw);
@@ -3788,9 +4728,19 @@ async function serve(tree) {
     console.error(`andon: ANDON_PORT must be a port number (0-65535), got ${JSON.stringify(raw)}`);
     process.exit(1);
   }
+  const tailnetHost = process.env.ANDON_TAILNET_HOST;
+  if (tailnetHost !== undefined && !isTailnetHost(tailnetHost)) {
+    console.error(`andon: ANDON_TAILNET_HOST must be a lowercase DNS name, got ${JSON.stringify(tailnetHost)}`);
+    process.exit(1);
+  }
   const registry = registryPath(process.env.ANDON_HOME);
-  const service = await startService({ port, registryPath: registry, ...tree });
+  const peers = peersPath(process.env.ANDON_HOME);
+  const machine = machineName(tailnetHost ?? hostname2());
+  const service = await startService({ port, registryPath: registry, peersPath: peers, machine, ...tree, ...tailnetHost === undefined ? {} : { tailnetHost } });
   console.log(`Andon service: ${service.url} (registry ${registry})`);
+  if (tailnetHost !== undefined)
+    console.log(`Andon service: also https://${tailnetHost}:${new URL(service.url).port}/ through tailscale serve`);
+  console.log(`Andon service: machine ${machine}, following the peers in ${peers}`);
   const shutdown = () => {
     service.stop().then(() => process.exit(0));
   };
@@ -3799,12 +4749,12 @@ async function serve(tree) {
 }
 
 // packages/cli/src/core.ts
-import { readFile as readFile9 } from "fs/promises";
-import { dirname as dirname9, join as join14, resolve as resolve8 } from "path";
+import { readFile as readFile10 } from "fs/promises";
+import { dirname as dirname10, join as join15, resolve as resolve8 } from "path";
 
 // packages/cli/src/abandon.ts
 import { stat as stat4 } from "fs/promises";
-import { dirname as dirname5, join as join9, relative as relative2, resolve as resolve4 } from "path";
+import { dirname as dirname6, join as join10, relative as relative2, resolve as resolve4 } from "path";
 
 // packages/cli/src/git.ts
 var REDIRECTS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR"];
@@ -3885,8 +4835,8 @@ async function addWorktree(repo, path, branch, from) {
 
 // packages/cli/src/paths.ts
 import { realpath as realpath2 } from "fs/promises";
-import { basename as basename3, dirname as dirname4, isAbsolute as isAbsolute2, join as join8, posix, relative, resolve as resolve3, sep as sep2 } from "path";
-var isNotFound3 = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "ENOENT";
+import { basename as basename4, dirname as dirname5, isAbsolute as isAbsolute2, join as join9, posix, relative, resolve as resolve3, sep as sep2 } from "path";
+var isNotFound4 = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "ENOENT";
 function assertInside(repoReal, p) {
   const back = relative(repoReal, p);
   if (back === "" || back === ".." || back.startsWith(`..${sep2}`) || isAbsolute2(back)) {
@@ -3899,25 +4849,25 @@ async function locate(repo, rel) {
     throw new Error(why);
   const repoReal = await realpath2(repo);
   const abs = resolve3(repoReal, rel);
-  const rest = [basename3(abs)];
-  let dir = dirname4(abs);
+  const rest = [basename4(abs)];
+  let dir = dirname5(abs);
   let dirReal = null;
   while (dirReal === null) {
     try {
       dirReal = await realpath2(dir);
     } catch (e) {
-      if (!isNotFound3(e) || dirname4(dir) === dir)
+      if (!isNotFound4(e) || dirname5(dir) === dir)
         throw e;
-      rest.unshift(basename3(dir));
-      dir = dirname4(dir);
+      rest.unshift(basename4(dir));
+      dir = dirname5(dir);
     }
   }
-  const at = join8(dirReal, ...rest);
+  const at = join9(dirReal, ...rest);
   assertInside(repoReal, at);
   try {
     assertInside(repoReal, await realpath2(at));
   } catch (e) {
-    if (!isNotFound3(e))
+    if (!isNotFound4(e))
       throw e;
   }
   return at;
@@ -3947,7 +4897,7 @@ var isDir = async (path) => {
   try {
     return (await stat4(path)).isDirectory();
   } catch (e) {
-    if (isNotFound3(e))
+    if (isNotFound4(e))
       return false;
     throw e;
   }
@@ -3957,11 +4907,11 @@ async function abandonJob(root, args) {
     throw new Error(`job id '${args.id}' must match ^\\d{3}-[a-z0-9-]+$`);
   const input = parseEventInput("job.abandoned", { reason: args.reason });
   const snap = await appendEvent(root, args.id, input, undefined, { force: args.force });
-  const repo = dirname5(resolve4(root));
+  const repo = dirname6(resolve4(root));
   const branch = `factory/${args.id}`;
-  const worktree = relative2(repo, join9(resolve4(root), ".worktrees", args.id));
+  const worktree = relative2(repo, join10(resolve4(root), ".worktrees", args.id));
   const left = [];
-  if (await isDir(join9(repo, worktree))) {
+  if (await isDir(join10(repo, worktree))) {
     const why = await removeWorktree(repo, worktree);
     if (why !== null)
       left.push(`worktree ${worktree} (${why})`);
@@ -3981,9 +4931,9 @@ async function abandonJob(root, args) {
 }
 
 // packages/cli/src/archive.ts
-import { lstat as lstat3, mkdtemp, readFile as readFile7, readdir as readdir4, rm as rm4 } from "fs/promises";
+import { lstat as lstat3, mkdtemp, readFile as readFile8, readdir as readdir4, rm as rm5 } from "fs/promises";
 import { tmpdir } from "os";
-import { join as join10 } from "path";
+import { join as join11 } from "path";
 var ARCHIVE_BRANCH = "factory/archive";
 var ARCHIVE_REF2 = `refs/heads/${ARCHIVE_BRANCH}`;
 var WHAT = "archive";
@@ -4033,7 +4983,7 @@ async function isDir2(path) {
   try {
     return (await lstat3(path)).isDirectory();
   } catch (e) {
-    if (isNotFound3(e))
+    if (isNotFound4(e))
       return false;
     throw e;
   }
@@ -4043,7 +4993,7 @@ async function exists2(path) {
     await lstat3(path);
     return true;
   } catch (e) {
-    if (isNotFound3(e))
+    if (isNotFound4(e))
       return false;
     throw e;
   }
@@ -4051,7 +5001,7 @@ async function exists2(path) {
 async function legacySnapshot(dir) {
   let raw;
   try {
-    raw = JSON.parse(await readFile7(join10(dir, "job.json"), "utf8"));
+    raw = JSON.parse(await readFile8(join11(dir, "job.json"), "utf8"));
   } catch {
     return null;
   }
@@ -4063,14 +5013,14 @@ async function legacySnapshot(dir) {
 async function readLocalJob(root, id) {
   if (!isJobId(id))
     throw new Error(`job id '${id}' must match ^\\d{3}-[a-z0-9-]+$`);
-  const dir = join10(root, "jobs", id);
+  const dir = join11(root, "jobs", id);
   if (!await isDir2(dir)) {
     if (await exists2(dir))
       throw new Error(`${id}: not a directory (a symlinked job dir is never followed); not archived`);
     throw new Error(`${id}: no such job`);
   }
   const log = await readLog(root, id);
-  if (log.length === 0 && await exists2(join10(dir, "events.jsonl")))
+  if (log.length === 0 && await exists2(join11(dir, "events.jsonl")))
     throw new Error(`${id}: events.jsonl is empty; not archived`);
   if (log.length === 0) {
     const snap = await legacySnapshot(dir);
@@ -4105,13 +5055,13 @@ async function buildTree(repo, dir, top, legacy, env) {
     if (e.isFile())
       files.push(e.name);
     else if (e.isDirectory()) {
-      const sha = await buildTree(repo, join10(dir, e.name), false, legacy, env);
+      const sha = await buildTree(repo, join11(dir, e.name), false, legacy, env);
       if (sha !== null)
         tree.push({ mode: "040000", type: "tree", sha, name: e.name });
     }
   }
   if (files.length > 0) {
-    const shas = (await git2(repo, ["hash-object", "-w", "--no-filters", "--", ...files.map((f) => join10(dir, f))], { env })).out.split(`
+    const shas = (await git2(repo, ["hash-object", "-w", "--no-filters", "--", ...files.map((f) => join11(dir, f))], { env })).out.split(`
 `);
     if (shas.length !== files.length)
       throw new Error(`${WHAT}: git hash-object returned ${shas.length} ids for ${files.length} files`);
@@ -4134,11 +5084,11 @@ function alternate(path) {
 }
 async function scratchTree(repo, job) {
   const objects = (await git2(repo, ["rev-parse", "--path-format=absolute", "--git-path", "objects"])).out;
-  const scratch = await mkdtemp(join10(tmpdir(), "factory-archive-"));
+  const scratch = await mkdtemp(join11(tmpdir(), "factory-archive-"));
   try {
     return await buildTree(repo, job.dir, true, job.legacy, { GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternate(objects) });
   } finally {
-    await rm4(scratch, { recursive: true, force: true });
+    await rm5(scratch, { recursive: true, force: true });
   }
 }
 async function trialTree(repo, job) {
@@ -4230,9 +5180,9 @@ async function archiveJob(repo, job, force) {
 }
 async function localJobIds(root) {
   try {
-    return (await readdir4(join10(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && isJobId(d.name)).map((d) => d.name).sort();
+    return (await readdir4(join11(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && isJobId(d.name)).map((d) => d.name).sort();
   } catch (e) {
-    if (isNotFound3(e))
+    if (isNotFound4(e))
       return [];
     throw e;
   }
@@ -4240,7 +5190,7 @@ async function localJobIds(root) {
 var EPICS_DIR = "epics";
 async function readLocalEpic(root, slug) {
   checkEpicSlug(slug);
-  const dir = join10(root, "jobs", "epics", slug);
+  const dir = join11(root, "jobs", "epics", slug);
   if (!await isDir2(dir)) {
     if (await exists2(dir))
       throw new Error(`epic ${slug}: not a directory (a symlinked epic dir is never followed); not archived`);
@@ -4269,8 +5219,8 @@ async function readLocalEpic(root, slug) {
     landedSha,
     endedAt,
     files: [
-      { name: "events.jsonl", path: join10(dir, "events.jsonl") },
-      { name: "plan.md", path: join10(root, "epics", `${slug}.md`) }
+      { name: "events.jsonl", path: join11(dir, "events.jsonl") },
+      { name: "plan.md", path: join11(root, "epics", `${slug}.md`) }
     ]
   };
 }
@@ -4281,7 +5231,7 @@ async function checkEpicFiles(epic) {
     try {
       st = await lstat3(f.path);
     } catch (e) {
-      if (!isNotFound3(e))
+      if (!isNotFound4(e))
         throw e;
       if (f.name === "plan.md")
         throw new Error(`epic ${epic.slug}: plan factory/epics/${epic.slug}.md is missing; not archived`);
@@ -4300,11 +5250,11 @@ async function filesTree(repo, files, env) {
 }
 async function scratchEpicTree(repo, epic) {
   const objects = (await git2(repo, ["rev-parse", "--path-format=absolute", "--git-path", "objects"])).out;
-  const scratch = await mkdtemp(join10(tmpdir(), "factory-archive-"));
+  const scratch = await mkdtemp(join11(tmpdir(), "factory-archive-"));
   try {
     return await filesTree(repo, epic.files, { GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: alternate(objects) });
   } finally {
-    await rm4(scratch, { recursive: true, force: true });
+    await rm5(scratch, { recursive: true, force: true });
   }
 }
 async function archivedEpicTrees(repo) {
@@ -4401,17 +5351,17 @@ async function archiveEpic(repo, epic, force) {
 
 // packages/cli/src/doctor.ts
 import { createHash as createHash3 } from "crypto";
-import { readFile as readFile8, readdir as readdir5 } from "fs/promises";
-import { dirname as dirname6, join as join11, resolve as resolve5 } from "path";
+import { readFile as readFile9, readdir as readdir5 } from "fs/promises";
+import { dirname as dirname7, join as join12, resolve as resolve5 } from "path";
 var firstLine = (e) => (e instanceof Error ? e.message : String(e)).split(`
 `)[0] ?? "";
 var ok = (what) => ({ ok: true, line: `ok    ${what}` });
 var bad = (what, why) => ({ ok: false, line: `FAIL  ${what}: ${why}` });
 async function readText2(path) {
   try {
-    return await readFile8(path, "utf8");
+    return await readFile9(path, "utf8");
   } catch (e) {
-    if (isNotFound3(e))
+    if (isNotFound4(e))
       return null;
     throw e;
   }
@@ -4419,7 +5369,7 @@ async function readText2(path) {
 async function checkConfig(root) {
   let text;
   try {
-    text = await readText2(join11(root, "config.json"));
+    text = await readText2(join12(root, "config.json"));
   } catch (e) {
     return bad("config.json", firstLine(e));
   }
@@ -4441,9 +5391,9 @@ async function checkConfig(root) {
 async function safeRead(repo, rel) {
   const at = await locate(repo, rel);
   try {
-    return await readFile8(at);
+    return await readFile9(at);
   } catch (e) {
-    if (isNotFound3(e))
+    if (isNotFound4(e))
       return null;
     throw e;
   }
@@ -4451,7 +5401,7 @@ async function safeRead(repo, rel) {
 async function checkManaged(root) {
   let text;
   try {
-    text = await readText2(join11(root, "managed.json"));
+    text = await readText2(join12(root, "managed.json"));
   } catch (e) {
     return [bad("managed.json", firstLine(e))];
   }
@@ -4463,7 +5413,7 @@ async function checkManaged(root) {
   } catch (e) {
     return [bad("managed.json", e instanceof SyntaxError ? "not valid JSON" : firstLine(e))];
   }
-  const repo = dirname6(resolve5(root));
+  const repo = dirname7(resolve5(root));
   const out = [ok(`managed.json (version ${manifest.version})`)];
   for (const [rel, want] of Object.entries(manifest.files)) {
     try {
@@ -4483,9 +5433,9 @@ async function checkManaged(root) {
 async function checkJobNumbers(root) {
   let names;
   try {
-    names = (await readdir5(join11(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && isJobId(d.name)).map((d) => d.name);
+    names = (await readdir5(join12(root, "jobs"), { withFileTypes: true })).filter((d) => d.isDirectory() && isJobId(d.name)).map((d) => d.name);
   } catch (e) {
-    if (isNotFound3(e))
+    if (isNotFound4(e))
       return [];
     return [bad("jobs/", firstLine(e))];
   }
@@ -4499,9 +5449,9 @@ async function checkJobNumbers(root) {
 async function checkPlans(root) {
   let entries;
   try {
-    entries = (await readdir5(join11(root, "epics"), { withFileTypes: true })).filter((d) => d.name.endsWith(".md")).sort((a, b) => a.name < b.name ? -1 : 1);
+    entries = (await readdir5(join12(root, "epics"), { withFileTypes: true })).filter((d) => d.name.endsWith(".md")).sort((a, b) => a.name < b.name ? -1 : 1);
   } catch (e) {
-    if (isNotFound3(e))
+    if (isNotFound4(e))
       return [];
     return [bad("factory/epics/", firstLine(e))];
   }
@@ -4515,7 +5465,7 @@ async function checkPlans(root) {
     const slug = e.name.slice(0, -".md".length);
     let plan;
     try {
-      plan = parsePlan(await readFile8(join11(root, "epics", e.name), "utf8"));
+      plan = parsePlan(await readFile9(join12(root, "epics", e.name), "utf8"));
     } catch (err) {
       out.push(bad(rel, firstLine(err)));
       continue;
@@ -4555,7 +5505,7 @@ async function doctor(root) {
 
 // packages/cli/src/epic.ts
 import { lstat as lstat4 } from "fs/promises";
-import { dirname as dirname7, join as join12, relative as relative3, resolve as resolve6 } from "path";
+import { dirname as dirname8, join as join13, relative as relative3, resolve as resolve6 } from "path";
 var EPIC_USAGE = {
   epic: "usage: epic start|event|next|show|abandon <slug> \u2026",
   epicStart: "usage: epic start <slug> [session=t3code:<environmentId>/<threadId>]",
@@ -4570,7 +5520,7 @@ async function pathExists(path) {
     await lstat4(path);
     return true;
   } catch (e) {
-    if (isNotFound3(e))
+    if (isNotFound4(e))
       return false;
     throw e;
   }
@@ -4579,7 +5529,7 @@ async function sameCommit(repo, a, b) {
   const [x, y] = await Promise.all([a, b].map((r) => runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${r}^{commit}`], { what: "epic start" })));
   return x !== undefined && y !== undefined && x.code === 0 && y.code === 0 && x.out === y.out;
 }
-var worktreeOf = (repo, root, slug) => relative3(repo, join12(resolve6(root), ".worktrees", `epic-${slug}`));
+var worktreeOf = (repo, root, slug) => relative3(repo, join13(resolve6(root), ".worktrees", `epic-${slug}`));
 async function runEpic(rest, io, config) {
   const [sub, ...args] = rest;
   switch (sub) {
@@ -4606,7 +5556,7 @@ async function start(args, io, config) {
   const problem = await epicPlanProblem(io.root, slug);
   if (problem !== null)
     throw new Error(`epic start ${slug}: ${problem}`);
-  const repo = dirname7(resolve6(io.root));
+  const repo = dirname8(resolve6(io.root));
   const target = await resolveTarget(repo, mergeTarget(config));
   const input = parseEpicEventInput("epic.started", fields, { slug, target });
   const branch = epicBranch(slug);
@@ -4614,11 +5564,11 @@ async function start(args, io, config) {
   const setup = async () => {
     if (await branchExists(repo, branch))
       throw new Error(`epic start ${slug}: branch ${branch} already exists`);
-    if (await pathExists(join12(repo, worktree)))
+    if (await pathExists(join13(repo, worktree)))
       throw new Error(`epic start ${slug}: ${worktree} already exists`);
     const cleanup = async (deleteIt) => {
       const left = [];
-      if (await isDir(join12(repo, worktree))) {
+      if (await isDir(join13(repo, worktree))) {
         const w = await removeWorktree(repo, worktree);
         if (w !== null)
           left.push(`worktree ${worktree} (${w})`);
@@ -4740,11 +5690,11 @@ async function abandon(args, io) {
 `)[0] ?? ""})`);
     }
   }
-  const repo = dirname7(resolve6(io.root));
+  const repo = dirname8(resolve6(io.root));
   const worktree = worktreeOf(repo, io.root, a.slug);
   const branch = epicBranch(a.slug);
   let worktreeLeft = false;
-  if (await isDir(join12(repo, worktree))) {
+  if (await isDir(join13(repo, worktree))) {
     const why = await removeWorktree(repo, worktree);
     if (why !== null) {
       worktreeLeft = true;
@@ -4767,8 +5717,8 @@ async function abandon(args, io) {
 }
 
 // packages/cli/src/prune.ts
-import { lstat as lstat5, mkdir as mkdir6, rm as rm5 } from "fs/promises";
-import { dirname as dirname8, join as join13, resolve as resolve7 } from "path";
+import { lstat as lstat5, mkdir as mkdir7, rm as rm6 } from "fs/promises";
+import { dirname as dirname9, join as join14, resolve as resolve7 } from "path";
 var LOCK = ".events.lock";
 var IN_FLIGHT = `an event is in flight (${LOCK})`;
 var isSystemError = (e) => typeof e === "object" && e !== null && ("code" in e);
@@ -4779,7 +5729,7 @@ async function exists3(path) {
     await lstat5(path);
     return true;
   } catch (e) {
-    if (isNotFound3(e))
+    if (isNotFound4(e))
       return false;
     throw e;
   }
@@ -4789,7 +5739,7 @@ function epicFacts2(io, repo) {
   const read = async (slug) => {
     if (!isEpicSlug(slug))
       return null;
-    if (await exists3(join13(io.root, "jobs", "epics", slug))) {
+    if (await exists3(join14(io.root, "jobs", "epics", slug))) {
       try {
         const epic = await readLocalEpic(io.root, slug);
         return { state: epic.state, endedAt: epic.endedAt };
@@ -4815,7 +5765,7 @@ function epicFacts2(io, repo) {
   };
 }
 async function check(io, id, trees, hours, now, facts) {
-  if (await exists3(join13(io.root, "jobs", id, LOCK)))
+  if (await exists3(join14(io.root, "jobs", id, LOCK)))
     return { kind: "keep", reason: IN_FLIGHT };
   let job;
   try {
@@ -4844,9 +5794,9 @@ async function check(io, id, trees, hours, now, facts) {
   return { kind: "candidate", job, tree };
 }
 async function compareAndRemove(dir, same) {
-  const lock = join13(dir, LOCK);
+  const lock = join14(dir, LOCK);
   try {
-    await mkdir6(lock);
+    await mkdir7(lock);
   } catch (e) {
     if (typeof e === "object" && e !== null && "code" in e && e.code === "EEXIST")
       return { kind: "keep", reason: IN_FLIGHT };
@@ -4856,18 +5806,18 @@ async function compareAndRemove(dir, same) {
   try {
     equal = await same();
   } catch (e) {
-    await rm5(lock, { recursive: true, force: true });
+    await rm6(lock, { recursive: true, force: true });
     throw e;
   }
   if (!equal) {
-    await rm5(lock, { recursive: true, force: true });
+    await rm6(lock, { recursive: true, force: true });
     return { kind: "keep", reason: "differs from its archived tree" };
   }
-  await rm5(dir, { recursive: true });
+  await rm6(dir, { recursive: true });
   return { kind: "prune" };
 }
 async function checkEpic(io, slug, trees, hours, now) {
-  if (await exists3(join13(io.root, "jobs", "epics", slug, LOCK)))
+  if (await exists3(join14(io.root, "jobs", "epics", slug, LOCK)))
     return { kind: "keep", reason: IN_FLIGHT };
   let epic;
   try {
@@ -4888,7 +5838,7 @@ async function checkEpic(io, slug, trees, hours, now) {
   return { kind: "candidate", epic, tree };
 }
 async function pruneAll(io, settleAfterHours) {
-  const repo = dirname8(resolve7(io.root));
+  const repo = dirname9(resolve7(io.root));
   const now = (io.now ?? (() => new Date))();
   const trees = await archivedTrees(repo);
   const epicTrees = await archivedEpicTrees(repo);
@@ -4955,7 +5905,7 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       io.stdout(f.line);
     return findings.every((f) => f.ok) ? 0 : 1;
   }
-  const config = parseConfig(JSON.parse(await readFile9(join14(io.root, "config.json"), "utf8")));
+  const config = parseConfig(JSON.parse(await readFile10(join15(io.root, "config.json"), "utf8")));
   switch (cmd) {
     case "claim": {
       const [slug, ...kv] = rest;
@@ -4964,7 +5914,7 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       checkSlug(slug);
       const fields = parseFields(kv);
       checkClaim(slug, { fields, config });
-      const repo = dirname9(resolve8(io.root));
+      const repo = dirname10(resolve8(io.root));
       const epic = typeof fields.epic === "string" ? fields.epic : undefined;
       const target = epic === undefined ? await resolveTarget(repo, mergeTarget(config)) : await epicTarget(io.root, repo, epic);
       io.stdout((await claimJob(io.root, slug, { fields, config, target }, undefined, { archived: () => archivedIds(repo) })).id);
@@ -5060,17 +6010,17 @@ function parseArchive2(rest) {
 async function archiveOne(io, id, force) {
   if (!isJobId(id) && isEpicSlug(id)) {
     const epic = await readLocalEpic(io.root, id);
-    const outcome = await archiveEpic(dirname9(resolve8(io.root)), epic, force);
+    const outcome = await archiveEpic(dirname10(resolve8(io.root)), epic, force);
     io.stdout(outcome.kind === "archived" ? `archived epic ${id} ${outcome.commit.slice(0, 7)}` : `epic ${id}: already archived (unchanged)`);
     return 0;
   }
   const job = await readLocalJob(io.root, id);
-  const outcome = await archiveJob(dirname9(resolve8(io.root)), job, force);
+  const outcome = await archiveJob(dirname10(resolve8(io.root)), job, force);
   io.stdout(outcome.kind === "archived" ? `archived ${id} ${outcome.commit.slice(0, 7)}` : `${id}: already archived (unchanged)`);
   return 0;
 }
 async function archiveAll(io, force) {
-  const repo = dirname9(resolve8(io.root));
+  const repo = dirname10(resolve8(io.root));
   let archived = 0;
   let unchanged = 0;
   let skipped = 0;
@@ -5130,8 +6080,8 @@ async function guarded(io, body) {
 
 // packages/cli/src/install.ts
 import { createHash as createHash4 } from "crypto";
-import { mkdir as mkdir7, open as open2, readFile as readFile10, realpath as realpath3, rename as rename4, rm as rm6, unlink } from "fs/promises";
-import { basename as basename4, dirname as dirname10, join as join15, relative as relative4, resolve as resolve9, sep as sep3 } from "path";
+import { mkdir as mkdir8, open as open3, readFile as readFile11, realpath as realpath3, rename as rename5, rm as rm7, unlink } from "fs/promises";
+import { basename as basename5, dirname as dirname11, join as join16, relative as relative4, resolve as resolve9, sep as sep3 } from "path";
 var DEFAULT_CONFIG = {
   schema: "factory/v1",
   reviewers: ["code"],
@@ -5143,7 +6093,7 @@ var MANIFEST = "factory/managed.json";
 var CONFIG = "factory/config.json";
 var GITIGNORE = ".gitignore";
 var sha2562 = (data) => createHash4("sha256").update(data).digest("hex");
-var message3 = (e) => (e instanceof Error ? e.message : String(e)).split(`
+var message4 = (e) => (e instanceof Error ? e.message : String(e)).split(`
 `)[0] ?? "";
 function manifestFor(files) {
   const hashes = {};
@@ -5155,9 +6105,9 @@ var manifestText = (m) => `${JSON.stringify(m, null, 2)}
 `;
 async function readOrNull(at) {
   try {
-    return await readFile10(at);
+    return await readFile11(at);
   } catch (e) {
-    if (isNotFound3(e))
+    if (isNotFound4(e))
       return null;
     throw e;
   }
@@ -5170,7 +6120,7 @@ async function place(repo, rel, cmd, managed) {
   try {
     at = await locate(repo, rel);
   } catch (e) {
-    throw new Error(`${cmd}: refusing ${rel}: ${message3(e)}`);
+    throw new Error(`${cmd}: refusing ${rel}: ${message4(e)}`);
   }
   const resolvedDeny = managed ? protectedReason(relative4(await realpath3(repo), at).split(sep3).join("/")) : null;
   if (resolvedDeny !== null)
@@ -5178,9 +6128,9 @@ async function place(repo, rel, cmd, managed) {
   return at;
 }
 async function writeAtomic(at, text) {
-  await mkdir7(dirname10(at), { recursive: true });
-  const tmp = join15(dirname10(at), `.${basename4(at)}.${process.pid}.${Date.now()}.factory-tmp`);
-  const fh = await open2(tmp, "wx");
+  await mkdir8(dirname11(at), { recursive: true });
+  const tmp = join16(dirname11(at), `.${basename5(at)}.${process.pid}.${Date.now()}.factory-tmp`);
+  const fh = await open3(tmp, "wx");
   try {
     await fh.writeFile(text, "utf8");
     await fh.sync();
@@ -5188,9 +6138,9 @@ async function writeAtomic(at, text) {
     await fh.close();
   }
   try {
-    await rename4(tmp, at);
+    await rename5(tmp, at);
   } catch (e) {
-    await rm6(tmp, { force: true });
+    await rm7(tmp, { force: true });
     throw e;
   }
 }
@@ -5211,7 +6161,7 @@ async function readConfig2(cmd, at) {
   try {
     return { config: parseConfig(raw), text: null };
   } catch (e) {
-    throw new Error(`${cmd}: ${CONFIG}: ${message3(e).replace(/^config: /, "")}`);
+    throw new Error(`${cmd}: ${CONFIG}: ${message4(e).replace(/^config: /, "")}`);
   }
 }
 var IGNORE_FORMS = (line) => {
@@ -5242,7 +6192,7 @@ async function planWrites(repo, files, cmd) {
     const text = files[rel] ?? "";
     const at = await place(repo, rel, cmd, true);
     const cur = await readOrNull(at).catch((e) => {
-      throw new Error(`${cmd}: refusing ${rel}: ${message3(e)}`);
+      throw new Error(`${cmd}: refusing ${rel}: ${message4(e)}`);
     });
     existing.set(rel, cur);
     if (cur === null || !cur.equals(Buffer.from(text, "utf8")))
@@ -5251,7 +6201,7 @@ async function planWrites(repo, files, cmd) {
   return { writes, existing };
 }
 async function init(root, opts) {
-  const repo = dirname10(resolve9(root));
+  const repo = dirname11(resolve9(root));
   const manifestAt = await place(repo, MANIFEST, "init", false);
   if (await readOrNull(manifestAt) !== null)
     throw new Error(`init: ${MANIFEST} exists: this project is installed, use upgrade`);
@@ -5280,11 +6230,11 @@ async function register(registry, repo, stdout) {
   try {
     await addRoot(registry, await realpath3(repo));
   } catch (e) {
-    stdout(`note: not registered with Andon (${registry}): ${message3(e)}`);
+    stdout(`note: not registered with Andon (${registry}): ${message4(e)}`);
   }
 }
 async function upgrade(root, opts) {
-  const repo = dirname10(resolve9(root));
+  const repo = dirname11(resolve9(root));
   const manifestAt = await place(repo, MANIFEST, "upgrade", false);
   const manifestData = await readOrNull(manifestAt);
   if (manifestData === null)
@@ -5293,7 +6243,7 @@ async function upgrade(root, opts) {
   try {
     old = parseManifest(JSON.parse(manifestData.toString("utf8")));
   } catch (e) {
-    throw new Error(`upgrade: ${MANIFEST}: ${e instanceof SyntaxError ? "not valid JSON" : message3(e)}`);
+    throw new Error(`upgrade: ${MANIFEST}: ${e instanceof SyntaxError ? "not valid JSON" : message4(e)}`);
   }
   const configAt = await place(repo, CONFIG, "upgrade", false);
   const { config } = await readConfig2("upgrade", configAt);
@@ -5303,7 +6253,7 @@ async function upgrade(root, opts) {
   for (const [rel, want] of Object.entries(old.files)) {
     const at = await place(repo, rel, "upgrade", true);
     const cur = await readOrNull(at).catch((e) => {
-      throw new Error(`upgrade: refusing ${rel}: ${message3(e)}`);
+      throw new Error(`upgrade: refusing ${rel}: ${message4(e)}`);
     });
     if (cur === null)
       edited.push(`${rel} (missing)`);
@@ -5324,8 +6274,8 @@ async function upgrade(root, opts) {
     try {
       await unlink(d.at);
     } catch (e) {
-      if (!isNotFound3(e))
-        throw new Error(`upgrade: ${d.rel}: ${message3(e)}`);
+      if (!isNotFound4(e))
+        throw new Error(`upgrade: ${d.rel}: ${message4(e)}`);
     }
   }
   const next = manifestText(manifestFor(files));
@@ -5334,120 +6284,25 @@ async function upgrade(root, opts) {
   opts.stdout(`upgraded factory ${old.version} -> ${VERSION}: ${writes.length} written, ${deletes.length} removed`);
 }
 
-// packages/cli/src/projects.ts
-import { stat as stat5 } from "fs/promises";
-import { dirname as dirname11, join as join16, resolve as resolve10, sep as sep4 } from "path";
-var PROJECTS_USAGE = "usage: projects [prune [--dry-run] | remove <path>]";
-var code = (e) => typeof e === "object" && e !== null && ("code" in e) ? e.code : undefined;
-var fsProbe = async (path) => {
-  try {
-    const s = await stat5(path);
-    return { dev: s.dev, dir: s.isDirectory() };
-  } catch (e) {
-    const c = code(e);
-    if (c === "ENOENT" || c === "ENOTDIR")
-      return null;
-    throw e;
-  }
-};
-async function rootState(root, probe) {
-  if (await probe(root) === null)
-    return "missing";
-  const factory = await probe(join16(root, "factory"));
-  return factory !== null && factory.dir ? "ok" : "not a factory project";
-}
-var VOLUME_PREFIXES = ["/Volumes", "/media", "/run/media", "/mnt"];
-function volumePrefix(root) {
-  const norm = resolve10(root);
-  return VOLUME_PREFIXES.find((p) => norm.startsWith(p + sep4) && norm.length > p.length + 1) ?? null;
-}
-async function volumeUnmounted(root, probe) {
-  const prefix = volumePrefix(root);
-  if (prefix === null)
-    return false;
-  let dir = resolve10(root);
-  while (dir !== prefix) {
-    const here = await probe(dir);
-    if (here !== null) {
-      const parent = await probe(dirname11(dir));
-      if (parent !== null && parent.dev !== here.dev)
-        return false;
-    }
-    dir = dirname11(dir);
-  }
-  return true;
-}
-function parse(rest) {
-  const [sub, ...args] = rest;
-  if (sub === undefined)
-    return { kind: "list" };
-  if (sub === "prune") {
-    if (args.length === 0)
-      return { kind: "prune", dryRun: false };
-    if (args.length === 1 && args[0] === "--dry-run")
-      return { kind: "prune", dryRun: true };
-  }
-  if (sub === "remove" && args.length === 1 && args[0] !== undefined && args[0] !== "")
-    return { kind: "remove", path: args[0] };
-  throw new Error(PROJECTS_USAGE);
-}
-var NONE = "no projects registered";
-async function projects(rest, io) {
-  const cmd = parse(rest);
-  if (io.registry === undefined)
-    throw new Error("projects: no Andon registry configured");
-  const file = io.registry;
-  const probe = io.probe ?? fsProbe;
-  const registry = await readRegistry(file);
-  if (cmd.kind === "remove") {
-    const root = resolve10(io.cwd ?? process.cwd(), cmd.path);
-    if (!registry.projects.some((p) => p.root === root)) {
-      io.stdout(`not registered: ${root}`);
-      return 0;
-    }
-    await removeRoot(file, root);
-    io.stdout(`removed ${root}`);
-    return 0;
-  }
-  if (registry.projects.length === 0) {
-    io.stdout(NONE);
-    return 0;
-  }
-  const checked = [];
-  for (const { root } of registry.projects) {
-    checked.push({ root, state: await rootState(root, probe), unmounted: await volumeUnmounted(root, probe) });
-  }
-  if (cmd.kind === "list") {
-    for (const c of checked)
-      io.stdout(`${c.state}  ${c.root}${c.unmounted ? "  (volume not mounted)" : ""}`);
-    return 0;
-  }
-  let acted = false;
-  for (const c of checked) {
-    if (c.state === "ok")
-      continue;
-    acted = true;
-    if (c.unmounted) {
-      io.stdout(`skipped ${c.root}: volume not mounted`);
-    } else if (cmd.dryRun) {
-      io.stdout(`would remove ${c.root} (${c.state})`);
-    } else {
-      await removeRoot(file, c.root);
-      io.stdout(`removed ${c.root} (${c.state})`);
-    }
-  }
-  if (!acted)
-    io.stdout("nothing to prune");
-  return 0;
-}
-
 // packages/cli/src/service.ts
 import { dirname as dirname12, isAbsolute as isAbsolute3, join as join17 } from "path";
-var SERVICE_USAGE = "usage: service install|uninstall|start|stop|restart|status|run";
+var SERVICE_USAGE = "usage: service install [--tailnet]|uninstall|start|stop|restart|status|run";
 var LABEL = "dev.factory.andon";
 var UNIT = "andon.service";
 var DEFAULT_PORT = 8766;
 var LINGER_HINT = `hint: lingering is off, so ${UNIT} stops when you log out; to keep it running, run: loginctl enable-linger`;
+var TAILSCALE_APP = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+var OPERATOR_LINE = "service: tailscale serve needs operator permission on this machine; run once: sudo tailscale set --operator=$USER, then run factory service install --tailnet again";
+
+class GetJsonError extends Error {
+  kind;
+  status;
+  constructor(kind, status) {
+    super(kind === "redirect" ? `redirect (HTTP ${status}) refused` : kind === "status" ? `HTTP ${status}` : "not JSON");
+    this.kind = kind;
+    this.status = status;
+  }
+}
 var launchdPath = (home) => join17(home, "Library", "LaunchAgents", `${LABEL}.plist`);
 function systemdPath(home, env) {
   const xdg = env.XDG_CONFIG_HOME;
@@ -5482,6 +6337,12 @@ var systemctl = {
   restart: () => ["systemctl", "--user", "restart", UNIT]
 };
 var lingerQuery = (uid) => ["loginctl", "show-user", String(uid), "--property=Linger", "--value"];
+var tailscale = {
+  status: (bin) => [bin, "status", "--json"],
+  serveStatus: (bin) => [bin, "serve", "status", "--json"],
+  serve: (bin, port) => [bin, "serve", "--bg", `--https=${port}`, `http://127.0.0.1:${port}`],
+  off: (bin, port) => [bin, "serve", `--https=${port}`, "off"]
+};
 var SYSTEM_PATH = {
   launchd: ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"],
   systemd: ["/usr/local/bin", "/usr/bin", "/bin"]
@@ -5495,6 +6356,8 @@ function unitEnv(kind, spec) {
     out.push(["ANDON_PORT", spec.env.ANDON_PORT]);
   if (spec.env.ANDON_HOME !== undefined)
     out.push(["ANDON_HOME", spec.env.ANDON_HOME]);
+  if (spec.env.ANDON_TAILNET_HOST !== undefined)
+    out.push(["ANDON_TAILNET_HOST", spec.env.ANDON_TAILNET_HOST]);
   return out;
 }
 var unitArgv = (spec) => [spec.bun, spec.factory, "service", "run"];
@@ -5557,6 +6420,10 @@ function renderUnit(spec) {
 function recordedPort(text) {
   const m = /<key>ANDON_PORT<\/key>\s*<string>(\d+)<\/string>/.exec(text) ?? /^Environment="ANDON_PORT=(\d+)"$/m.exec(text);
   return m?.[1] === undefined ? null : Number(m[1]);
+}
+function recordedTailnetHost(text) {
+  const m = /<key>ANDON_TAILNET_HOST<\/key>\s*<string>([^<]+)<\/string>/.exec(text) ?? /^Environment="ANDON_TAILNET_HOST=([^"]+)"$/m.exec(text);
+  return m?.[1] ?? null;
 }
 function envPort(env) {
   const raw = env.ANDON_PORT;
@@ -5626,14 +6493,77 @@ async function bootout(host, uid) {
 }
 var named = (m) => m.kind === "launchd" ? LABEL : UNIT;
 var urlOf = (port) => `http://127.0.0.1:${port}/`;
-async function install(host, m) {
-  const spec = unitSpec(host);
-  const port = envPort(host.env) ?? DEFAULT_PORT;
-  const holder = await host.portHolder(port);
-  if (holder !== null && holder !== (await unitState(host, m)).pid) {
-    throw new Error(`service: port ${port} is held by pid ${holder}, not the installed Andon service; stop it, then run factory service install again`);
+var tailnetUrlOf = (name, port) => `https://${name}:${port}/`;
+var get = (v, k) => typeof v === "object" && v !== null && !Array.isArray(v) ? Reflect.get(v, k) : undefined;
+function parseJson(text) {
+  try {
+    const v = JSON.parse(text);
+    return v;
+  } catch {
+    return;
   }
-  const existed = await host.fs.exists(m.unitPath);
+}
+function parseTailscaleStatus(stdout) {
+  const v = parseJson(stdout);
+  if (typeof v !== "object" || v === null)
+    return { ok: false, reason: "service: tailscale status --json did not print a JSON object" };
+  const state = get(v, "BackendState");
+  if (state !== "Running") {
+    return { ok: false, reason: `service: Tailscale is not running or logged out (BackendState ${typeof state === "string" ? state : "unknown"}); connect it, then run factory service install --tailnet again` };
+  }
+  const dns = get(get(v, "Self"), "DNSName");
+  const name = typeof dns === "string" ? dns.replace(/\.$/, "").toLowerCase() : "";
+  if (!isTailnetHost(name))
+    return { ok: false, reason: `service: Tailscale reports no MagicDNS name for this machine (Self.DNSName ${JSON.stringify(dns ?? null)}); turn on MagicDNS for the tailnet` };
+  const certs = get(v, "CertDomains");
+  const listed = Array.isArray(certs) && certs.some((c) => typeof c === "string" && c.replace(/\.$/, "").toLowerCase() === name);
+  if (!listed)
+    return { ok: false, reason: `service: HTTPS certificates are not enabled on this tailnet (CertDomains lacks ${name}); enable HTTPS in the Tailscale admin console, then run factory service install --tailnet again` };
+  return { ok: true, name };
+}
+function hasServeEntry(stdout, port) {
+  const v = parseJson(stdout);
+  if (typeof v !== "object" || v === null || Array.isArray(v))
+    return null;
+  const tcp = get(v, "TCP");
+  if (get(tcp, String(port)) !== undefined)
+    return true;
+  const web = get(v, "Web");
+  return typeof web === "object" && web !== null && Object.keys(web).some((k) => k.endsWith(`:${port}`));
+}
+async function tailscaleBin(host, why) {
+  const bin = await host.tailscale();
+  if (bin !== null)
+    return bin;
+  const where = host.platform === "darwin" ? `not on PATH, and not at ${TAILSCALE_APP}` : "not on PATH";
+  throw new Error(`service: no tailscale CLI found (${where}); ${why}`);
+}
+async function serveEntry(host, bin, port) {
+  const argv = tailscale.serveStatus(bin);
+  const r = await must(host, argv);
+  const has = hasServeEntry(r.stdout, port);
+  if (has === null)
+    throw new Error(`service: ${argv.join(" ")} did not print a JSON object`);
+  return has;
+}
+async function removeServeEntry(host, bin, port) {
+  if (!await serveEntry(host, bin, port))
+    return false;
+  await must(host, tailscale.off(bin, port));
+  return true;
+}
+var OPERATOR = /operator|access denied/i;
+async function makeServeEntry(host, bin, port) {
+  const argv = tailscale.serve(bin, port);
+  const r = await host.run(argv);
+  if (r.code === 0)
+    return;
+  if (host.platform === "linux" && OPERATOR.test(`${r.stderr}
+${r.stdout}`))
+    throw new Error(OPERATOR_LINE);
+  throw new Error(`service: ${argv.join(" ")} failed: ${lastLine(r.stderr) || lastLine(r.stdout) || `exit ${r.code}`}`);
+}
+async function writeAndStart(host, m, spec, existed) {
   if (m.kind === "launchd") {
     await host.fs.mkdir(dirname12(logPath2(host.home)));
     await host.fs.write(m.unitPath, renderPlist(spec));
@@ -5648,8 +6578,60 @@ async function install(host, m) {
     if (existed)
       await must(host, systemctl.restart());
   }
+}
+async function install(host, m, tailnet) {
+  const spec = unitSpec(host);
+  const port = envPort(host.env) ?? DEFAULT_PORT;
+  const holder = await host.portHolder(port);
+  if (holder !== null && holder !== (await unitState(host, m)).pid) {
+    throw new Error(`service: port ${port} is held by pid ${holder}, not the installed Andon service; stop it, then run factory service install again`);
+  }
+  const old = await host.fs.read(m.unitPath);
+  const existed = old !== null || await host.fs.exists(m.unitPath);
+  const oldName = old === null ? null : recordedTailnetHost(old);
+  const oldPort = old === null ? DEFAULT_PORT : recordedPort(old) ?? DEFAULT_PORT;
+  let name = null;
+  if (tailnet) {
+    const bin = await tailscaleBin(host, "install Tailscale, then run factory service install --tailnet again");
+    const self = parseTailscaleStatus((await must(host, tailscale.status(bin))).stdout);
+    if (!self.ok)
+      throw new Error(self.reason);
+    name = self.name;
+    spec.env.ANDON_TAILNET_HOST = name;
+    const had = await serveEntry(host, bin, port);
+    await makeServeEntry(host, bin, port);
+    try {
+      await writeAndStart(host, m, spec, existed);
+    } catch (e) {
+      try {
+        if (old === null)
+          await host.fs.remove(m.unitPath);
+        else
+          await host.fs.write(m.unitPath, old);
+      } catch {}
+      const why = e instanceof Error ? e.message : String(e);
+      if (!had && (await host.run(tailscale.off(bin, port))).code !== 0)
+        throw new Error(`${why}; removing the serve entry again failed too: run ${tailscale.off("tailscale", port).join(" ")}`);
+      throw e;
+    }
+    if (oldName !== null && oldPort !== port) {
+      try {
+        await removeServeEntry(host, bin, oldPort);
+      } catch (e) {
+        throw new Error(`${e instanceof Error ? e.message : String(e)}; the service is installed on port ${port}, but the old serve entry on https port ${oldPort} is still there: run ${tailscale.off("tailscale", oldPort).join(" ")}`);
+      }
+    }
+  } else {
+    if (oldName !== null)
+      await removeServeEntry(host, await tailscaleBin(host, `remove the serve entry on https port ${oldPort} (tailscale serve --https=${oldPort} off), then run factory service install again`), oldPort);
+    await writeAndStart(host, m, spec, existed);
+  }
   host.stdout(`${existed ? "reinstalled" : "installed"} ${named(m)}: ${m.unitPath}`);
   host.stdout(`Andon service: ${urlOf(port)} (runs ${spec.factory} service run)`);
+  if (name !== null)
+    host.stdout(`tailnet: ${tailnetUrlOf(name, port)}`);
+  else if (oldName !== null)
+    host.stdout("tailnet: off");
   if (m.kind === "systemd") {
     const linger = await host.run(lingerQuery(host.uid));
     if (linger.code === 0 && linger.stdout.trim() === "no")
@@ -5657,7 +6639,17 @@ async function install(host, m) {
   }
 }
 async function uninstall(host, m) {
-  const existed = await host.fs.exists(m.unitPath);
+  const text = await host.fs.read(m.unitPath);
+  const name = text === null ? null : recordedTailnetHost(text);
+  if (text !== null && name !== null) {
+    const port = recordedPort(text) ?? DEFAULT_PORT;
+    try {
+      await removeServeEntry(host, await tailscaleBin(host, `remove the serve entry on https port ${port} (tailscale serve --https=${port} off)`), port);
+    } catch (e) {
+      throw new Error(`${e instanceof Error ? e.message : String(e)}; the unit is kept`);
+    }
+  }
+  const existed = text !== null || await host.fs.exists(m.unitPath);
   if (m.kind === "launchd") {
     const loaded = (await unitState(host, m)).loaded;
     if (!existed && !loaded)
@@ -5724,20 +6716,24 @@ async function status(host, m) {
   host.stdout(`service: ${manager}, ${text === null ? "not installed" : `installed (${m.unitPath})`}`);
   host.stdout(`running: ${state.pid === null ? "no" : `pid ${state.pid}${body === null ? ", but not answering" : ""}`}`);
   host.stdout(`url: ${urlOf(port)}`);
+  const name = text === null ? null : recordedTailnetHost(text);
+  if (name !== null)
+    host.stdout(`tailnet: ${tailnetUrlOf(name, port)}`);
   host.stdout(releaseLine(body));
   host.stdout(`logs: ${m.kind === "launchd" ? logPath2(host.home) : JOURNAL}`);
   return running ? 0 : 1;
 }
 async function service(rest, host, tree) {
   const [sub, ...args] = rest;
-  if (args.length > 0)
+  const tailnet = sub === "install" && args.length === 1 && args[0] === "--tailnet";
+  if (args.length > 0 && !tailnet)
     throw new Error(SERVICE_USAGE);
   switch (sub) {
     case "run":
       await host.serve(tree);
       return 0;
     case "install":
-      await install(host, await manager(host));
+      await install(host, await manager(host), tailnet);
       return 0;
     case "uninstall":
       await uninstall(host, await manager(host));
@@ -5754,6 +6750,291 @@ async function service(rest, host, tree) {
   }
 }
 
+// packages/cli/src/peers.ts
+var PEERS_USAGE = "usage: peers add <machine|url> | remove <machine|url> | list";
+var PEER_TIMEOUT_MS2 = 1e4;
+function parse(rest) {
+  const [sub, ...args] = rest;
+  if (sub === "list" && args.length === 0)
+    return { kind: "list" };
+  const arg = args[0];
+  if ((sub === "add" || sub === "remove") && args.length === 1 && arg !== undefined && arg !== "")
+    return { kind: sub, arg };
+  throw new Error(PEERS_USAGE);
+}
+var isUrl = (arg) => arg.includes("://");
+var isRecord9 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var message5 = (e) => (e instanceof Error ? e.message : String(e)).split(`
+`)[0] ?? "";
+function tailnetPeerNames(stdout) {
+  let v;
+  try {
+    v = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (!isRecord9(v))
+    return null;
+  const peers = v.Peer;
+  if (!isRecord9(peers))
+    return [];
+  const out = [];
+  for (const p of Object.values(peers)) {
+    if (!isRecord9(p) || typeof p.DNSName !== "string")
+      continue;
+    const name = p.DNSName.replace(/\.$/, "").toLowerCase();
+    if (name !== "")
+      out.push(name);
+  }
+  return out;
+}
+async function resolveMachine(host, name) {
+  const bin = await host.tailscale();
+  if (bin === null)
+    throw new Error(`peers: no tailscale CLI found, so ${name} can't be resolved; install Tailscale, or give the peer as an https:// URL`);
+  const argv = tailscale.status(bin);
+  const r = await host.run(argv);
+  if (r.code !== 0)
+    throw new Error(`peers: ${argv.join(" ")} failed: ${r.stderr.trim().split(`
+`).at(-1) || `exit ${r.code}`}`);
+  const names = tailnetPeerNames(r.stdout);
+  if (names === null)
+    throw new Error(`peers: ${argv.join(" ")} did not print a JSON object`);
+  const dns = names.find((n) => n.split(".")[0] === name);
+  if (dns === undefined)
+    throw new Error(`peers: no tailnet peer named ${name} (tailscale status --json)`);
+  return normalizePeerUrl(`https://${dns}:${DEFAULT_PORT}`);
+}
+async function ownMachineName(host) {
+  try {
+    const text = await host.fs.read((await manager(host)).unitPath);
+    const tailnet = text === null ? null : recordedTailnetHost(text);
+    if (tailnet !== null)
+      return machineName(tailnet);
+  } catch {}
+  return machineName(host.hostname);
+}
+var UPGRADE2 = "run factory upgrade and factory service restart on that machine";
+async function get2(host, url, path) {
+  try {
+    return await host.getJson(`${url}${path}`, PEER_TIMEOUT_MS2);
+  } catch (e) {
+    if (e instanceof GetJsonError) {
+      if (e.kind === "redirect")
+        throw new Error(`peers: ${url} answered GET ${path} with a redirect (HTTP ${e.status}), which is never followed; nothing written`);
+      if (e.kind === "status" && e.status === 404 && path === "/machines")
+        throw new Error(`peers: ${url} runs an Andon service from before peers (no GET /machines); ${UPGRADE2}, then add it again`);
+      throw new Error(`peers: ${url} is not an Andon service (GET ${path}: ${e.message}); nothing written`);
+    }
+    throw new Error(`peers: ${url} is not reachable (GET ${path}: ${message5(e)}); is its Andon service installed with factory service install --tailnet?`);
+  }
+}
+function reportedName(body) {
+  if (!isRecord9(body) || !Array.isArray(body.machines))
+    return null;
+  const first = body.machines[0];
+  if (!isRecord9(first) || typeof first.name !== "string" || !isMachineName(first.name))
+    return null;
+  return first.name;
+}
+async function probe(host, url) {
+  const machines = await get2(host, url, "/machines");
+  const name = reportedName(machines);
+  if (name === null)
+    throw new Error(`peers: ${url} is not an Andon service (GET /machines is not { machines: [{ name, \u2026 }] }); nothing written`);
+  const projects = await get2(host, url, "/projects?scope=local");
+  if (!isRecord9(projects) || !Array.isArray(projects.projects) || !projects.projects.every((p) => isRecord9(p) && typeof p.id === "string")) {
+    throw new Error(`peers: ${url} is not an Andon service (GET /projects?scope=local is not { projects: [{ id, \u2026 }] }); nothing written`);
+  }
+  if (!projects.projects.every((p) => isRecord9(p) && typeof p.machine === "string" && typeof p.id === "string" && !p.id.includes("@"))) {
+    throw new Error(`peers: ${url} runs an Andon service from before peers (its projects carry no machine); ${UPGRADE2}, then add it again`);
+  }
+  return name;
+}
+async function listedName(host, url) {
+  try {
+    return reportedName(await host.getJson(`${url}/machines`, PEER_TIMEOUT_MS2));
+  } catch {
+    return null;
+  }
+}
+async function add(file, arg, io, listed) {
+  let url;
+  if (isUrl(arg))
+    url = normalizePeerUrl(arg);
+  else if (isMachineName(arg.toLowerCase()))
+    url = "";
+  else
+    throw new Error(`peers: ${JSON.stringify(arg)} is neither a machine name nor an https:// URL`);
+  if (io.host === undefined)
+    throw new Error("peers: no machine configured to reach peers through");
+  const host = await io.host();
+  if (url === "")
+    url = await resolveMachine(host, arg.toLowerCase());
+  if (listed.includes(url)) {
+    io.stdout(`already listed: ${url}`);
+    return 0;
+  }
+  const name = await probe(host, url);
+  const own = await ownMachineName(host);
+  if (name === own)
+    throw new Error(`peers: ${url} reports this machine's own name ${name}; nothing written`);
+  for (const other of listed) {
+    if (await listedName(host, other) === name)
+      throw new Error(`peers: ${url} reports the name ${name}, already the name of ${other}; nothing written`);
+  }
+  await addPeer(file, url);
+  io.stdout(`added ${name} ${url}`);
+  return 0;
+}
+async function remove(file, arg, io, listed) {
+  let match;
+  if (isUrl(arg)) {
+    let norm = null;
+    try {
+      norm = normalizePeerUrl(arg);
+    } catch {
+      norm = null;
+    }
+    match = listed.filter((u) => u === norm);
+  } else {
+    const name = arg.toLowerCase();
+    match = listed.filter((u) => peerLabel(u) === name);
+  }
+  const [url, ...more] = match;
+  if (url === undefined)
+    throw new Error(`not listed: ${arg}`);
+  if (more.length > 0)
+    throw new Error(`peers: ${arg} names more than one peer (${match.join(", ")}); remove one by its URL`);
+  await removePeer(file, url);
+  io.stdout(`removed ${url}`);
+  return 0;
+}
+async function peers(rest, io) {
+  const cmd = parse(rest);
+  if (io.peers === undefined)
+    throw new Error("peers: no peers file configured");
+  const file = io.peers;
+  const listed = (await readPeers(file)).peers.map((p) => p.url);
+  if (cmd.kind === "list") {
+    if (listed.length === 0)
+      io.stdout("no peers");
+    for (const url of listed)
+      io.stdout(url);
+    return 0;
+  }
+  if (cmd.kind === "remove")
+    return remove(file, cmd.arg, io, listed);
+  return add(file, cmd.arg, io, listed);
+}
+
+// packages/cli/src/projects.ts
+import { stat as stat5 } from "fs/promises";
+import { dirname as dirname13, join as join18, resolve as resolve10, sep as sep4 } from "path";
+var PROJECTS_USAGE = "usage: projects [prune [--dry-run] | remove <path>]";
+var code = (e) => typeof e === "object" && e !== null && ("code" in e) ? e.code : undefined;
+var fsProbe = async (path) => {
+  try {
+    const s = await stat5(path);
+    return { dev: s.dev, dir: s.isDirectory() };
+  } catch (e) {
+    const c = code(e);
+    if (c === "ENOENT" || c === "ENOTDIR")
+      return null;
+    throw e;
+  }
+};
+async function rootState(root, probe) {
+  if (await probe(root) === null)
+    return "missing";
+  const factory = await probe(join18(root, "factory"));
+  return factory !== null && factory.dir ? "ok" : "not a factory project";
+}
+var VOLUME_PREFIXES = ["/Volumes", "/media", "/run/media", "/mnt"];
+function volumePrefix(root) {
+  const norm = resolve10(root);
+  return VOLUME_PREFIXES.find((p) => norm.startsWith(p + sep4) && norm.length > p.length + 1) ?? null;
+}
+async function volumeUnmounted(root, probe) {
+  const prefix = volumePrefix(root);
+  if (prefix === null)
+    return false;
+  let dir = resolve10(root);
+  while (dir !== prefix) {
+    const here = await probe(dir);
+    if (here !== null) {
+      const parent = await probe(dirname13(dir));
+      if (parent !== null && parent.dev !== here.dev)
+        return false;
+    }
+    dir = dirname13(dir);
+  }
+  return true;
+}
+function parse2(rest) {
+  const [sub, ...args] = rest;
+  if (sub === undefined)
+    return { kind: "list" };
+  if (sub === "prune") {
+    if (args.length === 0)
+      return { kind: "prune", dryRun: false };
+    if (args.length === 1 && args[0] === "--dry-run")
+      return { kind: "prune", dryRun: true };
+  }
+  if (sub === "remove" && args.length === 1 && args[0] !== undefined && args[0] !== "")
+    return { kind: "remove", path: args[0] };
+  throw new Error(PROJECTS_USAGE);
+}
+var NONE = "no projects registered";
+async function projects(rest, io) {
+  const cmd = parse2(rest);
+  if (io.registry === undefined)
+    throw new Error("projects: no Andon registry configured");
+  const file = io.registry;
+  const probe = io.probe ?? fsProbe;
+  const registry = await readRegistry(file);
+  if (cmd.kind === "remove") {
+    const root = resolve10(io.cwd ?? process.cwd(), cmd.path);
+    if (!registry.projects.some((p) => p.root === root)) {
+      io.stdout(`not registered: ${root}`);
+      return 0;
+    }
+    await removeRoot(file, root);
+    io.stdout(`removed ${root}`);
+    return 0;
+  }
+  if (registry.projects.length === 0) {
+    io.stdout(NONE);
+    return 0;
+  }
+  const checked = [];
+  for (const { root } of registry.projects) {
+    checked.push({ root, state: await rootState(root, probe), unmounted: await volumeUnmounted(root, probe) });
+  }
+  if (cmd.kind === "list") {
+    for (const c of checked)
+      io.stdout(`${c.state}  ${c.root}${c.unmounted ? "  (volume not mounted)" : ""}`);
+    return 0;
+  }
+  let acted = false;
+  for (const c of checked) {
+    if (c.state === "ok")
+      continue;
+    acted = true;
+    if (c.unmounted) {
+      io.stdout(`skipped ${c.root}: volume not mounted`);
+    } else if (cmd.dryRun) {
+      io.stdout(`would remove ${c.root} (${c.state})`);
+    } else {
+      await removeRoot(file, c.root);
+      io.stdout(`removed ${c.root} (${c.state})`);
+    }
+  }
+  if (!acted)
+    io.stdout("nothing to prune");
+  return 0;
+}
+
 // packages/cli/src/index.ts
 var serviceTree = (origin) => origin.kind === "source" ? sourceTree(origin.root) : bundleTree(origin.root);
 var SOURCE_ORIGIN = { kind: "source", root: SOURCE_ROOT, files: SOURCE_RELEASE };
@@ -5763,6 +7044,7 @@ var USAGE2 = {
   upgrade: "usage: upgrade [--force]",
   version: "usage: --version",
   projects: PROJECTS_USAGE,
+  peers: PEERS_USAGE,
   service: SERVICE_USAGE,
   source: `${USAGE.all} | doctor | init [--force] | upgrade [--force] | --version`
 };
@@ -5795,6 +7077,8 @@ function run(argv, io, origin = SOURCE_ORIGIN) {
     }
     if (cmd === "projects")
       return projects(rest, { registry: io.registry, stdout: io.stdout });
+    if (cmd === "peers")
+      return peers(rest, { peers: io.peers, stdout: io.stdout, ...io.service === undefined ? {} : { host: io.service } });
     if (cmd === "service") {
       if (io.service === undefined)
         throw new Error("service: no service host configured");
@@ -5805,11 +7089,12 @@ function run(argv, io, origin = SOURCE_ORIGIN) {
 }
 
 // packages/cli/src/servicehost.ts
+import { randomUUID } from "crypto";
 import { existsSync as existsSync2 } from "fs";
-import { mkdir as mkdir8, readFile as readFile11, realpath as realpath4, rename as rename5, rm as rm7, writeFile as writeFile3 } from "fs/promises";
-import { homedir as homedir2 } from "os";
-import { dirname as dirname13, isAbsolute as isAbsolute4, join as join18 } from "path";
-var isNotFound4 = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "ENOENT";
+import { mkdir as mkdir9, open as open4, readFile as readFile12, realpath as realpath4, rename as rename6, rm as rm8 } from "fs/promises";
+import { homedir as homedir3, hostname as hostname3 } from "os";
+import { basename as basename6, dirname as dirname14, isAbsolute as isAbsolute4, join as join19 } from "path";
+var isNotFound5 = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "ENOENT";
 async function spawnRun(argv) {
   try {
     const p = Bun.spawn([...argv], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
@@ -5834,6 +7119,12 @@ async function lookupPortHolder(port, run = spawnRun, platform = process.platfor
     return pid;
   return parseSs((await run(["ss", "-ltnpH", `sport = :${port}`])).stdout);
 }
+function findTailscale(platform, which = Bun.which, exists = existsSync2) {
+  const onPath = which("tailscale");
+  if (onPath !== null)
+    return onPath;
+  return platform === "darwin" && exists(TAILSCALE_APP) ? TAILSCALE_APP : null;
+}
 async function factoryCommand(main, candidates, resolve = realpath4) {
   let real;
   try {
@@ -5851,16 +7142,49 @@ async function factoryCommand(main, candidates, resolve = realpath4) {
   }
   return main;
 }
+function unitTempPath(unit) {
+  return join19(dirname14(unit), `.${basename6(unit)}.${randomUUID()}.tmp`);
+}
+async function writeUnitFile(unit, text, tmp = unitTempPath(unit)) {
+  await mkdir9(dirname14(unit), { recursive: true });
+  const fh = await open4(tmp, "wx", 420);
+  try {
+    try {
+      await fh.writeFile(text, "utf8");
+      await fh.chmod(420);
+    } finally {
+      await fh.close();
+    }
+    await rename6(tmp, unit);
+  } catch (e) {
+    await rm8(tmp, { force: true });
+    throw e;
+  }
+}
+async function getJson(url, timeoutMs = 2000, transport = fetch) {
+  const res = await transport(url, { redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
+  if (res.status >= 300 && res.status < 400)
+    throw new GetJsonError("redirect", res.status);
+  if (!res.ok)
+    throw new GetJsonError("status", res.status);
+  const text = await res.text();
+  try {
+    const body = JSON.parse(text);
+    return body;
+  } catch {
+    throw new GetJsonError("not json", res.status);
+  }
+}
 function systemdUser(uid, env) {
   const runtime = env.XDG_RUNTIME_DIR ?? `/run/user/${uid}`;
-  return existsSync2("/run/systemd/system") && Bun.which("systemctl") !== null && existsSync2(join18(runtime, "systemd", "private"));
+  return existsSync2("/run/systemd/system") && Bun.which("systemctl") !== null && existsSync2(join19(runtime, "systemd", "private"));
 }
 async function realServiceHost(stdout) {
   const env = process.env;
   const uid = process.getuid?.() ?? -1;
   return {
     platform: process.platform,
-    home: env.HOME !== undefined && isAbsolute4(env.HOME) ? env.HOME : homedir2(),
+    home: env.HOME !== undefined && isAbsolute4(env.HOME) ? env.HOME : homedir3(),
     uid,
     env,
     factory: await factoryCommand(Bun.main, [env._, Bun.which("factory")]),
@@ -5868,35 +7192,26 @@ async function realServiceHost(stdout) {
     run: spawnRun,
     systemd: async () => systemdUser(uid, env),
     portHolder: (port) => lookupPortHolder(port),
+    tailscale: async () => findTailscale(process.platform),
     fs: {
       exists: async (path) => existsSync2(path),
       read: async (path) => {
         try {
-          return await readFile11(path, "utf8");
+          return await readFile12(path, "utf8");
         } catch (e) {
-          if (isNotFound4(e))
+          if (isNotFound5(e))
             return null;
           throw e;
         }
       },
-      write: async (path, text) => {
-        await mkdir8(dirname13(path), { recursive: true });
-        const tmp = `${path}.${process.pid}.tmp`;
-        await writeFile3(tmp, text, { mode: 420 });
-        await rename5(tmp, path);
-      },
+      write: (path, text) => writeUnitFile(path, text),
       mkdir: async (path) => {
-        await mkdir8(path, { recursive: true });
+        await mkdir9(path, { recursive: true });
       },
-      remove: (path) => rm7(path, { force: true })
+      remove: (path) => rm8(path, { force: true })
     },
-    getJson: async (url) => {
-      const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
-      if (!res.ok)
-        throw new Error(`HTTP ${res.status}`);
-      const body = await res.json();
-      return body;
-    },
+    hostname: hostname3(),
+    getJson: (url, timeoutMs) => getJson(url, timeoutMs),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     serve,
     stdout
@@ -5905,9 +7220,10 @@ async function realServiceHost(stdout) {
 
 // packages/cli/src/release-main.ts
 process.exitCode = await run(process.argv.slice(2), {
-  root: join19(process.cwd(), "factory"),
+  root: join20(process.cwd(), "factory"),
   registry: registryPath(process.env.ANDON_HOME),
+  peers: peersPath(process.env.ANDON_HOME),
   stdout: (line) => console.log(line),
   stderr: (line) => console.error(line),
   service: () => realServiceHost((line) => console.log(line))
-}, { kind: "release", root: join19(import.meta.dir, ".."), files: bakedRelease(join19(import.meta.dir, "..")) });
+}, { kind: "release", root: join20(import.meta.dir, ".."), files: bakedRelease(join20(import.meta.dir, "..")) });

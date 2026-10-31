@@ -1,4 +1,4 @@
-<!-- factory 0.2.0 · managed file, do not edit: it is replaced on upgrade. This is the installed copy of the factory/v1 contract -->
+<!-- factory 0.3.0 · managed file, do not edit: it is replaced on upgrade. This is the installed copy of the factory/v1 contract -->
 # Factory state contract — `factory/v1`
 
 The fixed interface between a factory run and anything that observes it (the dashboard today,
@@ -664,7 +664,11 @@ factory upgrade [--force]                              # (source or release bund
 factory projects                                       # (source or release bundle) list the Andon registry's roots and their state
 factory projects prune [--dry-run]                     # (source or release bundle) unregister the dead roots
 factory projects remove <path>                         # (source or release bundle) unregister one root
+factory peers list                                     # (source or release bundle) list the Andon peers this machine's service follows
+factory peers add <machine|url>                        # (source or release bundle) check a peer's Andon service and list it
+factory peers remove <machine|url>                     # (source or release bundle) unlist a peer
 factory service install                                # (source or release bundle) make the Andon service a per-user OS service and start it
+factory service install --tailnet                      # (source or release bundle) the same, and publish it on the tailnet with tailscale serve
 factory service uninstall                              # (source or release bundle) stop and disable it and remove the unit
 factory service start                                  # (source or release bundle) start it (launchctl / systemctl --user)
 factory service stop                                   # (source or release bundle) stop it
@@ -1000,10 +1004,52 @@ one registry write (temp file plus rename). Exit 0 on success. A usage error pri
 `usage: projects [prune [--dry-run] | remove <path>]`, and an unreadable or invalid registry its
 one-line reason; each exits 1 and writes nothing.
 
+### `peers`
+
+`factory peers add <machine|url> | remove <machine|url> | list` (from the global `factory`
+command, source or release bundle) works on the machine's Andon peers file (see "Andon peers"),
+`$ANDON_HOME/peers.json`, the other machines' Andon services this machine's service follows. It
+is the file's only writer. Listing a peer makes its data readable through this machine's service
+(see "Andon service", "Peers", *Exposure*). Like `projects`, it needs no `factory/` directory in the cwd and reads
+no config; no command runs `sudo`. *(Added within v1, additively: a new command.)*
+
+- `factory peers list` prints one stdout line per peer, its URL, in file order, or `no peers`
+  when there is none (a missing or empty file). It writes nothing.
+- `factory peers add <machine>` resolves a short machine name (letters, digits, and `-`,
+  matched case-insensitively, as `remove <machine>` matches it) through `tailscale status --json` (the `tailscale` CLI found as `service install --tailnet`
+  finds it): the first `Peer[*].DNSName`, its trailing dot stripped and lowercased, whose first
+  label is the name. The peer's URL is then `https://<DNSName>:8766` (the default service port);
+  any other port is given as a URL. `factory peers add <url>` takes the URL itself, normalized
+  (see "Andon peers"). Before it writes, it checks that the peer answers `GET /machines` and
+  `GET /projects?scope=local` in this version's shapes (see "Andon service"), reaching it only at
+  that URL, following no redirect, with about 10 s for each answer. It then adds the entry (temp
+  file plus rename) and prints `added <name> <url>`, where `<name>` is the machine name the peer
+  reports (the first entry of its `GET /machines`). Adding a URL that is already listed prints
+  `already listed: <url>`, writes nothing, and exits 0.
+- `add` refuses, printing one stderr line naming the cause, exit 1, leaving `peers.json` as it
+  was, when: there is no `tailscale` CLI, or `tailscale status --json` fails or names no tailnet
+  peer by that name; the argument is neither a machine name nor an `https:` URL, or the URL is
+  `http:` or otherwise not an `https:` origin; the peer is unreachable, or answers with a redirect
+  (never followed); the peer's answer isn't JSON in the expected shape (not an Andon service); the
+  peer is from before peers (its `GET /machines` is a 404, or its `scope=local` projects carry no
+  `machine` or an id with `@`), in which case the line names `factory upgrade` and
+  `factory service restart` on that machine; or the name it reports is this machine's own name
+  (the first label of the unit's recorded `ANDON_TAILNET_HOST`, else of the OS hostname,
+  sanitized as in "Andon service"), or the name an already-listed peer that answers reports.
+- `factory peers remove <url>` unlists the peer at that URL (normalized before matching), and
+  `factory peers remove <machine>` the peer whose URL's host has that first label; each prints
+  `removed <url>`. An argument that matches no listed peer prints `not listed: <arg>`, exits 1, and
+  writes nothing; a machine name that matches more than one URL exits 1 naming them, and writes
+  nothing.
+
+A usage error prints `usage: peers add <machine|url> | remove <machine|url> | list` and exits 1.
+An unreadable or invalid `peers.json` makes every subcommand print its one-line `peers:` reason
+and exit 1, writing nothing. Every refusal is one stderr line, exit 1, and writes nothing.
+
 ### `service`
 
-`factory service install | uninstall | start | stop | restart | status | run` (from the global
-`factory` command, source or release bundle) runs the machine's Andon service (see "Andon
+`factory service install [--tailnet] | uninstall | start | stop | restart | status | run` (from
+the global `factory` command, source or release bundle) runs the machine's Andon service (see "Andon
 service") as a per-user OS service, owned by the OS service manager only: on macOS a launchd
 LaunchAgent, label `dev.factory.andon`, at `~/Library/LaunchAgents/dev.factory.andon.plist`,
 in the `gui/<uid>` domain; on Linux a systemd `--user` unit, `andon.service`, at
@@ -1025,9 +1071,40 @@ in the `gui/<uid>` domain; on Linux a systemd `--user` unit, `andon.service`, at
   when it is off, prints one hint line naming `loginctl enable-linger`; it never changes
   lingering. It refuses, writing no unit and running no command that changes anything, when
   `127.0.0.1:<port>` is held by a process that isn't the installed unit's service (the line names
-  that pid and the port), when `ANDON_PORT` isn't a port number from 1 to 65535, or when
-  `ANDON_HOME` isn't an absolute path.
-- `uninstall` stops and disables the service and removes the unit file. The registry
+  that pid and the port), when `ANDON_PORT` isn't a port number from 1 to 65535, when
+  `ANDON_HOME` isn't an absolute path or contains a newline or NUL, or when the `factory` path,
+  the `bun` path, or the home directory isn't absolute or contains a newline or NUL (the line
+  names which one).
+- `install --tailnet` also makes the service readable from the user's other machines over
+  their tailnet, through `tailscale serve`; the service itself stays on `127.0.0.1`. After the
+  refusals above (which come first and run no `tailscale` command), it finds the `tailscale` CLI
+  (`tailscale` on `PATH`, else on macOS `/Applications/Tailscale.app/Contents/MacOS/Tailscale`)
+  and reads `tailscale status --json`: the machine's name is `Self.DNSName`, its trailing dot
+  stripped and lowercased (e.g. `studio.manticore-hue.ts.net`). It then runs
+  `tailscale serve --bg --https=<port> http://127.0.0.1:<port>`, where `<port>` is the service
+  port, before it writes the unit, and records the name in the unit as `ANDON_TAILNET_HOST`
+  beside `ANDON_PORT`. It prints the tailnet URL, `tailnet: https://<name>:<port>/`. When a unit
+  step fails after `tailscale serve` succeeded, it runs `tailscale serve --https=<port> off`
+  (unless that entry was there before) and puts the previous unit file back, so a recorded name
+  and its serve entry never part. Over a unit that records a tailnet host on another port, it
+  removes that port's entry after the new unit is running. It refuses with one stderr line,
+  exit 1, writing no unit and leaving no serve entry, when there is no `tailscale` CLI, when
+  Tailscale is not running or logged out (`BackendState` is not `Running`), when there is no
+  MagicDNS name, when HTTPS certificates are not enabled on the tailnet (`CertDomains` lacks the
+  name), or when `tailscale serve` fails; on Linux, when `tailscale serve` is denied for want of
+  an operator, the line is the one-time `sudo tailscale set --operator=$USER` instruction, which
+  the CLI never runs. Only the `--https=<port>` serve entry is ever changed; other serve entries
+  (443, for example) are left alone. Whether an entry exists is read from
+  `tailscale serve status --json`. Tailscale ACLs, and running `tailscale up` or `tailscale set`,
+  are the user's.
+- `install` without `--tailnet` records no `ANDON_TAILNET_HOST`, so it turns tailnet access off:
+  when the unit it replaces records one, it first removes that unit's `--https=<port>` serve entry
+  (`tailscale serve --https=<port> off`, run only when `tailscale serve status --json` shows it),
+  and prints `tailnet: off`; when that fails, it exits 1 with one line and keeps the unit. When
+  the unit records no tailnet host, it runs no `tailscale` command and the unit is as before.
+- `uninstall` stops and disables the service and removes the unit file. When the unit records a
+  tailnet host, it first removes that unit's `--https=<port>` serve entry (as `install` without
+  `--tailnet` does); when that fails, it exits 1 with one line and keeps the unit. The registry
   (`$ANDON_HOME/projects.json`) and the rest of `~/.andon/` are left untouched. With nothing
   installed it prints `not installed: <unit>` and exits 0.
 - `start`, `stop`, and `restart` pass through to the service manager: `systemctl --user
@@ -1035,10 +1112,11 @@ in the `gui/<uid>` domain; on Linux a systemd `--user` unit, `andon.service`, at
   kickstarts a loaded one), `stop` boots it out (it comes back at the next login or `start`), and
   `restart` runs `kickstart -k`. With no unit installed, each exits 1 naming `factory service
   install`. `restart` is the answer to Andon's "Restart service".
-- `status` prints five lines: the service manager, unit, and whether it is installed; whether it
+- `status` prints five lines (six when the unit records a tailnet host): the service manager, unit, and whether it is installed; whether it
   is running, with the pid the service manager reports; the URL
-  (`http://127.0.0.1:<port>/`, the port the unit records, else `$ANDON_PORT`, else 8766); the
-  running against the on-disk release, from the service's `GET /release` (with
+  (`http://127.0.0.1:<port>/`, the port the unit records, else `$ANDON_PORT`, else 8766); when
+  the unit records a tailnet host, the tailnet URL right after it,
+  `tailnet: https://<name>:<port>/`; the running against the on-disk release, from the service's `GET /release` (with
   `restart needed (factory service restart)` when they differ); and where the logs are
   (`~/.andon/service.log`, or `journalctl --user -u andon.service`). It exits 0 only when the
   service manager reports a pid and the service answers; else 1.
@@ -1048,7 +1126,8 @@ in the `gui/<uid>` domain; on Linux a systemd `--user` unit, `andon.service`, at
 
 On any platform other than macOS and Linux, or on Linux with no systemd `--user` manager, every
 subcommand but `run` exits 1 with one line and writes and runs nothing. A usage error prints
-`usage: service install|uninstall|start|stop|restart|status|run` and exits 1. Any other refusal,
+`usage: service install [--tailnet]|uninstall|start|stop|restart|status|run` and exits 1;
+`--tailnet` on any subcommand but `install`, or any other flag, is a usage error. Any other refusal,
 or a service-manager command that fails, exits 1 with one stderr line.
 
 ### Job archive — the `factory/archive` branch
@@ -1195,15 +1274,52 @@ changes nothing. `factory init` adds to it (see "`init` and `upgrade`"), and `fa
 prune` and `factory projects remove` remove roots from it (see "`projects`"); a human may also edit
 it by hand. Andon itself only reads it. The parse, add, and remove helpers are `packages/contract` (`registry.ts`).
 
+## Andon peers
+
+The peers file lists the other machines' Andon services this machine's service follows (see
+"Andon service", "Peers"). It is one file per machine, `$ANDON_HOME/peers.json`, beside the
+registry (`ANDON_HOME` defaults to `~/.andon`):
+
+```json
+{ "schema": "factory/v1", "peers": [{ "url": "https://studio.manticore-hue.ts.net:8766" }] }
+```
+
+`schema` must be `"factory/v1"`, and each `url` must be a normalized `https:` origin,
+`https://<host>[:<port>]`, lowercase: an `https:` URL with a host and an optional port (the
+default `443` dropped), with no user or password, no path other than `/`, no query, and no
+fragment, listed at most once. Unknown keys, at the top level or in a `peers` entry, are rejected
+with a one-line `peers:` reason, and nothing is written. A missing file is an empty list. It
+copies the registry's other rules: a write goes to a temp file beside it and is renamed into
+place, and adding a URL that is already listed, or removing one that is not, writes nothing.
+`factory peers add` and `factory peers remove` are its only writers (see "`peers`"); a human may
+also edit it by hand. The Andon service reads and watches it and never writes it, and Andon
+never edits it. A peer is reached as `tailscale serve` publishes it,
+`https://<machine>.<tailnet>.ts.net:<port>/` (see "`service`", `install --tailnet`). The parse,
+read, add, and remove helpers, and the machine-name derivation, are `packages/contract`
+(`peers.ts`). *(Added within v1, additively: a new file.)*
+
 ## Andon service
 
 The Andon service is one Bun daemon per machine (`factory service run`, made a per-user OS
 service by `factory service install`, see "`service`"; source `packages/andon-service`; in the
 release bundle, `andon/service.js`, built from `src/release-main.ts`). The OS service manager is
 its only owner: Andon, the Mac app, never starts or stops it. It listens on `127.0.0.1` only, on `$ANDON_PORT` (default 8766), and
-reads the registry at `$ANDON_HOME/projects.json`. It is a reader: it never writes job state.
+reads the registry at `$ANDON_HOME/projects.json` and the peers file at `$ANDON_HOME/peers.json`
+(see "Andon peers" and "Peers" below). It is a reader: it never writes job state, the registry, or
+`peers.json`.
 A request whose `Host` header is not `127.0.0.1:<port>` or `localhost:<port>`, or that carries an
 `Origin` other than `http://` plus one of those, is a 403 (a guard against DNS rebinding).
+When a tailnet host is recorded (`$ANDON_TAILNET_HOST`, written into the unit by
+`factory service install --tailnet`; see "`service`"), the guard also accepts exactly that name:
+a `Host` of `<name>:<port>` (in any case), and an `Origin` of `https://<name>:<port>`. Only that
+one name, on the service's own port: never another `*.ts.net` name, the name with no port or
+another port, or an `http://` origin for it. `tailscale serve` publishes the loopback service on
+HTTPS port `<port>` and passes the client's `Host` through. With no tailnet host, the guard is as
+above. A tailnet reader reads exactly what a loopback client may, behind the same guards; the
+service checks no identity and ignores `Tailscale-User-*` headers. `$ANDON_TAILNET_HOST` must
+be a lowercase DNS name (two or more labels, no port, scheme, path, whitespace, or trailing dot);
+any other value makes the service exit 1 with one `andon:` line before it listens, as a bad
+`$ANDON_PORT` does.
 Successful API responses are JSON (the UI routes below serve the UI's files); every response
 carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 405):
 
@@ -1224,7 +1340,22 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
   field; anything else (a pre-release or build suffix included) is not valid, so a manifest
   `version` of `"next"` is `{ installed: "next", state: "unknown" }`. `id`, `name`, and `root`
   are unchanged, and every project is still listed whatever its `release`. *(Added within v1,
-  additively: `release`.)*
+  additively: `release`.)* Each entry also carries `machine`, the machine name of the service
+  the project is on (see "Peers" below): this service's own name for its own projects. After this
+  machine's projects, in registry order, come the projects of each peer this service follows, in
+  `peers.json` order (see "Peers"). `GET /projects?scope=local` returns only this machine's
+  projects; only the exact value `local` opts in, and any other `scope` value, or none, is the
+  merged list. With no peers the two are the same. *(Added within v1, additively: `machine`, the
+  peers' projects, and `scope=local`.)*
+- `GET /machines` returns `{ machines: [{ name, url, state, since, reason, release }] }`: this
+  machine first, then each listed peer in `peers.json` order. `name` is the machine name (for a
+  peer not yet reached, its URL's first host label); `url` is this service's tailnet URL,
+  `https://<tailnet host>:<port>`, when it has one, else `http://127.0.0.1:<port>`, and a peer's
+  listed URL; `state` is one of `live`, `connecting`, `down`, or `error` (this machine is always
+  `live`); `since` is the ISO 8601 time the machine entered that state (this machine: when the
+  service started); `reason` is a one-line string, or `null` (always `null` for this machine); and
+  `release` is that service's `GET /release` `running` value (`null` when it can't be read). It
+  sits behind the same guards as every endpoint. *(Added within v1, additively: a new endpoint.)*
 - `GET /release` returns `{ running, onDisk, changelog }`, the factory release of the clone the
   service runs from (this repo's checkout; the process entry passes its root). Run from the
   release bundle, the clone is the bundle itself, and its root `package.json` (which carries the
@@ -1277,7 +1408,10 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
   never counts as a merge), and `epics` is the number of settled epics (`0` when there are none;
   settled epics never count toward `count`). Errors are as for the plain board. *(Added within
   v1, additively: a new query parameter; the plain response is unchanged. The summary's `epics`
-  and the narrow board's `epics` were added later within v1, additively.)*
+  and the narrow board's `epics` were added later within v1, additively.)* The narrow board also
+  carries `backlog: { queued, exploring }`, the lengths of `GET /projects/<pid>/backlog`'s
+  `queued` and `exploring` lists (below), read when the board is built; the plain board and
+  `/settled` never carry it. *(Added within v1, additively: the narrow board's `backlog`.)*
 - `GET /projects/<pid>/settled` returns `{ jobs, epics }`: only that project's settled jobs (by
   the rule above), sorted by id, in the same shape and under the same rules as the plain board's
   `jobs` (last good snapshot, unknown fields passed through, archived-only jobs included and
@@ -1309,6 +1443,23 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
   `factory/`: a symlink is never followed (a symlinked plan counts as missing, a symlinked
   brief is skipped), and nothing outside `factory/` is read. It sits behind the same guards as
   every endpoint. *(Added within v1, additively: a new endpoint.)*
+- `GET /projects/<pid>/backlog` returns `{ queued, exploring }`, the project's backlog (see
+  "Backlog in the service" below): `queued` is its `factory/backlog.md`'s open lines, in file
+  order, and `exploring` is its draft briefs and draft plans that no open line points at. Each
+  item is `{ kind, slug, title, done, status, members, abandoned }`. A project with no
+  `backlog.md`, `briefs/`, or `epics/` returns `{ queued: [], exploring: [] }`; an unknown `<pid>`
+  is a 404. It sits behind the same guards as every endpoint. *(Added within v1, additively: a
+  new endpoint.)*
+- `GET /projects/<pid>/briefs/<slug>` and `GET /projects/<pid>/plans/<slug>` return `{ path, text
+  }`: the exact text of `factory/briefs/<slug>.md` or `factory/epics/<slug>.md`, with `path`
+  relative to `factory/` (`briefs/<slug>.md`, `epics/<slug>.md`), as the docs endpoints do. The
+  slug is checked against `^[a-z0-9]+(-[a-z0-9]+)*$`, on the request path as sent (never
+  decoded), before any path is built: a slug that fails it (`..`, an encoded `..` or `/`,
+  uppercase, empty, or a leading, trailing, or doubled `-`) is a 404 and reads nothing. The file
+  is read only as a regular file that resolves inside the project's `factory/`: a missing file, a
+  directory, and a symlink (even one pointing inside `factory/`) are each a 404, and nothing
+  outside `factory/` is read. An unknown `<pid>` is a 404. They sit behind the same guards as
+  every endpoint. *(Added within v1, additively: new endpoints.)*
 - `GET /` returns the Andon UI's `index.html`, and `GET /<path>` returns that file of the UI
   build (from source `apps/andon-ui/dist`, built by `bun run andon:ui:build`; from the release
   bundle, its `andon/ui/`), read-only. The URL path is decoded,
@@ -1325,10 +1476,13 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
   line; no `'unsafe-inline'` or `'unsafe-eval'`). Only successful UI route responses carry it:
   API responses, `/events`, and every 403, 405, and 404 are unchanged. *(Added within v1,
   additively: a new response header on the UI routes; no status, body, or other header changed.)*
-- An unknown `<pid>`, a malformed job id or epic slug, or any other path not served by the UI routes is a 404.
+- An unknown `<pid>`, a malformed job id, epic slug, or brief or plan slug, or any other path not served by the UI routes is a 404.
 - `GET /events` is a `text/event-stream` of these events, each `data` one JSON line:
   - `projects`: `{ projects: [{ id, name, root, release }] }`, with `name` and `release`
-    resolved as in `GET /projects`. Sent once on connect, again whenever the registry's list of
+    resolved as in `GET /projects`, and each entry's `machine` and the peers' projects as there
+    (*added within v1, additively*). A hub also re-sends it (with the merged list, to every client
+    but `scope=local` ones) whenever a live peer's projects change, a peer goes `live`, or
+    `peers.json` changes (see "Peers"). Sent once on connect, again whenever the registry's list of
     projects changes, again whenever a project's resolved name changes (its `config.json` gains,
     changes, or drops `name`, or turns invalid or valid), and again whenever a project's
     `release.installed` or `release.state` changes (its `factory/managed.json` is written, as by
@@ -1347,12 +1501,31 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
     included. A burst of changes is debounced to one `board` event per project (at most about
     100 ms of delay). *(Added within v1, additively: `epics`, and the re-send on a plan edit.
     There is no separate epic event.)*
+  - `backlog`: `{ project: <pid> }`, sent to every client (plain and narrow) when that project's
+    `factory/backlog.md`, a file in its `factory/briefs/`, or a plan file in its `factory/epics/`
+    is created, edited, replaced, or removed, debounced like `board` to one `backlog` event per
+    project per burst. It carries no list: a client re-fetches `GET /projects/<pid>/backlog`.
+    The same burst sends narrow clients a fresh narrow `board` event, so its `backlog` counts
+    update; a burst that touches only `backlog.md` or `briefs/` sends plain clients no `board`
+    event. *(Added within v1, additively: a new event.)*
   - `error`: `{ project: <pid>, reason: "config.json: <reason>" }`, sent instead of `board` when
     that project's `config.json` is bad.
+  - `machines`: the `GET /machines` body, `{ machines: [...] }`. Sent once on connect, right
+    after the first `release` event, and again to every client (but `scope=local` ones, below)
+    whenever an entry changes (a peer
+    listed or unlisted, or a peer's state, reason, name, or release changing). *(Added within v1,
+    additively: a new event.)*
+
+  `GET /events?scope=local` is the same stream with only this machine's data: its `projects`
+  events list only this machine's projects, it gets no peer's `board`, `backlog`, or `error`
+  events, and its one `machines` event (on connect) lists only this machine. Only the exact value
+  `local` opts in; it combines with `settled=summary`. With no peers it is the plain stream.
+  *(Added within v1, additively: a new query parameter.)*
 
   `GET /events?settled=summary` is the same stream for a *narrow client*: its `projects` and
-  `error` events are as above, and each of its `board` events is the narrow form
-  `{ project: <pid>, jobs, config, settled, epics }`, with `jobs`, `settled`, and `epics` as in
+  `error` events (and its `backlog` events) are as above, and each of its `board` events is the
+  narrow form `{ project: <pid>, jobs, config, settled, epics, backlog }`, with `jobs`,
+  `settled`, `epics`, and `backlog` (*added within v1, additively*) as in
   `GET /projects/<pid>/board?settled=summary`. Only the exact value `summary` opts in; with no
   `settled` parameter, or any other value, the stream is the plain one above, unchanged. Plain and
   narrow clients may be connected at once: a change sends each client its own form of the same
@@ -1377,8 +1550,12 @@ The service finds changes with `fs.watch`, never by polling: one recursive watch
 `factory/jobs/` (which covers `factory/jobs/epics/`), one non-recursive watch on its `factory/`
 (for `config.json`), one non-recursive watch on its `factory/epics/` (plan files; a
 `factory/epics/` created after startup is watched once the `factory/` watch sees it appear), and
-one on the registry file's directory. *(Added within v1, additively: the `factory/epics/`
-watch.)* A project's `factory/managed.json` is seen by the existing non-recursive `factory/` watch
+one non-recursive watch on its `factory/briefs/` (brief files; a `factory/briefs/` created after
+startup is watched once the `factory/` watch sees it appear), and one on the registry file's
+directory. *(Added within v1, additively: the `factory/epics/` watch, and later the
+`factory/briefs/` watch.)* `factory/backlog.md` is seen by the existing non-recursive `factory/`
+watch. The `factory/briefs/` watch is closed when the project leaves the registry or the service
+stops. A project's `factory/managed.json` is seen by the existing non-recursive `factory/` watch
 (which ignores dot-named entries, such as the installer's temp files), so it needs no watch of
 its own. The clone the service runs from has two non-recursive watches: one on its root (for
 `CHANGELOG.md` only) and one on its `packages/templates/` (for `package.json` only); from the
@@ -1390,6 +1567,85 @@ watches its main repo's refs): non-recursive watches on `refs/heads/factory/` (a
 on `refs/heads/` (for `factory/` appearing, so a branch created after startup is seen), and on the
 common dir itself for `packed-refs` only (`git pack-refs`, `git update-ref`). It never watches or
 serves `factory/.worktrees/` or `factory/.lock/`. An invalid registry edit keeps the current list.
+`peers.json` is watched like the registry, on its directory (the same watch when they share it,
+as they do by default), debounced; an unreadable or invalid `peers.json` edit keeps the current
+peers and logs one line. *(Added within v1, additively: the peers watch.)*
+
+**Peers.** A service that lists peers in `peers.json` (see "Andon peers") is a *hub*: it follows
+each peer's own projects and serves them beside its own, so a client that connects to one service
+sees every machine. It stays read-only, and it follows one hop only: it asks each peer for its
+local data (`scope=local`) and never passes on what that peer follows, so machines may list each
+other with no cycle or duplicate. *(Added within v1, additively: everything in this paragraph and
+the list below. With no `peers.json`, or an empty one, a service serves exactly what it did before,
+plus `machine` on each project, `GET /machines` listing only itself, and the `machines` event.)*
+
+- *The machine name.* With a tailnet host (`$ANDON_TAILNET_HOST`), it is that host's first label
+  (`studio.manticore-hue.ts.net` is `studio`). Otherwise it is the OS hostname's first label,
+  lowercased, with every character outside `[a-z0-9-]` made `-`, leading and trailing `-` trimmed,
+  and `local` when nothing is left (`Rocinante.local` is `rocinante`). It never contains `@`, so a
+  service never refuses to start because of its hostname. `factory peers` derives this machine's
+  name the same way (`machineName`, `packages/contract`).
+- *Ids.* This machine's projects keep their bare 12-hex ids. A peer's project is served as
+  `<pid>@<machine>` (e.g. `1a2b3c4d5e6f@studio`), its `machine` that peer's name, every other
+  field of the peer's entry passed through unchanged. The same id names it on every endpoint
+  (`/projects/<id>/board`, `/settled`, `/jobs/<id>/docs`, `/epics/<slug>/docs`, `/backlog`,
+  `/briefs/<slug>`, `/plans/<slug>`) and in every event's `project`. In a request path, `@` may
+  also be written `%40` (as `encodeURIComponent` writes it). An id whose part before `@` isn't 12
+  lowercase hex characters, one with a second `@`, or one naming a machine that isn't a listed peer
+  (or is one in `error`) is a 404, and sends no request.
+- *Following.* The hub reaches each peer only at its listed URL, over HTTPS, through the
+  transport, and follows no redirect: a 3xx answer is a failure, never followed. It first reads
+  the peer's `GET /machines`; the peer's own entry is its first, and the hub learns the peer's
+  name and `release` from it. Then it follows the peer with exactly two streams while it is
+  reachable, `GET /events?scope=local` and `GET /events?scope=local&settled=summary`, and never
+  polls: the peer's `projects` events set its projects (a change in a `live` peer's list re-sends
+  the merged `projects` event to every client but `scope=local` ones), and its `board`, `backlog`, and `error`
+  events reach the hub's clients of the matching form (plain from the first stream, narrow from
+  the second; the peer's own settle timers drive narrow re-sends) with `project` rewritten to
+  `<pid>@<machine>`. A peer's `release` and `machines` events are not passed on: `/release` and
+  its event stay the hub's own. When a peer goes `live` (both streams open), the hub reads each
+  of its projects' boards once, in both forms, and sends them as `board` events, so a reconnect
+  brings fresh boards. The hub keeps, in memory only, the peer's projects and the last board of
+  each form for each of them.
+- *States.* A listed peer is `connecting` until both streams are open, then `live`. When it
+  can't be reached, or a stream drops (a network error, a 5xx to its `GET /machines` or a stream
+  open, such as `tailscale serve`'s 502, or no answer within about 10 s), it is `down`: its
+  projects stay listed with their last boards, never removed. The hub reconnects with a backoff from 3 s, doubling, up to about 60 s, back to
+  3 s once it is `live` again; a `down` peer that answers again is `connecting`, then `live`, and
+  fresh `projects` and `board` events follow. A hub started while a peer is down lists it `down`
+  with no projects. Nothing about peers is persisted.
+- *Errors.* A peer is `error`, and none of its projects or events are merged, when: it is from
+  before peers (its `GET /machines` is a 404, its `scope=local` projects carry no `machine`, or an
+  id containing `@`), with a reason naming `factory upgrade` and `factory service restart` on that
+  machine; it answers but not as an Andon service (not JSON in these shapes, or a redirect); or it
+  reports this hub's own machine name, or the same name as an earlier peer in `peers.json` (the
+  later or clashing peer is `error`, with a reason naming the clash). A peer in `error` for a name
+  clash is retried when `peers.json` changes; any other is retried on the backoff and stays
+  `error`, with its `since`, while nothing changes.
+- *Releases.* A peer on another release passes through unchanged: its boards, docs, and events
+  are served as it sends them, and its `release` shows on its machine entry.
+- *Forwarded reads.* A read of a peer's project (every endpoint above) is forwarded to the peer
+  on demand, not cached ahead: the hub sends `GET <peer url>/projects/<pid>/…` with the same path
+  after the id and the same query, and returns the peer's status and body, whatever the status (a
+  4xx or 5xx included: a peer project's bad `config.json` is the peer's 500 with its
+  `config.json: <reason>` text), with `cache-control: no-store` and a `content-type` of JSON (when
+  the peer's is) or plain text. A body larger than 32 MiB is a 502 naming the machine. The
+  job id, epic slug, or brief or plan slug is checked by the same rules as for a local project
+  first; one that fails is a 404 that sends no request. A forwarded read that fails on a `live`
+  peer (a network error, a redirect, or no answer within about 10 s) is a 502 whose text names the
+  machine. While a peer is not `live`, `GET /projects/<pid>@<machine>/board` serves the last board
+  of the requested form the hub holds (plain, or narrow with `?settled=summary`), and is a 502
+  naming the machine when it holds none; every other read for it is a 502 whose text names the
+  machine. Forwarded responses sit behind the same guards as every endpoint (the `Host`/`Origin`
+  403, `GET` only).
+- *Changes.* Editing `peers.json` applies with no restart: a listed peer is followed, an unlisted
+  one dropped (its projects leave the list), and every client gets fresh `projects` and `machines`
+  events. The hub's own listener stays on `127.0.0.1`; peers are read through `tailscale serve`
+  (see "`service`").
+- *Exposure.* A hub re-serves its peers' data: anyone who can read the hub (on loopback, or over
+  the tailnet when it is published with `install --tailnet`) can read every listed peer's
+  projects through it, even a tailnet device that Tailscale ACLs keep from reaching the peer
+  itself. Peer values other than `id` and `machine` are passed through as the peer sent them.
 
 **Archived jobs.** A job whose `factory/jobs/<id>/` is gone (pruned, or never there on a fresh
 clone) but which is on the local `factory/archive` branch (see "Job archive") is still served by
@@ -1443,6 +1699,38 @@ named by an epic slug; see "Epics in the service"). *(Added within v1, additivel
 *(Added within v1, additively: epics in the service. A project with no epics serves exactly what
 it did before plus `epics: []`, and `epics: 0` in the narrow summary; jobs with no `epic` settle
 exactly as before.)*
+
+**Backlog in the service.** `GET /projects/<pid>/backlog` and the narrow board's `backlog` counts
+are read, per request and per build, from three fixed paths only: `factory/backlog.md`, the
+`<slug>.md` files of `factory/briefs/`, and those of `factory/epics/`, each named by a slug
+(`^[a-z0-9]+(-[a-z0-9]+)*$`) and read only as a regular file that resolves inside `factory/` (a
+symlink, a directory, or a missing or unreadable file counts as absent). The parse is tolerant and
+never fails: a malformed line or file is free text or absent, never an error. The service writes
+nothing.
+
+- *Queued.* Only lines starting `- [ ] ` are queued, in file order; ticked `- [x]` lines and any
+  other text are ignored. The text after `- [ ] ` is split on ` — `: the first part is the
+  `title`, and when the last part is a *pointer*, `brief: factory/briefs/<slug>.md` (kind `brief`)
+  or `epic: factory/epics/<slug>.md` (kind `epic`) with a slug that passes the slug rule, the parts
+  between are the `done` text (`null` when there are none). Anything else (no pointer, an unknown
+  key, a key and folder that don't match, a slug that fails the rule) is kind `text`, with `slug:
+  null` and every part after the title as `done`; a line with no ` — ` is kind `text` with the
+  whole text as its `title` and `done: null`.
+- *A brief's or plan's facts.* Its title is its first `# ` heading (else the slug), `status` is its
+  `- Status:` value as the contract's `statusLine` reads it (else `null`), `abandoned` is the text
+  after each `- Abandoned: ` line, in file order (`[]` when there are none), and a plan's member
+  count is the number of `## Members` items `parsePlan` yields (`0` when none parse).
+- *Items.* `{ kind: "brief" | "epic" | "text", slug, title, done, status, members, abandoned }`:
+  `slug`, `done`, and `status` are `string | null`, `members` is a number for an epic and `null`
+  otherwise, and `abandoned` is `string[]`. A queued `brief` or `epic` item takes `status`,
+  `members`, and `abandoned` from the file it points at; when that file is absent, its kind and
+  slug are kept, `status` is `null`, `abandoned` is `[]`, and an epic's `members` is `0`. A
+  `text` item has `status: null`, `members: null`, and `abandoned: []`.
+- *Exploring.* Every brief and plan whose `status` is `draft` and that no open line points at, in
+  slug order, briefs before plans; a plan is kind `epic`, its title is the file's, and `done` is
+  `null`. A draft an open line points at shows only in `queued`, so nothing is shown twice.
+
+*(Added within v1, additively: the backlog in the service.)*
 
 ## Versioning
 
@@ -1557,5 +1845,22 @@ These rules record how the code behaves today; they change no behavior.
   top-level usage lines, and the installed CLI's commands are unchanged; no event, snapshot
   field, config key, or transition changes. `bun run andon:service`, a root script and never part
   of the CLI, gives way to `factory service run`.
+- **2026-10-30: the Andon service serves the backlog.** Additive within v1 (the brief
+  `andon-backlog-service`'s contract call, approved by Matt on 2026-10-30): `backlog: { queued,
+  exploring }` on the narrow board (endpoint and narrow `board` event); the new `GET
+  /projects/<pid>/backlog`, `GET /projects/<pid>/briefs/<slug>`, and `GET
+  /projects/<pid>/plans/<slug>`, with the slug rule and the regular-file-inside-`factory/` rule;
+  the new `backlog` event; and the `factory/briefs/` watch. New fields, endpoints, and an event
+  only: the plain board, the plain `board` event, `/settled`, and the epic docs endpoint are
+  unchanged, and the service still writes nothing.
+- **2026-10-30: the Andon service over the tailnet.** Additive within v1 (the brief
+  `andon-peer-access`'s contract calls, approved by Matt on 2026-10-30): the Andon service's
+  `Host`/`Origin` guard also accepts the recorded tailnet host (`Host` `<name>:<port>`, `Origin`
+  `https://<name>:<port>`), only when one is recorded (`$ANDON_TAILNET_HOST`); and `service`
+  gains `install --tailnet` with its refusals, `ANDON_TAILNET_HOST` in the unit, `install`
+  without the flag turning tailnet access off, `uninstall` removing the serve entry, `status`'s
+  `tailnet:` line, and the usage line `usage: service install [--tailnet]|uninstall|…`. The
+  service still binds `127.0.0.1` only, is `GET` only, and writes nothing; with no tailnet host
+  recorded, the guard, the unit, and every command's output are unchanged.
 - **`config.json` is strict, so upgrade first.** A config that uses a newer v1 key needs a CLI that
   knows that key. Upgrade the managed files before adding the key to the overlay.

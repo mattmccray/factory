@@ -2,10 +2,11 @@
 // @bun
 
 // packages/andon-service/src/release-main.ts
-import { join as join5 } from "path";
+import { join as join6 } from "path";
 
 // packages/andon-service/src/entry.ts
-import { join as join4 } from "path";
+import { hostname as hostname2 } from "os";
+import { join as join5 } from "path";
 
 // packages/contract/src/contract.ts
 var WORKING_STAGES = ["claimed", "spec", "build", "review", "approve"];
@@ -794,11 +795,112 @@ async function readRegistry(path) {
   }
   return parseRegistry(raw);
 }
+// packages/contract/src/peers.ts
+import { mkdir as mkdir2, open as open2, readFile as readFile2, rename as rename2, rm as rm2 } from "fs/promises";
+import { homedir as homedir2 } from "os";
+import { basename as basename2, dirname as dirname2, join as join2 } from "path";
+var SCHEMA4 = "factory/v1";
+var isRecord4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isNotFound3 = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "ENOENT";
+function peersPath(andonHome) {
+  return join2(andonHome !== undefined && andonHome !== "" ? andonHome : join2(homedir2(), ".andon"), "peers.json");
+}
+var MACHINE_NAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+var isMachineName = (name) => MACHINE_NAME.test(name);
+function machineName(host) {
+  const label = (host.split(".")[0] ?? "").toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "");
+  return label === "" ? "local" : label;
+}
+function normalizePeerUrl(raw) {
+  const shown = JSON.stringify(raw);
+  if (/[\s\0]/.test(raw))
+    throw new Error(`peers: ${shown} must not contain whitespace or NUL`);
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new Error(`peers: ${shown} is not a URL; give an https://<host>[:<port>] URL`);
+  }
+  if (u.protocol !== "https:")
+    throw new Error(`peers: ${shown} must be an https:// URL`);
+  if (u.username !== "" || u.password !== "")
+    throw new Error(`peers: ${shown} must not carry a user or password`);
+  if (u.pathname !== "/" && u.pathname !== "")
+    throw new Error(`peers: ${shown} must have no path`);
+  if (u.search !== "" || raw.includes("?"))
+    throw new Error(`peers: ${shown} must have no query`);
+  if (u.hash !== "" || raw.includes("#"))
+    throw new Error(`peers: ${shown} must have no fragment`);
+  if (u.hostname === "")
+    throw new Error(`peers: ${shown} has no host`);
+  return `https://${u.host}`.toLowerCase();
+}
+function peerLabel(url) {
+  try {
+    return (new URL(url).hostname.split(".")[0] ?? "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+function parsePeers(raw) {
+  if (!isRecord4(raw))
+    throw new Error("peers: must be a JSON object");
+  const extra = Object.keys(raw).filter((k) => k !== "schema" && k !== "peers");
+  if (extra.length)
+    throw new Error(`peers: unknown key ${extra.map((k) => `'${k}'`).join(", ")}`);
+  if (raw.schema !== SCHEMA4)
+    throw new Error(`peers: schema must be "${SCHEMA4}"`);
+  if (!Array.isArray(raw.peers))
+    throw new Error("peers: peers must be an array");
+  const peers = [];
+  const seen = new Set;
+  for (const [i, p] of raw.peers.entries()) {
+    if (!isRecord4(p))
+      throw new Error(`peers: peers[${i}] must be an object`);
+    const pExtra = Object.keys(p).filter((k) => k !== "url");
+    if (pExtra.length)
+      throw new Error(`peers: peers[${i}]: unknown key ${pExtra.map((k) => `'${k}'`).join(", ")}`);
+    if (typeof p.url !== "string")
+      throw new Error(`peers: peers[${i}].url must be a string`);
+    let norm;
+    try {
+      norm = normalizePeerUrl(p.url);
+    } catch (e) {
+      throw new Error(`peers: peers[${i}]: ${(e instanceof Error ? e.message : String(e)).replace(/^peers: /, "")}`);
+    }
+    if (norm !== p.url)
+      throw new Error(`peers: peers[${i}]: url ${JSON.stringify(p.url)} must be normalized (${JSON.stringify(norm)})`);
+    if (seen.has(p.url))
+      throw new Error(`peers: peers[${i}]: url ${JSON.stringify(p.url)} is listed twice`);
+    seen.add(p.url);
+    peers.push({ url: p.url });
+  }
+  return { schema: SCHEMA4, peers };
+}
+async function readPeers(path) {
+  let text;
+  try {
+    text = await readFile2(path, "utf8");
+  } catch (e) {
+    if (isNotFound3(e))
+      return { schema: SCHEMA4, peers: [] };
+    throw new Error(`peers: cannot read ${path}: ${(e instanceof Error ? e.message : String(e)).split(`
+`)[0] ?? ""}`);
+  }
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    throw new Error("peers: not valid JSON");
+  }
+  return parsePeers(raw);
+}
 // packages/andon-service/src/index.ts
 import { createHash } from "crypto";
 import { watch } from "fs";
-import { lstat, mkdir as mkdir2, readFile as readFile3, readdir, realpath, stat } from "fs/promises";
-import { basename as basename2, dirname as dirname2, join as join3, resolve as resolve2, sep } from "path";
+import { lstat, mkdir as mkdir3, readFile as readFile4, readdir, realpath, stat } from "fs/promises";
+import { hostname } from "os";
+import { basename as basename3, dirname as dirname3, join as join4, resolve as resolve2, sep } from "path";
 
 // packages/andon-service/src/archive.ts
 var ARCHIVE_REF = "refs/heads/factory/archive";
@@ -829,7 +931,7 @@ var TOP_MD = /^(feature|spec|build|decision|rework-\d+|conflict-\d+)\.md$/;
 var ROUND_MD = /^round-\d+\/[^/]+\.md$/;
 var REGULAR = /^100(644|755)$/;
 var decoder = new TextDecoder("utf-8", { ignoreBOM: true });
-var isRecord4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var message = (e) => (e instanceof Error ? e.message : String(e)).split(`
 `)[0] ?? "";
 var wanted = (rel) => rel === "events.jsonl" || rel === "job.json" || TOP_MD.test(rel) || ROUND_MD.test(rel);
@@ -914,7 +1016,7 @@ function snapshot(id, files) {
   const log = files.get("events.jsonl");
   if (log !== undefined) {
     const snap = JSON.parse(JSON.stringify(project(parseLog(log))));
-    if (!isRecord4(snap))
+    if (!isRecord5(snap))
       throw new Error("projection is not an object");
     if (snap.id !== id)
       throw new Error(`events.jsonl claims ${JSON.stringify(snap.id)}`);
@@ -924,7 +1026,7 @@ function snapshot(id, files) {
   if (legacy === undefined)
     throw new Error("no events.jsonl and no job.json");
   const job = JSON.parse(legacy);
-  if (!isRecord4(job))
+  if (!isRecord5(job))
     throw new Error("job.json is not a JSON object");
   return job;
 }
@@ -1023,14 +1125,14 @@ function epicJob(job, slug) {
 function projectArchivedEpic(epic, jobs) {
   const mine = jobs.map((j) => epicJob(j, epic.slug)).filter((j) => j !== null).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const snap = JSON.parse(JSON.stringify(projectEpic(epic.log, epic.members, mine, epic.planError)));
-  if (!isRecord4(snap))
+  if (!isRecord5(snap))
     throw new Error("projection is not an object");
   return snap;
 }
 
 // packages/andon-service/src/release.ts
-import { readFile as readFile2 } from "fs/promises";
-import { join as join2 } from "path";
+import { readFile as readFile3 } from "fs/promises";
+import { join as join3 } from "path";
 var SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 var JOB_ID2 = /^\d{3}-[a-z0-9-]+$/;
 var isSemver = (v) => SEMVER.test(v);
@@ -1055,7 +1157,7 @@ function releaseState(installed, running) {
 }
 async function readInstalled(factory) {
   try {
-    return parseManifest(JSON.parse(await readFile2(join2(factory, "managed.json"), "utf8"))).version;
+    return parseManifest(JSON.parse(await readFile3(join3(factory, "managed.json"), "utf8"))).version;
   } catch {
     return null;
   }
@@ -1066,7 +1168,7 @@ async function readTemplatesVersion(cloneRoot, versionFile = SOURCE_VERSION_FILE
   if (cloneRoot === undefined)
     return null;
   try {
-    const pkg = JSON.parse(await readFile2(join2(cloneRoot, versionFile), "utf8"));
+    const pkg = JSON.parse(await readFile3(join3(cloneRoot, versionFile), "utf8"));
     if (typeof pkg !== "object" || pkg === null || Array.isArray(pkg) || !("version" in pkg))
       return null;
     return typeof pkg.version === "string" ? pkg.version : null;
@@ -1136,7 +1238,7 @@ async function readChangelog(cloneRoot) {
   if (cloneRoot === undefined)
     return [];
   try {
-    return parseChangelog(await readFile2(join2(cloneRoot, "CHANGELOG.md"), "utf8"));
+    return parseChangelog(await readFile3(join3(cloneRoot, "CHANGELOG.md"), "utf8"));
   } catch {
     return [];
   }
@@ -1144,6 +1246,115 @@ async function readChangelog(cloneRoot) {
 async function readRelease(cloneRoot, running, versionFile = SOURCE_VERSION_FILE) {
   const [onDisk, changelog] = await Promise.all([readTemplatesVersion(cloneRoot, versionFile), readChangelog(cloneRoot)]);
   return { running, onDisk, changelog };
+}
+
+// packages/andon-service/src/backlog.ts
+var isBacklogSlug = (slug) => SLUG_PATTERN.test(slug);
+var OPEN = "- [ ] ";
+var SEP = " \u2014 ";
+var POINTER = /^(brief|epic): factory\/(briefs|epics)\/([^/]*)\.md$/;
+function pointer(part) {
+  const m = POINTER.exec(part.trim());
+  if (m === null)
+    return null;
+  const [, key, dir, slug = ""] = m;
+  if (!isBacklogSlug(slug))
+    return null;
+  if (key === "brief" && dir === "briefs")
+    return { kind: "brief", slug };
+  if (key === "epic" && dir === "epics")
+    return { kind: "epic", slug };
+  return null;
+}
+function parseBacklogLines(text) {
+  const out = [];
+  for (const raw of text.split(`
+`)) {
+    const line = raw.trimEnd();
+    if (!line.startsWith(OPEN))
+      continue;
+    const body = line.slice(OPEN.length).trim();
+    const parts = body.split(SEP);
+    const [title = "", ...rest] = parts;
+    if (rest.length === 0) {
+      out.push({ kind: "text", slug: null, title: body, done: null });
+      continue;
+    }
+    const last = rest[rest.length - 1] ?? "";
+    const ptr = pointer(last);
+    if (ptr === null) {
+      out.push({ kind: "text", slug: null, title: title.trim(), done: rest.join(SEP).trim() });
+      continue;
+    }
+    const done = rest.slice(0, -1).join(SEP).trim();
+    out.push({ kind: ptr.kind, slug: ptr.slug, title: title.trim(), done: done === "" ? null : done });
+  }
+  return out;
+}
+function docMeta(slug, text) {
+  let title = slug;
+  const abandoned = [];
+  let titled = false;
+  for (const raw of text.split(`
+`)) {
+    const line = raw.trimEnd();
+    if (!titled && line.startsWith("# ")) {
+      const t = line.slice(2).trim();
+      if (t !== "")
+        title = t;
+      titled = true;
+    }
+    if (line.startsWith("- Abandoned: "))
+      abandoned.push(line.slice("- Abandoned: ".length).trim());
+  }
+  let status = null;
+  try {
+    status = statusLine(text);
+  } catch {
+    status = null;
+  }
+  let members = 0;
+  try {
+    members = parsePlan(text).members.length;
+  } catch {
+    members = 0;
+  }
+  return { title, status, abandoned, members };
+}
+var bySlug = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+function buildBacklog(input) {
+  const lines = input.backlog === null ? [] : parseBacklogLines(input.backlog);
+  const pointed = { brief: new Set, epic: new Set };
+  const queued = lines.map((l) => {
+    if (l.kind === "text" || l.slug === null)
+      return { ...l, status: null, members: null, abandoned: [] };
+    if (l.kind === "brief")
+      pointed.brief.add(l.slug);
+    else
+      pointed.epic.add(l.slug);
+    const text = (l.kind === "brief" ? input.briefs : input.plans).get(l.slug);
+    const meta = text === undefined ? null : docMeta(l.slug, text);
+    return {
+      ...l,
+      status: meta?.status ?? null,
+      members: l.kind === "epic" ? meta?.members ?? 0 : null,
+      abandoned: meta?.abandoned ?? []
+    };
+  });
+  const exploring = [];
+  const drafts = (docs, kind, skip) => {
+    for (const slug of [...docs.keys()].sort(bySlug)) {
+      if (!isBacklogSlug(slug) || skip.has(slug))
+        continue;
+      const meta = docMeta(slug, docs.get(slug) ?? "");
+      if (meta.status !== "draft")
+        continue;
+      exploring.push({ kind, slug, title: meta.title, done: null, status: meta.status, members: kind === "epic" ? meta.members : null, abandoned: meta.abandoned });
+    }
+  };
+  drafts(input.briefs, "brief", pointed.brief);
+  drafts(input.plans, "epic", pointed.epic);
+  return { queued, exploring };
 }
 
 // packages/andon-service/src/settled.ts
@@ -1205,48 +1416,483 @@ function nextSettle(jobs, epics, hours, now) {
   return next;
 }
 
+// packages/andon-service/src/peers.ts
+var FIRST_BACKOFF_MS = 3000;
+var MAX_BACKOFF_MS = 60000;
+var PEER_TIMEOUT_MS = 1e4;
+var MAX_FRAME = 32 * 2 ** 20;
+var backoff = (n) => Math.min(FIRST_BACKOFF_MS * 2 ** Math.min(n, 30), MAX_BACKOFF_MS);
+var PID = /^[0-9a-f]{12}$/;
+var isPid = (s) => PID.test(s);
+var UPGRADE = "run factory upgrade and factory service restart on that machine";
+var isRecord6 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var message2 = (e) => (e instanceof Error ? e.message : String(e)).split(`
+`)[0] ?? "";
+
+class PeerFailure extends Error {
+  state;
+  constructor(state, reason) {
+    super(reason);
+    this.state = state;
+  }
+}
+function parseBlock(block) {
+  let event = "message";
+  const data = [];
+  for (const line of block.split(`
+`)) {
+    if (line === "" || line.startsWith(":"))
+      continue;
+    const colon = line.indexOf(":");
+    const key = colon === -1 ? line : line.slice(0, colon);
+    const value = colon === -1 ? "" : line.slice(colon + 1).replace(/^ /, "");
+    if (key === "event")
+      event = value;
+    else if (key === "data")
+      data.push(value);
+  }
+  return data.length > 0 ? { event, data: data.join(`
+`) } : null;
+}
+function sseReader() {
+  let buf = "";
+  let scanned = 0;
+  let cr = false;
+  return {
+    push(chunk) {
+      let t = cr ? `\r${chunk}` : chunk;
+      cr = t.endsWith("\r");
+      if (cr)
+        t = t.slice(0, -1);
+      buf += t.replace(/\r\n?/g, `
+`);
+      const frames = [];
+      let i = buf.indexOf(`
+
+`, Math.max(0, scanned - 1));
+      while (i !== -1) {
+        const f = parseBlock(buf.slice(0, i));
+        if (f !== null)
+          frames.push(f);
+        buf = buf.slice(i + 2);
+        i = buf.indexOf(`
+
+`);
+      }
+      scanned = buf.length;
+      return frames;
+    },
+    pending: () => buf.length
+  };
+}
+var NO_STORE = { "cache-control": "no-store" };
+var FORMS = ["plain", "narrow"];
+function createFollower(opts) {
+  const { url, transport, timers, hooks } = opts;
+  const now = opts.now ?? (() => new Date);
+  const label = peerLabel(url);
+  let learned = null;
+  let state = "connecting";
+  let since = now().toISOString();
+  let reason = null;
+  let release = null;
+  let clashedBy = null;
+  let stopped = false;
+  let generation = 0;
+  let attempts = 0;
+  let retry = null;
+  let ctl = null;
+  let list = [];
+  let listText = "[]";
+  const boards = new Map;
+  const name = () => learned ?? label;
+  const merged = () => state !== "error" && learned !== null;
+  function set(next, why) {
+    if (next === state && why === reason)
+      return;
+    if (next !== state)
+      since = now().toISOString();
+    state = next;
+    reason = why;
+    hooks.changed();
+  }
+  function dropProjects() {
+    const had = list.length > 0;
+    list = [];
+    listText = "[]";
+    boards.clear();
+    if (had)
+      hooks.projects();
+  }
+  function abort() {
+    generation++;
+    ctl?.abort();
+    ctl = null;
+  }
+  function schedule() {
+    if (stopped || clashedBy !== null || retry !== null)
+      return;
+    const ms = backoff(attempts);
+    attempts++;
+    retry = timers.set(() => {
+      retry = null;
+      attempt();
+    }, ms);
+  }
+  function fail(gen, e) {
+    if (gen !== generation || stopped)
+      return;
+    abort();
+    const f = e instanceof PeerFailure ? e : new PeerFailure("down", message2(e));
+    if (f.state === "error")
+      dropProjects();
+    set(f.state, f.message);
+    schedule();
+  }
+  async function request(path, signal, kind) {
+    const stream = kind === "stream";
+    const limit = new AbortController;
+    const timer = setTimeout(() => limit.abort(new Error(`GET ${path}: no answer within ${PEER_TIMEOUT_MS / 1000} s`)), PEER_TIMEOUT_MS);
+    let res;
+    try {
+      res = await transport(`${url}${path}`, { redirect: "manual", signal: AbortSignal.any([signal, limit.signal]), headers: { accept: stream ? "text/event-stream" : "application/json" } });
+    } catch (e) {
+      clearTimeout(timer);
+      throw limit.signal.aborted && !signal.aborted ? new PeerFailure("down", message2(limit.signal.reason)) : e;
+    }
+    if (stream)
+      clearTimeout(timer);
+    else
+      timer.unref();
+    if (res.status >= 300 && res.status < 400)
+      throw new PeerFailure("error", `GET ${path} answered with a redirect (HTTP ${res.status}), which is never followed`);
+    if (res.status >= 500 && kind !== "read")
+      throw new PeerFailure("down", `GET ${path}: HTTP ${res.status}`);
+    return res;
+  }
+  async function body(res, path) {
+    if (res.body === null)
+      return new Uint8Array;
+    const reader = res.body.getReader();
+    const parts = [];
+    let size = 0;
+    let chunk = await reader.read();
+    while (!chunk.done) {
+      size += chunk.value.byteLength;
+      if (size > MAX_FRAME) {
+        reader.cancel().catch(() => {
+          return;
+        });
+        throw new PeerFailure("error", `GET ${path}: an answer larger than ${MAX_FRAME / 2 ** 20} MiB`);
+      }
+      parts.push(chunk.value);
+      chunk = await reader.read();
+    }
+    const out = new Uint8Array(size);
+    let at = 0;
+    for (const p of parts) {
+      out.set(p, at);
+      at += p.byteLength;
+    }
+    return out;
+  }
+  const textOf = async (res, path) => new TextDecoder().decode(await body(res, path));
+  async function getJson(path, signal) {
+    const res = await request(path, signal, "probe");
+    if (res.status === 404 && path === "/machines")
+      throw new PeerFailure("error", `its Andon service is from before peers (no GET /machines); ${UPGRADE}`);
+    if (!res.ok)
+      throw new PeerFailure("error", `not an Andon service (GET ${path}: HTTP ${res.status})`);
+    try {
+      const parsed = JSON.parse(await textOf(res, path));
+      return parsed;
+    } catch (e) {
+      if (signal.aborted || e instanceof PeerFailure)
+        throw e;
+      throw new PeerFailure("error", `not an Andon service (GET ${path} is not JSON)`);
+    }
+  }
+  function readProjects(data) {
+    if (!isRecord6(data) || !Array.isArray(data.projects))
+      throw new PeerFailure("error", "not an Andon service (its projects event is not { projects: [...] })");
+    const out = [];
+    for (const p of data.projects) {
+      if (!isRecord6(p) || typeof p.id !== "string")
+        throw new PeerFailure("error", "not an Andon service (a project with no id)");
+      if (p.id.includes("@") || typeof p.machine !== "string")
+        throw new PeerFailure("error", `its Andon service is from before peers (its projects ${p.id.includes("@") ? "are not scope=local" : "carry no machine"}); ${UPGRADE}`);
+      if (!isPid(p.id))
+        throw new PeerFailure("error", `not an Andon service (project id ${JSON.stringify(p.id)})`);
+      out.push(p);
+    }
+    return out;
+  }
+  function rewrite(data) {
+    if (!isRecord6(data) || typeof data.project !== "string")
+      return null;
+    const pid = data.project;
+    if (!list.some((p) => p.id === pid))
+      return null;
+    return { pid, data: { ...data, project: `${pid}@${name()}` } };
+  }
+  function keepBoard(pid, form, body) {
+    const rest = { ...body };
+    delete rest.project;
+    const b = boards.get(pid) ?? {};
+    b[form] = rest;
+    boards.set(pid, b);
+  }
+  function onFrame(gen, form, frame, ready) {
+    if (gen !== generation || stopped)
+      return;
+    let data;
+    try {
+      data = JSON.parse(frame.data);
+    } catch {
+      return;
+    }
+    if (frame.event === "projects") {
+      const next = readProjects(data);
+      const text = JSON.stringify(next);
+      if (text !== listText) {
+        list = next;
+        listText = text;
+        for (const pid of [...boards.keys()])
+          if (!next.some((p) => p.id === pid))
+            boards.delete(pid);
+        if (state === "live")
+          hooks.projects();
+      }
+      ready();
+      return;
+    }
+    if (frame.event !== "board" && frame.event !== "backlog" && frame.event !== "error")
+      return;
+    const r = rewrite(data);
+    if (r === null)
+      return;
+    if (frame.event === "board")
+      keepBoard(r.pid, form, r.data);
+    if (state === "live")
+      hooks.event(form, frame.event, r.data);
+  }
+  async function open(gen, path, form, signal) {
+    const res = await request(path, signal, "stream");
+    if (res.status !== 200 || !(res.headers.get("content-type") ?? "").startsWith("text/event-stream") || res.body === null) {
+      throw new PeerFailure("error", `not an Andon service (GET ${path}: HTTP ${res.status})`);
+    }
+    const reader = res.body.getReader();
+    let first = () => {
+      return;
+    };
+    let firstFail = () => {
+      return;
+    };
+    const ready = new Promise((resolve, reject) => {
+      first = resolve;
+      firstFail = reject;
+    });
+    const decoder = new TextDecoder;
+    const sse = sseReader();
+    (async () => {
+      try {
+        let chunk = await reader.read();
+        while (!chunk.done) {
+          const frames = sse.push(decoder.decode(chunk.value, { stream: true }));
+          if (sse.pending() > MAX_FRAME)
+            throw new PeerFailure("error", `not an Andon service (an event larger than ${MAX_FRAME / 2 ** 20} MiB)`);
+          for (const f of frames)
+            onFrame(gen, form, f, first);
+          chunk = await reader.read();
+        }
+        throw new PeerFailure("down", "its event stream closed");
+      } catch (e) {
+        firstFail(e);
+        fail(gen, e);
+      } finally {
+        reader.cancel().catch(() => {
+          return;
+        });
+      }
+    })();
+    const timer = setTimeout(() => firstFail(new PeerFailure("down", `GET ${path}: no projects event within ${PEER_TIMEOUT_MS / 1000} s`)), PEER_TIMEOUT_MS);
+    try {
+      await ready;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  async function freshBoards(gen, signal) {
+    await Promise.all(list.flatMap((p) => FORMS.map(async (form) => {
+      const pid = String(p.id);
+      try {
+        const path = `/projects/${pid}/board${form === "narrow" ? "?settled=summary" : ""}`;
+        const res = await request(path, signal, "read");
+        if (!res.ok)
+          return;
+        const board = JSON.parse(await textOf(res, path));
+        if (gen !== generation || stopped || !isRecord6(board) || !list.some((q) => q.id === pid))
+          return;
+        const data = { project: `${pid}@${name()}`, ...board };
+        keepBoard(pid, form, data);
+        if (state === "live")
+          hooks.event(form, "board", data);
+      } catch {}
+    })));
+  }
+  async function attempt() {
+    if (stopped || clashedBy !== null)
+      return;
+    abort();
+    const gen = generation;
+    const c = new AbortController;
+    ctl = c;
+    try {
+      const machines = await getJson("/machines", c.signal);
+      const first = isRecord6(machines) && Array.isArray(machines.machines) ? machines.machines[0] : undefined;
+      if (!isRecord6(first) || typeof first.name !== "string" || !isMachineName(first.name))
+        throw new PeerFailure("error", "not an Andon service (GET /machines is not { machines: [{ name, \u2026 }] })");
+      if (gen !== generation || stopped)
+        return;
+      const reported = first.name;
+      const clash = hooks.claim(self, reported);
+      if (clash !== null) {
+        clashNow(clash);
+        return;
+      }
+      if (learned !== null && learned !== reported)
+        dropProjects();
+      const rel = typeof first.release === "string" ? first.release : null;
+      const renamed = learned !== reported || rel !== release;
+      learned = reported;
+      release = rel;
+      if (state === "down")
+        set("connecting", null);
+      else if (state === "connecting" && (renamed || reason !== null)) {
+        reason = null;
+        hooks.changed();
+      } else if (renamed)
+        hooks.changed();
+      await Promise.all([open(gen, "/events?scope=local", "plain", c.signal), open(gen, "/events?scope=local&settled=summary", "narrow", c.signal)]);
+      if (gen !== generation || stopped)
+        return;
+      attempts = 0;
+      set("live", null);
+      hooks.projects();
+      await freshBoards(gen, c.signal);
+    } catch (e) {
+      fail(gen, e);
+    }
+  }
+  function clashNow(why) {
+    abort();
+    if (retry !== null)
+      timers.clear(retry);
+    retry = null;
+    clashedBy = why;
+    dropProjects();
+    set("error", why);
+  }
+  const self = {
+    url,
+    name,
+    entry: () => ({ name: name(), url, state, since, reason, release }),
+    merged,
+    projects: () => merged() ? list.map((p) => ({ ...p, id: `${String(p.id)}@${name()}`, machine: name() })) : [],
+    board: (pid, form) => boards.get(pid)?.[form],
+    async forward(path, search, form) {
+      const who = name();
+      if (state !== "live" || ctl === null)
+        return new Response(`${who} is ${state}${reason === null ? "" : `: ${reason}`}`, { status: 502, headers: NO_STORE });
+      try {
+        const res = await request(`${path}${search}`, ctl.signal, "read");
+        const read = await body(res, path);
+        const json = (res.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json");
+        const headers = { ...NO_STORE, "content-type": json ? "application/json;charset=utf-8" : "text/plain;charset=utf-8" };
+        if (res.status === 200 && form !== undefined) {
+          try {
+            const parsed = JSON.parse(new TextDecoder().decode(read));
+            const pid = path.split("/")[2] ?? "";
+            if (isRecord6(parsed))
+              keepBoard(pid, form, parsed);
+          } catch {}
+        }
+        return new Response(read, { status: res.status, headers });
+      } catch (e) {
+        return new Response(`${who}: ${message2(e)}`, { status: 502, headers: NO_STORE });
+      }
+    },
+    clash: clashNow,
+    clashed: () => clashedBy !== null,
+    start() {
+      attempt();
+    },
+    restart() {
+      if (stopped)
+        return;
+      clashedBy = null;
+      attempts = 0;
+      if (retry !== null)
+        timers.clear(retry);
+      retry = null;
+      attempt();
+    },
+    stop() {
+      stopped = true;
+      abort();
+      if (retry !== null)
+        timers.clear(retry);
+      retry = null;
+    }
+  };
+  return self;
+}
+
 // packages/andon-service/src/index.ts
 var HOSTNAME = "127.0.0.1";
+var DNS_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
+var DNS_NAME = new RegExp(`^(?=.{1,253}$)${DNS_LABEL}(?:\\.${DNS_LABEL})+$`);
+var isTailnetHost = (name) => DNS_NAME.test(name);
 var JOB_ID3 = /^\d{3}-[a-z0-9-]+$/;
 var BRIEF = /^factory\/briefs\/[\w.-]+\.md$/;
 var projectId = (root) => createHash("sha256").update(root).digest("hex").slice(0, 12);
-var message2 = (e) => (e instanceof Error ? e.message : String(e)).split(`
+var message3 = (e) => (e instanceof Error ? e.message : String(e)).split(`
 `)[0] ?? "";
-var isRecord5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord7 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 async function entries(dir) {
   return readdir(dir, { withFileTypes: true }).catch(() => []);
 }
 async function readJob(p, id) {
   try {
-    const job = JSON.parse(await readFile3(join3(p.factory, "jobs", id, "job.json"), "utf8"));
-    if (isRecord5(job))
+    const job = JSON.parse(await readFile4(join4(p.factory, "jobs", id, "job.json"), "utf8"));
+    if (isRecord7(job))
       p.lastGood.set(id, { ...job });
   } catch {}
   return p.lastGood.get(id);
 }
 async function readEpic(p, slug) {
   try {
-    const epic = JSON.parse(await readFile3(join3(p.factory, "jobs", "epics", slug, "epic.json"), "utf8"));
-    if (isRecord5(epic))
+    const epic = JSON.parse(await readFile4(join4(p.factory, "jobs", "epics", slug, "epic.json"), "utf8"));
+    if (isRecord7(epic))
       p.lastGoodEpic.set(slug, { ...epic });
   } catch {}
   return p.lastGoodEpic.get(slug);
 }
 async function readConfig(p) {
-  return parseConfig(JSON.parse(await readFile3(join3(p.factory, "config.json"), "utf8")));
+  return parseConfig(JSON.parse(await readFile4(join4(p.factory, "config.json"), "utf8")));
 }
 async function resolveName(p) {
   try {
-    return (await readConfig(p)).name ?? basename2(p.info.root);
+    return (await readConfig(p)).name ?? basename3(p.info.root);
   } catch {
-    return basename2(p.info.root);
+    return basename3(p.info.root);
   }
 }
 var bySlugOrId = (a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 async function board(p) {
   const config = await readConfig(p);
   await p.archiveTask;
-  const ids = (await entries(join3(p.factory, "jobs"))).filter((d) => d.isDirectory() && JOB_ID3.test(d.name)).map((d) => d.name);
+  const ids = (await entries(join4(p.factory, "jobs"))).filter((d) => d.isDirectory() && JOB_ID3.test(d.name)).map((d) => d.name);
   const local = new Set(ids);
   const read = await Promise.all(ids.map(async (id) => ({ id, job: await readJob(p, id) })));
   for (const [id, a] of p.archive.jobs)
@@ -1254,7 +1900,7 @@ async function board(p) {
       read.push({ id, job: { ...a.job } });
   read.sort(bySlugOrId);
   const jobs = read.map((r) => r.job).filter((j) => j !== undefined);
-  const slugs = (await entries(join3(p.factory, "jobs", "epics"))).filter((d) => d.isDirectory() && isEpicSlug(d.name)).map((d) => d.name);
+  const slugs = (await entries(join4(p.factory, "jobs", "epics"))).filter((d) => d.isDirectory() && isEpicSlug(d.name)).map((d) => d.name);
   const localEpics = new Set(slugs);
   const epicRead = await Promise.all(slugs.map(async (id) => ({ id, epic: await readEpic(p, id) })));
   for (const [slug, a] of p.archive.epics) {
@@ -1266,7 +1912,7 @@ async function board(p) {
       const key = `${p.archive.tip ?? ""} ${slug}`;
       if (!p.epicFailures.has(key)) {
         p.epicFailures.add(key);
-        p.log(`andon: ${p.info.root}: factory/archive epics/${slug}: ${message2(e)}; left out`);
+        p.log(`andon: ${p.info.root}: factory/archive epics/${slug}: ${message3(e)}; left out`);
       }
     }
   }
@@ -1281,26 +1927,48 @@ function plain(b, now) {
   const { unsettledEpics } = partition([], b.epics, b.config.dashboard.settleAfterHours, now);
   return { jobs: b.jobs, config: b.config, epics: unsettledEpics };
 }
-function narrow(b, now) {
+function narrow(b, now, backlog) {
   const { unsettled, settled, unsettledEpics, settledEpics } = partition(b.jobs, b.epics, b.config.dashboard.settleAfterHours, now);
-  return { jobs: unsettled, config: b.config, settled: summarize(settled, settledEpics), epics: unsettledEpics };
+  return { jobs: unsettled, config: b.config, settled: summarize(settled, settledEpics), epics: unsettledEpics, backlog };
 }
 function settledOf(b, now) {
   const { settled, settledEpics } = partition(b.jobs, b.epics, b.config.dashboard.settleAfterHours, now);
   return { jobs: settled, epics: settledEpics };
 }
 async function readInside(p, rel) {
-  const path = join3(p.factory, rel);
+  const path = join4(p.factory, rel);
   try {
     if (!(await lstat(path)).isFile())
       return null;
     const [root, real] = await Promise.all([realpath(p.factory), realpath(path)]);
     if (!real.startsWith(root + sep))
       return null;
-    return await readFile3(real, "utf8");
+    return await readFile4(real, "utf8");
   } catch {
     return null;
   }
+}
+async function readDocs(p, dir) {
+  const out = new Map;
+  for (const d of await entries(join4(p.factory, dir))) {
+    if (!d.isFile() || !d.name.endsWith(".md"))
+      continue;
+    const slug = d.name.slice(0, -".md".length);
+    if (!isBacklogSlug(slug))
+      continue;
+    const text = await readInside(p, `${dir}/${slug}.md`);
+    if (text !== null)
+      out.set(slug, text);
+  }
+  return out;
+}
+async function backlogOf(p) {
+  const [backlog, briefs, plans] = await Promise.all([readInside(p, "backlog.md"), readDocs(p, "briefs"), readDocs(p, "epics")]);
+  return buildBacklog({ backlog, briefs, plans });
+}
+async function backlogCounts(p) {
+  const b = await backlogOf(p);
+  return { queued: b.queued.length, exploring: b.exploring.length };
 }
 async function epicDocs(p, slug) {
   const path = `epics/${slug}.md`;
@@ -1341,12 +2009,12 @@ async function briefPath2(p, job) {
   if (typeof brief !== "string" || !BRIEF.test(brief))
     return null;
   const rel = brief.replace(/^factory\//, "");
-  const info = await lstat(join3(p.factory, rel)).catch(() => null);
+  const info = await lstat(join4(p.factory, rel)).catch(() => null);
   return info?.isFile() === true ? rel : null;
 }
 async function docs(p, id) {
   const { reviewers } = await readConfig(p);
-  const dir = join3(p.factory, "jobs", id);
+  const dir = join4(p.factory, "jobs", id);
   const info = await lstat(dir).catch(() => null);
   if (info === null || !info.isDirectory()) {
     await p.archiveTask;
@@ -1367,7 +2035,7 @@ async function docs(p, id) {
     const files = readingOrder(top, rounds, reviewers).map((rel) => ({ path: `jobs/${id}/${rel}`, text: archived.files.get(rel) ?? "" }));
     const brief = await briefPath2(p, archived.job);
     if (brief !== null)
-      files.unshift({ path: brief, text: await readFile3(join3(p.factory, brief), "utf8") });
+      files.unshift({ path: brief, text: await readFile4(join4(p.factory, brief), "utf8") });
     return { files };
   }
   const top = (await entries(dir)).filter((d) => d.isFile()).map((d) => d.name);
@@ -1375,18 +2043,18 @@ async function docs(p, id) {
   for (const d of await entries(dir)) {
     if (!d.isDirectory() || !/^round-\d+$/.test(d.name))
       continue;
-    rounds.set(d.name, (await entries(join3(dir, d.name))).filter((f) => f.isFile()).map((f) => f.name));
+    rounds.set(d.name, (await entries(join4(dir, d.name))).filter((f) => f.isFile()).map((f) => f.name));
   }
   const paths = readingOrder(top, rounds, reviewers).map((rel) => `jobs/${id}/${rel}`);
   const brief = await briefPath2(p, await readJob(p, id));
   if (brief !== null)
     paths.unshift(brief);
-  const files = await Promise.all(paths.map(async (path) => ({ path, text: await readFile3(join3(p.factory, path), "utf8") })));
+  const files = await Promise.all(paths.map(async (path) => ({ path, text: await readFile4(join4(p.factory, path), "utf8") })));
   return { files };
 }
-var NO_STORE = { "cache-control": "no-store" };
-var json = (body) => Response.json(body, { headers: NO_STORE });
-var text = (body, status) => new Response(body, { status, headers: NO_STORE });
+var NO_STORE2 = { "cache-control": "no-store" };
+var json = (body) => Response.json(body, { headers: NO_STORE2 });
+var text = (body, status) => new Response(body, { status, headers: NO_STORE2 });
 var notFound = () => text("Not found", 404);
 var UI_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 async function uiFile(uiDir, pathname) {
@@ -1413,7 +2081,7 @@ async function uiFile(uiDir, pathname) {
   if ((await stat(real).catch(() => null))?.isFile() !== true)
     return null;
   const file = Bun.file(real);
-  return new Response(file, { headers: { ...NO_STORE, "content-type": file.type, "content-security-policy": UI_CSP } });
+  return new Response(file, { headers: { ...NO_STORE2, "content-type": file.type, "content-security-policy": UI_CSP } });
 }
 var encoder = new TextEncoder;
 var frame = (event, data) => encoder.encode(`event: ${event}
@@ -1421,6 +2089,13 @@ data: ${JSON.stringify(data)}
 
 `);
 async function startService(opts) {
+  const tailnetHost = opts.tailnetHost;
+  if (tailnetHost !== undefined && !isTailnetHost(tailnetHost))
+    throw new Error(`andon: the tailnet host must be a lowercase DNS name, got ${JSON.stringify(tailnetHost)}`);
+  const machine = opts.machine ?? machineName(tailnetHost ?? hostname());
+  if (!isMachineName(machine))
+    throw new Error(`andon: the machine name must be lowercase letters, digits, and inner '-', got ${JSON.stringify(machine)}`);
+  const startedAt = new Date().toISOString();
   const debounceMs = opts.debounceMs ?? 50;
   const log = opts.log ?? ((line) => console.error(line));
   const git = opts.git ?? spawnGit;
@@ -1435,13 +2110,13 @@ async function startService(opts) {
     return { installed, state: releaseState(installed, running) };
   };
   let announcing = Promise.resolve();
-  function announce(force) {
+  function announce(force, peers = false) {
     const run = announcing.then(async () => {
       const open = [...projects.values()];
       const [names, releases] = await Promise.all([Promise.all(open.map(resolveName)), Promise.all(open.map(resolveRelease))]);
       let changed = force;
       const current = open.filter((p, i) => {
-        const name = names[i] ?? basename2(p.info.root);
+        const name = names[i] ?? basename3(p.info.root);
         if (name !== p.info.name) {
           p.info.name = name;
           changed = true;
@@ -1455,7 +2130,9 @@ async function startService(opts) {
       });
       const list = current.map((p) => ({ ...p.info, release: { ...p.info.release } }));
       if (changed)
-        broadcast("projects", { projects: list });
+        broadcast("projects", { projects: list }, undefined, "local");
+      if (changed || peers)
+        broadcast("projects", { projects: merged(list) }, undefined, "merged");
       return list;
     });
     announcing = run.catch(() => {
@@ -1463,7 +2140,7 @@ async function startService(opts) {
     });
     return run;
   }
-  const hasForm = (form) => [...clients.values()].includes(form);
+  const hasForm = (form) => [...clients.values()].some((c) => c.form === form);
   function removeClient(c) {
     if (!clients.delete(c))
       return;
@@ -1471,10 +2148,12 @@ async function startService(opts) {
       for (const p of projects.values())
         clearSettle(p);
   }
-  function broadcast(event, data, form) {
+  function broadcast(event, data, form, scope = "every") {
     const bytes = frame(event, data);
-    for (const [c, f] of [...clients]) {
-      if (form !== undefined && f !== form)
+    for (const [c, info] of [...clients]) {
+      if (form !== undefined && info.form !== form)
+        continue;
+      if (scope === "local" && !info.local || scope === "merged" && info.local)
         continue;
       try {
         c.enqueue(bytes);
@@ -1522,7 +2201,7 @@ async function startService(opts) {
         return;
       const now = Date.now();
       if (now >= p.settleDue)
-        broadcast("board", { project: p.info.id, ...narrow(b, now) }, "narrow");
+        broadcast("board", { project: p.info.id, ...narrow(b, now, await backlogCounts(p)) }, "narrow");
       armSettle(p, b);
     } catch {
       clearSettle(p);
@@ -1542,7 +2221,7 @@ async function startService(opts) {
       }
     } catch (e) {
       if (!p.closed)
-        log(`andon: ${p.info.root}: reading factory/archive: ${message2(e)}`);
+        log(`andon: ${p.info.root}: reading factory/archive: ${message3(e)}`);
     }
   }
   function refreshArchive(p) {
@@ -1551,41 +2230,58 @@ async function startService(opts) {
     return p.archiveTask;
   }
   const archiveReady = (p) => p.archiveDirty ? refreshArchive(p) : p.archiveTask;
-  async function emitBoard(p) {
+  async function emitBoard(p, boardChanged, backlogChanged) {
     if (p.closed || clients.size === 0)
+      return;
+    if (backlogChanged)
+      broadcast("backlog", { project: p.info.id });
+    const toPlain = boardChanged && hasForm("plain");
+    const toNarrow = hasForm("narrow");
+    if (!toPlain && !toNarrow)
       return;
     try {
       await archiveReady(p);
       const b = await board(p);
+      const counts = toNarrow ? await backlogCounts(p) : null;
       if (!p.closed) {
         const now = Date.now();
-        if (hasForm("plain"))
+        if (toPlain)
           broadcast("board", { project: p.info.id, ...plain(b, now) }, "plain");
-        if (hasForm("narrow"))
-          broadcast("board", { project: p.info.id, ...narrow(b, now) }, "narrow");
+        if (counts !== null)
+          broadcast("board", { project: p.info.id, ...narrow(b, now, counts) }, "narrow");
         armSettle(p, b);
       }
     } catch (e) {
       clearSettle(p);
-      if (!p.closed)
-        broadcast("error", { project: p.info.id, reason: `config.json: ${message2(e)}` });
+      if (!p.closed && boardChanged)
+        broadcast("error", { project: p.info.id, reason: `config.json: ${message3(e)}` });
     }
     if (!p.closed)
       await announce(false);
   }
-  function schedule(p) {
-    if (p.closed || p.timer !== null)
+  function schedule(p, what = "board") {
+    if (p.closed)
+      return;
+    if (what !== "backlog")
+      p.pendingBoard = true;
+    if (what !== "board")
+      p.pendingBacklog = true;
+    if (p.timer !== null)
       return;
     p.timer = setTimeout(() => {
       p.timer = null;
-      emitBoard(p);
+      const boardChanged = p.pendingBoard;
+      const backlogChanged = p.pendingBacklog;
+      p.pendingBoard = false;
+      p.pendingBacklog = false;
+      emitBoard(p, boardChanged, backlogChanged);
     }, debounceMs);
   }
   function watchJobs(p) {
     if (p.closed || p.jobsWatcher !== null)
       return;
     try {
-      const w = watch(join3(p.factory, "jobs"), { recursive: true }, () => schedule(p));
+      const w = watch(join4(p.factory, "jobs"), { recursive: true }, () => schedule(p));
       w.on("error", () => {
         w.close();
         if (p.jobsWatcher === w)
@@ -1597,9 +2293,17 @@ async function startService(opts) {
   function watchEpics(p) {
     if (p.closed || p.epicsWatcher !== null)
       return;
-    p.epicsWatcher = watchDir(join3(p.factory, "epics"), () => schedule(p), (w) => {
+    p.epicsWatcher = watchDir(join4(p.factory, "epics"), () => schedule(p, "both"), (w) => {
       if (p.epicsWatcher === w)
         p.epicsWatcher = null;
+    });
+  }
+  function watchBriefs(p) {
+    if (p.closed || p.briefsWatcher !== null)
+      return;
+    p.briefsWatcher = watchDir(join4(p.factory, "briefs"), () => schedule(p, "backlog"), (w) => {
+      if (p.briefsWatcher === w)
+        p.briefsWatcher = null;
     });
   }
   function refMoved(p) {
@@ -1622,7 +2326,7 @@ async function startService(opts) {
     if (p.closed)
       return;
     p.refs.factory?.close();
-    p.refs.factory = watchDir(join3(common, "refs", "heads", "factory"), () => refMoved(p), (w) => {
+    p.refs.factory = watchDir(join4(common, "refs", "heads", "factory"), () => refMoved(p), (w) => {
       if (p.refs.factory === w)
         p.refs.factory = null;
     });
@@ -1635,7 +2339,7 @@ async function startService(opts) {
       if (p.refs.common === w)
         p.refs.common = null;
     });
-    p.refs.heads = watchDir(join3(common, "refs", "heads"), (name) => {
+    p.refs.heads = watchDir(join4(common, "refs", "heads"), (name) => {
       if (name !== null && name !== "factory")
         return;
       watchFactoryRefs(p, common);
@@ -1655,14 +2359,17 @@ async function startService(opts) {
   }
   function openProject(root) {
     const p = {
-      info: { id: projectId(root), name: basename2(root), root, release: { installed: null, state: "unknown" } },
-      factory: join3(root, "factory"),
+      info: { id: projectId(root), name: basename3(root), root, release: { installed: null, state: "unknown" }, machine },
+      factory: join4(root, "factory"),
       lastGood: new Map,
       lastGoodEpic: new Map,
       factoryWatcher: null,
       jobsWatcher: null,
       epicsWatcher: null,
+      briefsWatcher: null,
       timer: null,
+      pendingBoard: false,
+      pendingBacklog: false,
       settleTimer: null,
       settleDue: 0,
       closed: false,
@@ -1682,7 +2389,14 @@ async function startService(opts) {
           watchJobs(p);
         if (filename === null || filename === "epics")
           watchEpics(p);
-        schedule(p);
+        if (filename === null || filename === "briefs")
+          watchBriefs(p);
+        if (filename === "backlog.md" || filename === "briefs")
+          schedule(p, "backlog");
+        else if (filename === null || filename === "epics")
+          schedule(p, "both");
+        else
+          schedule(p);
       });
       w.on("error", () => {
         w.close();
@@ -1693,6 +2407,7 @@ async function startService(opts) {
     } catch {}
     watchJobs(p);
     watchEpics(p);
+    watchBriefs(p);
     return p;
   }
   function closeProject(p) {
@@ -1700,9 +2415,11 @@ async function startService(opts) {
     p.factoryWatcher?.close();
     p.jobsWatcher?.close();
     p.epicsWatcher?.close();
+    p.briefsWatcher?.close();
     p.factoryWatcher = null;
     p.jobsWatcher = null;
     p.epicsWatcher = null;
+    p.briefsWatcher = null;
     for (const w of [p.refs.common, p.refs.heads, p.refs.factory])
       w?.close();
     p.refs = { common: null, heads: null, factory: null };
@@ -1718,7 +2435,7 @@ async function startService(opts) {
     try {
       roots = (await readRegistry(opts.registryPath)).projects.map((p) => p.root);
     } catch (e) {
-      log(`andon: ${opts.registryPath}: ${message2(e)}`);
+      log(`andon: ${opts.registryPath}: ${message3(e)}`);
       return;
     }
     if (stopped)
@@ -1761,15 +2478,155 @@ async function startService(opts) {
       reload();
     }, debounceMs);
   }
-  const registryDir = dirname2(opts.registryPath);
-  let registryWatcher = null;
-  try {
-    await mkdir2(registryDir, { recursive: true });
-    registryWatcher = watch(registryDir, () => scheduleRegistry());
-    registryWatcher.on("error", (e) => log(`andon: watching ${registryDir}: ${message2(e)}`));
-  } catch (e) {
-    log(`andon: cannot watch ${registryDir}: ${message2(e)}`);
+  const reconnectTimers = opts.reconnectTimers ?? { set: (fn, ms) => setTimeout(fn, ms), clear: (t) => clearTimeout(t) };
+  const transport = opts.transport ?? ((u, init) => fetch(u, init));
+  let followers = [];
+  const merged = (local) => [...local, ...followers.flatMap((f) => f.projects())];
+  let boundPort = 0;
+  const ownEntry = () => ({
+    name: machine,
+    url: tailnetHost === undefined ? `http://${HOSTNAME}:${boundPort}` : `https://${tailnetHost}:${boundPort}`,
+    state: "live",
+    since: startedAt,
+    reason: null,
+    release: running
+  });
+  const machinesBody = () => ({ machines: [ownEntry(), ...followers.map((f) => f.entry())] });
+  let machinesQueued = false;
+  function machinesChanged() {
+    if (stopped || machinesQueued)
+      return;
+    machinesQueued = true;
+    queueMicrotask(() => {
+      machinesQueued = false;
+      if (!stopped)
+        broadcast("machines", machinesBody(), undefined, "merged");
+    });
   }
+  function claim(f, name) {
+    if (name === machine)
+      return `${f.url} reports this hub's own machine name ${name}`;
+    const i = followers.indexOf(f);
+    for (const [j, g] of followers.entries()) {
+      if (g === f || g.entry().state === "error" || g.name() !== name || !g.merged())
+        continue;
+      if (j < i)
+        return `${f.url} reports the name ${name}, already the name of ${g.url}`;
+      g.clash(`${g.url} reports the name ${name}, already the name of ${f.url}`);
+    }
+    return null;
+  }
+  function follow(url) {
+    return createFollower({
+      url,
+      transport,
+      timers: reconnectTimers,
+      hooks: {
+        changed: machinesChanged,
+        projects: () => {
+          if (!stopped)
+            announce(false, true);
+        },
+        event: (form, event, data) => {
+          if (!stopped)
+            broadcast(event, data, form, "merged");
+        },
+        claim,
+        log
+      }
+    });
+  }
+  async function loadPeers() {
+    if (stopped || opts.peersPath === undefined)
+      return;
+    let urls;
+    try {
+      urls = (await readPeers(opts.peersPath)).peers.map((p) => p.url);
+    } catch (e) {
+      log(`andon: ${opts.peersPath}: ${message3(e)}; keeping the current peers`);
+      return;
+    }
+    if (stopped)
+      return;
+    const before = followers.map((f) => f.url).join(",");
+    if (urls.join(",") === before)
+      return;
+    const known = new Map(followers.map((f) => [f.url, f]));
+    const next = urls.map((u) => known.get(u) ?? follow(u));
+    for (const f of followers)
+      if (!urls.includes(f.url))
+        f.stop();
+    const fresh = next.filter((f) => !known.has(f.url));
+    followers = next;
+    for (const f of next)
+      if (f.clashed())
+        f.restart();
+    for (const f of fresh)
+      f.start();
+    broadcast("machines", machinesBody(), undefined, "merged");
+    await announce(false, true);
+  }
+  let peersLoading = Promise.resolve();
+  let peersTimer = null;
+  const reloadPeers = () => {
+    peersLoading = peersLoading.then(loadPeers);
+    return peersLoading;
+  };
+  function schedulePeers() {
+    if (stopped || opts.peersPath === undefined || peersTimer !== null)
+      return;
+    peersTimer = setTimeout(() => {
+      peersTimer = null;
+      reloadPeers();
+    }, debounceMs);
+  }
+  function target(raw) {
+    const id = raw.replace(/%40/gi, "@");
+    const at = id.indexOf("@");
+    if (at === -1) {
+      const p = projects.get(id);
+      return p === undefined ? null : { kind: "local", p };
+    }
+    const pid = id.slice(0, at);
+    const name = id.slice(at + 1);
+    if (!isPid(pid) || name === "" || name.includes("@"))
+      return null;
+    const f = followers.find((g) => g.entry().state !== "error" && g.name() === name);
+    return f === undefined ? null : { kind: "peer", f, pid };
+  }
+  async function peerBoard(f, pid, search, form) {
+    if (f.entry().state === "live")
+      return f.forward(`/projects/${pid}/board`, search, form);
+    const held = f.board(pid, form);
+    if (held !== undefined)
+      return json(held);
+    return text(`${f.name()} is ${f.entry().state}, and the hub holds no board for ${pid}@${f.name()}`, 502);
+  }
+  const registryDir = dirname3(opts.registryPath);
+  const peersDir = opts.peersPath === undefined ? null : dirname3(opts.peersPath);
+  const homeWatchers = [];
+  function watchHome(dir, on) {
+    try {
+      const w = watch(dir, () => on());
+      w.on("error", (e) => log(`andon: watching ${dir}: ${message3(e)}`));
+      homeWatchers.push(w);
+    } catch (e) {
+      log(`andon: cannot watch ${dir}: ${message3(e)}`);
+    }
+  }
+  const made = async (dir) => mkdir3(dir, { recursive: true }).then(() => true, (e) => {
+    log(`andon: cannot watch ${dir}: ${message3(e)}`);
+    return false;
+  });
+  if (await made(registryDir)) {
+    watchHome(registryDir, () => {
+      scheduleRegistry();
+      if (peersDir === registryDir)
+        schedulePeers();
+    });
+  }
+  if (peersDir !== null && peersDir !== registryDir && await made(peersDir))
+    watchHome(peersDir, schedulePeers);
   await reload();
   let releaseTimer = null;
   const releaseBody = () => readRelease(opts.cloneRoot, running, versionFile);
@@ -1800,16 +2657,18 @@ async function startService(opts) {
   if (opts.cloneRoot !== undefined) {
     const root = resolve2(opts.cloneRoot);
     const versionAt = resolve2(root, versionFile);
-    if (dirname2(versionAt) === root)
-      watchClone(root, ["CHANGELOG.md", basename2(versionAt)]);
+    if (dirname3(versionAt) === root)
+      watchClone(root, ["CHANGELOG.md", basename3(versionAt)]);
     else {
       watchClone(root, ["CHANGELOG.md"]);
-      watchClone(dirname2(versionAt), [basename2(versionAt)]);
+      watchClone(dirname3(versionAt), [basename3(versionAt)]);
     }
   }
-  async function events(req, form) {
-    const list = await announce(false);
+  async function events(req, form, local) {
+    const own = await announce(false);
+    const list = local ? own : merged(own);
     const release = await releaseBody();
+    const machinesNow = local ? { machines: [ownEntry()] } : machinesBody();
     let self = null;
     const drop = () => {
       if (self === null)
@@ -1823,9 +2682,10 @@ async function startService(opts) {
       start(c) {
         self = c;
         const first = form === "narrow" && !hasForm("narrow");
-        clients.set(c, form);
+        clients.set(c, { form, local });
         c.enqueue(frame("projects", { projects: list }));
         c.enqueue(frame("release", release));
+        c.enqueue(frame("machines", machinesNow));
         if (first)
           for (const p of projects.values())
             armFromBuild(p);
@@ -1838,14 +2698,16 @@ async function startService(opts) {
     req.signal.addEventListener("abort", drop);
     return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" } });
   }
-  let boundPort = 0;
   function trusted(req) {
-    const hosts = [`127.0.0.1:${boundPort}`, `localhost:${boundPort}`];
-    const host = req.headers.get("host");
-    if (host === null || !hosts.includes(host.toLowerCase()))
+    const loopback = [`127.0.0.1:${boundPort}`, `localhost:${boundPort}`];
+    const tailnet = tailnetHost === undefined ? [] : [`${tailnetHost}:${boundPort}`];
+    const host = req.headers.get("host")?.toLowerCase();
+    if (host === undefined || !(loopback.includes(host) || tailnet.includes(host)))
       return false;
-    const origin = req.headers.get("origin");
-    return origin === null || hosts.some((h) => origin.toLowerCase() === `http://${h}`);
+    const origin = req.headers.get("origin")?.toLowerCase();
+    if (origin === undefined)
+      return true;
+    return loopback.some((h) => origin === `http://${h}`) || tailnet.some((h) => origin === `https://${h}`);
   }
   async function handle(req) {
     if (!trusted(req))
@@ -1855,54 +2717,90 @@ async function startService(opts) {
     const url = new URL(req.url);
     const { pathname } = url;
     const summary = url.searchParams.get("settled") === "summary";
-    if (pathname === "/projects")
-      return json({ projects: await announce(false) });
+    const local = url.searchParams.get("scope") === "local";
+    if (pathname === "/projects") {
+      const own = await announce(false);
+      return json({ projects: local ? own : merged(own) });
+    }
     if (pathname === "/events")
-      return events(req, summary ? "narrow" : "plain");
+      return events(req, summary ? "narrow" : "plain", local);
     if (pathname === "/release")
       return json(await releaseBody());
+    if (pathname === "/machines")
+      return json(machinesBody());
     const b = pathname.match(/^\/projects\/([^/]+)\/(board|settled)$/);
     if (b !== null) {
-      const p = projects.get(b[1] ?? "");
-      if (p === undefined)
+      const t = target(b[1] ?? "");
+      if (t === null)
         return notFound();
+      if (t.kind === "peer")
+        return b[2] === "board" ? peerBoard(t.f, t.pid, url.search, summary ? "narrow" : "plain") : t.f.forward(`/projects/${t.pid}/settled`, url.search);
+      const p = t.p;
       try {
         await archiveReady(p);
         const full = await board(p);
         const now = Date.now();
         if (b[2] === "settled")
           return json(settledOf(full, now));
-        return json(summary ? narrow(full, now) : plain(full, now));
+        return json(summary ? narrow(full, now, await backlogCounts(p)) : plain(full, now));
       } catch (e) {
-        return text(`config.json: ${message2(e)}`, 500);
+        return text(`config.json: ${message3(e)}`, 500);
       }
     }
     const d = pathname.match(/^\/projects\/([^/]+)\/jobs\/([^/]+)\/docs$/);
     if (d !== null) {
-      const p = projects.get(d[1] ?? "");
+      const t = target(d[1] ?? "");
       const id = d[2] ?? "";
-      if (p === undefined || !JOB_ID3.test(id))
+      if (t === null || !JOB_ID3.test(id))
         return notFound();
+      if (t.kind === "peer")
+        return t.f.forward(`/projects/${t.pid}/jobs/${id}/docs`, url.search);
+      const p = t.p;
       try {
         await archiveReady(p);
         return json(await docs(p, id));
       } catch (e) {
-        return text(`config.json: ${message2(e)}`, 500);
+        return text(`config.json: ${message3(e)}`, 500);
       }
     }
     const e = pathname.match(/^\/projects\/([^/]+)\/epics\/([^/]+)\/docs$/);
     if (e !== null) {
-      const p = projects.get(e[1] ?? "");
+      const t = target(e[1] ?? "");
       const slug = e[2] ?? "";
-      if (p === undefined || !isEpicSlug(slug))
+      if (t === null || !isEpicSlug(slug))
         return notFound();
+      if (t.kind === "peer")
+        return t.f.forward(`/projects/${t.pid}/epics/${slug}/docs`, url.search);
+      const p = t.p;
       try {
         await archiveReady(p);
         const docs = await epicDocs(p, slug);
         return docs === null ? notFound() : json(docs);
       } catch (e) {
-        return text(`epic docs: ${message2(e)}`, 500);
+        return text(`epic docs: ${message3(e)}`, 500);
       }
+    }
+    const bl = pathname.match(/^\/projects\/([^/]+)\/backlog$/);
+    if (bl !== null) {
+      const t = target(bl[1] ?? "");
+      if (t === null)
+        return notFound();
+      if (t.kind === "peer")
+        return t.f.forward(`/projects/${t.pid}/backlog`, url.search);
+      return json(await backlogOf(t.p));
+    }
+    const f = pathname.match(/^\/projects\/([^/]+)\/(briefs|plans)\/([^/]+)$/);
+    if (f !== null) {
+      const t = target(f[1] ?? "");
+      const slug = f[3] ?? "";
+      if (t === null || !isBacklogSlug(slug))
+        return notFound();
+      if (t.kind === "peer")
+        return t.f.forward(`/projects/${t.pid}/${f[2] ?? ""}/${slug}`, url.search);
+      const p = t.p;
+      const path = `${f[2] === "briefs" ? "briefs" : "epics"}/${slug}.md`;
+      const body = await readInside(p, path);
+      return body === null ? notFound() : json({ path, text: body });
     }
     if (opts.uiDir !== undefined)
       return await uiFile(opts.uiDir, pathname) ?? notFound();
@@ -1915,13 +2813,19 @@ async function startService(opts) {
     fetch: handle
   });
   boundPort = server.port ?? 0;
+  await reloadPeers();
   return {
     url: `http://${HOSTNAME}:${server.port}`,
     async stop() {
       stopped = true;
       if (registryTimer !== null)
         clearTimeout(registryTimer);
-      registryWatcher?.close();
+      if (peersTimer !== null)
+        clearTimeout(peersTimer);
+      for (const w of homeWatchers)
+        w.close();
+      for (const f of followers)
+        f.stop();
       if (releaseTimer !== null)
         clearTimeout(releaseTimer);
       for (const w of cloneWatchers)
@@ -1941,9 +2845,8 @@ async function startService(opts) {
     }
   };
 }
-
 // packages/andon-service/src/entry.ts
-var bundleTree = (bundleRoot) => ({ uiDir: join4(bundleRoot, "andon", "ui"), cloneRoot: bundleRoot, versionFile: BUNDLE_VERSION_FILE });
+var bundleTree = (bundleRoot) => ({ uiDir: join5(bundleRoot, "andon", "ui"), cloneRoot: bundleRoot, versionFile: BUNDLE_VERSION_FILE });
 async function serve(tree) {
   const raw = process.env.ANDON_PORT ?? "8766";
   const port = Number(raw);
@@ -1951,9 +2854,19 @@ async function serve(tree) {
     console.error(`andon: ANDON_PORT must be a port number (0-65535), got ${JSON.stringify(raw)}`);
     process.exit(1);
   }
+  const tailnetHost = process.env.ANDON_TAILNET_HOST;
+  if (tailnetHost !== undefined && !isTailnetHost(tailnetHost)) {
+    console.error(`andon: ANDON_TAILNET_HOST must be a lowercase DNS name, got ${JSON.stringify(tailnetHost)}`);
+    process.exit(1);
+  }
   const registry = registryPath(process.env.ANDON_HOME);
-  const service = await startService({ port, registryPath: registry, ...tree });
+  const peers = peersPath(process.env.ANDON_HOME);
+  const machine = machineName(tailnetHost ?? hostname2());
+  const service = await startService({ port, registryPath: registry, peersPath: peers, machine, ...tree, ...tailnetHost === undefined ? {} : { tailnetHost } });
   console.log(`Andon service: ${service.url} (registry ${registry})`);
+  if (tailnetHost !== undefined)
+    console.log(`Andon service: also https://${tailnetHost}:${new URL(service.url).port}/ through tailscale serve`);
+  console.log(`Andon service: machine ${machine}, following the peers in ${peers}`);
   const shutdown = () => {
     service.stop().then(() => process.exit(0));
   };
@@ -1962,4 +2875,4 @@ async function serve(tree) {
 }
 
 // packages/andon-service/src/release-main.ts
-await serve(bundleTree(join5(import.meta.dir, "..")));
+await serve(bundleTree(join6(import.meta.dir, "..")));
