@@ -12,7 +12,7 @@ board, so the UI stays served by the service (browsers and Linux keep working) a
 thin (decision 10).
 
 ## Members
-- `andon-peer-access` — a machine's Andon service accepts an authenticated peer over the network, alongside its loopback clients
+- `andon-peer-access` — a machine's Andon service can be read from Matt's other machines over his tailnet (`tailscale serve`), still on loopback and read-only
 - `andon-hub` — the local service follows its configured peers and merges their projects and events into its own, machine-prefixed, with each machine's status after: `andon-peer-access`
 - `andon-machines-ui` — the Andon UI groups projects by machine, shows each machine's status, and handles actions that can't run on a remote project after: `andon-hub`
 - `andon-machines-mac` — the Mac app's badge and notifications cover remote jobs, and its native menus are gated for remote projects after: `andon-hub`
