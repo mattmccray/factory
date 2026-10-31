@@ -52,6 +52,10 @@ import {
   storedHidden,
   viewLabelUpdates,
   whatsNewPayload,
+  childPosition,
+  mainFrames,
+  parseSize,
+  placeOnMain,
 } from './appmenu';
 import type { Menu, MenuItem, MenuState, StartWorkPush, ViewState } from './appmenu';
 
@@ -353,5 +357,124 @@ describe('075 AC1: File → New Exploration… (⌘N)', () => {
     expect(startWorkPayload({ action: 'next', project: 'aaaaaaaaaaaa' })).toEqual({ action: 'next', project: 'aaaaaaaaaaaa' });
     const extra: StartWorkPush & { command: string } = { action: 'next', project: 'aaaaaaaaaaaa', command: '/factory next' };
     expect(Object.keys(startWorkPayload(extra))).toEqual(['action', 'project']);
+  });
+});
+
+// ---- 077: About and Settings open centered on the main window ----
+
+describe('077 AC1: the child window is centered on the main window', () => {
+  const screen = { x: 0, y: 0, width: 1728, height: 1117 };
+  const main = { x: 200, y: 100, width: 1280, height: 820 };
+
+  test('the fixed sizes parse to whole points', () => {
+    expect(parseSize(ABOUT_SIZE)).toEqual({ width: 440, height: 400 });
+    expect(parseSize(SETTINGS_SIZE)).toEqual({ width: 480, height: 360 });
+    for (const bad of ['', '440', 'x400', '440x', 'axb', '-1x2', '0x10', '440 x 400']) expect({ bad, r: parseSize(bad) }).toEqual({ bad, r: null });
+  });
+
+  test('About (440x400) and Settings (480x360) get the top-left that centers them on the main frame', () => {
+    expect(childPosition(main, screen, { width: 440, height: 400 })).toEqual({ x: 200 + 420, y: 100 + 210 });
+    expect(childPosition(main, screen, { width: 480, height: 360 })).toEqual({ x: 200 + 400, y: 100 + 230 });
+  });
+
+  test('a half-point center is rounded to whole points', () => {
+    const odd = { x: 201, y: 101, width: 1281, height: 821 };
+    const at = childPosition(odd, screen, { width: 440, height: 400 });
+    expect(at).toEqual({ x: Math.round(201 + 841 / 2), y: Math.round(101 + 421 / 2) });
+    expect(Number.isInteger(at.x) && Number.isInteger(at.y)).toBe(true);
+  });
+
+  test('on a second screen, centering works in the global coordinates', () => {
+    const right = { x: 1728, y: -200, width: 2560, height: 1440 };
+    expect(childPosition({ x: 2000, y: 0, width: 1280, height: 820 }, right, { width: 480, height: 360 })).toEqual({ x: 2400, y: 230 });
+  });
+});
+
+describe('077 AC2: the child window stays fully on the main window\'s screen', () => {
+  const screen = { x: 0, y: 0, width: 1728, height: 1117 };
+  const about = { width: 440, height: 400 };
+  const settings = { width: 480, height: 360 };
+  const inside = (at: { x: number; y: number }, s: typeof screen, c: typeof about): boolean =>
+    at.x >= s.x && at.y >= s.y && at.x + c.width <= s.x + s.width && at.y + c.height <= s.y + s.height;
+
+  test('a small main window against or past each edge and corner keeps the child inside', () => {
+    const w = 300;
+    const h = 200;
+    const cases = {
+      left: { x: -250, y: 400, width: w, height: h },
+      right: { x: 1650, y: 400, width: w, height: h },
+      top: { x: 700, y: -150, width: w, height: h },
+      bottom: { x: 700, y: 1050, width: w, height: h },
+      topLeft: { x: -280, y: -180, width: w, height: h },
+      topRight: { x: 1700, y: -180, width: w, height: h },
+      bottomLeft: { x: -280, y: 1100, width: w, height: h },
+      bottomRight: { x: 1700, y: 1100, width: w, height: h },
+      flushLeft: { x: 0, y: 0, width: w, height: h },
+    };
+    for (const [edge, m] of Object.entries(cases)) {
+      for (const child of [about, settings]) {
+        const at = childPosition(m, screen, child);
+        expect({ edge, child, inside: inside(at, screen, child) }).toEqual({ edge, child, inside: true });
+      }
+    }
+    expect(childPosition(cases.left, screen, about)).toEqual({ x: 0, y: 300 });
+    expect(childPosition(cases.right, screen, about)).toEqual({ x: 1728 - 440, y: 300 });
+    expect(childPosition(cases.top, screen, about)).toEqual({ x: 630, y: 0 });
+    expect(childPosition(cases.bottom, screen, about)).toEqual({ x: 630, y: 1117 - 400 });
+    expect(childPosition(cases.bottomRight, screen, settings)).toEqual({ x: 1728 - 480, y: 1117 - 360 });
+  });
+
+  test('the clamp uses the screen\'s own origin, on a screen that is not the primary one', () => {
+    const left = { x: -1920, y: 100, width: 1920, height: 1080 };
+    const at = childPosition({ x: -1950, y: 50, width: 300, height: 200 }, left, about);
+    expect(at).toEqual({ x: -1920, y: 100 });
+    expect(inside(at, left, about)).toBe(true);
+  });
+
+  test('a child larger than the screen is pinned to the screen\'s top-left', () => {
+    const tiny = { x: 100, y: 50, width: 400, height: 300 };
+    expect(childPosition({ x: 120, y: 60, width: 300, height: 200 }, tiny, about)).toEqual({ x: 100, y: 50 });
+    // narrower than the screen only: x is pinned, y still centers (and clamps)
+    expect(childPosition({ x: 120, y: 400, width: 300, height: 200 }, { x: 100, y: 50, width: 400, height: 1000 }, about)).toEqual({ x: 100, y: 300 });
+  });
+});
+
+describe('077: the main window\'s state, as frames for the placement', () => {
+  /** A main window state as Tiny reports it: 1280x820 page, 1280x820 outer (frameless), on a screen at `origin`. */
+  const state = (x: number, y: number, origin = { x: 0, y: 0 }) => ({
+    x,
+    y,
+    width: 1280,
+    height: 820,
+    outer: { width: 1282, height: 822 },
+    screen: { width: 1728, height: 1117, scale: 2 },
+    local: { x: x - origin.x, y: y - origin.y },
+  });
+
+  test('the main frame is its outer footprint; the screen origin is x - local.x, y - local.y', () => {
+    expect(mainFrames(state(200, 100))).toEqual({ main: { x: 200, y: 100, width: 1282, height: 822 }, screen: { x: 0, y: 0, width: 1728, height: 1117 } });
+    expect(mainFrames(state(-1700, 300, { x: -1728, y: 0 }))).toEqual({ main: { x: -1700, y: 300, width: 1282, height: 822 }, screen: { x: -1728, y: 0, width: 1728, height: 1117 } });
+  });
+
+  test('a state with a non-finite number gives no frames', () => {
+    expect(mainFrames({ ...state(0, 0), x: Number.NaN })).toBeNull();
+    expect(mainFrames({ ...state(0, 0), outer: { width: Number.POSITIVE_INFINITY, height: 1 } })).toBeNull();
+    expect(mainFrames({ ...state(0, 0), screen: { width: 0, height: 1117 } })).toBeNull();
+  });
+
+  test('placeOnMain centers About and Settings on the main window from its state, clamped to its screen', () => {
+    expect(placeOnMain(state(200, 100), ABOUT_SIZE)).toEqual({ x: 200 + 421, y: 100 + 211 });
+    expect(placeOnMain(state(200, 100), SETTINGS_SIZE)).toEqual({ x: 200 + 401, y: 100 + 231 });
+    expect(placeOnMain(state(-1200, 100), ABOUT_SIZE)).toEqual({ x: 0, y: 311 });
+    expect(placeOnMain({ ...state(0, 0), x: Number.NaN }, ABOUT_SIZE)).toBeNull();
+    expect(placeOnMain(state(0, 0), 'big')).toBeNull();
+  });
+
+  test('the window options carry x/y only when a position is given', () => {
+    expect('x' in settingsWindow(8766) || 'y' in settingsWindow(8766)).toBe(false);
+    expect('x' in aboutWindow(8766) || 'y' in aboutWindow(8766)).toBe(false);
+    expect(settingsWindow(8766, null)).toEqual(settingsWindow(8766));
+    expect(settingsWindow(8766, { x: 10, y: 20 })).toEqual({ ...settingsWindow(8766), x: 10, y: 20 });
+    expect(aboutWindow(8766, { x: -5, y: 7 })).toEqual({ ...aboutWindow(8766), x: -5, y: 7 });
   });
 });

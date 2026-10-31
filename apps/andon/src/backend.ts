@@ -43,12 +43,16 @@ import { noServicePage, windowLoad } from './noservice';
 import type { App } from './app';
 import { bringBackAction, oneAtATime, trayClickAction } from './trayclick';
 import {
+  ABOUT_SIZE,
+  ABOUT_TITLE,
   ABOUT_WINDOW_ID,
   DEFAULT_VIEW,
   closeWindowStep,
   MERGED_EVENT,
   MERGED_ID,
   MERGED_KEY,
+  SETTINGS_SIZE,
+  SETTINGS_TITLE,
   SETTINGS_WINDOW_ID,
   STATUS_BAR_EVENT,
   STATUS_BAR_ID,
@@ -61,6 +65,8 @@ import {
   mergedLabel,
   mergedPayload,
   pageEventPayload,
+  parseSize,
+  placeOnMain,
   settingsWindow,
   statusBarLabel,
   statusBarPayload,
@@ -68,7 +74,7 @@ import {
   viewLabelUpdates,
   whatsNewPayload,
 } from './appmenu';
-import type { AboutWindowOptions, SettingsWindowOptions, ViewState } from './appmenu';
+import type { AboutWindowOptions, Point, SettingsWindowOptions, ViewState } from './appmenu';
 import { aboutAnswer, fromAboutWindow, noParams } from './about';
 import type { About } from './about';
 import { DEFAULT_HANDOFF_MODE, T3_HANDOFF_KEY, fromSettingsWindow, settingChange, settingsSnapshot, storedMode, viewStateParams } from './settings';
@@ -85,10 +91,11 @@ import type { AppIcons, Availability, MenuProject, OpenInApp, ProjectAction } fr
 // picks the members the Mac app calls, so its whole dependence on Tiny is listed here, in one place,
 // and the test fakes stay small.
 
-/** The fields of a window's state the tray click, the bring-back step, and Close Window read. */
-export type MacWinState = Pick<TinyWinState, 'minimized' | 'fullscreen' | 'allSpaces' | 'visible' | 'focused'>;
+/** The fields of a window's state the tray click, the bring-back step, Close Window, and the
+ *  placement of About and Settings (the main window's frame and screen: `placeOnMain`) read. */
+export type MacWinState = Pick<TinyWinState, 'minimized' | 'fullscreen' | 'allSpaces' | 'visible' | 'focused' | 'x' | 'y' | 'width' | 'height' | 'outer' | 'screen' | 'local'>;
 /** The window ops the adapter calls. `getState` resolves null when there is no state to give. */
-export type MacWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpaces' | 'eval' | 'minimize' | 'zoom' | 'setResizable' | 'close' | 'hide'> & {
+export type MacWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpaces' | 'eval' | 'minimize' | 'zoom' | 'setResizable' | 'setSize' | 'close' | 'hide'> & {
   getState(): Promise<MacWinState | null>;
 };
 /** The backend `app` object Tiny passes to `init` and the hooks, narrowed to what the Mac app uses.
@@ -412,6 +419,36 @@ async function bringBackMain(app: MacApp): Promise<void> {
 /** Settings…: bring the main window back, then open the Settings window (a child of it), or, when it
  *  is already open, show and focus it. One click at a time, so a quick second click can't open a
  *  second window while the first is still opening. */
+/** Where a fixed-size child of the main window (About or Settings) opens: centered on the main
+ *  window's current frame and kept on its screen (`placeOnMain`). An explicit position beats the one
+ *  Tiny's `rememberWindows` keeps. No state to place by (null, a throw, or an unusable frame): null,
+ *  so the window opens as it did before, and a log line says why. */
+async function openPosition(app: MacApp, title: string, size: string): Promise<Point | null> {
+  let state: MacWinState | null;
+  try {
+    state = await app.window('main').getState();
+  } catch (err) {
+    console.log(`andon: main window state unavailable (${String(err)}); opening ${title} without a position`);
+    return null;
+  }
+  if (state === null) {
+    console.log(`andon: the main window reported no state; opening ${title} without a position`);
+    return null;
+  }
+  const at = placeOnMain(state, size);
+  if (at === null) console.log(`andon: the main window's frame can't place ${title}; opening it without a position`);
+  return at;
+}
+
+/** After a fixed-size child window opens: set its fixed size (a size Tiny remembers for its id
+ *  could otherwise win over `size`), then make it non-resizable. */
+function fixSize(app: MacApp, id: string, size: string): void {
+  const win = app.window(id);
+  const fixed = parseSize(size);
+  if (fixed !== null) win.setSize(fixed.width, fixed.height);
+  win.setResizable(false);
+}
+
 const openSettings = oneAtATime(async (app: MacApp): Promise<void> => {
   await bringBackMain(app);
   let open: string[];
@@ -425,8 +462,9 @@ const openSettings = oneAtATime(async (app: MacApp): Promise<void> => {
     app.window(SETTINGS_WINDOW_ID).show(); // brings it to the front, above the main window, and focuses it
     return;
   }
-  app.win.open(SETTINGS_WINDOW_ID, settingsWindow(servicePort));
-  app.window(SETTINGS_WINDOW_ID).setResizable(false);
+  const at = await openPosition(app, SETTINGS_TITLE, SETTINGS_SIZE);
+  app.win.open(SETTINGS_WINDOW_ID, settingsWindow(servicePort, at));
+  fixSize(app, SETTINGS_WINDOW_ID, SETTINGS_SIZE);
 });
 
 /** About Andon: bring the main window back (About is its child, as Settings is), then open the About
@@ -445,8 +483,9 @@ const openAbout = oneAtATime(async (app: MacApp): Promise<void> => {
     app.window(ABOUT_WINDOW_ID).show();
     return;
   }
-  app.win.open(ABOUT_WINDOW_ID, aboutWindow(servicePort));
-  app.window(ABOUT_WINDOW_ID).setResizable(false);
+  const at = await openPosition(app, ABOUT_TITLE, ABOUT_SIZE);
+  app.win.open(ABOUT_WINDOW_ID, aboutWindow(servicePort, at));
+  fixSize(app, ABOUT_WINDOW_ID, ABOUT_SIZE);
 });
 
 /** File → Close Window (⌘W): close the focused Settings or About window, or hide the focused main

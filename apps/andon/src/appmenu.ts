@@ -269,6 +269,9 @@ export interface SettingsWindowOptions {
   minSize: string;
   chrome: { frame: true; windowControls: ['close'] };
   parent: 'main';
+  /** The top-left, from `placeOnMain`: an explicit position beats the one Tiny remembers. */
+  x?: number;
+  y?: number;
 }
 
 /** How the Settings window opens: a standard titled frame (not the main window's frameless chrome)
@@ -276,14 +279,17 @@ export interface SettingsWindowOptions {
  *  settings page on the service's port, at its fixed size, as a child of the main window: it stays
  *  above the board and moves, hides, and minimizes with it, while the board stays usable (not modal).
  *  `parent` is open-time only in Tiny, so it is here, not set afterward. */
-export const settingsWindow = (port: number): SettingsWindowOptions => ({
-  page: settingsUrl(port),
-  title: SETTINGS_TITLE,
-  size: SETTINGS_SIZE,
-  minSize: SETTINGS_SIZE,
-  chrome: { frame: true, windowControls: ['close'] },
-  parent: 'main',
-});
+export const settingsWindow = (port: number, at: Point | null = null): SettingsWindowOptions => {
+  const base: SettingsWindowOptions = {
+    page: settingsUrl(port),
+    title: SETTINGS_TITLE,
+    size: SETTINGS_SIZE,
+    minSize: SETTINGS_SIZE,
+    chrome: { frame: true, windowControls: ['close'] },
+    parent: 'main',
+  };
+  return at === null ? base : { ...base, x: at.x, y: at.y };
+};
 
 // ---- the About window ----
 
@@ -306,6 +312,9 @@ export interface AboutWindowOptions {
   minSize: string;
   chrome: { frame: false; windowControls: ['close'] };
   parent: 'main';
+  /** The top-left, from `placeOnMain`, as Settings has. */
+  x?: number;
+  y?: number;
 }
 
 /** How the About window opens: frameless, so the art runs to the top edge (its page makes the art
@@ -313,11 +322,97 @@ export interface AboutWindowOptions {
  *  minimize or zoom in a fixed-size window); the about page on the service's port, at its fixed
  *  size, as a child of the main window, as Settings is: it stays above the board and moves, hides,
  *  and minimizes with it. `parent` is open-time only in Tiny, so it is here, not set afterward. */
-export const aboutWindow = (port: number): AboutWindowOptions => ({
-  page: aboutUrl(port),
-  title: ABOUT_TITLE,
-  size: ABOUT_SIZE,
-  minSize: ABOUT_SIZE,
-  chrome: { frame: false, windowControls: ['close'] },
-  parent: 'main',
-});
+export const aboutWindow = (port: number, at: Point | null = null): AboutWindowOptions => {
+  const base: AboutWindowOptions = {
+    page: aboutUrl(port),
+    title: ABOUT_TITLE,
+    size: ABOUT_SIZE,
+    minSize: ABOUT_SIZE,
+    chrome: { frame: false, windowControls: ['close'] },
+    parent: 'main',
+  };
+  return at === null ? base : { ...base, x: at.x, y: at.y };
+};
+
+// ---- where About and Settings open ----
+// Tiny's `rememberWindows` applies to every window id, so About and Settings would reopen wherever
+// they were last left. Both are fixed-size children of the main window: each open passes an explicit
+// x/y (which always beats a remembered one), centered on the main window and kept on its screen.
+
+/** A rect in Tiny's top-left screen coordinates, in points. */
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+/** A width and height, in points. */
+export interface Size {
+  width: number;
+  height: number;
+}
+/** A top-left, in Tiny's screen coordinates, in points. */
+export interface Point {
+  x: number;
+  y: number;
+}
+
+/** A `'WxH'` size (as `ABOUT_SIZE` and `SETTINGS_SIZE` are) in points; null for anything else. */
+export function parseSize(size: string): Size | null {
+  const m = /^(\d+)x(\d+)$/.exec(size);
+  if (m === null) return null;
+  const width = Number(m[1]);
+  const height = Number(m[2]);
+  return width > 0 && height > 0 ? { width, height } : null;
+}
+
+/** One axis: the start that centers `len` on `[mainAt, mainAt + mainLen]`, clamped to
+ *  `[screenAt, screenAt + screenLen - len]`, in whole points. Longer than the screen: the screen's start. */
+function placeAxis(mainAt: number, mainLen: number, screenAt: number, screenLen: number, len: number): number {
+  const lo = Math.ceil(screenAt);
+  const hi = Math.floor(screenAt + screenLen - len);
+  if (hi < lo) return lo;
+  return Math.min(Math.max(Math.round(mainAt + (mainLen - len) / 2), lo), hi);
+}
+
+/** Where a fixed-size child window opens: its top-left, centered on the main window's frame, then
+ *  clamped so its whole `child` rect stays inside `screen` (the full frame, not its visible area). A
+ *  child larger than the screen, on an axis, is pinned to the screen's top or left edge. Whole points. */
+export function childPosition(main: Rect, screen: Rect, child: Size): Point {
+  return {
+    x: placeAxis(main.x, main.width, screen.x, screen.width, child.width),
+    y: placeAxis(main.y, main.height, screen.y, screen.height, child.height),
+  };
+}
+
+/** The fields of the main window's state (as the window state reports it) the placement reads. */
+export interface MainPlacementState {
+  x: number;
+  y: number;
+  outer: { width: number; height: number };
+  screen: { width: number; height: number };
+  local: { x: number; y: number };
+}
+
+/** The main window's frame (its outer footprint: `x`, `y`, `outer`) and its screen's frame (the
+ *  screen `getState` reports, whose origin is `x - local.x`, `y - local.y`). Null when a number
+ *  isn't finite, or a size isn't positive: nothing to place by. */
+export function mainFrames(state: MainPlacementState): { main: Rect; screen: Rect } | null {
+  const nums = [state.x, state.y, state.outer.width, state.outer.height, state.screen.width, state.screen.height, state.local.x, state.local.y];
+  if (!nums.every(Number.isFinite)) return null;
+  if (state.outer.width <= 0 || state.outer.height <= 0 || state.screen.width <= 0 || state.screen.height <= 0) return null;
+  return {
+    main: { x: state.x, y: state.y, width: state.outer.width, height: state.outer.height },
+    screen: { x: state.x - state.local.x, y: state.y - state.local.y, width: state.screen.width, height: state.screen.height },
+  };
+}
+
+/** Where a child window of `size` (`'WxH'`) opens, for the main window's state: `childPosition` over
+ *  `mainFrames`. The child's footprint is its fixed size (its outer size isn't known before it opens).
+ *  Null when the state or the size gives nothing to place by. */
+export function placeOnMain(state: MainPlacementState, size: string): Point | null {
+  const frames = mainFrames(state);
+  const child = parseSize(size);
+  if (frames === null || child === null) return null;
+  return childPosition(frames.main, frames.screen, child);
+}

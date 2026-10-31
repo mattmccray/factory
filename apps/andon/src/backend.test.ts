@@ -50,6 +50,7 @@ function fakeApp(state: MacWinState | null, fail: Failures = {}): { app: MacApp;
       minimize: () => calls.push(`${id}.minimize`),
       zoom: () => calls.push(`${id}.zoom`),
       setResizable: (on) => calls.push(`${id}.resizable(${on})`),
+      setSize: (w, h) => calls.push(`${id}.setSize(${w}x${h})`),
       close: () => calls.push(`${id}.close`),
       hide: (opts) => calls.push(`${id}.hide(${JSON.stringify(opts)})`),
     }),
@@ -89,7 +90,15 @@ function fakeApp(state: MacWinState | null, fail: Failures = {}): { app: MacApp;
 // The tray click reads only `minimized`, `fullscreen`, and `allSpaces`; Tiny's `visible` and `focused`
 // play no part in it (rework 2), so a window in front and one hidden look the same to it. Settings…'s
 // bring-back step also reads `visible` (037). Close Window reads `focused` (073), set per window by menuApp's `focus`.
-const st = (minimized: boolean, fullscreen = false, visible = true): MacWinState => ({ minimized, fullscreen, allSpaces: false, visible, focused: false });
+const st = (minimized: boolean, fullscreen = false, visible = true): MacWinState => ({ minimized, fullscreen, allSpaces: false, visible, focused: false, ...FRAME });
+/** The main window's frame in every `st` state (077): a 1280x820 window at (200, 100) on a 1728x1117 screen at the origin. */
+const FRAME = { x: 200, y: 100, width: 1280, height: 820, outer: { width: 1280, height: 820 }, screen: { width: 1728, height: 1117, scale: 2 }, local: { x: 200, y: 100 } };
+/** Where Settings (480x360) and About (440x400) open, centered on FRAME (077 AC3). */
+const SETTINGS_AT = { x: 200 + 400, y: 100 + 230 };
+const ABOUT_AT = { x: 200 + 420, y: 100 + 210 };
+/** After a child window opens: its fixed size set (over any size Tiny remembered), then not resizable. */
+const settingsFixed: unknown[][] = [['settings.setSize', 480, 360], ['settings.resizable', false]];
+const aboutFixed: unknown[][] = [['about.setSize', 440, 400], ['about.resizable', false]];
 /** Show on the Space the user is on: join every Space, show, then pin it back to one. */
 const showHere = (...mid: string[]): string[] => ['main.getState', 'main.allSpaces(true)', ...mid, 'main.show', 'main.allSpaces(false)'];
 
@@ -491,6 +500,7 @@ function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<s
     minimize: () => log.push([`${id}.minimize`]),
     zoom: () => log.push([`${id}.zoom`]),
     setResizable: (on) => log.push([`${id}.resizable`, on]),
+    setSize: (w, h) => log.push([`${id}.setSize`, w, h]),
     close: () => {
       open.delete(id);
       log.push([`${id}.close`]);
@@ -620,8 +630,8 @@ test('035 AC1: Settings… opens the settings window on the service port, not re
   m.log.length = 0;
   await onMenu(SETTINGS_ID, m.app);
   expect(m.log).toEqual([
-    ['win.open', 'settings', { page: 'http://127.0.0.1:8766/?shell=mac&view=settings', title: 'Settings', size: SETTINGS_SIZE, minSize: SETTINGS_SIZE, chrome: { frame: true, windowControls: ['close'] }, parent: 'main' }],
-    ['settings.resizable', false],
+    ['win.open', 'settings', { page: 'http://127.0.0.1:8766/?shell=mac&view=settings', title: 'Settings', size: SETTINGS_SIZE, minSize: SETTINGS_SIZE, chrome: { frame: true, windowControls: ['close'] }, parent: 'main', ...SETTINGS_AT }],
+    ...settingsFixed,
   ]);
   m.log.length = 0;
   await onMenu(SETTINGS_ID, m.app);
@@ -636,7 +646,7 @@ test('035 AC1: the settings window loads from the port init resolved', async () 
   init(m.app);
   m.log.length = 0;
   await onMenu(SETTINGS_ID, m.app);
-  expect(m.log.filter((e) => e[0] === 'win.open')).toEqual([['win.open', 'settings', settingsWindow(9123)]]);
+  expect(m.log.filter((e) => e[0] === 'win.open')).toEqual([['win.open', 'settings', settingsWindow(9123, SETTINGS_AT)]]);
 });
 
 test('035 AC1: two quick clicks open one window', async () => {
@@ -652,7 +662,7 @@ test('035 AC1: once the settings window is closed, Settings… opens it again', 
   m.open.delete('settings');
   m.log.length = 0;
   await onMenu(SETTINGS_ID, m.app);
-  expect(m.log.map((e) => e[0])).toEqual(['win.open', 'settings.resizable']);
+  expect(m.log.map((e) => e[0])).toEqual(['win.open', 'settings.setSize', 'settings.resizable']);
 });
 
 // ---- the About window (065) ----
@@ -662,8 +672,8 @@ test('065 AC2: About Andon opens the About window on the service port, not resiz
   m.log.length = 0;
   await onMenu(ABOUT_ID, m.app);
   expect(m.log).toEqual([
-    ['win.open', 'about', { page: 'http://127.0.0.1:8766/?shell=mac&view=about', title: 'About Andon', size: ABOUT_SIZE, minSize: ABOUT_SIZE, chrome: { frame: false, windowControls: ['close'] }, parent: 'main' }],
-    ['about.resizable', false],
+    ['win.open', 'about', { page: 'http://127.0.0.1:8766/?shell=mac&view=about', title: 'About Andon', size: ABOUT_SIZE, minSize: ABOUT_SIZE, chrome: { frame: false, windowControls: ['close'] }, parent: 'main', ...ABOUT_AT }],
+    ...aboutFixed,
   ]);
   m.log.length = 0;
   await onMenu(ABOUT_ID, m.app);
@@ -678,23 +688,23 @@ test('065 AC2: the About window loads from the port init resolved, and two quick
   init(m.app);
   m.log.length = 0;
   await Promise.all([onMenu(ABOUT_ID, m.app), onMenu(ABOUT_ID, m.app)]);
-  expect(m.log.filter((e) => e[0] === 'win.open')).toEqual([['win.open', 'about', aboutWindow(9123)]]);
+  expect(m.log.filter((e) => e[0] === 'win.open')).toEqual([['win.open', 'about', aboutWindow(9123, ABOUT_AT)]]);
 });
 
 // ---- About Andon brings the main window back first (073) ----
 
-const aboutOpen = (port = 8766): unknown[] => ['win.open', 'about', aboutWindow(port)];
+const aboutOpen = (port = 8766): unknown[] => ['win.open', 'about', aboutWindow(port, ABOUT_AT)];
 
 test('073 AC2: with the main window up, About Andon opens About and leaves main alone; it opens again once closed', async () => {
   const m = await initMenu(null);
   m.main.current = st(false, false, true);
   m.log.length = 0;
   await onMenu(ABOUT_ID, m.app);
-  expect(m.log).toEqual([aboutOpen(), ['about.resizable', false]]);
+  expect(m.log).toEqual([aboutOpen(), ...aboutFixed]);
   m.open.delete('about');
   m.log.length = 0;
   await onMenu(ABOUT_ID, m.app);
-  expect(m.log).toEqual([aboutOpen(), ['about.resizable', false]]);
+  expect(m.log).toEqual([aboutOpen(), ...aboutFixed]);
 });
 
 test('073 AC2: with the main window hidden, About Andon shows it, then opens About; once open, shows main, then About', async () => {
@@ -702,7 +712,7 @@ test('073 AC2: with the main window hidden, About Andon shows it, then opens Abo
   m.main.current = st(false, false, false);
   m.log.length = 0;
   await onMenu(ABOUT_ID, m.app);
-  expect(m.log).toEqual([['main.show'], aboutOpen(), ['about.resizable', false]]);
+  expect(m.log).toEqual([['main.show'], aboutOpen(), ...aboutFixed]);
   m.log.length = 0;
   await onMenu(ABOUT_ID, m.app);
   expect(m.log).toEqual([['main.show'], ['about.show']]);
@@ -713,7 +723,7 @@ test('073 AC2: with the main window minimized, About Andon restores and shows it
   m.main.current = st(true, false, false);
   m.log.length = 0;
   await onMenu(ABOUT_ID, m.app);
-  expect(m.log).toEqual([['main.restore'], ['main.show'], aboutOpen(), ['about.resizable', false]]);
+  expect(m.log).toEqual([['main.restore'], ['main.show'], aboutOpen(), ...aboutFixed]);
   m.log.length = 0;
   await onMenu(ABOUT_ID, m.app);
   expect(m.log).toEqual([['main.restore'], ['main.show'], ['about.show']]);
@@ -738,7 +748,7 @@ test('073 AC2: when the main window state cannot be read (rejects or null), Abou
     m.main.current = current;
     m.log.length = 0;
     await onMenu(ABOUT_ID, m.app);
-    expect(m.log).toEqual([['main.show'], aboutOpen(), ['about.resizable', false]]);
+    expect(m.log).toEqual([['main.show'], ['win.open', 'about', aboutWindow(8766)], ...aboutFixed]); // 077 AC5: no x/y
     m.log.length = 0;
     await onMenu(ABOUT_ID, m.app);
     expect(m.log).toEqual([['main.show'], ['about.show']]);
@@ -750,7 +760,7 @@ test('073 AC2: two quick clicks with the main window minimized open one About wi
   m.main.current = st(true, false, false);
   m.log.length = 0;
   await Promise.all([onMenu(ABOUT_ID, m.app), onMenu(ABOUT_ID, m.app)]);
-  expect(m.log).toEqual([['main.restore'], ['main.show'], aboutOpen(), ['about.resizable', false]]);
+  expect(m.log).toEqual([['main.restore'], ['main.show'], aboutOpen(), ...aboutFixed]);
 });
 
 // ---- File → Close Window (073) ----
@@ -883,14 +893,14 @@ test('073 AC5: closeAbout from any window but About, with malformed meta, or wit
 
 // ---- Settings… brings the main window back first (037) ----
 
-const openCall = (port = 8766): unknown[] => ['win.open', 'settings', settingsWindow(port)];
+const openCall = (port = 8766): unknown[] => ['win.open', 'settings', settingsWindow(port, SETTINGS_AT)];
 
 test('037 AC2: with the main window up, Settings… opens the close-only child window, not resizable, and leaves main alone', async () => {
   const m = await initMenu(null);
   m.main.current = st(false, false, true);
   m.log.length = 0;
   await onMenu(SETTINGS_ID, m.app);
-  expect(m.log).toEqual([openCall(), ['settings.resizable', false]]);
+  expect(m.log).toEqual([openCall(), ...settingsFixed]);
   expect(m.log.some((e) => e[0] === 'main.restore' || e[0] === 'main.show')).toBe(false);
 });
 
@@ -899,7 +909,7 @@ test('037 AC3: with the main window hidden, Settings… shows it, then opens Set
   m.main.current = st(false, false, false);
   m.log.length = 0;
   await onMenu(SETTINGS_ID, m.app);
-  expect(m.log).toEqual([['main.show'], openCall(), ['settings.resizable', false]]);
+  expect(m.log).toEqual([['main.show'], openCall(), ...settingsFixed]);
   m.log.length = 0;
   await onMenu(SETTINGS_ID, m.app);
   expect(m.log).toEqual([['main.show'], ['settings.show']]);
@@ -910,7 +920,7 @@ test('037 AC4: with the main window minimized, Settings… restores and shows it
   m.main.current = st(true, false, false);
   m.log.length = 0;
   await onMenu(SETTINGS_ID, m.app);
-  expect(m.log).toEqual([['main.restore'], ['main.show'], openCall(), ['settings.resizable', false]]);
+  expect(m.log).toEqual([['main.restore'], ['main.show'], openCall(), ...settingsFixed]);
   m.log.length = 0;
   await onMenu(SETTINGS_ID, m.app);
   expect(m.log).toEqual([['main.restore'], ['main.show'], ['settings.show']]);
@@ -934,7 +944,7 @@ test('037 AC5: two quick clicks with the main window hidden open one window and 
   m.main.current = st(true, false, false);
   m.log.length = 0;
   await Promise.all([onMenu(SETTINGS_ID, m.app), onMenu(SETTINGS_ID, m.app)]);
-  expect(m.log).toEqual([['main.restore'], ['main.show'], openCall(), ['settings.resizable', false]]);
+  expect(m.log).toEqual([['main.restore'], ['main.show'], openCall(), ...settingsFixed]);
 });
 
 test('037 AC6: when the main window state cannot be read (rejects or null), Settings… shows main, no restore, and still opens or shows Settings', async () => {
@@ -943,7 +953,7 @@ test('037 AC6: when the main window state cannot be read (rejects or null), Sett
     m.main.current = current;
     m.log.length = 0;
     await onMenu(SETTINGS_ID, m.app);
-    expect(m.log).toEqual([['main.show'], openCall(), ['settings.resizable', false]]);
+    expect(m.log).toEqual([['main.show'], ['win.open', 'settings', settingsWindow(8766)], ...settingsFixed]); // 077 AC5: no x/y
     m.log.length = 0;
     await onMenu(SETTINGS_ID, m.app);
     expect(m.log).toEqual([['main.show'], ['settings.show']]);
@@ -967,7 +977,105 @@ test('037: a main window that throws on show still lets Settings… open Setting
   };
   m.log.length = 0;
   await onMenu(SETTINGS_ID, m.app);
-  expect(m.log).toEqual([['main.show'], openCall(), ['settings.resizable', false]]);
+  expect(m.log).toEqual([['main.show'], openCall(), ...settingsFixed]);
+});
+
+// ---- About and Settings open centered on the main window (077) ----
+
+/** The main window moved: a frame at (x, y), 1280x820 (outer 1280x848), on a screen at `origin`, 1728x1117. */
+const movedTo = (x: number, y: number, origin = { x: 0, y: 0 }): MacWinState => ({
+  ...st(false),
+  x,
+  y,
+  outer: { width: 1280, height: 848 },
+  local: { x: x - origin.x, y: y - origin.y },
+});
+/** Each child window: its menu id, window id, options builder, and fixed size. */
+const CHILDREN = [
+  { menu: SETTINGS_ID, id: 'settings', options: settingsWindow, size: [480, 360] },
+  { menu: ABOUT_ID, id: 'about', options: aboutWindow, size: [440, 400] },
+] as const;
+
+test("077 AC3: About and Settings open with today's options plus the x/y that centers them on the main window's current frame", async () => {
+  for (const c of CHILDREN) {
+    const m = await initMenu(null);
+    const [w, h] = c.size;
+    m.main.current = movedTo(300, 150);
+    m.log.length = 0;
+    await onMenu(c.menu, m.app);
+    const at = { x: 300 + (1280 - w) / 2, y: 150 + (848 - h) / 2 };
+    expect(m.log).toEqual([['win.open', c.id, { ...c.options(8766), ...at }], [`${c.id}.setSize`, w, h], [`${c.id}.resizable`, false]]);
+    // closed, the main window moved again: the next open follows it, not the last place
+    m.open.delete(c.id);
+    m.main.current = movedTo(10, 40);
+    m.log.length = 0;
+    await onMenu(c.menu, m.app);
+    expect(m.log[0]).toEqual(['win.open', c.id, { ...c.options(8766), x: 10 + (1280 - w) / 2, y: 40 + (848 - h) / 2 }]);
+  }
+});
+
+test('077 AC3: against a screen edge, the position keeps the child on the main window\'s screen, a second screen included', async () => {
+  for (const c of CHILDREN) {
+    const [w, h] = c.size;
+    const m = await initMenu(null);
+    m.main.current = movedTo(-1100, 900); // mostly off the left and bottom edges
+    m.log.length = 0;
+    await onMenu(c.menu, m.app);
+    expect(m.log[0]).toEqual(['win.open', c.id, { ...c.options(8766), x: 0, y: 1117 - h }]);
+    const left = await initMenu(null);
+    left.main.current = movedTo(-1728 + 1000, -500, { x: -1728, y: 0 }); // a screen to the left of the primary one, past its top
+    left.log.length = 0;
+    await onMenu(c.menu, left.app);
+    expect(left.log[0]).toEqual(['win.open', c.id, { ...c.options(8766), x: -728 + (1728 - 1000 - w), y: 0 }]);
+  }
+});
+
+test('077 AC3: a minimized main window is brought back first, and the child is placed on its frame', async () => {
+  for (const c of CHILDREN) {
+    const m = await initMenu(null);
+    m.main.current = { ...movedTo(300, 150), minimized: true, visible: false };
+    m.log.length = 0;
+    await onMenu(c.menu, m.app);
+    const [w, h] = c.size;
+    expect(m.log.slice(0, 3)).toEqual([['main.restore'], ['main.show'], ['win.open', c.id, { ...c.options(8766), x: 300 + (1280 - w) / 2, y: 150 + (848 - h) / 2 }]]);
+  }
+});
+
+test('077 AC4: an open About or Settings is shown and focused where it is: no open, no position, no size', async () => {
+  for (const c of CHILDREN) {
+    const m = await initMenu(null);
+    await onMenu(c.menu, m.app);
+    m.main.current = movedTo(900, 600);
+    m.log.length = 0;
+    await onMenu(c.menu, m.app);
+    expect(m.log).toEqual([[`${c.id}.show`]]);
+  }
+});
+
+test('077 AC5: with the main window state null or failing, the child opens with no x/y, and a log line says why', async () => {
+  const logged: string[] = [];
+  const realLog = console.log;
+  console.log = (line: string) => void logged.push(line);
+  try {
+    for (const c of CHILDREN) {
+      for (const current of ['fail', null] as const) {
+        const m = await initMenu(null);
+        m.main.current = current;
+        m.log.length = 0;
+        logged.length = 0;
+        await onMenu(c.menu, m.app);
+        const opened = m.log.find((e) => e[0] === 'win.open');
+        expect(opened).toEqual(['win.open', c.id, c.options(8766)]);
+        const opts = opened?.[2];
+        expect(typeof opts === 'object' && opts !== null && ('x' in opts || 'y' in opts)).toBe(false);
+        const why = logged.filter((l) => l.includes('without a position'));
+        expect({ c: c.id, current, why: why.length }).toEqual({ c: c.id, current, why: 1 });
+        expect(why[0]).toContain(current === 'fail' ? 'main.getState failed' : 'no state');
+      }
+    }
+  } finally {
+    console.log = realLog;
+  }
 });
 
 const SETTINGS_META = { window: 'settings', origin: 'http://127.0.0.1:8766' };
