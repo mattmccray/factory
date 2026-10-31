@@ -33,6 +33,9 @@ import {
 } from './projects';
 import { applyEvent, applySettled, emptyState, startSettled } from './state';
 import type { UiState } from './state';
+import { HUB, LOCAL_FACTORY, STUDIO_FACTORY, job, machineEntry, machinesBody, tag } from './fixtures';
+import { fetchBacklog, fetchBoard, fetchBrief, fetchEpicDocs, fetchPlan, fetchSettled } from './api';
+import { MACHINES_PATH, backlogPath, briefPath, planPath } from './projects';
 
 const P1 = { id: 'aaaaaaaaaaaa', name: 'one', root: '/r/one' };
 const P2 = { id: 'bbbbbbbbbbbb', name: 'two', root: '/r/two' };
@@ -322,5 +325,54 @@ describe('epics across the projects (056 AC1, AC5, AC6, AC7)', () => {
     const later = applyEvent(s, 'board', { project: P2.id, config: {}, jobs: [], epics: [{ ...auth, state: 'landed', endedAt: before(25 * HOUR) }] });
     expect(settledEpicsFor(later, ALL, NOW).map((e) => e.key)).toEqual([`${P2.id}/auth`, `${P2.id}/old`]);
     expect(settledEpicsFor(later, P1.id, NOW)).toEqual([]);
+  });
+});
+
+describe('a remote project\'s reads (brief andon-machines-ui, AC7)', () => {
+  const ID = '1a2b3c4d5e6f@studio';
+  const ENC = '1a2b3c4d5e6f%40studio';
+
+  test('every read goes to the usual relative route with the id encoded', () => {
+    expect(boardPath(ID)).toBe(`/projects/${ENC}/board?settled=summary`);
+    expect(settledPath(ID)).toBe(`/projects/${ENC}/settled`);
+    expect(docsPath(tag(job({ id: '007-x' }), { id: ID, name: 'factory' }))).toBe(`/projects/${ENC}/jobs/007-x/docs`);
+    expect(epicDocsPath(ID, 'auth')).toBe(`/projects/${ENC}/epics/auth/docs`);
+    expect(backlogPath(ID)).toBe(`/projects/${ENC}/backlog`);
+    expect(briefPath(ID, 'sign-in')).toBe(`/projects/${ENC}/briefs/sign-in`);
+    expect(planPath(ID, 'auth')).toBe(`/projects/${ENC}/plans/auth`);
+    expect(MACHINES_PATH).toBe('/machines');
+  });
+
+  test('the fetches ask exactly those paths, and a down peer\'s 502 reads as any read failure', async () => {
+    const asked: string[] = [];
+    const fetcher: Fetcher = async (path) => {
+      asked.push(path);
+      return { ok: false, status: 502, text: async () => 'studio: unreachable' };
+    };
+    expect(await fetchBoard(fetcher, ID)).toEqual({ ok: false, reason: 'studio: unreachable' });
+    expect(await fetchSettled(fetcher, ID)).toEqual({ ok: false, reason: 'studio: unreachable' });
+    expect(await fetchBacklog(fetcher, ID)).toEqual({ ok: false, reason: 'studio: unreachable' });
+    expect(await fetchBrief(fetcher, ID, 'sign-in')).toEqual({ state: 'failed', reason: 'studio: unreachable' });
+    expect(await fetchPlan(fetcher, ID, 'auth')).toEqual({ state: 'failed', reason: 'studio: unreachable' });
+    await expect(fetchEpicDocs(fetcher, ID, 'auth')).rejects.toThrow('studio: unreachable');
+    await expect(fetchDocs(fetcher, tag(job({ id: '007-x' }), { id: ID, name: 'factory' }))).rejects.toThrow('studio: unreachable');
+    expect(asked).toEqual([
+      `/projects/${ENC}/board?settled=summary`,
+      `/projects/${ENC}/settled`,
+      `/projects/${ENC}/backlog`,
+      `/projects/${ENC}/briefs/sign-in`,
+      `/projects/${ENC}/plans/auth`,
+      `/projects/${ENC}/epics/auth/docs`,
+      `/projects/${ENC}/jobs/007-x/docs`,
+    ]);
+  });
+
+  test('board jobs and epics of a remote project carry its machine; a local one\'s, none', () => {
+    let s = applyEvent(emptyState(), 'projects', { projects: [LOCAL_FACTORY, STUDIO_FACTORY] });
+    s = applyEvent(s, 'board', { project: STUDIO_FACTORY.id, config: {}, jobs: [{ id: '007-x', stage: 'spec' }] });
+    s = applyEvent(s, 'board', { project: LOCAL_FACTORY.id, config: {}, jobs: [{ id: '001-a', stage: 'spec' }] });
+    expect(boardJobs(s, ALL).map((b) => b.project)).toEqual([{ id: LOCAL_FACTORY.id, name: 'factory' }, { id: STUDIO_FACTORY.id, name: 'factory' }]); // no machines data yet
+    s = applyEvent(s, 'machines', machinesBody(machineEntry(HUB), machineEntry('studio')));
+    expect(boardJobs(s, ALL).map((b) => b.project)).toEqual([{ id: LOCAL_FACTORY.id, name: 'factory' }, { id: STUDIO_FACTORY.id, name: 'factory', remote: 'studio' }]);
   });
 });

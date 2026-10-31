@@ -10,12 +10,16 @@
   // restart note that copies the restart command when the service's clone has moved.
   // Its right edge is a grip (brief andon-resizable-panes): drag it, or focus it and use ← and →
   // (Home and End to the limits), within 180–320 px; double-click resets it to 216 (panes.ts).
+  // Machines (brief andon-machines-ui): with peers, the projects sit under a heading per machine (the
+  // hub first, then the peers by name), each with its state ("down since 14:02", "needs upgrade",
+  // "error" in red, a gray "connecting…", nothing when live), its reason and release as the heading's
+  // tooltip and description. Headings aren't buttons: Tab skips them (keys.ts `sidebarStops`).
   import type { Status } from './live';
   import { SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, clampSidebar, sidebarKey } from './panes';
   import { ALL } from './projects';
   import type { Selection } from './projects';
   import { STATE_LABELS } from './sidebar';
-  import type { Badge, Footer, SidebarModel } from './sidebar';
+  import type { Badge, Footer, SidebarModel, SidebarRow } from './sidebar';
 
   interface Props {
     model: SidebarModel;
@@ -95,35 +99,26 @@
         </button>
       </li>
     </ul>
-    {#if model.projects.length > 0}
+    {#if model.projects.length > 0 || model.machines.length > 0}
       <h2>Projects</h2>
-      <ul>
-        {#each model.projects as p (p.id)}
-          <li class="sbrow" class:upd={p.release !== null && p.release.glyph !== null}>
-            <button
-              class="sbi"
-              class:on={p.selected}
-              type="button"
-              title={p.title}
-              data-project-menu={p.id}
-              aria-label={label(p.name, STATE_LABELS[p.state], p.badge)}
-              aria-describedby={p.release !== null ? `rel-${p.id}` : undefined}
-              aria-current={p.selected ? 'true' : undefined}
-              onclick={() => onselect(p.id)}
-            >
-              <span class="dot {p.dot}" aria-hidden="true"></span>
-              <span class="nm">{p.name}</span>
-              {#if p.badge !== null}<span class="badge" class:red={p.badge.tone === 'red'} aria-hidden="true">{p.badge.count}</span>{/if}
-              {#if p.release !== null}<span class="sr-only" id="rel-{p.id}">{p.release.line}</span>{/if}
-            </button>
-            {#if p.release?.glyph}
-              <button class="relglyph" type="button" title={p.release.glyph.label} aria-label={p.release.glyph.label} aria-haspopup="dialog" onclick={() => onwhatsnew(p.id)}>
-                <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.75" /><path d="M8 10.75v-5.5M5.75 7.5 8 5.25l2.25 2.25" /></svg>
-              </button>
-            {/if}
-          </li>
+      {#if model.machines.length > 0}
+        {#each model.machines as m, i (m.name)}
+          <h3 class="mhead" title={m.detail ?? undefined} aria-describedby={m.detail !== null ? `mach-${i}` : undefined}>
+            <span class="mname">{m.name}</span>
+            {#if m.status !== null}<span class="mstate t-{m.status.tone}">{m.status.text}</span>{/if}
+          </h3>
+          {#if m.detail !== null}<span class="sr-only" id="mach-{i}">{m.detail}</span>{/if}
+          {#if m.projects.length > 0}
+            <ul>
+              {#each m.projects as p (p.id)}{@render row(p)}{/each}
+            </ul>
+          {/if}
         {/each}
-      </ul>
+      {:else}
+        <ul>
+          {#each model.projects as p (p.id)}{@render row(p)}{/each}
+        </ul>
+      {/if}
     {/if}
   </nav>
   <div class="service" title={ANNOUNCE[status]}>
@@ -142,3 +137,29 @@
     <span class="sr-only" role="status">{ANNOUNCE[status]}</span>
   </div>
 </aside>
+
+{#snippet row(p: SidebarRow)}
+  <li class="sbrow" class:upd={p.release !== null && p.release.glyph !== null}>
+    <button
+      class="sbi"
+      class:on={p.selected}
+      type="button"
+      title={p.title}
+      data-project-menu={p.id}
+      aria-label={label(p.name, STATE_LABELS[p.state], p.badge)}
+      aria-describedby={p.release !== null ? `rel-${p.id}` : undefined}
+      aria-current={p.selected ? 'true' : undefined}
+      onclick={() => onselect(p.id)}
+    >
+      <span class="dot {p.dot}" aria-hidden="true"></span>
+      <span class="nm">{p.name}</span>
+      {#if p.badge !== null}<span class="badge" class:red={p.badge.tone === 'red'} aria-hidden="true">{p.badge.count}</span>{/if}
+      {#if p.release !== null}<span class="sr-only" id="rel-{p.id}">{p.release.line}</span>{/if}
+    </button>
+    {#if p.release?.glyph}
+      <button class="relglyph" type="button" title={p.release.glyph.label} aria-label={p.release.glyph.label} aria-haspopup="dialog" onclick={() => onwhatsnew(p.id)}>
+        <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.75" /><path d="M8 10.75v-5.5M5.75 7.5 8 5.25l2.25 2.25" /></svg>
+      </button>
+    {/if}
+  </li>
+{/snippet}

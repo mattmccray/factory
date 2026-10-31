@@ -33,6 +33,9 @@ import {
   startWorkPush,
 } from './startwork';
 import type { StartItem, StartWorkRequest } from './startwork';
+import { HUB, LOCAL_FACTORY, STUDIO_FACTORY, machineEntry, machinesBody } from './fixtures';
+import { remoteOfId } from './machines';
+import { applyEvent, emptyState } from './state';
 
 const PID = 'aaaaaaaaaaaa';
 const PROJECTS = [{ id: PID, name: 'factory', root: '/Users/me/code/factory' }];
@@ -315,5 +318,39 @@ describe('075 AC6: the project the New exploration sheet opens for', () => {
     expect(loadLastExplored(blocked)).toBeNull();
     expect(() => saveLastExplored(blocked, C.id)).not.toThrow();
     expect(loadLastExplored(null)).toBeNull();
+  });
+});
+
+describe('starting work on a remote project (brief andon-machines-ui, AC7)', () => {
+  const ID = '1a2b3c4d5e6f@studio';
+  const state = () => applyEvent(applyEvent(emptyState(), 'projects', { projects: [LOCAL_FACTORY, STUDIO_FACTORY] }), 'machines', machinesBody(machineEntry(HUB), machineEntry('studio')));
+
+  test('Start Work, Run Next, and New Exploration send the remote id unchanged', async () => {
+    const calls: unknown[][] = [];
+    const start = startWorkCaller('mac', { api: { call: (...args: unknown[]) => (calls.push(args), Promise.resolve('copy-only')) } });
+    const items: StartItem[] = [nextStart(ID), newExplorationStart(ID, 'an idea'), { label: 'Run', req: { project: ID, action: 'run', slug: 'sign-in' }, command: runCommand('Sign-in') }];
+    for (const item of items) await start?.(item.req);
+    expect(calls.map((c) => c[1])).toEqual(items.map((i) => i.req));
+    for (const c of calls) expect(c[1]).toMatchObject({ project: ID });
+  });
+
+  test('a successful copy-only or null outcome toasts "Copied. Run it on studio"; drafted, sent, no-github-remote, and local projects read as today', async () => {
+    const s = state();
+    const run = async (outcome: HandoffOutcome | null, pid: string, browser = false) =>
+      copyThenStart(async () => true, browser ? null : async () => outcome, nextStart(pid).req, NEXT_COMMAND, remoteOfId(s, pid));
+    expect(await run('copy-only', STUDIO_FACTORY.id)).toEqual({ text: 'Copied. Run it on studio', ok: true });
+    expect(await run(null, STUDIO_FACTORY.id)).toEqual({ text: 'Copied. Run it on studio', ok: true });
+    expect(await run(null, STUDIO_FACTORY.id, true)).toEqual({ text: 'Copied. Run it on studio', ok: true }); // a browser
+    expect(await run('drafted', STUDIO_FACTORY.id)).toEqual({ text: 'Opened a draft in T3 Code', ok: true });
+    expect(await run('sent', STUDIO_FACTORY.id)).toEqual({ text: 'Sent to T3 Code', ok: true });
+    expect(await run('no-github-remote', STUDIO_FACTORY.id)).toEqual({ text: 'No GitHub remote; copied /factory next', ok: true });
+    const quiet: Array<HandoffOutcome | null> = ['copy-only', null];
+    for (const o of quiet) expect(await run(o, LOCAL_FACTORY.id)).toEqual({ text: 'Copied /factory next', ok: true });
+    expect(await copyThenStart(async () => false, async () => 'copy-only', nextStart(ID).req, NEXT_COMMAND, 'studio')).toEqual({ text: COPY_FAILED, ok: false });
+  });
+
+  test('AC1: with only the hub listed, no project is remote, so no toast names a machine', () => {
+    const s = applyEvent(state(), 'machines', machinesBody(machineEntry(HUB)));
+    expect([remoteOfId(s, LOCAL_FACTORY.id), remoteOfId(s, STUDIO_FACTORY.id)]).toEqual([null, null]);
   });
 });

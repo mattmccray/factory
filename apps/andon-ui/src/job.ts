@@ -125,6 +125,22 @@ export interface ProjectInfo {
   root: string;
   /** Its factory release (`{ installed, state }`); absent when the service sent none (an older service) or a malformed one. */
   release?: ProjectRelease;
+  /** The machine name of the service the project is on; absent when the service sent none (one from before the hub). */
+  machine?: string;
+}
+
+/** A machine's state, as `GET /machines` reports it (docs/contract/v1.md "Andon service", "Peers"). */
+export type MachineState = 'live' | 'connecting' | 'down' | 'error';
+const MACHINE_STATES: readonly MachineState[] = ['live', 'connecting', 'down', 'error'];
+
+/** One `GET /machines` entry: this machine first, then each listed peer. */
+export interface Machine {
+  name: string;
+  url: string;
+  state: MachineState;
+  since: string; // ISO 8601: when it entered that state
+  reason: string | null;
+  release: string | null; // its service's running release; null when it can't be read
 }
 
 export const DEFAULT_SETTLE_HOURS = 24;
@@ -293,7 +309,31 @@ export function toProjects(v: unknown): ProjectInfo[] {
     if (id === null) continue;
     const root = str(p.root) ?? '';
     const release = toProjectRelease(p.release);
-    out.push(release === null ? { id, name: str(p.name) ?? id, root } : { id, name: str(p.name) ?? id, root, release });
+    const info: ProjectInfo = release === null ? { id, name: str(p.name) ?? id, root } : { id, name: str(p.name) ?? id, root, release };
+    const machine = str(p.machine);
+    out.push(machine === null || machine === '' ? info : { ...info, machine });
+  }
+  return out;
+}
+
+/**
+ * A `GET /machines` body (`{ machines: [...] }`, also the `machines` event's data), narrowed: an
+ * entry without a non-empty string `name`, a string `url`, a known `state`, and a string `since` is
+ * skipped; a `reason` or `release` that isn't a string is null; unknown fields are ignored. Null
+ * when the body has no `machines` list.
+ */
+export function toMachines(v: unknown): Machine[] | null {
+  if (!isRecord(v) || !Array.isArray(v.machines)) return null;
+  const out: Machine[] = [];
+  for (const m of v.machines) {
+    if (!isRecord(m)) continue;
+    const name = str(m.name);
+    const url = str(m.url);
+    const state = oneOf(MACHINE_STATES, m.state);
+    const since = str(m.since);
+    if (name === null || name === '' || url === null || state === null || since === null) continue;
+    if (out.some((x) => x.name === name)) continue; // a repeated name: the first wins
+    out.push({ name, url, state, since, reason: str(m.reason), release: str(m.release) });
   }
   return out;
 }

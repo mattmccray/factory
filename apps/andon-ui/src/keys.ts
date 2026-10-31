@@ -8,6 +8,7 @@
 // or Cmd) is held, or while a sheet is open over the page. Only Esc works from inside a field.
 // The Mac app's View menu shortcuts (063: ⇧⌘N, ⇧⌘S, ⌃⌘S, ⌥⌘I, ⌘/; 067: ⇧⌘B) are the menu's own, not this
 // reducer's; the shortcut sheet lists them in the Mac app only.
+// The sidebar's Tab order (`sidebarStops`) skips its machine headings, which are not selectable.
 
 export type KeyAction = 'focus-search' | 'toggle-needs' | 'open-keys' | 'all-projects' | 'close-sheet' | 'close-inspector' | 'clear-search' | 'leave-search';
 
@@ -114,3 +115,19 @@ export const SHORTCUTS: readonly Shortcut[] = [
 
 /** The rows the sheet shows: every row in the Mac app, and only the page's own in a browser (it has no View menu). */
 export const shortcutsFor = (mac: boolean): readonly Shortcut[] => (mac ? SHORTCUTS : SHORTCUTS.filter((s) => s.menu !== true));
+
+/** The slice of the sidebar model its keyboard order is read from (sidebar.ts `SidebarModel`). */
+export interface SidebarStops {
+  projects: ReadonlyArray<{ id: string }>;
+  machines: ReadonlyArray<{ projects: ReadonlyArray<{ id: string }> }>;
+}
+
+/**
+ * The sidebar's keyboard (Tab) order, as Sidebar.svelte renders it: All Projects (`ALL`, passed in),
+ * then each project row, under its machine heading when there are peers. Machine headings are not
+ * selectable, so they are never a stop.
+ */
+export function sidebarStops(model: SidebarStops, all: string): string[] {
+  const rows = model.machines.length > 0 ? model.machines.flatMap((m) => m.projects) : model.projects;
+  return [all, ...rows.map((r) => r.id)];
+}

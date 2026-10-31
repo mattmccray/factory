@@ -8,6 +8,10 @@ import { MARK_LEGEND } from './sidebar';
 import type { Kind, Lane } from './lanes';
 import { ALL, withSettled } from './projects';
 import { applyEvent, applySettled, emptyState, startSettled } from './state';
+import type { UiState } from './state';
+import { HUB, LOCAL_FACTORY, LOCAL_NOTES, MACHINE_PROJECTS, STUDIO_FACTORY, localAt, machineEntry, machinesBody } from './fixtures';
+import { boardEpics, boardJobs } from './projects';
+import { placed } from './machines';
 
 const P1 = { id: 'p1', name: 'one' };
 const at = (fields: Record<string, unknown>, project = P1, reviewers: string[] = []): BoardJob => tag(job(fields), project, 24, reviewers);
@@ -896,5 +900,93 @@ describe('067 AC1: the "N queued" gutter link', () => {
     const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
     expect(app).toContain('onbacklog={openBacklog}');
     expect(app).toContain('backlogCounts = $derived(Object.fromEntries(ui.projects.map((p): [string, BacklogCounts] => [p.id, ui.boards[p.id]?.backlog ?? NO_BACKLOG])))');
+  });
+});
+
+// ---- machines (brief andon-machines-ui, AC4, AC5) ----
+
+describe('one trouble-first board across machines', () => {
+  const iso = (t: number): string => new Date(t).toISOString();
+  const T = { claim: localAt(12, 0), stopped: localAt(13, 50), down: localAt(14, 2), now: localAt(16, 30), later: localAt(18, 45) };
+  /** rocinante's factory and notes are working; studio's factory has a needs-human job (and studio is `studio`). */
+  function fleet(studio: Record<string, unknown> = machineEntry('studio')): UiState {
+    let s = applyEvent(emptyState(), 'projects', { projects: MACHINE_PROJECTS });
+    s = applyEvent(s, 'board', { project: LOCAL_FACTORY.id, config: {}, jobs: [{ id: '001-a', stage: 'build', startedAt: iso(T.claim), stageEnteredAt: iso(localAt(15, 0)), updated: iso(localAt(15, 0)) }] });
+    s = applyEvent(s, 'board', { project: LOCAL_NOTES.id, config: {}, jobs: [{ id: '002-b', stage: 'spec', startedAt: iso(T.claim), stageEnteredAt: iso(localAt(15, 30)), updated: iso(localAt(15, 30)) }] });
+    s = applyEvent(s, 'board', {
+      project: STUDIO_FACTORY.id,
+      config: {},
+      jobs: [
+        { id: '007-x', stage: 'needs-human', ...stopped('escalated', 'review'), startedAt: iso(T.claim), stageEnteredAt: iso(T.stopped), updated: iso(T.stopped) },
+        { id: '008-y', stage: 'build', startedAt: iso(localAt(13, 0)), stageEnteredAt: iso(localAt(13, 30)), updated: iso(localAt(13, 30)) },
+      ],
+    });
+    return applyEvent(s, 'machines', machinesBody(machineEntry(HUB), studio, machineEntry('agentbox')));
+  }
+  const lanesAt = (s: UiState, now: number): Lane[] => orderLanes(buildLanes(placed(s, s.projects), boardJobs(s, ALL), now, false, {}, boardEpics(s, ALL)), null).lanes;
+  const studioLane = (lanes: readonly Lane[]): Lane | undefined => lanes.find((l) => l.project.id === STUDIO_FACTORY.id);
+  const tokenTimes = (l: Lane | undefined): Array<string | null> => (l?.cells ?? []).flatMap((c) => c.tokens.map((t) => t.time));
+
+  test('AC4: one list in tier order across every machine, never split by machine; the studio lane sits in the top tier', () => {
+    const lanes = lanesAt(fleet(), T.now);
+    expect(lanes).toHaveLength(MACHINE_PROJECTS.length);
+    expect(lanes[0]?.project.id).toBe(STUDIO_FACTORY.id);
+    expect(lanes[0]?.counts.human).toBe(1);
+    expect(lanes.slice(1, 3).map((l) => l.project.id)).toEqual([LOCAL_FACTORY.id, LOCAL_NOTES.id]); // working rocinante lanes after it, studio's idle api with the idle ones
+  });
+
+  test("AC4: a remote lane's gutter reads \"<project> · studio\"; a local one's, the bare name; two factory lanes are told apart", () => {
+    const lanes = lanesAt(fleet(), T.now);
+    expect(studioLane(lanes)?.label).toBe('factory · studio');
+    expect(lanes.find((l) => l.project.id === LOCAL_FACTORY.id)?.label).toBe('factory');
+    expect(new Set(lanes.filter((l) => l.project.name === 'factory').map((l) => l.label)).size).toBe(2);
+    const b = boardJobs(fleet(), ALL).find((x) => x.key === `${STUDIO_FACTORY.id}/007-x`);
+    if (b === undefined) throw new Error('no studio job');
+    expect(popoverOf(b, T.now).where).toBe('factory · studio · 007-x');
+    const lane = readFileSync(join(import.meta.dir, 'Lane.svelte'), 'utf8');
+    expect(lane).toContain('const name = $derived(lane.label);');
+  });
+
+  test('AC5: a down machine\'s lanes are stale, "as of 14:02", timed at 14:02 and not with the clock, in the same tier', () => {
+    const live = lanesAt(fleet(), T.now);
+    const down = fleet(machineEntry('studio', 'down', iso(T.down), { reason: 'studio: unreachable' }));
+    const now = lanesAt(down, T.now);
+    const later = lanesAt(down, T.later);
+    expect(studioLane(now)?.stale).toEqual({ asOf: T.down, text: 'as of 14:02' });
+    expect(tokenTimes(studioLane(now))).toEqual(['12m', '32m']); // needs-human since 13:50 (the Andon column), build since 13:30, at 14:02
+    expect(tokenTimes(studioLane(later))).toEqual(tokenTimes(studioLane(now)));
+    expect(studioLane(later)?.meta.active).toBe(studioLane(now)?.meta.active);
+    expect(studioLane(now)?.meta.active).toBe('2 active · 2h 2m'); // its oldest claim, 12:00, at 14:02
+    expect(studioLane(now)?.tier).toBe(studioLane(live)?.tier ?? '');
+    expect(now.map((l) => l.project.id)).toEqual(live.map((l) => l.project.id));
+    // the local lanes still count from the clock, and aren't stale
+    const local = (lanes: readonly Lane[]) => lanes.find((l) => l.project.id === LOCAL_FACTORY.id);
+    expect(local(now)?.stale).toBeNull();
+    expect(tokenTimes(local(now))).toEqual(['1h 30m']);
+    expect(tokenTimes(local(later))).toEqual(['3h 45m']);
+  });
+
+  test('AC5: through the following connecting it stays stale at 14:02; once live it counts from the clock', () => {
+    let s = fleet(machineEntry('studio', 'down', iso(T.down)));
+    s = applyEvent(s, 'machines', machinesBody(machineEntry(HUB), machineEntry('studio', 'connecting', iso(localAt(16, 0))), machineEntry('agentbox')));
+    expect(studioLane(lanesAt(s, T.later))?.stale).toEqual({ asOf: T.down, text: 'as of 14:02' });
+    expect(tokenTimes(studioLane(lanesAt(s, T.later)))).toEqual(['12m', '32m']);
+    s = applyEvent(s, 'machines', machinesBody(machineEntry(HUB), machineEntry('studio', 'live', iso(localAt(16, 1))), machineEntry('agentbox')));
+    expect(studioLane(lanesAt(s, T.later))?.stale).toBeNull();
+    expect(tokenTimes(studioLane(lanesAt(s, T.later)))).toEqual(['4h 55m', '5h 15m']);
+  });
+
+  test('AC5: a page opened while the machine is already connecting freezes at its current since', () => {
+    const s = fleet(machineEntry('studio', 'connecting', iso(localAt(14, 20))));
+    expect(studioLane(lanesAt(s, T.later))?.stale).toEqual({ asOf: localAt(14, 20), text: 'as of 14:20' });
+  });
+
+  test('AC1: with only the hub listed, no lane carries a machine or goes stale', () => {
+    const s = applyEvent(fleet(), 'machines', machinesBody(machineEntry(HUB)));
+    for (const l of lanesAt(s, T.now)) {
+      expect(l.label).toBe(l.project.name);
+      expect(l.project.remote).toBeUndefined();
+      expect(l.stale).toBeNull();
+    }
   });
 });

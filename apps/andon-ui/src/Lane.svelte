@@ -14,6 +14,9 @@
   // opens the epic page, then the same six cells holding only the epic's jobs ("+N more" focuses the
   // project). An epic waiting on you turns its gutter red. Under Needs Me, a lane shown only for its
   // sub-lanes collapses to a one-line header.
+  // Machines (brief andon-machines-ui): a remote project's gutter names its machine ("factory · studio",
+  // `lane.label`), and a stale machine's lane (and its sub-lanes) is dimmed, with "as of 14:02" in the
+  // gutter; its times were computed at that as-of time (lanes.ts). It keeps its tier position.
   import { cubicOut } from 'svelte/easing';
   import { crossfade } from 'svelte/transition';
   import type { Find } from './find';
@@ -40,7 +43,7 @@
 
   // Only a token that moves between two cells animates; one that appears or leaves has no partner and doesn't.
   const [send, receive] = crossfade({ duration: () => motionMs(250), easing: cubicOut, fallback: () => ({ duration: 0 }) });
-  const name = $derived(lane.project.name);
+  const name = $derived(lane.label);
   const laneMiss = $derived(found.dimLanes.has(lane.project.id));
   const subMiss = (key: string): boolean => laneMiss || found.dimSubs.has(key);
   const miss = (key: string): boolean => found.active && !laneMiss && !found.keys.has(key);
@@ -49,12 +52,13 @@
 </script>
 
 {#if lane.header || (lane.idle && !focused)}
-  <div class="row lane idle" class:has-sub={lane.subs.length > 0} class:miss={laneMiss} role="row" aria-label="{name}, {lane.header ? headerText : 'idle'}">
+  <div class="row lane idle" class:has-sub={lane.subs.length > 0} class:miss={laneMiss} class:stale={lane.stale !== null} role="row" aria-label="{name}, {lane.header ? headerText : 'idle'}{lane.stale !== null ? `, ${lane.stale.text}` : ''}">
     <div class="gut" role="rowheader" data-project-menu={lane.project.id}>
       <button class="pn" type="button" title="Focus {name}" onclick={() => onfocus(lane.project.id)}><span class="dot {lane.header ? lane.dot : 'gray'}" aria-hidden="true"></span><span class="pname">{name}</span></button>
     </div>
     <div class="span" role="cell">
       <span>{lane.header ? headerText : lane.idleText}</span>
+      {#if lane.stale !== null}<span class="asof">{lane.stale.text}</span>{/if}
       {#if lane.meta.settled > 0}
         <button class="settled-pill" type="button" aria-haspopup="dialog" onclick={() => onsettled(lane.project.id)}>Settled <b>{lane.meta.settled}</b></button>
       {/if}
@@ -65,11 +69,12 @@
   </div>
   {@render subRows()}
 {:else}
-  <div class="row lane" class:has-sub={lane.subs.length > 0} class:miss={laneMiss} role="row" data-rows={lane.rows}>
+  <div class="row lane" class:has-sub={lane.subs.length > 0} class:miss={laneMiss} class:stale={lane.stale !== null} role="row" data-rows={lane.rows}>
     <div class="gut" role="rowheader" data-project-menu={lane.project.id}>
       <button class="pn" type="button" title={focused ? name : `Focus ${name}`} onclick={() => onfocus(lane.project.id)}>
         <span class="dot {lane.dot}" aria-hidden="true"></span><span class="pname">{name}</span>
       </button>
+      {#if lane.stale !== null}<span class="meta asof" title="its machine isn't reachable: the last data it sent">{lane.stale.text}</span>{/if}
       <span class="meta" title="active jobs · oldest claim">{lane.meta.active}</span>
       {#if lane.meta.trouble !== null || lane.meta.settled > 0 || lane.meta.queued > 0}
         <span class="meta">
@@ -106,7 +111,7 @@
 
 {#snippet subRows()}
   {#each lane.subs as sub, i (sub.key)}
-    <div class="row lane sub" class:last={i === lane.subs.length - 1} class:hotgut={sub.hot} class:miss={subMiss(sub.key)} role="row" data-rows={sub.rows} aria-label="{sub.gutter.name}, an epic in {name}">
+    <div class="row lane sub" class:last={i === lane.subs.length - 1} class:hotgut={sub.hot} class:miss={subMiss(sub.key)} class:stale={lane.stale !== null} role="row" data-rows={sub.rows} aria-label="{sub.gutter.name}, an epic in {name}">
       <div class="gut egut" role="rowheader">
         <button class="en" class:sel={selectedEpic === sub.key} class:hit={found.epics.has(sub.key)} type="button" data-epic-menu={sub.slug} data-epic-menu-project={lane.project.id} aria-haspopup="dialog" title="Open epic {sub.gutter.name} · {sub.gutter.state}" onclick={() => onopenepic(sub.key)}>
           <span class="edot {sub.gutter.dot}" aria-hidden="true"></span><span class="ename">{sub.gutter.name}</span><span class="sr-only">, epic, {sub.gutter.state}</span>

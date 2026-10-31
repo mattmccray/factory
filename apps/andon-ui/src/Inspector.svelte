@@ -31,7 +31,7 @@
   import type { BoardEpic, BoardJob } from './board';
   import type { HandoffRequest } from './handoff';
   import { TIMING } from './docs';
-  import { INSPECTOR_MAX, INSPECTOR_MIN, approveCommand, clampWidth, epicFileModel, epicLinkOf, epicPage, fileModel, stepFile } from './inspector';
+  import { INSPECTOR_MAX, INSPECTOR_MIN, approveCommand, clampWidth, epicFileModel, epicLinkOf, epicPage, fileModel, jobHeader, stepFile } from './inspector';
   import type { SheetKind } from './inspector';
   import { landing } from './job';
   import { FILES_FIT, clampFiles, filesKey, filesShown, paneStep } from './panes';
@@ -407,11 +407,11 @@
       <div class="nosel">Nothing selected<small>Click a job, or an epic's name, to see its files.</small></div>
     {:else}
       <div class="ins-bar">
-        <span class="lbl">{item.project.name} / {job.id}</span>
+        <span class="lbl">{jobHeader(item).bar}</span>
         <button class="xbtn" type="button" bind:this={closeBtn} onclick={onclose} aria-label="Close the inspector" title="Close (esc)"><svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg></button>
       </div>
       <div class="ins-head">
-        <div class="crumbs"><span>{item.project.name}</span><span aria-hidden="true">·</span><span>{job.id}</span>{#if kind !== null}<span class="stage-pill sp-{kind}">{KIND_LABELS[kind]}</span>{/if}</div>
+        <div class="crumbs"><span>{jobHeader(item).project}</span><span aria-hidden="true">·</span><span>{job.id}</span>{#if kind !== null}<span class="stage-pill sp-{kind}">{KIND_LABELS[kind]}</span>{/if}</div>
         <h2 id="ins-title">{job.title}</h2>
         {#if lands !== null}<div class="branch" title="branch → target">{lands}</div>{/if}
         {#if sum !== null}<div class="tsum" class:na={!sum.recorded}>{sum.text}</div>{/if}

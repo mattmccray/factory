@@ -7,6 +7,7 @@ import { whatsNew } from './release';
 import { startLive } from './live';
 import type { EventSourceLike, Status } from './live';
 import type { UiState } from './state';
+import { HUB, LOCAL_FACTORY, STUDIO_FACTORY, machineEntry, machinesBody } from './fixtures';
 
 class FakeSource implements EventSourceLike {
   readyState = 0;
@@ -454,6 +455,76 @@ describe('067 AC3: backlogs on demand, re-fetched on `backlog` events', () => {
     source.send('projects', { projects: [P1, P2] }); // a reconnect may have missed events
     await tick();
     expect(svc.backlogAsks()).toEqual([`/projects/${P1.id}/backlog`, `/projects/${P1.id}/backlog`]);
+    live.stop();
+  });
+});
+
+// ---- machines (brief andon-machines-ui, AC2) ----
+
+describe('machines, live (AC2)', () => {
+  /** A fake hub: boards answer empty, and `/machines` answers what `answer` returns, held until let go when `hold` is on. */
+  function hub(answer: () => { ok: boolean; status: number; body: string }) {
+    const asked: string[] = [];
+    const held: Array<() => void> = [];
+    let hold = false;
+    const fetcher: Fetcher = async (path) => {
+      asked.push(path);
+      if (path !== '/machines') return ok({ jobs: [], config: { reviewers: [] } });
+      const a = answer();
+      if (hold) await new Promise<void>((r) => held.push(r));
+      return { ok: a.ok, status: a.status, text: async () => a.body };
+    };
+    return { fetcher, asked, machineAsks: () => asked.filter((p) => p === '/machines'), holdFetches: (on: boolean) => (hold = on), letGo: () => held.splice(0).forEach((r) => r()) };
+  }
+  const body = (b: unknown) => ({ ok: true, status: 200, body: JSON.stringify(b) });
+
+  test('each projects event whose entries carry machine fetches GET /machines once; machines events keep it current', async () => {
+    const source = new FakeSource();
+    const svc = hub(() => body(machinesBody(machineEntry(HUB), machineEntry('studio'))));
+    const live = startLive({ connect: () => source, fetcher: svc.fetcher, onState: () => undefined, onStatus: () => undefined });
+    source.send('projects', { projects: [LOCAL_FACTORY, STUDIO_FACTORY] });
+    await tick();
+    expect(svc.machineAsks()).toHaveLength(1);
+    expect(svc.asked).toContain('/projects/1a2b3c4d5e6f%40studio/board?settled=summary');
+    expect(live.state().projects.map((p) => p.machine)).toEqual([HUB, 'studio']);
+    expect(live.state().machines.list.map((m) => [m.name, m.state])).toEqual([
+      [HUB, 'live'],
+      ['studio', 'live'],
+    ]);
+    source.send('machines', machinesBody(machineEntry(HUB), machineEntry('studio', 'down', '2026-10-22T14:02:00.000Z', { reason: 'unreachable' })));
+    expect(live.state().machines.list[1]).toMatchObject({ state: 'down', reason: 'unreachable' });
+    source.send('projects', { projects: [LOCAL_FACTORY, STUDIO_FACTORY] });
+    await tick();
+    expect(svc.machineAsks()).toHaveLength(2);
+    live.stop();
+  });
+
+  test('a GET /machines that resolves after a newer machines event is dropped', async () => {
+    const source = new FakeSource();
+    const svc = hub(() => body(machinesBody(machineEntry(HUB), machineEntry('studio'))));
+    const live = startLive({ connect: () => source, fetcher: svc.fetcher, onState: () => undefined, onStatus: () => undefined });
+    svc.holdFetches(true);
+    source.send('projects', { projects: [LOCAL_FACTORY, STUDIO_FACTORY] });
+    await tick();
+    source.send('machines', machinesBody(machineEntry(HUB), machineEntry('studio', 'down', '2026-10-22T14:02:00.000Z')));
+    svc.letGo(); // the older, live answer lands last
+    await tick();
+    expect(live.state().machines.list[1]?.state).toBe('down');
+    live.stop();
+  });
+
+  test('a 404 on GET /machines leaves the list empty; a service from before the hub (no machine on any entry) is not asked', async () => {
+    const source = new FakeSource();
+    const svc = hub(() => ({ ok: false, status: 404, body: 'not found' }));
+    const live = startLive({ connect: () => source, fetcher: svc.fetcher, onState: () => undefined, onStatus: () => undefined });
+    source.send('projects', { projects: [LOCAL_FACTORY] });
+    await tick();
+    expect(svc.machineAsks()).toHaveLength(1);
+    expect(live.state().machines.list).toEqual([]);
+    source.send('projects', { projects: [P1, P2] });
+    await tick();
+    expect(svc.machineAsks()).toHaveLength(1);
+    expect(live.state().machines.list).toEqual([]);
     live.stop();
   });
 });

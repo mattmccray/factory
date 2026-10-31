@@ -5,10 +5,16 @@
 // subtitle, the status bar's legend and settle text, the shell mode and view read from the page URL,
 // the Mac app's pushed events (the status bar, the Merged column, What's New, and the View menu's
 // page actions), and the main window's view-state report back to the Mac app.
+// Machines (brief andon-machines-ui; design "Machines"): with peers, the projects sit under one
+// heading per machine, the hub first, then the peers by name, each heading with its state ("down
+// since 14:02", "needs upgrade", "error", a gray "connecting…", or nothing when live); headings
+// aren't selectable. The footer counts the machines and names each one in trouble. With no peers,
+// nothing names a machine.
 // Nothing here touches the DOM; App.svelte and the frame components only lay it out.
 import { isRecord } from './job';
-import type { Epic, Job } from './job';
+import type { Epic, Job, Machine, MachineState } from './job';
 import { isReviewFailed } from './lanes';
+import { hasPeers, hubName, machineOrder, machineStateText, needsUpgrade, projectLabel, remoteOf } from './machines';
 import type { Status } from './live';
 import { ALL, needsHuman } from './projects';
 import type { Selection } from './projects';
@@ -48,9 +54,19 @@ export interface SidebarRow {
   release: RowRelease | null; // null: the service sent no release (an older service)
 }
 
+/** A machine's heading in the sidebar (only with peers): not selectable, its projects under it. */
+export interface MachineHeading {
+  name: string;
+  state: MachineState | null; // null: a machine a project names that isn't listed (a moment between events)
+  status: { text: string; tone: 'red' | 'gray' } | null; // "down since 14:02", "needs upgrade", "error", "connecting…"; null when live
+  detail: string | null; // the tooltip and accessible description: its reason, then "factory <release>", when known
+  projects: SidebarRow[]; // its projects, by name (the rows keep the bare name)
+}
+
 export interface SidebarModel {
   all: { badge: Badge | null; selected: boolean };
-  projects: SidebarRow[];
+  projects: SidebarRow[]; // every project, by name
+  machines: MachineHeading[]; // one per machine, the hub first, then the peers by name; [] with no peers
 }
 
 /** Stages a job never leaves: it's done, never active (`merged`, and the contract's `abandoned`). */
@@ -84,8 +100,35 @@ export function projectStatus(jobs: readonly Job[], epics: readonly Pick<Epic, '
 const byName = (a: { name: string; id: string }, b: { name: string; id: string }): number =>
   a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
 
-/** The sidebar: All Projects (badge: the total needs-human count), then every project by name. */
-export function sidebarModel(s: UiState, sel: Selection): SidebarModel {
+/** A machine heading's tooltip and accessible description: its reason, then its release, when known. */
+const machineDetail = (m: Machine): string | null => {
+  const parts = [m.reason, m.release === null ? null : `factory ${m.release}`].filter((x): x is string => x !== null && x !== '');
+  return parts.length > 0 ? parts.join('\n') : null;
+};
+
+/** The machine headings for a sidebar's rows: the hub first, then the peers by name, each with its projects; [] with no peers. */
+function machineHeadings(s: UiState, rows: readonly SidebarRow[], now: number): MachineHeading[] {
+  if (!hasPeers(s)) return [];
+  const hub = hubName(s) ?? '';
+  const where = new Map(s.projects.map((p) => [p.id, remoteOf(s, p) ?? hub]));
+  const listed = machineOrder(s.machines.list);
+  const names = listed.map((m) => m.name);
+  const extra = [...new Set(rows.map((r) => where.get(r.id) ?? hub))].filter((n) => !names.includes(n)).sort((a, b) => a.localeCompare(b));
+  const heading = (name: string, m: Machine | undefined): MachineHeading => ({
+    name,
+    state: m?.state ?? null,
+    status: m === undefined ? null : machineStateText(m, now),
+    detail: m === undefined ? null : machineDetail(m),
+    projects: rows.filter((r) => (where.get(r.id) ?? hub) === name),
+  });
+  return [...listed.map((m) => heading(m.name, m)), ...extra.map((n) => heading(n, undefined))];
+}
+
+/**
+ * The sidebar: All Projects (badge: the total needs-human count, every machine's), then every project
+ * by name; with peers, also grouped under a heading per machine (`now` dates a "down since").
+ */
+export function sidebarModel(s: UiState, sel: Selection, now: number = Date.now()): SidebarModel {
   const total = needsHuman(s).total;
   const running = s.release.info?.running ?? null;
   const projects = s.projects
@@ -98,7 +141,7 @@ export function sidebarModel(s: UiState, sel: Selection): SidebarModel {
     })
     .sort(byName);
   const known = projects.some((p) => p.selected);
-  return { all: { badge: total > 0 ? redBadge(total) : null, selected: sel === ALL || !known }, projects };
+  return { all: { badge: total > 0 ? redBadge(total) : null, selected: sel === ALL || !known }, projects, machines: machineHeadings(s, projects, now) };
 }
 
 // ---- the connection footer ----
@@ -126,8 +169,27 @@ export function footerRelease(info: ReleaseInfo | null): FooterRelease | null {
   return { kind: 'version', text: `v${info.running}`, title: whatsNewTitle(info.running) };
 }
 
-export function footer(status: Status, projects: number, release: ReleaseInfo | null = null): Footer {
-  if (status === 'live') return { text: `Connected · ${plural(projects, 'project', 'projects')}`, dot: 'green', release: footerRelease(release) };
+/** A machine's trouble in the footer: "<name> down", "<name> needs upgrade", or "<name> error"; null otherwise. */
+function machineTrouble(m: Machine): string | null {
+  if (m.state === 'down') return `${m.name} down`;
+  if (m.state === 'error') return `${m.name} ${needsUpgrade(m) ? 'needs upgrade' : 'error'}`;
+  return null;
+}
+
+/**
+ * The footer. Live: "Connected · N projects", or, with peers (`machines` lists more than the hub),
+ * "Connected · 3 machines · 12 projects", then each machine in trouble in sidebar order
+ * ("studio down", "agentbox needs upgrade"); the release part follows (`footerLine`).
+ */
+export function footer(status: Status, projects: number, release: ReleaseInfo | null = null, machines: readonly Machine[] = []): Footer {
+  if (status === 'live') {
+    const count = plural(projects, 'project', 'projects');
+    if (machines.length <= 1) return { text: `Connected · ${count}`, dot: 'green', release: footerRelease(release) };
+    const trouble = machineOrder(machines)
+      .map(machineTrouble)
+      .filter((t): t is string => t !== null);
+    return { text: ['Connected', plural(machines.length, 'machine', 'machines'), count, ...trouble].join(' · '), dot: 'green', release: footerRelease(release) };
+  }
   if (status === 'down') return { text: 'Unreachable', dot: 'red', release: null };
   return { text: 'Connecting…', dot: 'gray', release: null };
 }
@@ -137,9 +199,17 @@ export const footerLine = (f: Footer): string => (f.release === null ? f.text : 
 
 // ---- the toolbar ----
 
-/** The toolbar title: "Andon", or the selected project's name. */
+/** A listed project's label ("<name> · <machine>" for a remote one, else its name), or null for an unlisted id. */
+function labelOf(s: UiState, pid: string): string | null {
+  const p = s.projects.find((x) => x.id === pid);
+  if (p === undefined) return null;
+  const remote = remoteOf(s, p);
+  return remote === null ? p.name : projectLabel({ name: p.name, remote });
+}
+
+/** The toolbar title: "Andon", or the selected project's label. */
 export function title(s: UiState, sel: Selection): string {
-  return sel === ALL ? 'Andon' : (s.projects.find((p) => p.id === sel)?.name ?? 'Andon');
+  return sel === ALL ? 'Andon' : (labelOf(s, sel) ?? 'Andon');
 }
 
 export interface Subtitle {
@@ -155,7 +225,7 @@ export interface Subtitle {
  */
 export function subtitle(s: UiState, sel: Selection, running: number, waiting: number): Subtitle {
   const focused = sel !== ALL && s.projects.some((p) => p.id === sel);
-  const scope = focused ? (s.projects.find((p) => p.id === sel)?.name ?? 'All Projects') : 'All Projects';
+  const scope = focused ? (labelOf(s, sel) ?? 'All Projects') : 'All Projects';
   const human = needsHuman(s);
   const others = focused ? human.total - (human.byProject[sel] ?? 0) : 0;
   return { scope, running: `${running} running`, waiting: waiting > 0 ? `${waiting} waiting on you` : null, elsewhere: others > 0 ? `${others} waiting elsewhere` : null };

@@ -77,6 +77,11 @@ svg.i { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-widt
 .srclist h2 { margin: 14px 8px 4px; font-size: 11px; font-weight: 600; color: var(--label3); }
 .srclist h2:first-child { margin-top: 2px; }
 .srclist ul { list-style: none; margin: 0; padding: 0; }
+/* machine headings (brief andon-machines-ui): not selectable; the state is red trouble or a gray "connecting…" */
+.srclist .mhead { margin: 8px 8px 2px; display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 11px; font-weight: 600; color: var(--label2); }
+.srclist .mhead .mname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srclist .mhead .mstate { flex: none; font-weight: 500; white-space: nowrap; }
+.srclist .mhead .mstate.t-gray { color: var(--label3); }
 .sbi { width: 100%; display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border: 0; background: none; border-radius: 6px; text-align: left; color: var(--label); }
 .sbi:hover { background: var(--ctl); }
 .sbi.on { background: var(--sel); }
@@ -138,6 +143,10 @@ svg.i { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-widt
 /* search dimming: what doesn't match drops to 25% */
 .lane.miss, .tok.miss, .ghost.miss { opacity: .25; }
 .lane, .tok, .ghost { transition: opacity .15s; }
+/* a stale machine's lane (brief andon-machines-ui): its cells and name dim, "as of …" stays readable */
+.lane.stale > .cell, .lane.stale > .gut .pn, .lane.stale > .gut .en, .lane.stale > .span > span:first-child { opacity: .5; }
+.asof { color: var(--label3); }
+.span .asof { margin-left: 8px; font-size: 11px; white-space: nowrap; }
 
 main { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--canvas); }
 

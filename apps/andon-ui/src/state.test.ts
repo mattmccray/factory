@@ -6,6 +6,8 @@ import { sidebarModel, subtitle, title } from './sidebar';
 import { applyBacklog, applyEvent, applyFetched, applyFetchedRelease, applySettled, emptyState, releaseRev, revOf, settledCurrent, startBacklog, startSettled, toSummary, wantsSettled } from './state';
 import { projectRelease, releaseBody } from './fixtures';
 import type { UiState } from './state';
+import { applyFetchedMachines, machinesRev } from './state';
+import { HUB, STUDIO_FACTORY, LOCAL_FACTORY, machineEntry, machinesBody } from './fixtures';
 
 const P1 = { id: 'aaaaaaaaaaaa', name: 'one', root: '/r/one' };
 const P2 = { id: 'bbbbbbbbbbbb', name: 'two', root: '/r/two' };
@@ -322,5 +324,75 @@ describe('067: backlog counts and lists', () => {
     expect(startBacklog(s, 'nobody').state).toBe(s);
     expect(applyEvent(s, 'projects', { projects: [P2] }).backlogs).toEqual({});
     expect(applyEvent(s, 'projects', { projects: [P1] }).backlogs[P1.id]).toBe(s.backlogs[P1.id]);
+  });
+});
+
+// ---- machines (brief andon-machines-ui, AC2) ----
+
+describe('machines in the UI state (AC2)', () => {
+  const studioDown = '2026-10-22T14:02:00.000Z';
+  const ok = (data: unknown): { ok: true; data: unknown } => ({ ok: true, data });
+
+  test('a projects entry keeps its machine; one without (a service from before the hub) has none', () => {
+    const s = applyEvent(emptyState(), 'projects', { projects: [LOCAL_FACTORY, STUDIO_FACTORY, P1, { ...P2, machine: 7 }] });
+    expect(s.projects.map((p) => p.machine)).toEqual([HUB, 'studio', undefined, undefined]);
+    expect(s.projects[1]?.id).toBe('1a2b3c4d5e6f@studio');
+  });
+
+  test('a machines event sets the list, in order: name, url, state, since, reason, release; malformed entries are skipped, unknown fields ignored', () => {
+    const s = applyEvent(
+      emptyState(),
+      'machines',
+      machinesBody(
+        machineEntry(HUB, 'live', '2026-10-22T09:00:00.000Z', { extra: true }),
+        machineEntry('studio', 'down', studioDown, { reason: 'unreachable', release: null }),
+        { name: 'bad-state', url: 'https://x', state: 'asleep', since: studioDown, reason: null, release: null },
+        { name: 'no-url', state: 'live', since: studioDown },
+        { name: '', url: 'https://x', state: 'live', since: studioDown },
+        { url: 'https://x', state: 'live', since: studioDown },
+        'junk',
+        machineEntry('agentbox', 'error', studioDown, { reason: 7, release: 3 }),
+      ),
+    );
+    expect(s.machines.list).toEqual([
+      { name: HUB, url: 'https://rocinante.example.ts.net:8766', state: 'live', since: '2026-10-22T09:00:00.000Z', reason: null, release: '0.2.0' },
+      { name: 'studio', url: 'https://studio.example.ts.net:8766', state: 'down', since: studioDown, reason: 'unreachable', release: null },
+      { name: 'agentbox', url: 'https://agentbox.example.ts.net:8766', state: 'error', since: studioDown, reason: null, release: null },
+    ]);
+    expect(s.machines.rev).toBe(1);
+  });
+
+  test('a malformed machines event changes nothing', () => {
+    const s = applyEvent(emptyState(), 'machines', machinesBody(machineEntry(HUB)));
+    for (const bad of [null, {}, { machines: 'x' }, []]) expect(applyEvent(s, 'machines', bad)).toBe(s);
+  });
+
+  test('a GET /machines applies at its rev, and one that resolves after a newer machines event is dropped', () => {
+    const s0 = emptyState();
+    const rev = machinesRev(s0);
+    const fetched = applyFetchedMachines(s0, rev, ok(machinesBody(machineEntry(HUB), machineEntry('studio'))));
+    expect(fetched.machines.list.map((m) => m.name)).toEqual([HUB, 'studio']);
+    const evented = applyEvent(s0, 'machines', machinesBody(machineEntry(HUB), machineEntry('studio', 'down', studioDown)));
+    const late = applyFetchedMachines(evented, rev, ok(machinesBody(machineEntry(HUB), machineEntry('studio'))));
+    expect(late).toBe(evented);
+    expect(late.machines.list[1]?.state).toBe('down');
+  });
+
+  test('a 404 (a service from before the hub) or a malformed body leaves the list empty', () => {
+    const s0 = emptyState();
+    expect(applyFetchedMachines(s0, 0, { ok: false, reason: 'not found' }).machines.list).toEqual([]);
+    expect(applyFetchedMachines(s0, 0, ok({ nope: true })).machines.list).toEqual([]);
+  });
+
+  test('the last-seen down time is kept through the connecting that follows, and cleared once live', () => {
+    let s = applyEvent(emptyState(), 'machines', machinesBody(machineEntry(HUB), machineEntry('studio', 'down', studioDown)));
+    expect(s.machines.lastDown).toEqual({ studio: studioDown });
+    s = applyEvent(s, 'machines', machinesBody(machineEntry(HUB), machineEntry('studio', 'connecting', '2026-10-22T14:30:00.000Z')));
+    expect(s.machines.lastDown).toEqual({ studio: studioDown });
+    s = applyEvent(s, 'machines', machinesBody(machineEntry(HUB), machineEntry('studio', 'live', '2026-10-22T14:31:00.000Z')));
+    expect(s.machines.lastDown).toEqual({});
+    s = applyEvent(s, 'machines', machinesBody(machineEntry(HUB), machineEntry('studio', 'down', studioDown)));
+    s = applyEvent(s, 'machines', machinesBody(machineEntry(HUB))); // studio unlisted: forgotten
+    expect(s.machines.lastDown).toEqual({});
   });
 });

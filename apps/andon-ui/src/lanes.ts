@@ -12,10 +12,15 @@
 // The Mac app's "Show Merged column" setting (063) can hide the Merged column: the header, every
 // lane, and every sub-lane then have the other five, and a merged job shows only in the Settled
 // sheet and a focused project's recent activity.
+// Machines (brief andon-machines-ui; design "Machines"): lanes stay one list in tier order across
+// every machine. A remote project's lane carries its machine (its gutter label "<name> · <machine>"),
+// and a stale machine's lane is marked stale ("as of 14:02"), with everything timed on it computed
+// at that as-of time instead of `now`; staleness never changes a lane's tier.
 import type { BacklogCounts } from './backlog';
 import { chipRounds, isEpicSettled, isEpicTerminal, isSettled, mergedAt, roundKeys } from './board';
-import type { BoardEpic, BoardJob } from './board';
+import type { BoardEpic, BoardJob, BoardProject } from './board';
 import { epicName } from './job';
+import { asOfText, projectLabel } from './machines';
 import type { Epic, EpicJobKind, Job, WorkingStage } from './job';
 import type { SettledSummary } from './state';
 import { chipLabel, time } from './time';
@@ -337,7 +342,7 @@ export function popoverOf(b: BoardJob, now: number): Popover {
   return {
     ...(b.epic === undefined ? {} : { epic: `${epicName(b.epic)}${helper !== null ? ` · ${helper} job` : ''}` }),
     title: j.title,
-    where: `${b.project.name} · ${j.id}`,
+    where: `${projectLabel(b.project)} · ${j.id}`,
     stage: inEpic !== null ? 'Merged into the epic' : KIND_LABELS[kind],
     timeLabel: merged ? 'Merged' : 'In stage',
     time: sinceText(j, kind, now),
@@ -389,8 +394,16 @@ export interface SubLane {
   rows: number;
 }
 
+/** A stale machine's lane: its as-of time (ms), and the gutter's "as of 14:02". */
+export interface Stale {
+  asOf: number;
+  text: string;
+}
+
 export interface Lane {
-  project: { id: string; name: string };
+  project: BoardProject; // `remote`: the machine a remote project is on
+  label: string; // the gutter's name: "<name> · <machine>" for a remote project, else the name
+  stale: Stale | null; // its machine is stale: dimmed, "as of …", and timed at `asOf`
   index: number; // registration order
   idle: boolean; // no job that isn't settled, and no epic on the board
   header: boolean; // Needs Me shows the lane only for its sub-lanes: a collapsed one-line header
@@ -500,7 +513,7 @@ export function epicGutter(e: Epic, jobs: readonly BoardJob[], now: number): Epi
 const byStart = (a: BoardEpic, b: BoardEpic): number => time(a.epic.startedAt) - time(b.epic.startedAt) || a.epic.slug.localeCompare(b.epic.slug);
 
 function laneOf(
-  project: { id: string; name: string },
+  project: BoardProject,
   index: number,
   jobs: readonly BoardJob[],
   now: number,
@@ -562,6 +575,8 @@ function laneOf(
 
   return {
     project,
+    label: projectLabel(project),
+    stale: null,
     index,
     idle,
     header,
@@ -579,7 +594,9 @@ function laneOf(
 }
 
 /**
- * One lane per project, in registration order (`orderLanes` sorts them). `focused` is a single
+ * One lane per project, in registration order (`orderLanes` sorts them). A project's `remote` (the
+ * machine a remote project is on) labels its lane; its `asOf` (its machine is stale) marks the lane
+ * stale, and every time on it (token, gutter, needs-human wait, settling) is computed at `asOf`, not `now`. `focused` is a single
  * focused project: its cells, its sub-lanes' too, are uncapped. `summaries` are the projects'
  * settled summaries (a missing one is none); settled jobs never sit in a cell, focused or not.
  * `epics` are the board's epics: each unsettled one gets a sub-lane under its project's lane, oldest
@@ -591,7 +608,7 @@ function laneOf(
  * "N queued" link; nothing else on the lane depends on it.
  */
 export function buildLanes(
-  projects: ReadonlyArray<{ id: string; name: string }>,
+  projects: ReadonlyArray<{ id: string; name: string; remote?: string; asOf?: number }>,
   jobs: readonly BoardJob[],
   now: number,
   focused: boolean,
@@ -601,20 +618,21 @@ export function buildLanes(
   mergedHidden = false,
   backlogs: Readonly<Record<string, BacklogCounts>> = {},
 ): Lane[] {
-  return projects.map((p, i) =>
-    laneOf(
-      { id: p.id, name: p.name },
+  return projects.map((p, i) => {
+    const lane = laneOf(
+      p.remote === undefined ? { id: p.id, name: p.name } : { id: p.id, name: p.name, remote: p.remote },
       i,
       jobs.filter((b) => b.project.id === p.id),
-      now,
+      p.asOf ?? now,
       focused,
       summaries[p.id] ?? { count: 0, lastMergedAt: null },
       epics.filter((e) => e.project.id === p.id),
       needs,
       mergedHidden,
       backlogs[p.id]?.queued ?? 0,
-    ),
-  );
+    );
+    return p.asOf === undefined ? lane : { ...lane, stale: { asOf: p.asOf, text: asOfText(p.asOf, now) } };
+  });
 }
 
 /** §5 lane order: non-idle first, then more needs-human, more review-failed, more active, then registration order. */
