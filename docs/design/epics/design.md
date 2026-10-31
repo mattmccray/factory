@@ -151,11 +151,14 @@ These bind every brief below. Each brief cites them by number and records only i
    counts once; an epic waiting on Matt for an epic-level reason (landing blocked) counts as one
    more needs-human item and turns its gutter red. Andon stays read-only. Why: Matt sees members
    move through the stations instead of one stuck card, and the gutter carries the epic's state.
-   **A landed epic is one line** (amended by brief `andon-landed-epic-row`, approved by Matt on
-   2026-10-31): until it settles (`settleAfterHours` after its landing), a `landed` epic's sub-lane
-   is one 28px row styled like an idle lane, with the indented gutter and its elbow, the green dot,
-   and the epic's name (which opens the epic page), then, green-toned across the columns, "Landed
-   `<sha>` · N members · took `<duration>` · `<age>` ago" (a missing part is dropped). Its member,
+   **A landed epic is one line** (amended by briefs `andon-landed-epic-row` and
+   `landed-row-layout`, approved by Matt on 2026-10-31): until it settles (`settleAfterHours` after
+   its landing), a `landed` epic's sub-lane is one 28px row styled like an idle lane, with the
+   indented gutter and its elbow, the green dot, and the epic's name (which opens the epic page),
+   whose cell spans the gutter and the first stage column (one line, ellipsized; it stays pinned
+   when the board scrolls sideways), then, green-toned and flush right in the rest of the row,
+   "Landed `<sha>` · N members · took `<duration>` · `<age>` ago" (a missing part is dropped; a
+   too-long text truncates at its end). Its member,
    `sync`, and `fix` jobs leave every cell (and the header's column counts) while it is landed; the
    epic page lists them with their job links, and once it settles it leaves the board for the
    Settled sheet. A landed epic doesn't keep its project out of idle: a project whose only shown

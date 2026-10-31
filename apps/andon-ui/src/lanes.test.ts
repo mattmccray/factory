@@ -814,7 +814,46 @@ describe('a landed epic is one line (082)', () => {
     expect(src.match(/\{@render subRows\(\)\}/g)?.length).toBe(2); // under the idle row and the full lane
     const css = readFileSync(join(import.meta.dir, 'app.css'), 'utf8');
     expect(css).toMatch(/\.row\.sub\.landed \{[^}]*height: 28px/);
-    expect(css).toMatch(/\.row\.sub\.landed > \.span \{[^}]*grid-column: 2 \/ -1;[^}]*color: var\(--green-ink\)/);
+    expect(css).toMatch(/\.row\.sub\.landed > \.span \{[^}]*grid-column: 3 \/ -1;[^}]*color: var\(--green-ink\)/);
+  });
+
+  // brief landed-row-layout: the name gets the gutter and the first stage column; the record sits flush right
+  const css = readFileSync(join(import.meta.dir, 'app.css'), 'utf8');
+  const landedRules = css.split('\n').filter((l) => l.startsWith('.row.sub.landed'));
+  const rule = (selector: string): string => {
+    const line = landedRules.find((l) => l.startsWith(`${selector} {`));
+    return line === undefined ? '' : line.slice(line.indexOf('{') + 1, line.lastIndexOf('}'));
+  };
+
+  test('085 AC1: the landed gutter spans the gutter and the first stage column, its name one line with an ellipsis', () => {
+    expect(rule('.row.sub.landed > .gut')).toContain('grid-column: 1 / 3;');
+    expect(rule('.row.sub.landed .ename')).toContain('-webkit-line-clamp: 1;');
+    expect(css).toMatch(/\.en \.ename \{[^}]*-webkit-box-orient: vertical; overflow: hidden;/);
+  });
+
+  test('085 AC2: the landed text spans the rest of the row, green-toned, flush right with 10px right padding, truncating at its end', () => {
+    const span = rule('.row.sub.landed > .span');
+    expect(span).toContain('grid-column: 3 / -1;');
+    expect(span).not.toContain('grid-column: 2 / -1');
+    expect(span).toContain('color: var(--green-ink);');
+    expect(span).toContain('padding-right: 10px;');
+    expect(span).toContain('justify-content: flex-end;');
+    expect(span).not.toContain('justify-content: center');
+    expect(rule('.row.sub.landed .ltext')).toContain('overflow: hidden; text-overflow: ellipsis;');
+  });
+
+  test('085 AC4: the widened landed gutter is still a sticky .gut directly under .row; no landed rule overrides position', () => {
+    const src = readFileSync(join(import.meta.dir, 'Lane.svelte'), 'utf8');
+    expect(src).toMatch(/<div class="row lane sub landed"[^>]*>\s*<div class="gut egut" role="rowheader">/);
+    expect(css).toContain('.row > .gut, .row > .corner { position: sticky; left: 0;');
+    expect(landedRules.filter((l) => l.includes('position'))).toEqual([]);
+  });
+
+  test('085 AC5: the new grid-column rules are scoped to the landed row; other rows keep theirs', () => {
+    const rows = css.split('\n').filter((l) => /grid-column: (1 \/ 3|3 \/ -1)/.test(l));
+    expect(rows.length).toBe(2);
+    expect(rows.every((l) => l.startsWith('.row.sub.landed'))).toBe(true);
+    expect(css).toMatch(/\.row\.idle \.span \{[^}]*grid-column: 2 \/ -1;/);
   });
 });
 
