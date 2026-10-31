@@ -15,7 +15,8 @@
   // project). An epic waiting on you turns its gutter red. Under Needs Me, a lane shown only for its
   // sub-lanes collapses to a one-line header. A landed epic's sub-lane (brief andon-landed-epic-row) is
   // one 28px row, focused or not, under a full lane or an idle one: the elbow, the green dot, and
-  // the name, then its green-toned "Landed <sha> · N members · took … · … ago" across the columns.
+  // the name across the gutter and the first stage column (brief landed-row-layout), then its
+  // green-toned "Landed <sha> · N members · took … · … ago" flush right in the rest of the row.
   // Machines (brief andon-machines-ui): a remote project's gutter names its machine ("factory · studio",
   // `lane.label`), and a stale machine's lane (and its sub-lanes) is dimmed, with "as of 14:02" in the
   // gutter; its times were computed at that as-of time (lanes.ts). It keeps its tier position.
