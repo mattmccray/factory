@@ -3,7 +3,7 @@
 //   init [--force]      install the managed core into the project
 //   upgrade [--force]   replace the managed core with a new render
 //   projects [prune [--dry-run] | remove <path>]   list, prune, or remove Andon registry roots (projects.ts)
-//   service install|uninstall|start|stop|restart|status|run   the Andon service as an OS service (service.ts)
+//   service install [--tailnet]|uninstall|start|stop|restart|status|run   the Andon service as an OS service (service.ts)
 //   --version           print the release and how this CLI runs
 // `run` is the whole command surface as a testable function; `main.ts` (source) and
 // `release-main.ts` (the release bundle) are the process entries. They differ only in their

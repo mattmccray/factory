@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { connect as tcp } from 'node:net';
-import { tmpdir } from 'node:os';
+import { networkInterfaces, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { addRoot, appendEvent, parseConfig, parseEventInput, registryPath } from '@factory/contract';
 import { spawnGit } from './archive';
-import { projectId, startService } from './index';
+import { HOSTNAME, isTailnetHost, projectId, startService } from './index';
 import type { GitRunner, Service } from './index';
 
 const CONFIG = { schema: 'factory/v1', reviewers: ['security', 'code'], maxRound: 2, dashboard: { settleAfterHours: 24 } };
@@ -346,6 +346,132 @@ describe('DNS-rebinding guard', () => {
       const res = await fetch(`${url}/projects`, { headers });
       expect({ headers, status: res.status }).toEqual({ headers, status: 200 });
     }
+  });
+});
+
+describe('the tailnet host (job 078, AC1)', () => {
+  const NAME = 'studio.manticore-hue.ts.net';
+  const startTailnet = async (opts: { uiDir?: string; tailnetHost?: string } = {}): Promise<Service> => {
+    service = await startService({ port: 0, registryPath: registry, log: (l) => logs.push(l), ...opts });
+    return service;
+  };
+  async function makeUi(): Promise<string> {
+    const ui = join(tmp, 'ui', 'dist');
+    await writeAt(join(ui, 'index.html'), '<!doctype html><title>Andon</title>');
+    return ui;
+  }
+  // What a GET answers with these headers: its status, cache-control, and body (an event stream is cancelled after its first bytes).
+  const answer = async (url: string, path: string, headers: Record<string, string>): Promise<{ status: number; cache: string | null; body: string }> => {
+    const res = await fetch(`${url}${path}`, { headers });
+    if (res.headers.get('content-type') === 'text/event-stream') {
+      const reader = res.body?.getReader();
+      const first = await reader?.read();
+      await reader?.cancel();
+      return { status: res.status, cache: res.headers.get('cache-control'), body: new TextDecoder().decode(first?.value).split('\n')[0] ?? '' };
+    }
+    return { status: res.status, cache: res.headers.get('cache-control'), body: await res.text() };
+  };
+
+  test('the recorded name, with the port, in any case, with no Origin or its https Origin, answers every endpoint as loopback does', async () => {
+    const a = await makeProject('alpha', ['001-first-job']);
+    await addRoot(registry, a);
+    const { url } = await startTailnet({ uiDir: await makeUi(), tailnetHost: NAME });
+    const port = new URL(url).port;
+    const paths = ['/projects', `/projects/${projectId(a)}/board`, '/release', '/events', '/'];
+    const tailnet: Array<Record<string, string>> = [
+      { host: `${NAME}:${port}` },
+      { host: `STUDIO.Manticore-Hue.TS.net:${port}` },
+      { host: `${NAME}:${port}`, origin: `https://${NAME}:${port}` },
+      { host: `${NAME}:${port}`, origin: `HTTPS://STUDIO.manticore-hue.ts.net:${port}` },
+    ];
+    for (const path of paths) {
+      const loopback = await answer(url, path, { host: `127.0.0.1:${port}` });
+      expect({ path, status: loopback.status }).toEqual({ path, status: 200 });
+      for (const headers of tailnet) {
+        expect({ path, headers, ...(await answer(url, path, headers)) }).toEqual({ path, headers, ...loopback });
+      }
+    }
+  });
+
+  test('another *.ts.net name, the name without its port or on another port, a LAN IP, a rebinding domain, and any other Origin are a 403', async () => {
+    const a = await makeProject('alpha', ['001-first-job']);
+    await addRoot(registry, a);
+    const { url } = await startTailnet({ uiDir: await makeUi(), tailnetHost: NAME });
+    const port = new URL(url).port;
+    const other = String(Number(port) === 65535 ? 1 : Number(port) + 1);
+    const bad: Array<Record<string, string>> = [
+      { host: `rocinante.manticore-hue.ts.net:${port}` },
+      { host: `studio.other-tailnet.ts.net:${port}` },
+      { host: NAME },
+      { host: `${NAME}:${other}` },
+      { host: `${NAME}.:${port}` },
+      { host: `${NAME}:443` },
+      { host: `192.168.1.20:${port}` },
+      { host: `100.101.102.103:${port}` },
+      { host: `${NAME}.evil.example:${port}` },
+      { host: `evil-${NAME}:${port}` },
+      { host: `127.0.0.1.nip.io:${port}` },
+      { host: `${NAME}:${port}`, origin: `http://${NAME}:${port}` },
+      { host: `${NAME}:${port}`, origin: `https://${NAME}` },
+      { host: `${NAME}:${port}`, origin: `https://${NAME}:${other}` },
+      { host: `${NAME}:${port}`, origin: `https://rocinante.manticore-hue.ts.net:${port}` },
+      { host: `${NAME}:${port}`, origin: 'https://evil.example' },
+      { host: `${NAME}:${port}`, origin: 'null' },
+      { host: `127.0.0.1:${port}`, origin: `http://${NAME}:${port}` },
+    ];
+    for (const path of ['/projects', `/projects/${projectId(a)}/board`, '/release', '/events', '/']) {
+      for (const headers of bad) {
+        const res = await fetch(`${url}${path}`, { headers });
+        expect({ path, headers, status: res.status }).toEqual({ path, headers, status: 403 });
+        await res.body?.cancel();
+      }
+    }
+  });
+
+  test('a non-GET over the tailnet host is still a 405, and the service still binds 127.0.0.1 only', async () => {
+    const { url } = await startTailnet({ uiDir: await makeUi(), tailnetHost: NAME });
+    const port = new URL(url).port;
+    for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
+      for (const path of ['/projects', '/']) {
+        const res = await fetch(`${url}${path}`, { method, headers: { host: `${NAME}:${port}`, origin: `https://${NAME}:${port}` } });
+        expect({ method, path, status: res.status }).toEqual({ method, path, status: 405 });
+      }
+    }
+    expect(HOSTNAME).toBe('127.0.0.1');
+    expect(url).toBe(`http://127.0.0.1:${port}`);
+    // Not reachable on any other address of this machine.
+    const lan = Object.values(networkInterfaces())
+      .flatMap((list) => list ?? [])
+      .filter((i) => i.family === 'IPv4' && !i.internal)
+      .map((i) => i.address);
+    for (const address of lan) {
+      const reached = await new Promise<boolean>((done) => {
+        const sock = tcp({ host: address, port: Number(port) }, () => {
+          sock.destroy();
+          done(true);
+        });
+        sock.on('error', () => done(false));
+      });
+      expect({ address, reached }).toEqual({ address, reached: false });
+    }
+  });
+
+  test('without a tailnet host, the tailnet Host and its https Origin are a 403', async () => {
+    const { url } = await startTailnet({ uiDir: await makeUi() });
+    const port = new URL(url).port;
+    const tailnet: Array<Record<string, string>> = [{ host: `${NAME}:${port}` }, { host: `${NAME}:${port}`, origin: `https://${NAME}:${port}` }, { host: `127.0.0.1:${port}`, origin: `https://${NAME}:${port}` }];
+    for (const headers of tailnet) {
+      for (const path of ['/projects', '/']) expect({ path, headers, status: (await fetch(`${url}${path}`, { headers })).status }).toEqual({ path, headers, status: 403 });
+    }
+    expect((await fetch(`${url}/projects`, { headers: { host: `127.0.0.1:${port}` } })).status).toBe(200);
+  });
+
+  test('a tailnet host that is not a lowercase DNS name is refused before anything listens', async () => {
+    for (const bad of ['', 'Studio.manticore-hue.ts.net', `${NAME}:8766`, `https://${NAME}`, `${NAME}/x`, ` ${NAME}`, `${NAME}\n`, `${NAME}.`, 'studio', 'a..b', '-a.b', 'a_b.ts.net']) {
+      await expect(startService({ port: 0, registryPath: registry, log: () => undefined, tailnetHost: bad })).rejects.toThrow('tailnet host');
+    }
+    expect(isTailnetHost(NAME)).toBe(true);
+    expect(isTailnetHost('agentbox.manticore-hue.ts.net')).toBe(true);
   });
 });
 

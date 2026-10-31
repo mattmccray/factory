@@ -1,6 +1,7 @@
 // The real `ServiceHost` for `factory service` (service.ts): this process's platform, home, uid, and
-// env; `Bun.spawn` (never a shell) for launchctl, systemctl, and loginctl; `lsof` (or `ss` on Linux)
-// for the port holder; the filesystem; `fetch` for the HTTP probe; and entry.ts `serve`.
+// env; `Bun.spawn` (never a shell) for launchctl, systemctl, loginctl, and tailscale; `lsof` (or
+// `ss` on Linux) for the port holder; the `tailscale` CLI on PATH or in the macOS app bundle; the
+// filesystem; `fetch` for the HTTP probe; and entry.ts `serve`.
 // `main.ts` (source) and `release-main.ts` (the release bundle) both build theirs here.
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -8,6 +9,7 @@ import { mkdir, open, readFile, realpath, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { serve } from '@factory/andon-service/entry';
+import { TAILSCALE_APP } from './service';
 import type { Ran, ServiceHost } from './service';
 
 const isNotFound = (e: unknown): boolean => typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT';
@@ -41,6 +43,13 @@ export async function lookupPortHolder(port: number, run: (argv: readonly string
   const pid = parseLsof(lsof.stdout);
   if (pid !== null || platform !== 'linux') return pid;
   return parseSs((await run(['ss', '-ltnpH', `sport = :${port}`])).stdout);
+}
+
+/** The `tailscale` CLI: `tailscale` on PATH, else on macOS the app bundle's binary when it is there; else null. */
+export function findTailscale(platform: string, which: (cmd: string) => string | null = Bun.which, exists: (path: string) => boolean = existsSync): string | null {
+  const onPath = which('tailscale');
+  if (onPath !== null) return onPath;
+  return platform === 'darwin' && exists(TAILSCALE_APP) ? TAILSCALE_APP : null;
 }
 
 /**
@@ -113,6 +122,7 @@ export async function realServiceHost(stdout: (line: string) => void): Promise<S
     run: spawnRun,
     systemd: async () => systemdUser(uid, env),
     portHolder: (port) => lookupPortHolder(port),
+    tailscale: async () => findTailscale(process.platform),
     fs: {
       exists: async (path) => existsSync(path),
       read: async (path) => {

@@ -97,6 +97,15 @@ contract is `docs/contract/v1.md`.
       (or stops it on quit): when its probe finds none, it shows a notice naming
       `factory service install`. One owner, so an app-spawned copy and a launchd copy never race
       for the port, and a Linux box with no Mac app works the same way.
+    - Amended 2026-10-30 (approved by Matt; brief `factory/briefs/andon-peer-access.md`): a
+      machine's Andon service may be read from Matt's other machines over his tailnet through
+      `tailscale serve`, opted into with `factory service install --tailnet`. It is still bound
+      to loopback and read-only: `tailscale serve` publishes `127.0.0.1:<port>` on HTTPS port
+      `<port>`, the unit records the machine's MagicDNS name (`ANDON_TAILNET_HOST`), and the
+      `Host`/`Origin` guard accepts exactly that name, never any other `*.ts.net` name. Any
+      tailnet device may read it, with no identity check in the service (Tailscale ACLs are
+      where to narrow it). `install` without the flag, and `uninstall`, remove the serve entry.
+      No command runs `sudo`.
 11. **The factory builds itself.**
     - This repo was seeded by hand once (2026-10-22) with a vendored v0 copy of Minerva's
       factory. Everything since goes through `/factory`.
@@ -217,7 +226,6 @@ Deliberately unfixed, but real:
 ## Deferred (don't build yet)
 
 - Codex, Pi and OpenCode orchestrator adapters, each starting with a research task.
-- Andon across multiple machines (the service design already allows it).
 - Adding or removing projects from Andon (decision 10). Today only `factory init` registers one,
   and the service is read-only.
 - Reviewers that run only when certain files change.

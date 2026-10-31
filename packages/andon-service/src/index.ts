@@ -81,6 +81,7 @@ export interface ServiceOptions {
   settleTimers?: SettleTimers; // how the per-project settle timers are set and cleared (default: setTimeout)
   cloneRoot?: string; // the factory clone the service runs from: its release and CHANGELOG.md; absent: `running`/`onDisk` null, `changelog` []
   versionFile?: string; // the file under `cloneRoot` whose `version` is the release (default `packages/templates/package.json`; the release bundle's is `package.json`)
+  tailnetHost?: string; // this machine's MagicDNS name (`ANDON_TAILNET_HOST`), published by `tailscale serve`: the guard also accepts exactly it
 }
 
 /** Sets and clears the one-shot settle timers (injectable so a test can see what is pending). */
@@ -127,6 +128,12 @@ interface Project {
 }
 
 export const HOSTNAME = '127.0.0.1';
+const DNS_LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?';
+const DNS_NAME = new RegExp(`^(?=.{1,253}$)${DNS_LABEL}(?:\\.${DNS_LABEL})+$`);
+
+/** A tailnet host the guard may accept: a lowercase DNS name of two or more labels, with no port,
+ *  scheme, path, whitespace, or trailing dot (e.g. `studio.manticore-hue.ts.net`). */
+export const isTailnetHost = (name: string): boolean => DNS_NAME.test(name);
 const JOB_ID = /^\d{3}-[a-z0-9-]+$/;
 const BRIEF = /^factory\/briefs\/[\w.-]+\.md$/;
 
@@ -405,8 +412,10 @@ type Form = 'plain' | 'narrow'; // a `/events` client's `board` form: every job,
 const encoder = new TextEncoder();
 const frame = (event: string, data: unknown): Uint8Array => encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
-/** Starts the service on `127.0.0.1:<port>`. */
+/** Starts the service on `127.0.0.1:<port>`. Throws, listening on nothing, when `tailnetHost` isn't a tailnet host. */
 export async function startService(opts: ServiceOptions): Promise<Service> {
+  const tailnetHost = opts.tailnetHost;
+  if (tailnetHost !== undefined && !isTailnetHost(tailnetHost)) throw new Error(`andon: the tailnet host must be a lowercase DNS name, got ${JSON.stringify(tailnetHost)}`);
   const debounceMs = opts.debounceMs ?? 50;
   const log = opts.log ?? ((line: string) => console.error(line));
   const git = opts.git ?? spawnGit;
@@ -876,13 +885,17 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
 
   // DNS-rebinding guard: loopback binding alone does not stop a page whose hostname resolves to
   // 127.0.0.1, so the Host must name this service, and an Origin, when sent, must be this service's.
+  // With a tailnet host, `tailscale serve` (HTTPS on the same port) passes the client's Host
+  // through: exactly `<name>:<port>` is also this service, and `https://<name>:<port>` its Origin.
   let boundPort = 0;
   function trusted(req: Request): boolean {
-    const hosts = [`127.0.0.1:${boundPort}`, `localhost:${boundPort}`];
-    const host = req.headers.get('host');
-    if (host === null || !hosts.includes(host.toLowerCase())) return false;
-    const origin = req.headers.get('origin');
-    return origin === null || hosts.some((h) => origin.toLowerCase() === `http://${h}`);
+    const loopback = [`127.0.0.1:${boundPort}`, `localhost:${boundPort}`];
+    const tailnet = tailnetHost === undefined ? [] : [`${tailnetHost}:${boundPort}`];
+    const host = req.headers.get('host')?.toLowerCase();
+    if (host === undefined || !(loopback.includes(host) || tailnet.includes(host))) return false;
+    const origin = req.headers.get('origin')?.toLowerCase();
+    if (origin === undefined) return true;
+    return loopback.some((h) => origin === `http://${h}`) || tailnet.some((h) => origin === `https://${h}`);
   }
 
   async function handle(req: Request): Promise<Response> {
