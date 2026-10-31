@@ -9,4 +9,4 @@ One feature per line — what "done" looks like, not the history. Add lines with
 
 Lines are in dependency order. Fuzzy ones should go through `/factory explore` first.
 
-- [ ] Andon across machines — every machine's projects on one trouble-first board through the local service as a hub (tailnet via `tailscale serve`, `factory peers`, one hop), with machine status, and the Mac app's badge, notifications, and native actions covering remote projects — epic: factory/epics/andon-multi-machine.md
+- [x] Andon across machines — every machine's projects on one trouble-first board through the local service as a hub (tailnet via `tailscale serve`, `factory peers`, one hop), with machine status, and the Mac app's badge, notifications, and native actions covering remote projects — epic: factory/epics/andon-multi-machine.md → epic andon-multi-machine
