@@ -142,12 +142,12 @@ describe('usage and show (AC3)', () => {
       epicAbandon: 'usage: epic abandon <slug> "<reason>" [--force] [--delete-branch]',
       all: 'usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id>',
       init: 'usage: init [--force]',
-      upgrade: 'usage: upgrade [--force]',
+      upgrade: 'usage: upgrade [--force] [--commit]',
       version: 'usage: --version',
       projects: 'usage: projects [prune [--dry-run] | remove <path>]',
       peers: 'usage: peers add <machine|url> | remove <machine|url> | list',
       service: 'usage: service install [--tailnet]|uninstall|start|stop|restart|status|run',
-      source: 'usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id> | doctor | init [--force] | upgrade [--force] | --version',
+      source: 'usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id> | doctor | init [--force] | upgrade [--force] [--commit] | --version',
     });
   });
 

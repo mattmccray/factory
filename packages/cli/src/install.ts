@@ -10,10 +10,13 @@ import type { Config, Manifest } from '@factory/contract';
 import { VERSION } from '@factory/templates';
 import { buildRelease } from './bundle';
 import type { ReleaseFiles } from './bundle';
+import { commitBlocker, commitPaths } from './git';
 import { isNotFound, locate, protectedReason } from './paths';
 
 export interface InstallOptions {
   force: boolean;
+  /** `upgrade --commit`: commit exactly what upgrade wrote or deleted, plus `managed.json`. */
+  commit?: boolean;
   stdout: (line: string) => void;
   /** The Andon registry file (`$ANDON_HOME/projects.json`) `init` registers the project in. Absent: no registration. */
   registry?: string;
@@ -136,6 +139,7 @@ const differing = (existing: ReadonlyMap<string, Buffer | null>, files: Readonly
 const listPaths = (paths: readonly string[]): string => paths.join(', ');
 
 interface Write {
+  rel: string;
   at: string;
   text: string;
 }
@@ -151,7 +155,7 @@ async function planWrites(repo: string, files: Readonly<Record<string, string>>,
       throw new Error(`${cmd}: refusing ${rel}: ${message(e)}`);
     });
     existing.set(rel, cur);
-    if (cur === null || !cur.equals(Buffer.from(text, 'utf8'))) writes.push({ at, text });
+    if (cur === null || !cur.equals(Buffer.from(text, 'utf8'))) writes.push({ rel, at, text });
   }
   return { writes, existing };
 }
@@ -190,9 +194,17 @@ async function register(registry: string, repo: string, stdout: (line: string) =
   }
 }
 
-/** `factory upgrade [--force]`. `root` is the project's `factory/` directory. */
+/**
+ * `factory upgrade [--force] [--commit]`. `root` is the project's `factory/` directory. With
+ * `commit`, the repo's git state is checked before anything is planned, and after the writes one
+ * commit holds exactly the written and deleted paths and `managed.json` (when rewritten).
+ */
 export async function upgrade(root: string, opts: InstallOptions): Promise<void> {
   const repo = dirname(resolve(root));
+  if (opts.commit === true) {
+    const blocker = await commitBlocker(repo);
+    if (blocker !== null) throw new Error(`upgrade --commit: refusing, ${blocker}`);
+  }
   const manifestAt = await place(repo, MANIFEST, 'upgrade', false);
   const manifestData = await readOrNull(manifestAt);
   if (manifestData === null) throw new Error(`upgrade: no ${MANIFEST}: this project is not installed, use init`);
@@ -238,6 +250,23 @@ export async function upgrade(root: string, opts: InstallOptions): Promise<void>
     }
   }
   const next = manifestText(manifestFor(files));
-  if (!manifestData.equals(Buffer.from(next, 'utf8'))) await writeAtomic(manifestAt, next);
-  opts.stdout(`upgraded factory ${old.version} -> ${VERSION}: ${writes.length} written, ${deletes.length} removed`);
+  const rewritten = !manifestData.equals(Buffer.from(next, 'utf8'));
+  if (rewritten) await writeAtomic(manifestAt, next);
+  const summary = `upgraded factory ${old.version} -> ${VERSION}: ${writes.length} written, ${deletes.length} removed`;
+  if (opts.commit !== true) {
+    opts.stdout(summary);
+    return;
+  }
+
+  // The commit: no rollback on failure. The written install is consistent and passes doctor.
+  const written = writes.map((w) => w.rel);
+  const changed = rewritten ? [...written, MANIFEST] : written;
+  let sha: string | null;
+  try {
+    sha = await commitPaths(repo, changed, deletes.map((d) => d.rel), `chore(factory): upgrade factory ${old.version} -> ${VERSION}`);
+  } catch (e) {
+    throw new Error(`upgrade: ${summary}, but the commit failed: ${message(e)}; commit the upgraded files by hand`);
+  }
+  opts.stdout(summary);
+  opts.stdout(sha === null ? 'nothing to commit' : `committed ${sha}`);
 }

@@ -1,7 +1,7 @@
 // The factory CLI, run from source or from the release bundle (docs/contract/v1.md "CLI"): the core
 // commands (`core.ts`) plus the installer, the Andon registry command, and the version:
 //   init [--force]      install the managed core into the project
-//   upgrade [--force]   replace the managed core with a new render
+//   upgrade [--force] [--commit]   replace the managed core with a new render (and commit exactly that)
 //   projects [prune [--dry-run] | remove <path>]   list, prune, or remove Andon registry roots (projects.ts)
 //   peers add <machine|url> | remove <machine|url> | list   the Andon peers this machine's service follows (peers.ts)
 //   service install [--tailnet]|uninstall|start|stop|restart|status|run   the Andon service as an OS service (service.ts)
@@ -43,13 +43,13 @@ export const SOURCE_ORIGIN: Origin = { kind: 'source', root: SOURCE_ROOT, files:
 export const USAGE = {
   ...CORE_USAGE,
   init: 'usage: init [--force]',
-  upgrade: 'usage: upgrade [--force]',
+  upgrade: 'usage: upgrade [--force] [--commit]',
   version: 'usage: --version',
   projects: PROJECTS_USAGE,
   peers: PEERS_USAGE,
   service: SERVICE_USAGE,
   // The source CLI's top-level line: the installed CLI's line plus `doctor`, the installer commands, and `--version`.
-  source: `${CORE_USAGE.all} | doctor | init [--force] | upgrade [--force] | --version`,
+  source: `${CORE_USAGE.all} | doctor | init [--force] | upgrade [--force] [--commit] | --version`,
 };
 
 /** `factory --version`'s line: `factory <version> (source: <clone path>)` or `factory <version> (release)`. */
@@ -57,11 +57,21 @@ export function versionLine(origin: Origin): string {
   return `factory ${VERSION} (${origin.kind === 'source' ? `source: ${origin.root}` : 'release'})`;
 }
 
-// `init` and `upgrade` take only `--force`; anything else is a usage error.
+// `init` takes only `--force`; anything else is a usage error.
 function parseForce(rest: readonly string[], usage: string): boolean {
   if (rest.length === 0) return false;
   if (rest.length === 1 && rest[0] === '--force') return true;
   throw new Error(usage);
+}
+
+// `upgrade` takes `--force` and `--commit`, in either order, each at most once; anything else is a usage error.
+function parseUpgrade(rest: readonly string[]): { force: boolean; commit: boolean } {
+  const seen = new Set<string>();
+  for (const arg of rest) {
+    if ((arg !== '--force' && arg !== '--commit') || seen.has(arg)) throw new Error(USAGE.upgrade);
+    seen.add(arg);
+  }
+  return { force: seen.has('--force'), commit: seen.has('--commit') };
 }
 
 // Returns the exit code: 0 on success, 1 on any rejection or usage error (one stderr line).
@@ -81,7 +91,7 @@ export function run(argv: readonly string[], io: CliIo, origin: Origin = SOURCE_
       return 0;
     }
     if (cmd === 'upgrade') {
-      await upgrade(io.root, { force: parseForce(rest, USAGE.upgrade), stdout: io.stdout, from: origin.files });
+      await upgrade(io.root, { ...parseUpgrade(rest), stdout: io.stdout, from: origin.files });
       return 0;
     }
     if (cmd === 'projects') return projects(rest, { registry: io.registry, stdout: io.stdout });

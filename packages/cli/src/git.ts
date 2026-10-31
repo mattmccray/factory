@@ -1,8 +1,11 @@
 // The CLI's git calls (docs/contract/v1.md "`job.claimed`" and "CLI"): resolving `merge.target`
 // to the branch a job is based on and merges into (a fact from the system, never from the
-// caller), `abandon`'s cleanup of a job's worktree and branch, and the guarded runner `archive.ts`
-// builds on.
+// caller), `abandon`'s cleanup of a job's worktree and branch, `upgrade --commit`'s preflight and
+// pathspec commit, and the guarded runner `archive.ts` builds on.
+import { lstat } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { BRANCH_PATTERN, CURRENT_TARGET, isTargetBranch } from '@factory/contract';
+import { isNotFound } from './paths';
 
 export interface GitResult {
   code: number;
@@ -113,4 +116,76 @@ export async function branchExists(repo: string, branch: string, what = 'epic'):
 export async function addWorktree(repo: string, path: string, branch: string, from: string): Promise<string | null> {
   const r = await git(repo, ['worktree', 'add', '--quiet', '-b', branch, path, from], 'epic start');
   return r.code === 0 ? null : r.err || `exit ${r.code}`;
+}
+
+// The states a pathspec commit can't be made in, by the path `rev-parse --git-path` names for each.
+const IN_PROGRESS: ReadonlyArray<readonly [string, string]> = [
+  ['MERGE_HEAD', 'a merge'],
+  ['rebase-merge', 'a rebase'],
+  ['rebase-apply', 'a rebase'],
+  ['CHERRY_PICK_HEAD', 'a cherry-pick'],
+  ['REVERT_HEAD', 'a revert'],
+];
+
+async function present(at: string): Promise<boolean> {
+  try {
+    await lstat(at);
+    return true;
+  } catch (e) {
+    if (isNotFound(e)) return false;
+    throw e;
+  }
+}
+
+/**
+ * Why a commit can't be made in `repo` now, or null when it can: `repo` is not inside a git work
+ * tree, its HEAD is detached, or a merge, rebase, cherry-pick, or revert is in progress. Reads only;
+ * writes nothing to the repo.
+ */
+export async function commitBlocker(repo: string, what = 'upgrade --commit'): Promise<string | null> {
+  const inside = await runGit(repo, ['rev-parse', '--is-inside-work-tree'], { what });
+  if (inside.code !== 0 || inside.out !== 'true') return `${repo} is not inside a git work tree`;
+  const head = await runGit(repo, ['symbolic-ref', '--quiet', 'HEAD'], { what });
+  if (head.code === 1) return 'HEAD is detached (no branch to commit on)';
+  if (head.code !== 0) return `git failed: ${head.err || `exit ${head.code}`}`;
+  const paths = await runGit(repo, ['rev-parse', ...IN_PROGRESS.flatMap(([p]) => ['--git-path', p])], { what });
+  if (paths.code !== 0) return `git failed: ${paths.err || `exit ${paths.code}`}`;
+  const lines = paths.out.split('\n');
+  for (const [i, [, state]] of IN_PROGRESS.entries()) {
+    const at = lines[i];
+    if (at !== undefined && at !== '' && (await present(resolve(repo, at)))) return `${state} is in progress`;
+  }
+  return null;
+}
+
+/**
+ * Commits exactly `changed` (paths written, tracked or not) and `deleted` (paths removed; a path
+ * git never tracked is left out) in `repo`, as one `git commit --only` with `message`. Other staged
+ * and unstaged changes keep their state. Hooks run. Paths are literal and relative to `repo`.
+ * Returns the new commit's short sha, or null when none of the paths differs from HEAD. Throws
+ * git's first error line when a step fails.
+ */
+export async function commitPaths(repo: string, changed: readonly string[], deleted: readonly string[], message: string, what = 'upgrade --commit'): Promise<string | null> {
+  const opts = { what, env: { GIT_LITERAL_PATHSPECS: '1' } };
+  const fail = (step: string, r: GitResult): Error => new Error(r.err || `git ${step} exited ${r.code}`);
+  const all = [...changed, ...deleted];
+  if (all.length === 0) return null;
+  const listed = await runGit(repo, ['ls-files', '-z', '--', ...all], opts);
+  if (listed.code !== 0) throw fail('ls-files', listed);
+  const tracked = new Set(listed.raw.split('\0').filter((p) => p !== ''));
+  const fresh = changed.filter((p) => !tracked.has(p));
+  if (fresh.length > 0) {
+    const added = await runGit(repo, ['add', '--', ...fresh], opts);
+    if (added.code !== 0) throw fail('add', added);
+  }
+  const paths = [...changed, ...deleted.filter((p) => tracked.has(p))];
+  if (paths.length === 0) return null;
+  const status = await runGit(repo, ['status', '--porcelain', '-z', '--untracked-files=no', '--', ...paths], opts);
+  if (status.code !== 0) throw fail('status', status);
+  if (status.raw === '') return null;
+  const commit = await runGit(repo, ['commit', '--quiet', '--only', '-m', message, '--', ...paths], opts);
+  if (commit.code !== 0) throw fail('commit', commit);
+  const sha = await runGit(repo, ['rev-parse', '--short', 'HEAD'], opts);
+  if (sha.code !== 0) throw fail('rev-parse', sha);
+  return sha.out;
 }
