@@ -10,4 +10,4 @@ One feature per line — what "done" looks like, not the history. Add lines with
 Lines are in dependency order. Fuzzy ones should go through `/factory explore` first.
 
 
-- [ ] `factory upgrade --commit` — upgrade commits exactly the files it wrote or deleted plus managed.json as `chore(factory): upgrade factory <old> -> <new>`, leaving other changes alone; refuses up front outside a work tree, on detached HEAD, or mid-merge/rebase — brief: factory/briefs/upgrade-commit-flag.md
+- [x] `factory upgrade --commit` — upgrade commits exactly the files it wrote or deleted plus managed.json as `chore(factory): upgrade factory <old> -> <new>`, leaving other changes alone; refuses up front outside a work tree, on detached HEAD, or mid-merge/rebase — brief: factory/briefs/upgrade-commit-flag.md → 084-upgrade-commit-flag
