@@ -1,6 +1,7 @@
 # Andon across machines
 
-- Status: ready
+- Status: done
+- Landed: 3899ba0 (2026-10-30)
 - Sources: the explore request of 2026-10-30 ("Add support for monitoring jobs from other machines" and the re-architecture discussion); decision 10 and the Deferred list in `docs/decisions.md`; `docs/contract/v1.md`, "Andon service"
 - Date: 2026-10-30
 

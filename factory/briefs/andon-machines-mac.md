@@ -1,6 +1,7 @@
 # Machines in the Mac app
 
-- Status: ready
+- Status: done
+- Job: 081-andon-machines-mac (merged 3b5bffc via epic andon-multi-machine, 2026-10-30)
 - Sources: the explore request of 2026-10-30; epic plan `factory/epics/andon-multi-machine.md`; briefs `andon-hub`, `andon-machines-ui`, `t3-handoff`, `t3-start-work`, `job-context-menu`, `project-context-menu`, `epic-context-menu`; `apps/andon/src/follow.ts`, `badge.ts`, `notify.ts`, `projectmenu.ts`, `jobmenu.ts`, `epicmenu.ts`, `handoff.ts`, `startwork.ts`
 - Date: 2026-10-30
 

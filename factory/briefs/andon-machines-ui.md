@@ -1,6 +1,7 @@
 # Machines in the Andon UI
 
-- Status: ready
+- Status: done
+- Job: 080-andon-machines-ui (merged 33531dc via epic andon-multi-machine, 2026-10-30)
 - Sources: the explore request of 2026-10-30; epic plan `factory/epics/andon-multi-machine.md`; briefs `andon-hub`, `andon-peer-access`; decision 5 and `docs/design/andon-overview/design.md` (§3–§7); `apps/andon-ui/src/sidebar.ts`, `lanes.ts`, `live.ts`
 - Date: 2026-10-30
 

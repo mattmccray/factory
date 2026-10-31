@@ -1,6 +1,7 @@
 # The Andon service as a hub for Matt's other machines
 
-- Status: ready
+- Status: done
+- Job: 079-andon-hub (merged 29d1abd via epic andon-multi-machine, 2026-10-30)
 - Sources: the explore request of 2026-10-30; epic plan `factory/epics/andon-multi-machine.md`; brief `andon-peer-access`; decision 10 in `docs/decisions.md`; `docs/contract/v1.md`, "Andon registry" and "Andon service"
 - Date: 2026-10-30
 

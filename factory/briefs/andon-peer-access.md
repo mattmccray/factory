@@ -1,6 +1,7 @@
 # An Andon service reachable from Matt's other machines
 
-- Status: ready
+- Status: done
+- Job: 078-andon-peer-access (merged e9f988b via epic andon-multi-machine, 2026-10-30)
 - Sources: the explore request of 2026-10-30; epic plan `factory/epics/andon-multi-machine.md`; decision 10 and the Deferred list in `docs/decisions.md`; `docs/contract/v1.md`, "Andon service"
 - Date: 2026-10-30
 
