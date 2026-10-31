@@ -660,7 +660,7 @@ bun factory/cli.ts epic next <slug>                    # what the epic should do
 bun factory/cli.ts epic show <slug>                    # the epic's state, its members, and why it waits
 bun factory/cli.ts epic abandon <slug> "<reason>" [--force] [--delete-branch]  # close an epic for good
 factory init [--force]                                 # (source or release bundle) install the managed core
-factory upgrade [--force]                              # (source or release bundle) replace the managed core
+factory upgrade [--force] [--commit]                   # (source or release bundle) replace the managed core (and commit exactly that)
 factory projects                                       # (source or release bundle) list the Andon registry's roots and their state
 factory projects prune [--dry-run]                     # (source or release bundle) unregister the dead roots
 factory projects remove <path>                         # (source or release bundle) unregister one root
@@ -946,7 +946,7 @@ finds its factory root from its own location (its directory), and keeps the same
 the source. The top-level usage line (printed for a missing or unknown command) differs: the
 installed CLI prints
 `usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id>`, and the source CLI (and the
-release bundle's) prints that line followed by ` | doctor | init [--force] | upgrade [--force] | --version`. Neither line lists
+release bundle's) prints that line followed by ` | doctor | init [--force] | upgrade [--force] [--commit] | --version`. Neither line lists
 `abandon`, `archive`, `prune`, or `epic`; each prints its own usage line for its usage errors. An
 installed copy that predates `abandon`, `archive`, `prune`, `claim`, or `epic` gains it when the
 CLI is promoted.
@@ -1206,7 +1206,7 @@ write `managed.json` last.
 bytes already sits at a managed path (a file with the same bytes is fine), or when the existing
 `config.json` is invalid.
 
-`upgrade [--force]` needs `factory/managed.json` and a valid `config.json`. It re-renders for
+`upgrade [--force] [--commit]` needs `factory/managed.json` and a valid `config.json`. It re-renders for
 the current config, writes the managed files whose bytes changed, deletes the files the old
 manifest lists that the new render does not (such as a reviewer removed from `reviewers`), and
 rewrites `managed.json`. It refuses when there is no manifest (use `init`), when `managed.json`
@@ -1227,10 +1227,31 @@ is refused.
 files at managed paths (this is how an unstamped install is adopted), and `upgrade --force`
 replaces edited or missing managed files and unmanaged files at new paths. It never overrides an
 existing manifest on `init`, a missing manifest on `upgrade`, an invalid config, or a path
-refusal. Any other argument is a usage error.
+refusal.
+
+`upgrade --commit` also commits the upgrade, as one git commit in the project's repo holding
+exactly the paths upgrade wrote (new, untracked managed files included), the paths it deleted (a
+path git never tracked is left out), and `factory/managed.json` when it was rewritten. The
+message is `chore(factory): upgrade factory <old> -> <new>` (`<old>` from the previous
+`managed.json`, `<new>` the CLI's version), with no trailer. It commits only those paths
+(`git commit --only`), so every other staged and unstaged change keeps its state, and the overlay
+and other state are never in it. Hooks run (they are never bypassed). Before anything is planned
+or written, `--commit` refuses, writing nothing, when the project root is not inside a git work
+tree, when HEAD is detached, or when a merge, rebase, cherry-pick, or revert is in progress; it
+requires no particular branch and no clean tree. On success it prints the summary line, then
+`committed <short sha>`, or `nothing to commit` when nothing changed (no commit is made). When the
+commit fails after the writes (a hook rejects it, signing fails, no identity), the written files
+stay as they are (no rollback; the install is consistent and passes `doctor`), no commit is made,
+and it exits 1 with one line naming the summary, git's first error line, and
+`commit the upgraded files by hand`. Without `--commit`, upgrade runs no git command. `init`
+takes no `--commit`.
+
+`init` takes only `--force`, and `upgrade` takes `--force` and `--commit`, in either order, each at
+most once. Any other argument, or a repeated flag, is a usage error (`usage: init [--force]`,
+`usage: upgrade [--force] [--commit]`).
 
 Both exit 0 on success and print one summary line (plus, for `init`, the registration `note:`
-line when registering fails); on a refusal or usage error they exit 1 with
+line when registering fails, and for `upgrade --commit`, its commit line); on a refusal or usage error they exit 1 with
 a one-line reason that names the offending paths.
 
 Concurrency: a job's log has exactly one writer at a time — the session driving that job (or,

@@ -1761,6 +1761,46 @@ function parseManifest(raw) {
 import { stat as stat3 } from "fs/promises";
 import { dirname as dirname3, join as join4, relative as relative2, resolve as resolve2 } from "path";
 
+// packages/cli/src/paths.ts
+import { realpath } from "fs/promises";
+import { basename, dirname as dirname2, isAbsolute, join as join3, posix, relative, resolve, sep } from "path";
+var isNotFound2 = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "ENOENT";
+function assertInside(repoReal, p) {
+  const back = relative(repoReal, p);
+  if (back === "" || back === ".." || back.startsWith(`..${sep}`) || isAbsolute(back)) {
+    throw new Error("resolves outside the repo");
+  }
+}
+async function locate(repo, rel) {
+  const why = checkManifestPath(rel);
+  if (why !== null)
+    throw new Error(why);
+  const repoReal = await realpath(repo);
+  const abs = resolve(repoReal, rel);
+  const rest = [basename(abs)];
+  let dir = dirname2(abs);
+  let dirReal = null;
+  while (dirReal === null) {
+    try {
+      dirReal = await realpath(dir);
+    } catch (e) {
+      if (!isNotFound2(e) || dirname2(dir) === dir)
+        throw e;
+      rest.unshift(basename(dir));
+      dir = dirname2(dir);
+    }
+  }
+  const at = join3(dirReal, ...rest);
+  assertInside(repoReal, at);
+  try {
+    assertInside(repoReal, await realpath(at));
+  } catch (e) {
+    if (!isNotFound2(e))
+      throw e;
+  }
+  return at;
+}
+
 // packages/cli/src/git.ts
 var REDIRECTS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR"];
 function gitEnv(extra = {}) {
@@ -1836,46 +1876,6 @@ async function branchExists(repo, branch, what = "epic") {
 async function addWorktree(repo, path, branch, from) {
   const r = await git(repo, ["worktree", "add", "--quiet", "-b", branch, path, from], "epic start");
   return r.code === 0 ? null : r.err || `exit ${r.code}`;
-}
-
-// packages/cli/src/paths.ts
-import { realpath } from "fs/promises";
-import { basename, dirname as dirname2, isAbsolute, join as join3, posix, relative, resolve, sep } from "path";
-var isNotFound2 = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "ENOENT";
-function assertInside(repoReal, p) {
-  const back = relative(repoReal, p);
-  if (back === "" || back === ".." || back.startsWith(`..${sep}`) || isAbsolute(back)) {
-    throw new Error("resolves outside the repo");
-  }
-}
-async function locate(repo, rel) {
-  const why = checkManifestPath(rel);
-  if (why !== null)
-    throw new Error(why);
-  const repoReal = await realpath(repo);
-  const abs = resolve(repoReal, rel);
-  const rest = [basename(abs)];
-  let dir = dirname2(abs);
-  let dirReal = null;
-  while (dirReal === null) {
-    try {
-      dirReal = await realpath(dir);
-    } catch (e) {
-      if (!isNotFound2(e) || dirname2(dir) === dir)
-        throw e;
-      rest.unshift(basename(dir));
-      dir = dirname2(dir);
-    }
-  }
-  const at = join3(dirReal, ...rest);
-  assertInside(repoReal, at);
-  try {
-    assertInside(repoReal, await realpath(at));
-  } catch (e) {
-    if (!isNotFound2(e))
-      throw e;
-  }
-  return at;
 }
 
 // packages/cli/src/abandon.ts
