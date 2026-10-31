@@ -86,7 +86,7 @@
   } from './projects';
   import type { BoardEpic, BoardJob } from './board';
   import { epicName } from './job';
-  import { nowFor, placed, projectLabel, remoteOfId } from './machines';
+  import { asOfText, nowFor, placed, projectAsOf, projectLabel, remoteOfId } from './machines';
   import { whatsNew } from './release';
   import type { Selection } from './projects';
   import SettledSheet from './SettledSheet.svelte';
@@ -414,6 +414,8 @@
   // The inspector's clock: the shown job's or epic's machine's as-of time while it is stale, else now.
   const inspectorPid = $derived(openDoc !== null ? openDoc.project : openEpic !== null ? (openEpicItem?.project.id ?? '') : (openItem?.project.id ?? ''));
   const inspectorNow = $derived(nowFor(ui, inspectorPid, now));
+  const inspectorStale = $derived(projectAsOf(ui, inspectorPid));
+  const inspectorAsOf = $derived(inspectorStale === null ? null : asOfText(inspectorStale, now));
   function select(next: Selection): void {
     selection = next;
     saveSelection(storage(), next);
@@ -786,6 +788,7 @@
     width={inspectorWidth}
     {filesHeight}
     now={inspectorNow}
+    asOf={inspectorAsOf}
     {fetcher}
     file={openFile}
     onfile={(f) => (openFile = f)}

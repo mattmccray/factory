@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { HUB, LOCAL_FACTORY, STUDIO_FACTORY, localAt, machineEntry, machinesBody } from './fixtures';
 import { asOfText, hasPeers, hubName, machineAsOf, machineOrder, nowFor, placed, projectLabel, remoteOf, remoteOfId } from './machines';
-import { applyEvent, emptyState } from './state';
+import { applyEvent, applyFetchedMachines, emptyState } from './state';
 import type { UiState } from './state';
 import type { ProjectInfo } from './job';
 
@@ -73,3 +75,25 @@ describe('stale machines and their as-of time (AC5)', () => {
     expect(asOfText(localAt(14, 2, 21), localAt(16, 0))).toBe('as of Oct 21 14:02');
   });
 });
+
+describe('review round 1', () => {
+  test('a connecting machine named like an Object.prototype key is stale at its own since', () => {
+    const s = withMachines(machineEntry(HUB), machineEntry('toString', 'connecting', iso(localAt(14, 20))));
+    expect(machineAsOf(s, 'toString')).toBe(localAt(14, 20));
+  });
+
+  test('in development, an unproxied GET /machines (Vite answers index.html) is dropped, and the machines event still sets the list', () => {
+    const evented = withMachines(machineEntry(HUB), machineEntry('studio'));
+    const html: { ok: false; reason: string } = { ok: false, reason: 'Unexpected token < in JSON' };
+    expect(applyFetchedMachines(evented, evented.machines.rev, html)).toBe(evented);
+  });
+
+  test("a stale job's or epic's inspector timing says \"as of …\"", () => {
+    const ins = readFileSync(join(import.meta.dir, 'Inspector.svelte'), 'utf8');
+    expect(ins.match(/\{#if asOf !== null\} · <span class="asof">\{asOf\}<\/span>\{\/if\}/g)?.length).toBe(2);
+    const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
+    expect(app).toContain('const inspectorAsOf = $derived(inspectorStale === null ? null : asOfText(inspectorStale, now));');
+    expect(app).toContain('asOf={inspectorAsOf}');
+  });
+});
+

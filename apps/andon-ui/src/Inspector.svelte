@@ -20,6 +20,8 @@
   // In the job view a grip between the Files list and the document sets the list's height
   // (`filesHeight`, reported by `onfilesresize`; brief andon-resizable-panes): drag it, or focus it
   // and use ↑ and ↓; double-click returns the list to fitting its files. Limits are in panes.ts.
+  // A stale machine's job or epic (brief andon-machines-ui) is timed at its as-of time (`now`), and
+  // its timing line says so ("as of 14:02", `asOf`), as its lane's gutter does.
   import { tick, untrack } from 'svelte';
   import { fetchBacklog, fetchBrief, fetchDocs, fetchEpicDocs, fetchPage } from './api';
   import { docKey, docPage, planMembers, toBacklog } from './backlog';
@@ -49,7 +51,8 @@
     open: boolean;
     width: number;
     filesHeight: number | null; // the job view's Files list height; null: it fits its files (up to 38%)
-    now: number;
+    now: number; // a stale machine's job or epic: its as-of time (machines.ts `nowFor`)
+    asOf?: string | null; // a stale machine's job or epic: "as of 14:02", beside the frozen timing; null otherwise
     fetcher: Fetcher;
     file: string | null; // the chosen file; null: the latest
     onfile: (path: string) => void;
@@ -64,7 +67,7 @@
     onopenpage: (ref: DocRef) => void; // a plan member's brief
     onstart: (item: StartItem) => void; // a brief's or plan's action: copy, then start in T3 Code
   }
-  let { item, epic, epicJobs, page: docRef, pageProject, onopenpage, onstart, open, width, filesHeight, now, fetcher, file, onfile, onclose, onresize, onfilesresize, oncopy, onhandoff, onsheet, onopenjob, onopenepic }: Props = $props();
+  let { item, epic, epicJobs, page: docRef, pageProject, onopenpage, onstart, open, width, filesHeight, now, asOf = null, fetcher, file, onfile, onclose, onresize, onfilesresize, oncopy, onhandoff, onsheet, onopenjob, onopenepic }: Props = $props();
 
   const key = $derived(item !== null ? item.key : epic !== null ? `epic:${epic.key}` : docRef !== null ? docKey(docRef) : null);
   const updated = $derived(item !== null ? item.job.updated : (epic?.epic.updated ?? null));
@@ -291,7 +294,7 @@
           <div class="crumbs"><span>{page.project}</span><span aria-hidden="true">·</span><span class="stage-pill sp-epic">Epic</span><span class="stage-pill sp-e-{page.state}">{page.stateLabel}</span></div>
           <h2 id="ins-title">{page.name}</h2>
           <div class="branch" title="epic branch → target">{page.lands}</div>
-          <div class="tsum">{page.timing} · {page.merged}</div>
+          <div class="tsum">{page.timing} · {page.merged}{#if asOf !== null} · <span class="asof">{asOf}</span>{/if}</div>
           <div class="eprog" role="img" aria-label="Members by state: {page.progress.map((s) => s.title).join(', ')}">
             {#each page.progress as seg, i (i)}<i class={seg.cls} title={seg.title}></i>{/each}
           </div>
@@ -414,7 +417,7 @@
         <div class="crumbs"><span>{jobHeader(item).project}</span><span aria-hidden="true">·</span><span>{job.id}</span>{#if kind !== null}<span class="stage-pill sp-{kind}">{KIND_LABELS[kind]}</span>{/if}</div>
         <h2 id="ins-title">{job.title}</h2>
         {#if lands !== null}<div class="branch" title="branch → target">{lands}</div>{/if}
-        {#if sum !== null}<div class="tsum" class:na={!sum.recorded}>{sum.text}</div>{/if}
+        {#if sum !== null}<div class="tsum" class:na={!sum.recorded}>{sum.text}{#if asOf !== null} · <span class="asof">{asOf}</span>{/if}</div>{/if}
         {#if link !== null}
           <button class="elink" type="button" aria-haspopup="dialog" onclick={() => onopenepic(link.key)}>
             <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="3" r="1.5" /><circle cx="4" cy="13" r="1.5" /><circle cx="12" cy="8" r="1.5" /><path d="M4 4.5v7M5.3 3.8C8.5 5 10.6 5.6 11 6.6M5.3 12.2C8.5 11 10.6 10.4 11 9.4" /></svg>

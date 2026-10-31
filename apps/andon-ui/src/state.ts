@@ -148,7 +148,8 @@ export const setError = (s: UiState, pid: string, reason: string): UiState => wi
 function setMachines(s: UiState, list: Machine[], rev: number): UiState {
   const lastDown: Record<string, string> = {};
   for (const m of list) {
-    const seen = m.state === 'down' ? m.since : m.state === 'live' ? undefined : s.machines.lastDown[m.name];
+    const kept = Object.hasOwn(s.machines.lastDown, m.name) ? s.machines.lastDown[m.name] : undefined; // own keys only: a name like `constructor` is no inherited value
+    const seen = m.state === 'down' ? m.since : m.state === 'live' ? undefined : kept;
     if (seen !== undefined) lastDown[m.name] = seen;
   }
   return { ...s, machines: { list, rev, lastDown } };

@@ -156,9 +156,11 @@ export type FooterRelease =
   | { kind: 'restart'; text: string; title: string; command: string }; // title: both releases and the command
 
 export interface Footer {
-  text: string;
+  text: string; // "Connected · 3 machines · 12 projects"
   dot: 'green' | 'gray' | 'red';
   release: FooterRelease | null; // null: not live, or no release data (an older service)
+  trouble?: string; // live with peers: each machine in trouble, "studio down · agentbox needs upgrade"; absent when none
+  full?: string; // live with peers: the whole line (`footerLine`), the text's own tooltip, since a narrow sidebar truncates it
 }
 
 /** The footer's release part, for release data; null when there is nothing to show. */
@@ -178,8 +180,9 @@ function machineTrouble(m: Machine): string | null {
 
 /**
  * The footer. Live: "Connected · N projects", or, with peers (`machines` lists more than the hub),
- * "Connected · 3 machines · 12 projects", then each machine in trouble in sidebar order
- * ("studio down", "agentbox needs upgrade"); the release part follows (`footerLine`).
+ * "Connected · 3 machines · 12 projects", then (`trouble`) each machine in trouble in sidebar order
+ * ("studio down", "agentbox needs upgrade"); the release part follows (`footerLine`). The trouble is
+ * its own part so that, in a narrow sidebar, the counts truncate before it does.
  */
 export function footer(status: Status, projects: number, release: ReleaseInfo | null = null, machines: readonly Machine[] = []): Footer {
   if (status === 'live') {
@@ -188,14 +191,16 @@ export function footer(status: Status, projects: number, release: ReleaseInfo | 
     const trouble = machineOrder(machines)
       .map(machineTrouble)
       .filter((t): t is string => t !== null);
-    return { text: ['Connected', plural(machines.length, 'machine', 'machines'), count, ...trouble].join(' · '), dot: 'green', release: footerRelease(release) };
+    const text = ['Connected', plural(machines.length, 'machine', 'machines'), count].join(' · ');
+    const f: Footer = trouble.length === 0 ? { text, dot: 'green', release: footerRelease(release) } : { text, dot: 'green', release: footerRelease(release), trouble: trouble.join(' · ') };
+    return { ...f, full: footerLine(f) };
   }
   if (status === 'down') return { text: 'Unreachable', dot: 'red', release: null };
   return { text: 'Connecting…', dot: 'gray', release: null };
 }
 
-/** The footer as one line of text: "Connected · 3 projects · v0.2.0". */
-export const footerLine = (f: Footer): string => (f.release === null ? f.text : `${f.text} · ${f.release.text}`);
+/** The footer as one line of text: "Connected · 3 projects · v0.2.0", or "Connected · 3 machines · 12 projects · studio down · v0.2.0". */
+export const footerLine = (f: Footer): string => [f.text, f.trouble, f.release?.text].filter((x) => x !== undefined).join(' · ');
 
 // ---- the toolbar ----
 

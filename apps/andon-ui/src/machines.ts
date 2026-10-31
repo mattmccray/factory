@@ -36,7 +36,8 @@ export const isStaleState = (m: Pick<Machine, 'state'>): boolean => m.state === 
 export function machineAsOf(s: UiState, name: string): number | null {
   const m = s.machines.list.find((x) => x.name === name);
   if (m === undefined || !isStaleState(m)) return null;
-  const t = time(s.machines.lastDown[name] ?? m.since);
+  const down = Object.hasOwn(s.machines.lastDown, name) ? s.machines.lastDown[name] : undefined; // own keys only
+  const t = time(down ?? m.since);
   return t > 0 ? t : null;
 }
 

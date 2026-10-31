@@ -395,4 +395,12 @@ describe('machines in the UI state (AC2)', () => {
     s = applyEvent(s, 'machines', machinesBody(machineEntry(HUB))); // studio unlisted: forgotten
     expect(s.machines.lastDown).toEqual({});
   });
+
+  test('a machine named like an Object.prototype key is tracked by its own entry only (round 1)', () => {
+    let s = applyEvent(emptyState(), 'machines', machinesBody(machineEntry(HUB), machineEntry('constructor', 'connecting', studioDown)));
+    expect(Object.hasOwn(s.machines.lastDown, 'constructor')).toBe(false);
+    s = applyEvent(s, 'machines', machinesBody(machineEntry(HUB), machineEntry('constructor', 'down', studioDown)));
+    s = applyEvent(s, 'machines', machinesBody(machineEntry(HUB), machineEntry('constructor', 'connecting', '2026-10-22T15:00:00.000Z')));
+    expect(s.machines.lastDown).toEqual({ constructor: studioDown });
+  });
 });

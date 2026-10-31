@@ -100,6 +100,10 @@ svg.i { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-widt
 .service { flex: none; height: var(--statusbar-h); padding: 0 18px; font-size: 11px; color: var(--label2); display: flex; align-items: center; gap: 7px; border-top: .5px solid var(--sep); }
 .service .dot { width: 7px; height: 7px; flex: none; }
 .service .txt { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* the text and any machine trouble (brief andon-machines-ui): the counts give way first, so the red trouble stays readable */
+.service .ftext { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 7px; }
+.service .ftext .txt { flex: 0 1000 auto; }
+.service .ftext .trouble { flex: 0 0 auto; max-width: 100%; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .service .dot.gray { box-shadow: none; background: var(--gray); }
 .service .dot.red { box-shadow: none; }
 /* the footer's release (brief andon-version-ui, decision 1): the machine's version, a quiet button that

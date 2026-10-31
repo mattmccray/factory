@@ -596,8 +596,8 @@ function laneOf(
 /**
  * One lane per project, in registration order (`orderLanes` sorts them). A project's `remote` (the
  * machine a remote project is on) labels its lane; its `asOf` (its machine is stale) marks the lane
- * stale, and every time on it (token, gutter, needs-human wait, settling) is computed at `asOf`, not `now`. `focused` is a single
- * focused project: its cells, its sub-lanes' too, are uncapped. `summaries` are the projects'
+ * stale, and every time on it (token, gutter, needs-human wait, settling) is computed at `asOf`,
+ * not `now`. `focused` is a single focused project: its cells, its sub-lanes' too, are uncapped. `summaries` are the projects'
  * settled summaries (a missing one is none); settled jobs never sit in a cell, focused or not.
  * `epics` are the board's epics: each unsettled one gets a sub-lane under its project's lane, oldest
  * start first, holding its jobs (a job whose epic isn't among them stays in the project's cells).

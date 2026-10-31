@@ -741,4 +741,20 @@ describe("the footer's machine count and trouble (machines AC6)", () => {
     expect(line(twelve(machineEntry('studio')))).toBe('Connected · 3 machines · 12 projects');
     expect(footer('down', 12, null, twelve(machineEntry('studio')).machines.list)).toEqual({ text: 'Unreachable', dot: 'red', release: null });
   });
+
+  test('the trouble is its own red part that the counts give way to in a narrow sidebar, and the whole line is the tooltip (round 1)', () => {
+    const s = twelve(machineEntry('studio', 'down', iso(localAt(14, 2))));
+    const f = footer('live', 12, { running: '0.2.0', onDisk: null, changelog: [] }, s.machines.list);
+    expect([f.text, f.trouble, f.full]).toEqual(['Connected · 3 machines · 12 projects', 'studio down', 'Connected · 3 machines · 12 projects · studio down · v0.2.0']);
+    expect(footer('live', 12, null, twelve(machineEntry('studio')).machines.list)).toEqual({ text: 'Connected · 3 machines · 12 projects', dot: 'green', release: null, full: 'Connected · 3 machines · 12 projects' });
+    const sidebar = readFileSync(join(import.meta.dir, 'Sidebar.svelte'), 'utf8');
+    expect(sidebar).toContain('<span class="ftext" title={foot.full}');
+    expect(sidebar).toContain('<span class="trouble t-red">{foot.trouble}</span>');
+    const css = readFileSync(join(import.meta.dir, 'app.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rule = (selector: string): string => new RegExp(`(?:^|\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+    const shrink = (selector: string): number => Number(/flex:\s*\d+\s+(\d+)/.exec(rule(selector))?.[1] ?? NaN);
+    expect(shrink('.service .ftext .txt')).toBeGreaterThan(shrink('.service .ftext .trouble'));
+    expect(rule('.service .ftext')).toMatch(/min-width:\s*0/);
+    for (const want of [/white-space:\s*nowrap/, /overflow:\s*hidden/, /text-overflow:\s*ellipsis/]) expect(rule('.service .ftext .trouble')).toMatch(want);
+  });
 });

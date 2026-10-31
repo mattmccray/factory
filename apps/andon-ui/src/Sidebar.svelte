@@ -122,7 +122,11 @@
     {/if}
   </nav>
   <div class="service" title={ANNOUNCE[status]}>
-    <span class="dot {foot.dot}" aria-hidden="true"></span><span class="txt">{foot.text}</span>
+    <span class="dot {foot.dot}" aria-hidden="true"></span>
+    <!-- The text, then any machine trouble (red): the counts truncate first, and the whole line is the tooltip here. -->
+    <span class="ftext" title={foot.full}
+      ><span class="txt">{foot.text}</span>{#if foot.trouble !== undefined}<span class="sep" aria-hidden="true">·</span><span class="trouble t-red">{foot.trouble}</span>{/if}</span
+    >
     {#if foot.release !== null}
       {@const rel = foot.release}
       <span class="sep" aria-hidden="true">·</span>
