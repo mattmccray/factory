@@ -4,8 +4,11 @@
 // file of the release it reports. Listens on 127.0.0.1:$ANDON_PORT (default 8766) and reads the
 // registry at $ANDON_HOME/projects.json (default ~/.andon/projects.json). With $ANDON_TAILNET_HOST
 // (recorded in the unit by `factory service install --tailnet`), the guard also accepts that name.
+// The machine name is that host's first label, else the OS hostname's (`machineName`, shared with
+// the CLI); the peers it follows are listed in $ANDON_HOME/peers.json, beside the registry.
+import { hostname } from 'node:os';
 import { join } from 'node:path';
-import { registryPath } from '@factory/contract';
+import { machineName, peersPath, registryPath } from '@factory/contract';
 import { isTailnetHost, startService } from './index';
 
 export { isTailnetHost } from './index';
@@ -38,9 +41,12 @@ export async function serve(tree: Tree): Promise<void> {
     process.exit(1);
   }
   const registry = registryPath(process.env.ANDON_HOME);
-  const service = await startService({ port, registryPath: registry, ...tree, ...(tailnetHost === undefined ? {} : { tailnetHost }) });
+  const peers = peersPath(process.env.ANDON_HOME);
+  const machine = machineName(tailnetHost ?? hostname());
+  const service = await startService({ port, registryPath: registry, peersPath: peers, machine, ...tree, ...(tailnetHost === undefined ? {} : { tailnetHost }) });
   console.log(`Andon service: ${service.url} (registry ${registry})`);
   if (tailnetHost !== undefined) console.log(`Andon service: also https://${tailnetHost}:${new URL(service.url).port}/ through tailscale serve`);
+  console.log(`Andon service: machine ${machine}, following the peers in ${peers}`);
 
   const shutdown = (): void => {
     void service.stop().then(() => process.exit(0));
