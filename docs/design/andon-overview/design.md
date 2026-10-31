@@ -544,7 +544,9 @@ the machine is `live` again, its lanes count from the clock.
 
 **Footer.** With peers: "Connected · 3 machines · 12 projects", then each machine in trouble in
 sidebar order ("studio down", "agentbox needs upgrade", "agentbox error"), then the release part
-as section 3 and brief `andon-version-ui` describe. The dot still tracks only the hub connection.
+as section 3 and brief `andon-version-ui` describe. The trouble is red, and in a narrow sidebar the
+counts truncate before it does; hovering the text shows the whole line. The dot still tracks only
+the hub connection. In the inspector, a stale machine's job or epic adds "as of 14:02" to its timing line.
 
 **Actions.** The hand-off, Start Work, Run Next, and New Exploration controls stay for remote
 projects and name the project's id as for any project. When a remote action's copy succeeded and
