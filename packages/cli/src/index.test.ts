@@ -145,6 +145,7 @@ describe('usage and show (AC3)', () => {
       upgrade: 'usage: upgrade [--force]',
       version: 'usage: --version',
       projects: 'usage: projects [prune [--dry-run] | remove <path>]',
+      peers: 'usage: peers add <machine|url> | remove <machine|url> | list',
       service: 'usage: service install [--tailnet]|uninstall|start|stop|restart|status|run',
       source: 'usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id> | doctor | init [--force] | upgrade [--force] | --version',
     });

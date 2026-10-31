@@ -67,12 +67,28 @@ export interface ServiceHost {
   /** The `tailscale` CLI's path (on PATH, else on macOS the app bundle's), or null when there is none. Runs no command. */
   tailscale(): Promise<string | null>;
   fs: ServiceFs;
-  /** GET `url` and parse its JSON; throws when nothing answers or the answer isn't a 2xx. */
-  getJson(url: string): Promise<unknown>;
+  /** This machine's OS hostname (`os.hostname()`), for the machine name when no tailnet host is recorded. */
+  hostname: string;
+  /**
+   * GET `url` and parse its JSON, following no redirect, within `timeoutMs` (default 2000). Throws a
+   * `GetJsonError` when the answer is a redirect, any other non-2xx, or not JSON, and the transport's
+   * error when nothing answers.
+   */
+  getJson(url: string, timeoutMs?: number): Promise<unknown>;
   sleep(ms: number): Promise<void>;
   /** Starts the Andon service in this process for `tree` (entry.ts `serve`). */
   serve(tree: Tree): Promise<void>;
   stdout(line: string): void;
+}
+
+/** Why `getJson` refused an answer: a 3xx (never followed), another non-2xx status, or a body that isn't JSON. */
+export class GetJsonError extends Error {
+  constructor(
+    readonly kind: 'redirect' | 'status' | 'not json',
+    readonly status: number,
+  ) {
+    super(kind === 'redirect' ? `redirect (HTTP ${status}) refused` : kind === 'status' ? `HTTP ${status}` : 'not JSON');
+  }
 }
 
 // ---- the platform ----
