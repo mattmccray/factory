@@ -1,6 +1,7 @@
 # `factory upgrade --commit`
 
-- Status: ready
+- Status: done
+- Job: 084-upgrade-commit-flag (merged 38bbed0, 2026-10-31)
 - Sources: packages/cli/src/install.ts (`upgrade`), scripts/promote.ts, docs/contract/v1.md ("`init` and `upgrade`"), docs/upgrade.md
 - Date: 2026-10-31
 
