@@ -1,4 +1,4 @@
-<!-- factory 0.2.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/config.json and factory/roles/<role>.md -->
+<!-- factory 0.3.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/config.json and factory/roles/<role>.md -->
 # /factory explore — interview an idea into a brief
 
 The factory's agents can't talk to the user, so the thinking that needs a human happens here,
