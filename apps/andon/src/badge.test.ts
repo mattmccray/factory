@@ -9,9 +9,9 @@ const job = (id: string, stage: string): AppJob => ({ id, title: id, stage, note
 test('AC1: the count is every needs-human job across the listed projects, and nothing else', () => {
   const s: AppState = {
     projects: [
-      { id: 'aaaaaaaaaaaa', name: 'one', root: null },
-      { id: 'bbbbbbbbbbbb', name: 'two', root: null },
-      { id: 'cccccccccccc', name: 'three', root: null }, // listed, no board yet
+      { id: 'aaaaaaaaaaaa', name: 'one', root: null, machine: null },
+      { id: 'bbbbbbbbbbbb', name: 'two', root: null, machine: null },
+      { id: 'cccccccccccc', name: 'three', root: null, machine: null }, // listed, no board yet
     ],
     boards: {
       aaaaaaaaaaaa: { jobs: [job('001-a', 'needs-human'), job('002-b', 'review'), job('003-c', 'needs-human')], error: null, rev: 1 },
@@ -46,8 +46,8 @@ test('056 AC8: the tray badge counts needs-human jobs plus epics waiting on you,
   const epic = (slug: string, waitingOn: string | null) => ({ slug, name: slug, state: waitingOn === null ? 'running' : 'waiting', waitingOn, note: '', members: 1 });
   const s: AppState = {
     projects: [
-      { id: 'aaaaaaaaaaaa', name: 'one', root: null },
-      { id: 'bbbbbbbbbbbb', name: 'two', root: null },
+      { id: 'aaaaaaaaaaaa', name: 'one', root: null, machine: null },
+      { id: 'bbbbbbbbbbbb', name: 'two', root: null, machine: null },
     ],
     boards: {
       aaaaaaaaaaaa: { jobs: [job('001-a', 'needs-human'), job('002-b', 'build')], epics: [epic('auth', 'you'), epic('calm', null), epic('stuck', 'members')], error: null, rev: 1 },
@@ -58,6 +58,25 @@ test('056 AC8: the tray badge counts needs-human jobs plus epics waiting on you,
   expect(needsHumanCount(s)).toBe(3);
   expect(traySpec(needsHumanCount(s)).tooltip).toBe('Andon: 3 need a human');
   // the Dock lantern agrees: an epic waiting on you alone is escalated
-  const only: AppState = { projects: [{ id: 'bbbbbbbbbbbb', name: 'two', root: null }], boards: { bbbbbbbbbbbb: { jobs: [], epics: [epic('billing', 'you')], error: null, rev: 1 } } };
+  const only: AppState = { projects: [{ id: 'bbbbbbbbbbbb', name: 'two', root: null, machine: null }], boards: { bbbbbbbbbbbb: { jobs: [], epics: [epic('billing', 'you')], error: null, rev: 1 } } };
   expect([needsHumanCount(only), dockLook(only)]).toEqual([1, 'escalated']);
+});
+
+test("081 AC2: the count covers every machine, and a down machine's last board still counts (its error kept beside its jobs)", () => {
+  const epic = (slug: string, waitingOn: string | null) => ({ slug, name: slug, state: waitingOn === null ? 'running' : 'waiting', waitingOn, note: '', members: 1 });
+  const projects = [
+    { id: 'aaaaaaaaaaaa', name: 'factory', root: '/r/factory', machine: null },
+    { id: '1a2b3c4d5e6f@studio', name: 'factory', root: '/Users/studio/factory', machine: 'studio' },
+  ];
+  const up: AppState = {
+    projects,
+    boards: {
+      aaaaaaaaaaaa: { jobs: [job('001-a', 'needs-human'), job('002-b', 'build')], error: null, rev: 1 },
+      '1a2b3c4d5e6f@studio': { jobs: [job('081-x', 'needs-human')], epics: [epic('auth', 'you')], error: null, rev: 1 },
+    },
+  };
+  expect(needsHumanCount(up)).toBe(3);
+  const down: AppState = { ...up, boards: { ...up.boards, '1a2b3c4d5e6f@studio': { jobs: [job('081-x', 'needs-human')], epics: [epic('auth', 'you')], error: 'studio: unreachable', rev: 2 } } };
+  expect(needsHumanCount(down)).toBe(3);
+  expect(traySpec(needsHumanCount(down))).toEqual({ title: '3', tooltip: 'Andon: 3 need a human', menu: TRAY_MENU, primaryAction: true });
 });

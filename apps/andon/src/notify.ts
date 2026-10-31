@@ -5,7 +5,8 @@
 // merges into the epic's branch, not its target, so its merge never notifies (its escalation does).
 // An epic notifies "Epic landed" when its state moves into `landed`, and "Epic waiting on you" when
 // its `waitingOn` becomes "you"; an epic first seen after the baseline notifies only if it arrives
-// so. Runtime-neutral.
+// so. A remote project (on another machine, state.ts `machineOf`) notifies by the same rules; its
+// notices name the machine in the project label (`<name> · <machine>`, `projectLabel`). Runtime-neutral.
 import { NEEDS_HUMAN } from './badge';
 import type { AppEpic, AppJob } from './state';
 
@@ -57,7 +58,15 @@ export interface NoticeText {
   body: string;
 }
 
-/** The words of a native notification: the job's title and its note. */
+/** The project's label in a notice: its name for a local project; `<name> · <machine>` for a remote
+ *  one (just the machine when it has no name). '' for a local project with no name. */
+export function projectLabel(p: { name: string; machine: string | null }): string {
+  if (p.machine === null) return p.name;
+  return p.name === '' ? p.machine : `${p.name} · ${p.machine}`;
+}
+
+/** The words of a native notification: the job's title and its note. `projectName` is the project's
+ *  label (`projectLabel`). */
 export function noticeText(n: Notice, projectName: string): NoticeText {
   const name = n.title === '' ? n.job : n.title;
   const what = n.kind === 'needs-human' ? 'needs a human' : 'merged';
@@ -96,7 +105,7 @@ export function diffEpics(base: EpicBaselines, pid: string, epics: readonly AppE
   return { base: { ...base, [pid]: next }, notices };
 }
 
-/** The words of an epic's notification: "Epic landed" with its name and member count, or "Epic waiting on you" with the reason. */
+/** The words of an epic's notification: "Epic landed" with its name and member count, or "Epic waiting on you" with the reason. `projectName` is the project's label (`projectLabel`). */
 export function epicNoticeText(n: EpicNotice, projectName: string): NoticeText {
   const subtitle = projectName === '' ? n.name : `${projectName} · ${n.name}`;
   if (n.kind === 'epic-landed') return { title: 'Epic landed', subtitle, body: `${n.name}: ${n.members} ${n.members === 1 ? 'member' : 'members'}` };
