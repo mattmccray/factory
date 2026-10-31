@@ -142,6 +142,7 @@ function host(w: World): ServiceHost {
         w.files.delete(p);
       },
     },
+    hostname: 'Rocinante.local',
     getJson: async (url) => {
       if (w.release === null) throw new Error(`refused: ${url}`);
       return w.release;

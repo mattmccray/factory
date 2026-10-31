@@ -6,10 +6,10 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, open, readFile, realpath, rename, rm } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { serve } from '@factory/andon-service/entry';
-import { TAILSCALE_APP } from './service';
+import { GetJsonError, TAILSCALE_APP } from './service';
 import type { Ran, ServiceHost } from './service';
 
 const isNotFound = (e: unknown): boolean => typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT';
@@ -103,6 +103,20 @@ export async function writeUnitFile(unit: string, text: string, tmp: string = un
   }
 }
 
+/** GET `url` with no redirect followed (a 3xx is refused), within `timeoutMs`, and parse its JSON (`ServiceHost.getJson`). */
+export async function getJson(url: string, timeoutMs = 2000, transport: (url: string, init: RequestInit) => Promise<Response> = fetch): Promise<unknown> {
+  const res = await transport(url, { redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) });
+  if (res.status >= 300 && res.status < 400) throw new GetJsonError('redirect', res.status);
+  if (!res.ok) throw new GetJsonError('status', res.status);
+  const text = await res.text();
+  try {
+    const body: unknown = JSON.parse(text);
+    return body;
+  } catch {
+    throw new GetJsonError('not json', res.status);
+  }
+}
+
 /** A systemd `--user` manager is there: systemd is the init (`/run/systemd/system`), `systemctl` is on PATH, and the user manager's socket exists. */
 function systemdUser(uid: number, env: Readonly<Record<string, string | undefined>>): boolean {
   const runtime = env.XDG_RUNTIME_DIR ?? `/run/user/${uid}`;
@@ -139,12 +153,8 @@ export async function realServiceHost(stdout: (line: string) => void): Promise<S
       },
       remove: (path) => rm(path, { force: true }),
     },
-    getJson: async (url) => {
-      const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body: unknown = await res.json();
-      return body;
-    },
+    hostname: hostname(),
+    getJson: (url, timeoutMs) => getJson(url, timeoutMs),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     serve,
     stdout,
