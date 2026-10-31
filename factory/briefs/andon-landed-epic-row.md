@@ -1,6 +1,7 @@
 # A landed epic collapses to one line on the board
 
-- Status: ready
+- Status: done
+- Job: 082-landed-epic-row (merged 8546473, 2026-10-31)
 - Sources: `/factory explore` on 2026-10-31; factory/briefs/andon-epics-ui.md (decisions 1–2);
   docs/design/epics/design.md (decision 9); docs/design/andon-overview/design.md (§5, "Idle
   lanes"); apps/andon-ui/src/lanes.ts (`laneOf`, `epicGutter`, `cellsOf`), Lane.svelte, board.ts
