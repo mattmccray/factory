@@ -1,3 +1,32 @@
+## v0.3.0 (2026-10-31)
+
+### Added
+
+- Release: run the gate on the staged tree before writing (064-release-gate-check)
+- Andon: add View menu view toggles and a Merged column switch (063-andon-view-menu)
+- Andon: add the About window with the lantern art and versions (065-andon-about-window)
+- Andon: serve the backlog, briefs, and plans read-only (066-andon-backlog-service)
+- Andon: show the backlog and explorations in Andon (067-andon-backlog-ui)
+- Andon: start work in T3 Code from the Backlog sheet (068-t3-start-work)
+- Release: refuse stale workspace links before anything else (069-release-workspace-links)
+- Andon: show a no-service page in the main window until the service answers (071-andon-no-service-page)
+- Release: add bun run promote for the local-dev promotion
+- Andon: frameless About as a child of main, File → Close Window (⌘W) (073-andon-window-chrome)
+- Andon: resizable Files divider and sidebar, with kept pane sizes (074-andon-resizable-panes)
+- Andon: add New Exploration… and Run Next to the File and project menus (075-andon-explore-menus)
+- Andon: add an epic's right-click menu with Open in T3 Code (076-epic-context-menu)
+- Andon: open About and Settings centered on the main window (077-andon-child-window-placement)
+- Service: publish the Andon service on the tailnet with install --tailnet (078-andon-peer-access)
+- Andon: follow peer machines' services as a hub (079-andon-hub)
+- Andon: cover every machine in the Mac app and gate remote native actions (081-andon-machines-mac)
+- Andon: show machines, their health, and stale lanes on the board (080-andon-machines-ui)
+- Andon: collapse a landed epic to one line on the board (082-landed-epic-row)
+
+### Fixed
+
+- CLI: write the service unit through an exclusive temp file (070-service-unit-writes)
+- Andon: list apps/andon files on disk outside a git work tree (083-release-gate-archive)
+
 ## v0.2.0 (2026-10-30)
 
 ### Added
