@@ -9,11 +9,15 @@
 // The backlog (brief andon-backlog-ui) rides the same way: a narrow board's `backlog` counts, and
 // each project's `GET /projects/<pid>/backlog` lists, fetched only while a view needs them and
 // cached per project with a rev guard, so a slower, older response never overwrites a newer one.
+// Machines (brief andon-machines-ui) ride the same way: the `machines` event and one `GET /machines`
+// per `projects` event, with a rev guard; a service from before the hub sends neither (a 404), and
+// the list stays empty, so every project is local. The slot also remembers, per machine, the `since`
+// of the last `down` entry seen, which a stale machine's lanes are frozen at (machines.ts).
 // Every update returns a new state; nothing here touches the DOM.
 import { NO_BACKLOG, toBacklog, toBacklogCounts } from './backlog';
 import type { BacklogCounts, BacklogList } from './backlog';
-import { isRecord, toConfig, toEpics, toJobs, toProjects } from './job';
-import type { BoardConfig, Epic, Job, ProjectInfo } from './job';
+import { isRecord, toConfig, toEpics, toJobs, toMachines, toProjects } from './job';
+import type { BoardConfig, Epic, Job, Machine, ProjectInfo } from './job';
 import { toReleaseInfo } from './release';
 import type { ReleaseInfo } from './release';
 
@@ -55,17 +59,29 @@ export interface ReleaseSlot {
   rev: number; // bumped by every `release` event, so a slower `GET /release` can't overwrite a newer event
 }
 
+/**
+ * The machines the service follows (`GET /machines`): empty until a list arrives (and for a service
+ * from before the hub); `rev` as the release's. `lastDown` is, per machine name, the `since` of the
+ * last `down` entry seen for it, kept until it is `live` again (the as-of time of its stale lanes).
+ */
+export interface MachinesSlot {
+  list: Machine[];
+  rev: number; // bumped by every `machines` event, so a slower `GET /machines` can't overwrite a newer event
+  lastDown: Record<string, string>;
+}
+
 export interface UiState {
   projects: ProjectInfo[];
   boards: Record<string, ProjectBoard>;
   settled: Record<string, SettledList>;
   backlogs: Record<string, BacklogList>; // each project's cached backlog lists, fetched on demand
   release: ReleaseSlot;
+  machines: MachinesSlot;
 }
 
 export const NO_SETTLED: SettledSummary = { count: 0, lastMergedAt: null };
 
-export const emptyState = (): UiState => ({ projects: [], boards: {}, settled: {}, backlogs: {}, release: { info: null, rev: 0 } });
+export const emptyState = (): UiState => ({ projects: [], boards: {}, settled: {}, backlogs: {}, release: { info: null, rev: 0 }, machines: { list: [], rev: 0, lastDown: {} } });
 const emptyBoard = (): ProjectBoard => ({ jobs: [], epics: [], config: toConfig(null), settled: NO_SETTLED, backlog: NO_BACKLOG, error: null, loaded: false, rev: 0 });
 const known = (s: UiState, pid: string): boolean => s.projects.some((p) => p.id === pid);
 const boardOf = (s: UiState, pid: string): ProjectBoard => s.boards[pid] ?? emptyBoard();
@@ -125,9 +141,27 @@ export const setBoard = (s: UiState, pid: string, data: unknown): UiState =>
 /** A project's config went bad: it shows the reason and keeps its last board. */
 export const setError = (s: UiState, pid: string, reason: string): UiState => withBoard(s, pid, (b) => ({ ...b, error: reason, loaded: true, rev: b.rev + 1 }));
 
+/**
+ * A new machine list, at `rev`: each `down` entry records its `since` as the machine's last-seen
+ * down time, a `live` one clears it, and any other state keeps it; a machine no longer listed is forgotten.
+ */
+function setMachines(s: UiState, list: Machine[], rev: number): UiState {
+  const lastDown: Record<string, string> = {};
+  for (const m of list) {
+    const kept = Object.hasOwn(s.machines.lastDown, m.name) ? s.machines.lastDown[m.name] : undefined; // own keys only: a name like `constructor` is no inherited value
+    const seen = m.state === 'down' ? m.since : m.state === 'live' ? undefined : kept;
+    if (seen !== undefined) lastDown[m.name] = seen;
+  }
+  return { ...s, machines: { list, rev, lastDown } };
+}
+
 /** Applies one `GET /events` event. Unknown events and malformed data leave the state as is. */
 export function applyEvent(s: UiState, event: string, data: unknown): UiState {
   if (event === 'projects') return isRecord(data) && Array.isArray(data.projects) ? setProjects(s, toProjects(data)) : s;
+  if (event === 'machines') {
+    const list = toMachines(data);
+    return list === null ? s : setMachines(s, list, s.machines.rev + 1);
+  }
   if (event === 'release') {
     const info = toReleaseInfo(data);
     return info === null ? s : { ...s, release: { info, rev: s.release.rev + 1 } };
@@ -159,6 +193,19 @@ export function applyFetchedRelease(s: UiState, rev: number, result: { ok: true;
   const info = result.ok ? toReleaseInfo(result.data) : null;
   if (info === null && s.release.info === null) return s;
   return { ...s, release: { info, rev } };
+}
+
+/** The machines `rev` to pass back with a fetched `GET /machines`, read when the request is sent. */
+export const machinesRev = (s: UiState): number => s.machines.rev;
+
+/**
+ * Applies a fetched `GET /machines` unless a `machines` event arrived since `rev`. A failed fetch (a
+ * 404 from a service from before the hub, any other non-2xx) or a malformed body changes nothing.
+ */
+export function applyFetchedMachines(s: UiState, rev: number, result: { ok: true; data: unknown } | { ok: false; reason: string }): UiState {
+  if (s.machines.rev !== rev || !result.ok) return s;
+  const list = toMachines(result.data);
+  return list === null ? s : setMachines(s, list, rev);
 }
 
 // ---- settled lists ----

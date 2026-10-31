@@ -3,6 +3,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SHORTCUTS, initialKeys, reduceKey, shortcutsFor, topSheet } from './keys';
 import type { KeyAction, KeyInput, KeyState, Layers } from './keys';
+import { sidebarStops } from './keys';
+import { HUB, MACHINE_PROJECTS, machineEntry, machinesBody } from './fixtures';
+import { ALL } from './projects';
+import { sidebarModel } from './sidebar';
+import { applyEvent, emptyState } from './state';
 
 const NONE: Layers = { sheet: false, inspector: false, searchText: false, searchFocused: false };
 const ev = (key: string, opts: Partial<KeyInput> = {}): KeyInput => ({ key, mod: false, inField: false, ...opts });
@@ -166,5 +171,20 @@ describe('067 AC7: the Backlog sheet in the layer order', () => {
   test('the shortcut sheet lists ⇧⌘B as a View menu row, in the Mac app only', () => {
     expect(SHORTCUTS.find((s) => s.keys[0] === '⇧⌘B')).toEqual({ keys: ['⇧⌘B'], text: 'Show the backlog (View menu)', menu: true });
     expect(shortcutsFor(false).some((s) => s.keys[0] === '⇧⌘B')).toBe(false);
+  });
+});
+
+describe('the sidebar keyboard order skips machine headings (machines AC3)', () => {
+  const listed = applyEvent(emptyState(), 'projects', { projects: MACHINE_PROJECTS });
+  test('with no peers: All Projects, then every project by name', () => {
+    expect(sidebarStops(sidebarModel(listed, ALL), ALL)).toEqual([ALL, ...sidebarModel(listed, ALL).projects.map((p) => p.id)]);
+  });
+  test('with peers: All Projects, then each machine\'s rows in heading order; never a heading', () => {
+    const s = applyEvent(listed, 'machines', machinesBody(machineEntry(HUB), machineEntry('studio'), machineEntry('agentbox')));
+    const m = sidebarModel(s, ALL);
+    const stops = sidebarStops(m, ALL);
+    expect(stops).toEqual([ALL, ...m.machines.flatMap((h) => h.projects.map((p) => p.id))]);
+    expect(stops).toHaveLength(1 + MACHINE_PROJECTS.length);
+    for (const name of [HUB, 'studio', 'agentbox']) expect(stops).not.toContain(name);
   });
 });

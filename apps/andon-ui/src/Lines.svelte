@@ -55,8 +55,11 @@
     if (timer !== null) clearTimeout(timer);
   });
   const hoverJob = $derived(hovered === null ? null : (jobs.find((b) => b.key === hovered?.key) ?? null));
-  const pop = $derived(hoverJob === null ? null : popoverOf(hoverJob, now));
-  const popTone = $derived(hoverJob !== null && (isHuman(kindOf(hoverJob, now)) || kindOf(hoverJob, now) === 'review-failed') ? 'red' : 'none');
+  // A stale machine's lane is timed at its as-of time (lanes.ts), and so are its popovers and activity.
+  const nowOf = (pid: string): number => lanes.find((l) => l.project.id === pid)?.stale?.asOf ?? now;
+  const hoverNow = $derived(hoverJob === null ? now : nowOf(hoverJob.project.id));
+  const pop = $derived(hoverJob === null ? null : popoverOf(hoverJob, hoverNow));
+  const popTone = $derived(hoverJob !== null && (isHuman(kindOf(hoverJob, hoverNow)) || kindOf(hoverJob, hoverNow) === 'review-failed') ? 'red' : 'none');
   const open = (key: string): void => {
     onhover(null, null);
     onopen(key);
@@ -65,7 +68,8 @@
     onhover(null, null);
     onopenepic(key);
   };
-  const projectName = $derived(lanes[0]?.project.name ?? '');
+  const projectName = $derived(lanes[0]?.label ?? '');
+  const recentNow = $derived(lanes[0]?.stale?.asOf ?? now);
 </script>
 
 <div class="lines" class:focus={focused} onscroll={() => onhover(null, null)}>
@@ -102,7 +106,7 @@
                 <span class="w">{when(a.at)}</span>
                 <span class="id">{a.num}</span>
                 <span class="e t-{a.tone ?? 'none'}">{a.text}</span>
-                <span class="w">{age(now - a.at)} ago</span>
+                <span class="w">{age(recentNow - a.at)} ago</span>
               </button>
             </li>
           {/each}

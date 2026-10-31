@@ -27,6 +27,10 @@
   // Next push `startwork`, a request the page checks (`startWorkPush`): Run next goes through the
   // same copyAndStart, and New exploration opens the sheet, with a project picker from the File menu
   // under All Projects (`exploreOpen`). The sheet remembers the project an exploration is started in.
+  // Machines (brief andon-machines-ui; machines.ts): with peers, the sidebar groups projects under a
+  // heading per machine and the footer counts them; the board stays one trouble-first list, a remote
+  // project labeled "<name> · <machine>" everywhere its name shows, and a stale machine's lanes and
+  // its jobs' inspector timed at its as-of time. A remote action's copy-only toast names the machine.
   import { onMount, untrack } from 'svelte';
   import type { Fetcher } from './api';
   import { backlogProjects, backlogSheet } from './backlog';
@@ -82,6 +86,7 @@
   } from './projects';
   import type { BoardEpic, BoardJob } from './board';
   import { epicName } from './job';
+  import { asOfText, nowFor, placed, projectAsOf, projectLabel, remoteOfId } from './machines';
   import { whatsNew } from './release';
   import type { Selection } from './projects';
   import SettledSheet from './SettledSheet.svelte';
@@ -276,7 +281,8 @@
   // settled merges and recent activity). Lane order is sorted once every board has loaded, then a
   // lane moves only when its tier changes (lanes.ts `orderLanes`).
   const focused = $derived(sel !== ALL);
-  const shownProjects = $derived((needed?.projects ?? ui.projects).filter((p) => !focused || p.id === sel));
+  // Each shown project carries its machine (a remote one's) and its as-of time (a stale machine's; machines.ts `placed`).
+  const shownProjects = $derived(placed(ui, (needed?.projects ?? ui.projects).filter((p) => !focused || p.id === sel)));
   let laneOrder: LaneOrder | null = null;
   const summaries = $derived(Object.fromEntries(ui.projects.map((p): [string, SettledSummary] => [p.id, ui.boards[p.id]?.settled ?? NO_SETTLED])));
   const backlogCounts = $derived(Object.fromEntries(ui.projects.map((p): [string, BacklogCounts] => [p.id, ui.boards[p.id]?.backlog ?? NO_BACKLOG])));
@@ -287,7 +293,7 @@
   // Search dims the tokens and lanes that don't match; it hides nothing. It also lists the matching
   // backlog items of the projects in view (never dimming or lighting the board).
   const found = $derived(find(shownProjects, jobs, query, now, epics));
-  const inView = $derived(ui.projects.filter((p) => !focused || p.id === sel));
+  const inView = $derived(placed(ui, ui.projects.filter((p) => !focused || p.id === sel)));
   const hits = $derived(backlogHits(inView, ui.backlogs, query));
   const backlogTotal = $derived(inView.reduce((n, p) => n + (ui.boards[p.id]?.backlog.queued ?? 0) + (ui.boards[p.id]?.backlog.exploring ?? 0), 0));
   // Backlogs on demand: the open sheet's projects, or, while a search is typed, the projects in view.
@@ -295,7 +301,7 @@
   $effect(() => {
     live?.watchBacklog(backlogPids);
   });
-  const backlogModel = $derived(backlogSheet(ui.projects, ui.backlogs, backlogProject));
+  const backlogModel = $derived(backlogSheet(placed(ui, ui.projects).map((p) => ({ id: p.id, name: projectLabel(p) })), ui.backlogs, backlogProject));
   const header = $derived(headerOf(lines.lanes, settleHours(ui, sel), mergedOff));
   // Recent activity draws on the focused project's settled jobs too, once its list has loaded.
   const recent = $derived(focused ? activity(needs ? jobs : withSettled(ui, sel)) : []);
@@ -317,8 +323,8 @@
     reportView?.({ needsMe: needs, sidebarShown: sidebarOpen, inspectorOpen });
   });
   const win = $derived(frame(mode, sidebarOpen));
-  const side = $derived(sidebarModel(ui, sel));
-  const foot = $derived(footer(status, ui.projects.length, ui.release.info));
+  const side = $derived(sidebarModel(ui, sel, now));
+  const foot = $derived(footer(status, ui.projects.length, ui.release.info, ui.machines.list));
   // The What's New sheet's model: every release, or the ones its project is missing (live: a
   // `projects` or `release` event updates it while it is open).
   const whatsNewModel = $derived(
@@ -400,7 +406,16 @@
     if (settledOpen && loaded && settledState.current && settledState.failures.length === 0 && !settledJobs.some(shown) && !settledEpics.some(shown)) settledOpen = false;
   });
 
-  const projectName = (pid: string): string => ui.projects.find((p) => p.id === pid)?.name ?? pid;
+  // A project's label: "<name> · <machine>" for a remote project, else its name (machines.ts).
+  const projectName = (pid: string): string => {
+    const p = placed(ui, ui.projects).find((x) => x.id === pid);
+    return p === undefined ? pid : projectLabel(p);
+  };
+  // The inspector's clock: the shown job's or epic's machine's as-of time while it is stale, else now.
+  const inspectorPid = $derived(openDoc !== null ? openDoc.project : openEpic !== null ? (openEpicItem?.project.id ?? '') : (openItem?.project.id ?? ''));
+  const inspectorNow = $derived(nowFor(ui, inspectorPid, now));
+  const inspectorStale = $derived(projectAsOf(ui, inspectorPid));
+  const inspectorAsOf = $derived(inspectorStale === null ? null : asOfText(inspectorStale, now));
   function select(next: Selection): void {
     selection = next;
     saveSelection(storage(), next);
@@ -518,7 +533,7 @@
   async function copyAndHandOff(req: HandoffRequest, command: string): Promise<void> {
     const copied = await write(command);
     const outcome = handOff === null ? null : await handOff(req);
-    const t = handoffToast(copied, outcome, command);
+    const t = handoffToast(copied, outcome, command, remoteOfId(ui, req.project));
     show(t.text, t.ok);
   }
   // Starting work (t3-start-work): copy first, then (in the Mac app) ask it to start the work in T3
@@ -527,7 +542,7 @@
   const startWork = startWorkCaller(mode, Reflect.get(window, 'tiny'));
   async function copyAndStart(item: StartItem): Promise<void> {
     backlogOpen = false;
-    const t = await copyThenStart(write, startWork, item.req, item.command);
+    const t = await copyThenStart(write, startWork, item.req, item.command, remoteOfId(ui, item.req.project));
     show(t.text, t.ok);
   }
   function openNewExploration(project: { id: string; name: string }, picker: ExploreProject[] | null = null): void {
@@ -705,7 +720,7 @@
       {hits}
       {sidebarOpen}
       {inspectorOpen}
-      selected={openDoc !== null ? `${projectName(openDoc.project)} / ${openDoc.kind} ${openDoc.slug}` : openItem !== null ? `${openItem.project.name} / ${openItem.job.id}` : openEpicItem !== null ? `${openEpicItem.project.name} / epic ${epicName(openEpicItem.epic)}` : null}
+      selected={openDoc !== null ? `${projectName(openDoc.project)} / ${openDoc.kind} ${openDoc.slug}` : openItem !== null ? `${projectLabel(openItem.project)} / ${openItem.job.id}` : openEpicItem !== null ? `${projectLabel(openEpicItem.project)} / epic ${epicName(openEpicItem.epic)}` : null}
       drag={win.drag}
       bind:query
       bind:searchEl
@@ -772,7 +787,8 @@
     open={inspectorOpen}
     width={inspectorWidth}
     {filesHeight}
-    {now}
+    now={inspectorNow}
+    asOf={inspectorAsOf}
     {fetcher}
     file={openFile}
     onfile={(f) => (openFile = f)}

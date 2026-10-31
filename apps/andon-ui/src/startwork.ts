@@ -113,12 +113,13 @@ export function startWorkCaller(mode: ShellMode, host: unknown): StartWork | nul
 /**
  * One action, run: the command copied first (`write`), then, with a caller (the Mac app), the
  * request sent (`start`); the toast is the hand-off's for that outcome. With no caller (a browser),
- * it only copies, and the toast says "Copied …" (or that the copy failed).
+ * it only copies, and the toast says "Copied …" (or that the copy failed). `machine` is the machine
+ * a remote project is on (null: local): its copy-only toast names it ("Copied. Run it on studio").
  */
-export async function copyThenStart(write: (command: string) => Promise<boolean>, start: StartWork | null, req: StartWorkRequest, command: string): Promise<Toast> {
+export async function copyThenStart(write: (command: string) => Promise<boolean>, start: StartWork | null, req: StartWorkRequest, command: string, machine: string | null = null): Promise<Toast> {
   const copied = await write(command);
   const outcome = start === null ? null : await start(req);
-  return handoffToast(copied, outcome, command);
+  return handoffToast(copied, outcome, command, machine);
 }
 
 // ---- the Mac app's startwork event (andon-explore-menus) ----

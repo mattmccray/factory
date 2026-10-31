@@ -9,6 +9,10 @@ import { ALL, SELECTION_KEY, boardJobs, hotEpics, loadSelection, resolveSelectio
 import { BACKLOG_EVENT, INSPECTOR_EVENT, LEGEND, MAC_INSET, MENU_EVENTS, MERGED_EVENT, NEEDS_ME_EVENT, PUSHED_EVENTS, SETTLED_EVENT, SIDEBAR_EVENT, STATUS_BAR_EVENT, VIEW_STATE_METHOD, WHATS_NEW_EVENT, footer, footerLine, footerRelease, frame, isActive, projectStatus, pushSubscriber, reviewFailed, settleHours, settleText, shellMode, sidebarModel, statusBarHidden, mergedHidden, menuEventAction, viewStateCaller, subtitle, subtitleText, title } from './sidebar';
 import { applyEvent, emptyState } from './state';
 import type { UiState } from './state';
+import { AGENT_LAB, HUB, LOCAL_FACTORY, LOCAL_NOTES, MACHINE_PROJECTS, STUDIO_API, STUDIO_FACTORY, localAt, machineEntry, machineProject, machinesBody } from './fixtures';
+import { needsFilter } from './find';
+import { needsHuman } from './projects';
+import { sidebarStops } from './keys';
 
 // Registered out of name order, so the sidebar's sort shows.
 const ZED = { id: 'zzzzzzzzzzzz', name: 'zed', root: '/r/zed' }; // two needs-human, one active
@@ -617,5 +621,140 @@ describe('063 AC5/AC7: the view-state report', () => {
     expect(app).toContain("const reportView = viewStateCaller(mode, Reflect.get(window, 'tiny'));");
     expect(app).toMatch(/\$effect\(\(\) => \{\s*reportView\?\.\(\{ needsMe: needs, sidebarShown: sidebarOpen, inspectorOpen \}\);\s*\}\);/);
     expect(app).toContain('const sidebarOpen = $derived(sidebarShown(sidebar, innerWidth, inspectorOpen));');
+  });
+});
+
+// ---- machines (brief andon-machines-ui) ----
+
+const iso = (t: number): string => new Date(t).toISOString();
+const LATER = localAt(16, 30); // "now": the same local day as 14:02
+
+/** The three-machine fleet: studio has a needs-human job, rocinante's factory an active one; peers listed studio before agentbox. */
+function machines(studio: Record<string, unknown> = machineEntry('studio'), agentbox: Record<string, unknown> = machineEntry('agentbox'), extra: Array<Record<string, unknown>> = []): UiState {
+  let s = applyEvent(emptyState(), 'projects', { projects: MACHINE_PROJECTS });
+  s = applyEvent(s, 'board', { project: STUDIO_FACTORY.id, config: {}, jobs: [{ id: '007-x', stage: 'needs-human', updated: before(HOUR) }] });
+  s = applyEvent(s, 'board', { project: LOCAL_FACTORY.id, config: {}, jobs: [{ id: '001-a', stage: 'build', updated: before(HOUR) }] });
+  return applyEvent(s, 'machines', machinesBody(machineEntry(HUB), studio, agentbox, ...extra));
+}
+
+describe('no peers: the board as today (machines AC1)', () => {
+  test('no machines data, or only the hub listed: no headings, and the footer reads "Connected · N projects"', () => {
+    const none = applyEvent(emptyState(), 'projects', { projects: MACHINE_PROJECTS.filter((p) => p.machine === HUB) });
+    const alone = applyEvent(none, 'machines', machinesBody(machineEntry(HUB)));
+    for (const s of [none, alone]) {
+      expect(sidebarModel(s, ALL, LATER).machines).toEqual([]);
+      expect(sidebarModel(s, ALL, LATER).projects.map((p) => p.name)).toEqual(['factory', 'notes']);
+      expect(footerLine(footer('live', s.projects.length, null, s.machines.list))).toBe('Connected · 2 projects');
+      expect(footerLine(footer('live', 2, { running: '0.2.0', onDisk: null, changelog: [] }, s.machines.list))).toBe('Connected · 2 projects · v0.2.0');
+      expect(title(s, LOCAL_FACTORY.id)).toBe('factory');
+    }
+  });
+});
+
+describe('machine headings in the sidebar (machines AC3)', () => {
+  test('Overview, then a heading per machine: the hub first, then the peers by name, each with its projects by name', () => {
+    const m = sidebarModel(machines(), ALL, LATER);
+    expect(m.all.selected).toBe(true);
+    expect(m.machines.map((h) => [h.name, h.projects.map((p) => p.name)])).toEqual([
+      [HUB, ['factory', 'notes']],
+      ['agentbox', ['lab']],
+      ['studio', ['api', 'factory']],
+    ]);
+    // the rows under a heading keep the bare name
+    expect(m.machines[2]?.projects.find((p) => p.id === STUDIO_FACTORY.id)?.name).toBe('factory');
+  });
+
+  test("each heading's state text: nothing when live, gray connecting…, red down since, needs upgrade, or error", () => {
+    const down = iso(localAt(14, 2));
+    const cases: Array<[Record<string, unknown>, { text: string; tone: 'red' | 'gray' } | null]> = [
+      [machineEntry('studio'), null],
+      [machineEntry('studio', 'connecting', down), { text: 'connecting…', tone: 'gray' }],
+      [machineEntry('studio', 'down', down), { text: 'down since 14:02', tone: 'red' }],
+      [machineEntry('studio', 'down', iso(localAt(14, 2, 21))), { text: 'down since Oct 21 14:02', tone: 'red' }],
+      [machineEntry('studio', 'error', down, { reason: 'from before peers: run factory upgrade and factory service restart on studio' }), { text: 'needs upgrade', tone: 'red' }],
+      [machineEntry('studio', 'error', down, { reason: 'reports the same name as rocinante' }), { text: 'error', tone: 'red' }],
+      [machineEntry('studio', 'error', down, { reason: 'not an Andon service' }), { text: 'error', tone: 'red' }],
+    ];
+    for (const [entry, want] of cases) expect({ entry, status: sidebarModel(machines(entry), ALL, LATER).machines.find((h) => h.name === 'studio')?.status }).toEqual({ entry, status: want });
+    expect(sidebarModel(machines(), ALL, LATER).machines[0]?.status).toBeNull(); // the hub is always live
+  });
+
+  test("a heading's tooltip and description carry its reason and its release, when known", () => {
+    const m = sidebarModel(machines(machineEntry('studio', 'down', iso(localAt(14, 2)), { reason: 'studio: unreachable', release: '0.2.0' }), machineEntry('agentbox', 'live', iso(localAt(9, 0)), { release: null })), ALL, LATER);
+    expect(m.machines.find((h) => h.name === 'studio')?.detail).toBe('studio: unreachable\nfactory 0.2.0');
+    expect(m.machines.find((h) => h.name === 'agentbox')?.detail).toBeNull();
+    expect(m.machines[0]?.detail).toBe('factory 0.2.0');
+  });
+
+  test('a machine with no projects still shows its heading, with no rows', () => {
+    const m = sidebarModel(machines(undefined, undefined, [machineEntry('spare', 'down', iso(localAt(8, 15)))]), ALL, LATER);
+    expect(m.machines.map((h) => h.name)).toEqual([HUB, 'agentbox', 'spare', 'studio']);
+    expect(m.machines.find((h) => h.name === 'spare')).toMatchObject({ projects: [], status: { text: 'down since 08:15', tone: 'red' } });
+  });
+
+  test("headings aren't selectable, and the sidebar's keyboard order skips them", () => {
+    const m = sidebarModel(machines(), ALL, LATER);
+    expect(sidebarStops(m, ALL)).toEqual([ALL, LOCAL_FACTORY.id, LOCAL_NOTES.id, AGENT_LAB.id, STUDIO_API.id, STUDIO_FACTORY.id]);
+    for (const h of m.machines) expect(sidebarStops(m, ALL)).not.toContain(h.name);
+    const sidebar = readFileSync(join(import.meta.dir, 'Sidebar.svelte'), 'utf8');
+    expect(sidebar).toMatch(/<h3 class="mhead"[^>]*>/);
+    expect(sidebar).not.toMatch(/<h3 class="mhead"[^>]*(onclick|tabindex)/);
+  });
+
+  test("All Projects' badge, the toolbar's counts, and Needs Me cover every machine", () => {
+    const s = machines();
+    expect(sidebarModel(s, ALL, LATER).all.badge).toEqual({ tone: 'red', count: 1, label: '1 needs a human' });
+    expect(needsHuman(s).total).toBe(1);
+    const board = buildBoard(boardJobs(s, ALL), NOW, []);
+    expect([board.running, board.waiting]).toEqual([1, 1]);
+    expect(subtitleText(subtitle(s, ALL, board.running, board.waiting))).toBe('All Projects — 1 running, 1 waiting on you');
+    expect(needsFilter(s.projects, boardJobs(s, ALL)).projects.map((p) => p.id)).toEqual([STUDIO_FACTORY.id]);
+  });
+
+  test("a focused remote project's title and subtitle name its machine", () => {
+    const s = machines();
+    expect(title(s, STUDIO_FACTORY.id)).toBe('factory · studio');
+    expect(title(s, LOCAL_FACTORY.id)).toBe('factory');
+    expect(subtitle(s, STUDIO_FACTORY.id, 0, 1).scope).toBe('factory · studio');
+  });
+});
+
+describe("the footer's machine count and trouble (machines AC6)", () => {
+  const twelve = (studio: Record<string, unknown>, agentbox: Record<string, unknown> = machineEntry('agentbox')): UiState => {
+    const projects = [...Array.from({ length: 5 }, (_, i) => machineProject(`a${i}a${i}a${i}a${i}a${i}a${i}`, `p${i}`, HUB)), ...Array.from({ length: 4 }, (_, i) => machineProject(`b${i}b${i}b${i}b${i}b${i}b${i}`, `s${i}`, 'studio')), ...Array.from({ length: 3 }, (_, i) => machineProject(`c${i}c${i}c${i}c${i}c${i}c${i}`, `g${i}`, 'agentbox'))];
+    return applyEvent(applyEvent(emptyState(), 'projects', { projects }), 'machines', machinesBody(machineEntry(HUB), studio, agentbox));
+  };
+  const line = (s: UiState, release: Parameters<typeof footer>[2] = null): string => footerLine(footer('live', s.projects.length, release, s.machines.list));
+
+  test('three machines, twelve projects, studio down: "Connected · 3 machines · 12 projects · studio down", the release part after', () => {
+    const s = twelve(machineEntry('studio', 'down', iso(localAt(14, 2))));
+    expect(s.projects).toHaveLength(12);
+    expect(line(s)).toBe('Connected · 3 machines · 12 projects · studio down');
+    expect(line(s, { running: '0.2.0', onDisk: null, changelog: [] })).toBe('Connected · 3 machines · 12 projects · studio down · v0.2.0');
+  });
+
+  test('an error machine adds "<name> needs upgrade" or "<name> error", in sidebar order; all live reads only the counts', () => {
+    const upgrade = machineEntry('agentbox', 'error', iso(localAt(9, 0)), { reason: 'run factory upgrade and factory service restart on agentbox' });
+    expect(line(twelve(machineEntry('studio', 'down', iso(localAt(14, 2))), upgrade))).toBe('Connected · 3 machines · 12 projects · agentbox needs upgrade · studio down');
+    expect(line(twelve(machineEntry('studio', 'error', iso(localAt(9, 0)), { reason: 'a name clash' })))).toBe('Connected · 3 machines · 12 projects · studio error');
+    expect(line(twelve(machineEntry('studio', 'connecting', iso(localAt(9, 0)))))).toBe('Connected · 3 machines · 12 projects');
+    expect(line(twelve(machineEntry('studio')))).toBe('Connected · 3 machines · 12 projects');
+    expect(footer('down', 12, null, twelve(machineEntry('studio')).machines.list)).toEqual({ text: 'Unreachable', dot: 'red', release: null });
+  });
+
+  test('the trouble is its own red part that the counts give way to in a narrow sidebar, and the whole line is the tooltip (round 1)', () => {
+    const s = twelve(machineEntry('studio', 'down', iso(localAt(14, 2))));
+    const f = footer('live', 12, { running: '0.2.0', onDisk: null, changelog: [] }, s.machines.list);
+    expect([f.text, f.trouble, f.full]).toEqual(['Connected · 3 machines · 12 projects', 'studio down', 'Connected · 3 machines · 12 projects · studio down · v0.2.0']);
+    expect(footer('live', 12, null, twelve(machineEntry('studio')).machines.list)).toEqual({ text: 'Connected · 3 machines · 12 projects', dot: 'green', release: null, full: 'Connected · 3 machines · 12 projects' });
+    const sidebar = readFileSync(join(import.meta.dir, 'Sidebar.svelte'), 'utf8');
+    expect(sidebar).toContain('<span class="ftext" title={foot.full}');
+    expect(sidebar).toContain('<span class="trouble t-red">{foot.trouble}</span>');
+    const css = readFileSync(join(import.meta.dir, 'app.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rule = (selector: string): string => new RegExp(`(?:^|\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? '';
+    const shrink = (selector: string): number => Number(/flex:\s*\d+\s+(\d+)/.exec(rule(selector))?.[1] ?? NaN);
+    expect(shrink('.service .ftext .txt')).toBeGreaterThan(shrink('.service .ftext .trouble'));
+    expect(rule('.service .ftext')).toMatch(/min-width:\s*0/);
+    for (const want of [/white-space:\s*nowrap/, /overflow:\s*hidden/, /text-overflow:\s*ellipsis/]) expect(rule('.service .ftext .trouble')).toMatch(want);
   });
 });

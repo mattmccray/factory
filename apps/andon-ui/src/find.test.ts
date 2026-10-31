@@ -7,6 +7,9 @@ import type { BacklogList } from './backlog';
 import { backlogHits, epicMatches, find, matches, needsFilter, needsMe } from './find';
 import { HOUR, NOW, backlogBody, before, epic, inEpic, job, stopped, tag, tagEpic } from './fixtures';
 import { popoverOf } from './lanes';
+import { HUB, LOCAL_FACTORY, STUDIO_FACTORY, machineEntry, machinesBody } from './fixtures';
+import { placed } from './machines';
+import { applyEvent, emptyState } from './state';
 
 const P1 = { id: 'p1', name: 'Minerva' };
 const P2 = { id: 'p2', name: 'ledgerline' };
@@ -173,5 +176,23 @@ describe('067 AC6: search over the backlog', () => {
     expect(app).toContain('const hits = $derived(backlogHits(inView, ui.backlogs, query));');
     const bar = readFileSync(join(import.meta.dir, 'Toolbar.svelte'), 'utf8');
     expect(bar).toContain('onclick={() => onopenpage(h.page)}');
+  });
+});
+
+describe('machines in search results (brief andon-machines-ui)', () => {
+  const lists = (): Record<string, BacklogList> => {
+    const list: BacklogList = { status: 'loaded', ...toBacklog(backlogBody()), reason: null, rev: 1 };
+    return { [LOCAL_FACTORY.id]: list, [STUDIO_FACTORY.id]: list };
+  };
+  test('AC4: a remote project\'s results name its machine, so two projects named factory are told apart', () => {
+    const s = applyEvent(applyEvent(emptyState(), 'projects', { projects: [LOCAL_FACTORY, STUDIO_FACTORY] }), 'machines', machinesBody(machineEntry(HUB), machineEntry('studio')));
+    const hits = backlogHits(placed(s, s.projects), lists(), 'sign');
+    expect(hits.length).toBeGreaterThan(1);
+    expect([...new Set(hits.map((h) => h.project))]).toEqual(['factory', 'factory · studio']);
+  });
+  test('AC1: with no machines data, or only the hub listed, results carry no machine', () => {
+    const none = applyEvent(emptyState(), 'projects', { projects: [LOCAL_FACTORY, STUDIO_FACTORY] });
+    const alone = applyEvent(none, 'machines', machinesBody(machineEntry(HUB)));
+    for (const s of [none, alone]) expect([...new Set(backlogHits(placed(s, s.projects), lists(), 'sign').map((h) => h.project))]).toEqual(['factory']);
   });
 });

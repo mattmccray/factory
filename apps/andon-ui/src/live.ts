@@ -11,11 +11,16 @@
 // newly named is fetched; a `backlog` event `{ project }` re-fetches it while it is named, and
 // replaces its list (an older response never overwrites a newer one); each `projects` event (a
 // reconnect may have missed some) re-fetches every named project. A project no view names is never fetched.
+// Machines (brief andon-machines-ui) ride as the release does: each `projects` event fetches
+// `GET /machines` once, `machines` events keep it current, and a fetch that resolves after a newer
+// `machines` event is dropped. A `projects` event in which no project carries `machine` is from a
+// service from before the hub, whose `GET /machines` can only be a 404: it fetches nothing (the hub
+// itself sends `machine` on every entry, and its `machines` event on every connect).
 import type { Fetcher } from './api';
-import { fetchBacklog, fetchBoard, fetchRelease, fetchSettled } from './api';
+import { fetchBacklog, fetchBoard, fetchMachines, fetchRelease, fetchSettled } from './api';
 import { isRecord } from './job';
 import { EVENTS_PATH } from './projects';
-import { applyBacklog, applyEvent, applyFetched, applyFetchedRelease, applySettled, emptyState, releaseRev, revOf, startBacklog, startSettled, wantsSettled } from './state';
+import { applyBacklog, applyEvent, applyFetched, applyFetchedMachines, applyFetchedRelease, applySettled, emptyState, machinesRev, releaseRev, revOf, startBacklog, startSettled, wantsSettled } from './state';
 import type { UiState } from './state';
 
 /** The slice of `EventSource` used here, so tests can drive it. */
@@ -108,6 +113,12 @@ export function startLive(opts: {
     set(applyFetchedRelease(state, rev, result));
   }
 
+  async function loadMachines(): Promise<void> {
+    const rev = machinesRev(state);
+    const result = await fetchMachines(opts.fetcher);
+    set(applyFetchedMachines(state, rev, result));
+  }
+
   const on = (event: string) => (e: unknown) => {
     const msg = parse(e);
     if (!msg.ok) return;
@@ -115,6 +126,7 @@ export function startLive(opts: {
     if (event === 'projects') {
       for (const p of state.projects) void load(p.id);
       void loadRelease();
+      if (state.projects.some((p) => p.machine !== undefined)) void loadMachines();
       for (const pid of backlogWatched) if (!stopped) void loadBacklog(pid);
     }
   };
@@ -130,6 +142,7 @@ export function startLive(opts: {
     src.addEventListener('projects', on('projects'));
     src.addEventListener('board', on('board'));
     src.addEventListener('release', on('release'));
+    src.addEventListener('machines', on('machines'));
     src.addEventListener('backlog', onBacklog);
     // `error` is both the service's named event (a MessageEvent with data) and EventSource's own
     // connection error (no data): the first updates a project, the second marks the service down.

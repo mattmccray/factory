@@ -11,6 +11,7 @@ import { TIMING, groupsOf, pickFile } from './docs';
 import type { FileGroup } from './docs';
 import { epicName } from './job';
 import { age, epicStateLabel, helperOf, kindOf, numOf } from './lanes';
+import { projectLabel } from './machines';
 import type { Kind } from './lanes';
 import { fmt, time, when } from './time';
 
@@ -151,6 +152,14 @@ export function stepFile(order: readonly string[], current: string | null, delta
   return order[Math.min(order.length - 1, Math.max(0, i + delta))] ?? null;
 }
 
+// ---- the job page's header ----
+
+/**
+ * A job page's header: the bar's "<project> / <job id>" and the crumbs' project, each naming a remote
+ * project's machine ("factory · studio"), so same-named projects on two machines are told apart.
+ */
+export const jobHeader = (b: Pick<BoardJob, 'project' | 'job'>): { bar: string; project: string } => ({ bar: `${projectLabel(b.project)} / ${b.job.id}`, project: projectLabel(b.project) });
+
 // ---- the Settled sheet ----
 
 export interface SettledRow {
@@ -178,7 +187,7 @@ export function settledRows(settled: readonly BoardJob[], project: string | null
         key: b.key,
         id: j.id,
         title: j.title,
-        project: b.project.name,
+        project: projectLabel(b.project),
         end: mergedAt(j),
         total: j.startedAt !== null && j.endedAt !== null ? fmt(time(j.endedAt) - time(j.startedAt)) : '—',
         rounds: rounds(j.round),
@@ -323,7 +332,7 @@ export function epicPage(b: BoardEpic, jobs: readonly BoardJob[], now: number): 
     key: b.key,
     slug: e.slug,
     name: epicName(e),
-    project: b.project.name,
+    project: projectLabel(b.project),
     state: e.waitingOn === 'you' ? 'waiting' : e.state,
     stateLabel: epicStateLabel(e),
     lands: `${e.branch} → ${e.target}`,
@@ -384,7 +393,7 @@ export function settledEpicRows(settled: readonly BoardJob[], epics: readonly Bo
         key: b.key,
         slug: e.slug,
         name: epicName(e),
-        project: b.project.name,
+        project: projectLabel(b.project),
         outcome: e.state === 'abandoned' ? 'Abandoned' : 'Landed',
         sha: e.sha,
         members: `${n} member${n === 1 ? '' : 's'}`,

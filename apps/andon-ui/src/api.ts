@@ -3,7 +3,7 @@ import { isSlug, toDocText } from './backlog';
 import type { DocRef, DocText } from './backlog';
 import type { BoardJob } from './board';
 import { isRecord } from './job';
-import { RELEASE_PATH, backlogPath, boardPath, briefPath, docsPath, epicDocsPath, planPath, settledPath } from './projects';
+import { MACHINES_PATH, RELEASE_PATH, backlogPath, boardPath, briefPath, docsPath, epicDocsPath, planPath, settledPath } from './projects';
 
 export interface FetchResponse {
   ok: boolean;
@@ -40,6 +40,9 @@ export const fetchSettled = (fetcher: Fetcher, pid: string): Promise<Fetched> =>
 
 /** The service's release (`GET /release`), or the reason it couldn't be read (a 404 from an older service). */
 export const fetchRelease = (fetcher: Fetcher): Promise<Fetched> => fetchJson(fetcher, RELEASE_PATH);
+
+/** The machines the service follows (`GET /machines`), or the reason they couldn't be read (a 404 from a service from before the hub). */
+export const fetchMachines = (fetcher: Fetcher): Promise<Fetched> => fetchJson(fetcher, MACHINES_PATH);
 
 export interface DocFile {
   path: string; // relative to the project's factory/

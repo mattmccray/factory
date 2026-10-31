@@ -1,8 +1,9 @@
 // The project switcher: one project's board, or **All projects** merged into one board with
 // every card tagged by its project. The selection persists in localStorage.
 import { isEpicSettled, settledCount, settledJobs } from './board';
-import type { BoardEpic, BoardJob } from './board';
+import type { BoardEpic, BoardJob, BoardProject } from './board';
 import type { Epic, Job, ProjectInfo } from './job';
+import { projectLabel, remoteOf } from './machines';
 import { settledCurrent } from './state';
 import { time } from './time';
 import type { ProjectBoard, UiState } from './state';
@@ -44,11 +45,17 @@ export function projectEpics(s: UiState, pid: string): Epic[] {
   return [...held, ...(s.settled[pid]?.epics ?? []).filter((e) => !slugs.has(e.slug))];
 }
 
+/** A board item's project: its id and name, and the machine it is remote on when it is remote. */
+function boardProject(s: UiState, p: ProjectInfo): BoardProject {
+  const remote = remoteOf(s, p);
+  return remote === null ? { id: p.id, name: p.name } : { id: p.id, name: p.name, remote };
+}
+
 /** A job tagged with its project and that project's settings, and with its epic when the project has it. */
 function tagged(s: UiState, p: ProjectInfo, b: ProjectBoard, job: Job): BoardJob {
   const out: BoardJob = {
     key: `${p.id}/${job.id}`,
-    project: { id: p.id, name: p.name },
+    project: boardProject(s, p),
     settleAfterHours: b.config.settleAfterHours,
     reviewers: b.config.reviewers,
     job,
@@ -58,7 +65,7 @@ function tagged(s: UiState, p: ProjectInfo, b: ProjectBoard, job: Job): BoardJob
   return out;
 }
 
-const taggedEpic = (p: ProjectInfo, b: ProjectBoard, epic: Epic): BoardEpic => ({ key: `${p.id}/${epic.slug}`, project: { id: p.id, name: p.name }, settleAfterHours: b.config.settleAfterHours, epic });
+const taggedEpic = (s: UiState, p: ProjectInfo, b: ProjectBoard, epic: Epic): BoardEpic => ({ key: `${p.id}/${epic.slug}`, project: boardProject(s, p), settleAfterHours: b.config.settleAfterHours, epic });
 
 /** The jobs on the board for a selection, each tagged with its project and that project's settings. */
 export function boardJobs(s: UiState, sel: Selection): BoardJob[] {
@@ -79,7 +86,7 @@ export function boardEpics(s: UiState, sel: Selection): BoardEpic[] {
     if (sel !== ALL && sel !== p.id) continue;
     const b = s.boards[p.id];
     if (b === undefined) continue;
-    for (const e of b.epics) out.push(taggedEpic(p, b, e));
+    for (const e of b.epics) out.push(taggedEpic(s, p, b, e));
   }
   return out;
 }
@@ -91,7 +98,7 @@ export function fetchedSettledEpics(s: UiState, sel: Selection): BoardEpic[] {
     if (sel !== ALL && sel !== p.id) continue;
     const b = s.boards[p.id];
     if (b === undefined) continue;
-    for (const e of s.settled[p.id]?.epics ?? []) out.push(taggedEpic(p, b, e));
+    for (const e of s.settled[p.id]?.epics ?? []) out.push(taggedEpic(s, p, b, e));
   }
   return out;
 }
@@ -163,7 +170,8 @@ export function settledStatus(s: UiState, pids: readonly string[]): SettledStatu
   let loading = false;
   for (const pid of pids) {
     const list = s.settled[pid];
-    if (list?.status === 'failed') failures.push({ id: pid, name: s.projects.find((p) => p.id === pid)?.name ?? pid, reason: list.reason ?? 'unreadable' });
+    const p = s.projects.find((x) => x.id === pid);
+    if (list?.status === 'failed') failures.push({ id: pid, name: p === undefined ? pid : projectLabel(boardProject(s, p)), reason: list.reason ?? 'unreadable' });
     else if (list === undefined || list.jobs === null) loading = true;
   }
   return { loading, failures, current: pids.every((pid) => settledCurrent(s, pid)) };
@@ -197,7 +205,7 @@ export function lookupEpic(s: UiState, ref: { project: string; slug: string }): 
   const b = s.boards[ref.project];
   if (p === undefined || b === undefined) return s.projects.length > 0 ? { state: 'missing' } : { state: 'waiting' };
   const epic = projectEpics(s, ref.project).find((e) => e.slug === ref.slug);
-  if (epic !== undefined) return { state: 'found', item: taggedEpic(p, b, epic) };
+  if (epic !== undefined) return { state: 'found', item: taggedEpic(s, p, b, epic) };
   return settledCurrent(s, ref.project) ? { state: 'missing' } : { state: 'waiting' };
 }
 
@@ -241,7 +249,7 @@ export function projectErrors(s: UiState, sel: Selection): Array<{ id: string; n
   const out: Array<{ id: string; name: string; reason: string }> = [];
   for (const p of s.projects) {
     const reason = s.boards[p.id]?.error ?? null;
-    if ((sel === ALL || sel === p.id) && reason !== null) out.push({ id: p.id, name: p.name, reason });
+    if ((sel === ALL || sel === p.id) && reason !== null) out.push({ id: p.id, name: projectLabel(boardProject(s, p)), reason });
   }
   return out;
 }
@@ -260,6 +268,9 @@ export const boardPath = (pid: string): string => `/projects/${encodeURIComponen
 
 /** The service's factory release and changelog (`{ running, onDisk, changelog }`); an older service answers 404. */
 export const RELEASE_PATH = '/release';
+
+/** The machines the service follows (`{ machines: [...] }`), this one first; a service from before the hub answers 404. */
+export const MACHINES_PATH = '/machines';
 
 /** A project's settled jobs, fetched only when a view needs them. */
 export const settledPath = (pid: string): string => `/projects/${encodeURIComponent(pid)}/settled`;

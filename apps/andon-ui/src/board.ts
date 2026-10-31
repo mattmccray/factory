@@ -5,10 +5,17 @@
 import type { Epic, Job } from './job';
 import { time } from './time';
 
+/** A board item's project: its id and name, and the machine it is remote on (absent for a local project; machines.ts). */
+export interface BoardProject {
+  id: string;
+  name: string;
+  remote?: string;
+}
+
 /** A job on the board, tagged with its project. `key` is unique across projects. */
 export interface BoardJob {
   key: string; // `<pid>/<job id>`
-  project: { id: string; name: string };
+  project: BoardProject;
   settleAfterHours: number; // the job's own project's setting
   reviewers: string[]; // the job's own project's reviewers, for chip order
   job: Job;
@@ -18,7 +25,7 @@ export interface BoardJob {
 /** An epic on the board or in a settled list, tagged with its project. `key` is unique across projects. */
 export interface BoardEpic {
   key: string; // `<pid>/<slug>`
-  project: { id: string; name: string };
+  project: BoardProject;
   settleAfterHours: number; // its project's setting
   epic: Epic;
 }

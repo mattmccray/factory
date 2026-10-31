@@ -365,3 +365,35 @@ Some prose that is not a member.
 
 /** A brief's text with a `- Status:` line. */
 export const briefText = (status: string, title = 'A brief'): string => `# ${title}\n\n- Status: ${status}\n- Date: 2026-10-30\n\n## Intent\nSomething.\n`;
+
+// ---- machines (brief andon-machines-ui) ----
+// As the hub sends them (docs/contract/v1.md "Andon service", "Peers"): `machine` on each project
+// entry, a peer's projects as `<pid>@<machine>`, and the `GET /machines` body (also the `machines`
+// event's data), the hub's own machine first.
+
+/** The hub's own machine in these fixtures. */
+export const HUB = 'rocinante';
+
+/** A local time on Oct 22, 2026 (the machine tests' "today"), in ms. */
+export const localAt = (hour: number, minute: number, day = 22): number => new Date(2026, 9, day, hour, minute).getTime();
+
+/** One `GET /machines` entry, as JSON: live since `since` by default, with a tailnet URL and release 0.2.0. */
+export function machineEntry(name: string, state = 'live', since: string = new Date(localAt(9, 0)).toISOString(), fields: Record<string, unknown> = {}): Record<string, unknown> {
+  return { name, url: `https://${name}.example.ts.net:8766`, state, since, reason: null, release: '0.2.0', ...fields };
+}
+
+/** A `GET /machines` body (and `machines` event data), as JSON. */
+export const machinesBody = (...entries: unknown[]): { machines: unknown[] } => ({ machines: entries });
+
+/** A project entry as the hub sends it: a local one's bare id, a peer's `<pid>@<machine>`. */
+export function machineProject(pid: string, name: string, machine: string): { id: string; name: string; root: string; machine: string } {
+  return { id: machine === HUB ? pid : `${pid}@${machine}`, name, root: `/Users/m/${name}`, machine };
+}
+
+/** The three-machine fleet: rocinante (the hub) with `factory` and `notes`, studio with `factory` and `api`, agentbox with `lab`. */
+export const LOCAL_FACTORY = machineProject('a0a0a0a0a0a0', 'factory', HUB);
+export const LOCAL_NOTES = machineProject('a1a1a1a1a1a1', 'notes', HUB);
+export const STUDIO_FACTORY = machineProject('1a2b3c4d5e6f', 'factory', 'studio');
+export const STUDIO_API = machineProject('b2b2b2b2b2b2', 'api', 'studio');
+export const AGENT_LAB = machineProject('c3c3c3c3c3c3', 'lab', 'agentbox');
+export const MACHINE_PROJECTS = [LOCAL_FACTORY, LOCAL_NOTES, STUDIO_FACTORY, STUDIO_API, AGENT_LAB];

@@ -7,6 +7,9 @@ import { COPY_FAILED, HAND_OFF_METHOD, handOffCaller, handoffToast, narrowOutcom
 import type { HandoffOutcome, HandoffRequest } from './handoff';
 import { abandonCommand, approveCommand, reworkCommand } from './inspector';
 import { shellMode } from './sidebar';
+import { remoteCopiedText } from './handoff';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 describe('036 AC2: the Mac app builds the same command as the UI', () => {
   const ids = ['036-t3-handoff', '040-tag-migration', '001-a'];
@@ -116,5 +119,39 @@ describe('036 AC7: the toast after a copy and a hand-off', () => {
     expect(handoffToast(false, 'no-github-remote', cmd)).toEqual({ text: COPY_FAILED, ok: false });
     expect(handoffToast(false, 'drafted', cmd)).toEqual({ text: 'Opened a draft in T3 Code', ok: true });
     expect(handoffToast(false, 'sent', cmd).text).toBe('Sent to T3 Code');
+  });
+});
+
+describe('a remote project\'s hand-off (brief andon-machines-ui, AC7)', () => {
+  const ID = '1a2b3c4d5e6f@studio';
+  test('the request names the remote id unchanged', async () => {
+    const calls: unknown[][] = [];
+    const call = (...args: unknown[]): Promise<unknown> => {
+      calls.push(args);
+      return Promise.resolve('copy-only');
+    };
+    const req: HandoffRequest = { project: ID, job: '007-x', action: 'rework', note: 'again' };
+    expect(await handOffCaller('mac', { api: { call } })?.(req)).toBe('copy-only');
+    expect(calls).toEqual([[HAND_OFF_METHOD, { project: ID, job: '007-x', action: 'rework', note: 'again' }]]);
+  });
+
+  test('a successful copy with a copy-only or null outcome names the machine; the rest, and every local toast, are unchanged', () => {
+    const cmd = '/factory approve 007-x';
+    expect(remoteCopiedText('studio')).toBe('Copied. Run it on studio');
+    expect(handoffToast(true, 'copy-only', cmd, 'studio')).toEqual({ text: 'Copied. Run it on studio', ok: true });
+    expect(handoffToast(true, null, cmd, 'studio')).toEqual({ text: 'Copied. Run it on studio', ok: true });
+    expect(handoffToast(true, 'drafted', cmd, 'studio')).toEqual({ text: 'Opened a draft in T3 Code', ok: true });
+    expect(handoffToast(true, 'sent', cmd, 'studio')).toEqual({ text: 'Sent to T3 Code', ok: true });
+    expect(handoffToast(true, 'no-github-remote', cmd, 'studio')).toEqual({ text: `No GitHub remote; copied ${cmd}`, ok: true });
+    expect(handoffToast(false, 'copy-only', cmd, 'studio')).toEqual({ text: COPY_FAILED, ok: false });
+    const outcomes: Array<HandoffOutcome | null> = ['copy-only', null, 'drafted', 'sent', 'no-github-remote'];
+    for (const o of outcomes) expect(handoffToast(true, o, cmd, null)).toEqual(handoffToast(true, o, cmd));
+    expect(handoffToast(true, 'copy-only', cmd)).toEqual({ text: `Copied ${cmd}`, ok: true });
+  });
+
+  test('App.svelte names the request\'s project\'s machine for the toast', () => {
+    const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
+    expect(app).toContain('handoffToast(copied, outcome, command, remoteOfId(ui, req.project))');
+    expect(app).toContain('copyThenStart(write, startWork, item.req, item.command, remoteOfId(ui, item.req.project))');
   });
 });

@@ -56,16 +56,21 @@ export interface Toast {
 /** The toast when the clipboard write failed and nothing else took the command. */
 export const COPY_FAILED = "Couldn't copy: select the command and copy it yourself";
 
+/** The copy-only toast for a remote project's action: the command is on the clipboard, to run on that machine. */
+export const remoteCopiedText = (machine: string): string => `Copied. Run it on ${machine}`;
+
 /**
  * The toast after a copy and a hand-off: "Opened a draft in T3 Code" or "Sent to T3 Code" when the
  * Mac app did that; "No GitHub remote; copied …" when a draft had no GitHub origin; otherwise (copy
- * only, no `t3`, a refused call, a browser's null) "Copied …" as before. A failed copy says so,
- * unless T3 Code got the command anyway.
+ * only, no `t3`, a refused call, a browser's null) "Copied …" as before, or, for a remote project
+ * (`machine`, the machine it is on; brief andon-machines-ui), "Copied. Run it on <machine>". A
+ * failed copy says so, unless T3 Code got the command anyway.
  */
-export function handoffToast(copied: boolean, outcome: HandoffOutcome | null, command: string): Toast {
+export function handoffToast(copied: boolean, outcome: HandoffOutcome | null, command: string, machine: string | null = null): Toast {
   if (outcome === 'drafted') return { text: 'Opened a draft in T3 Code', ok: true };
   if (outcome === 'sent') return { text: 'Sent to T3 Code', ok: true };
   if (!copied) return { text: COPY_FAILED, ok: false };
   if (outcome === 'no-github-remote') return { text: `No GitHub remote; copied ${command}`, ok: true };
+  if (machine !== null) return { text: remoteCopiedText(machine), ok: true };
   return { text: copiedText(command), ok: true };
 }
