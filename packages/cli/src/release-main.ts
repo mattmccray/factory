@@ -6,7 +6,7 @@
 // `(release)`, and `service run` serves the bundle's Andon service tree (`andon/ui/`, its version and
 // CHANGELOG.md). The bundle's root is the parent of this file's directory.
 import { join } from 'node:path';
-import { registryPath } from '@factory/contract';
+import { peersPath, registryPath } from '@factory/contract';
 import { bakedRelease } from './bundle';
 import { run } from './index';
 import { realServiceHost } from './servicehost';
@@ -16,6 +16,7 @@ process.exitCode = await run(
   {
     root: join(process.cwd(), 'factory'),
     registry: registryPath(process.env.ANDON_HOME), // init registers the project with Andon
+    peers: peersPath(process.env.ANDON_HOME), // `peers` lists, adds, and removes the Andon peers there
     stdout: (line) => console.log(line),
     stderr: (line) => console.error(line),
     service: () => realServiceHost((line) => console.log(line)), // `service` works on this machine's launchd or systemd --user

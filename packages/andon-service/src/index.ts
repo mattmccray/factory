@@ -1,7 +1,7 @@
 // The Andon service (docs/contract/v1.md "Andon service"): one Bun daemon per machine that reads every
 // project listed in the Andon registry through `@factory/contract` and serves it, read-only, on
 // loopback:
-//   GET /projects                        → { projects: [{ id, name, root, release }] } (name: config.json's `name`, else basename(root))
+//   GET /projects                        → { projects: [{ id, name, root, release, machine }] } (name: config.json's `name`, else basename(root))
 //   GET /projects/<pid>/board            → { jobs, config, epics } (a bad config is a 500 carrying the reason);
 //                                          epics: the on-board (unsettled) epics' epic.json, in slug order
 //   GET /projects/<pid>/board?settled=summary → { jobs, config, settled, epics, backlog }: unsettled jobs only, plus
@@ -52,12 +52,24 @@
 // clone's `CHANGELOG.md` or `packages/templates/package.json` changes (two non-recursive watches,
 // on the clone root and on `packages/templates/`).
 // The board and docs readers are ported from the vendored `factory/serve.ts` (not imported).
+// Peers (peers.ts; docs/contract/v1.md "Andon peers"): every service has a machine name (its tailnet
+// host's first label, else its hostname's, sanitized), carried as `machine` on every `/projects`
+// entry. A service that lists peers in `$ANDON_HOME/peers.json` (watched like the registry) is a
+// hub: it follows each peer's own projects (`scope=local`, one hop) with two streams and serves them
+// as `<pid>@<machine>` (also written `%40`) beside its own bare ids, on every endpoint and event:
+//   GET /projects?scope=local            → only this machine's projects (only the exact value `local` opts in)
+//   GET /events?scope=local              → only this machine's events (and a `machines` listing only itself)
+//   GET /machines                        → { machines: [{ name, url, state, since, reason, release }] }, itself first
+//   GET /projects/<pid>@<machine>/…      → forwarded to the peer on demand (a 502 naming it when it can't be read;
+//                                          a down peer's board is its last one held)
+// The `machines` event carries the same body: on connect (after `release`), and on every change.
 import { createHash } from 'node:crypto';
 import { watch } from 'node:fs';
 import type { FSWatcher } from 'node:fs';
 import { lstat, mkdir, readFile, readdir, realpath, stat } from 'node:fs/promises';
+import { hostname } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import { isEpicSlug, parseConfig, parsePlan, readRegistry } from '@factory/contract';
+import { isEpicSlug, isMachineName, machineName, parseConfig, parsePlan, readPeers, readRegistry } from '@factory/contract';
 import type { Config } from '@factory/contract';
 import { EMPTY_ARCHIVE, archiveTip, gitCommonDir, projectArchivedEpic, readArchive, spawnGit } from './archive';
 import type { ArchiveCache, GitRunner } from './archive';
@@ -66,9 +78,12 @@ import type { ProjectRelease, ReleaseInfo } from './release';
 import { buildBacklog, isBacklogSlug } from './backlog';
 import type { Backlog } from './backlog';
 import { MAX_DELAY_MS, nextSettle, partition, summarize } from './settled';
+import { createFollower, isPid } from './peers';
+import type { Follower, Form, MachineEntry, ReconnectTimers, Transport } from './peers';
 import type { SettledSummary } from './settled';
 
 export type { GitRunner } from './archive';
+export type { MachineEntry, MachineState, ReconnectTimers, Transport } from './peers';
 export type { ChangelogEntry, ChangelogRelease, ProjectRelease, ReleaseInfo, ReleaseState } from './release';
 
 export interface ServiceOptions {
@@ -81,6 +96,11 @@ export interface ServiceOptions {
   settleTimers?: SettleTimers; // how the per-project settle timers are set and cleared (default: setTimeout)
   cloneRoot?: string; // the factory clone the service runs from: its release and CHANGELOG.md; absent: `running`/`onDisk` null, `changelog` []
   versionFile?: string; // the file under `cloneRoot` whose `version` is the release (default `packages/templates/package.json`; the release bundle's is `package.json`)
+  tailnetHost?: string; // this machine's MagicDNS name (`ANDON_TAILNET_HOST`), published by `tailscale serve`: the guard also accepts exactly it
+  machine?: string; // this machine's name (default: derived from `tailnetHost`, else the OS hostname; `machineName`)
+  peersPath?: string; // `$ANDON_HOME/peers.json`, the peers this service follows; absent: none
+  transport?: Transport; // how peers are reached (default: fetch); every request is `redirect: 'manual'`
+  reconnectTimers?: ReconnectTimers; // how the peer reconnect timers are set and cleared (default: setTimeout)
 }
 
 /** Sets and clears the one-shot settle timers (injectable so a test can see what is pending). */
@@ -99,6 +119,7 @@ export interface ProjectInfo {
   name: string; // config.json's `name` when the config is valid and sets it, else basename(root)
   root: string; // absolute repo root
   release: ProjectRelease; // its managed.json `version`, and its state against the running release
+  machine: string; // the machine name of the service it is on
 }
 
 type Job = Record<string, unknown>;
@@ -127,6 +148,12 @@ interface Project {
 }
 
 export const HOSTNAME = '127.0.0.1';
+const DNS_LABEL = '[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?';
+const DNS_NAME = new RegExp(`^(?=.{1,253}$)${DNS_LABEL}(?:\\.${DNS_LABEL})+$`);
+
+/** A tailnet host the guard may accept: a lowercase DNS name of two or more labels, with no port,
+ *  scheme, path, whitespace, or trailing dot (e.g. `studio.manticore-hue.ts.net`). */
+export const isTailnetHost = (name: string): boolean => DNS_NAME.test(name);
 const JOB_ID = /^\d{3}-[a-z0-9-]+$/;
 const BRIEF = /^factory\/briefs\/[\w.-]+\.md$/;
 
@@ -401,17 +428,25 @@ async function uiFile(uiDir: string, pathname: string): Promise<Response | null>
 }
 
 type Client = ReadableStreamDefaultController<Uint8Array>;
-type Form = 'plain' | 'narrow'; // a `/events` client's `board` form: every job, or `?settled=summary`
+// A `/events` client: its `board` form, and whether it asked for this machine's data only (`scope=local`).
+type ClientInfo = { form: Form; local: boolean };
+// Who a broadcast goes to: every client, or only the `scope=local` ones or the others.
+type Scope = 'every' | 'local' | 'merged';
 const encoder = new TextEncoder();
 const frame = (event: string, data: unknown): Uint8Array => encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
-/** Starts the service on `127.0.0.1:<port>`. */
+/** Starts the service on `127.0.0.1:<port>`. Throws, listening on nothing, when `tailnetHost` isn't a tailnet host. */
 export async function startService(opts: ServiceOptions): Promise<Service> {
+  const tailnetHost = opts.tailnetHost;
+  if (tailnetHost !== undefined && !isTailnetHost(tailnetHost)) throw new Error(`andon: the tailnet host must be a lowercase DNS name, got ${JSON.stringify(tailnetHost)}`);
+  const machine = opts.machine ?? machineName(tailnetHost ?? hostname());
+  if (!isMachineName(machine)) throw new Error(`andon: the machine name must be lowercase letters, digits, and inner '-', got ${JSON.stringify(machine)}`);
+  const startedAt = new Date().toISOString();
   const debounceMs = opts.debounceMs ?? 50;
   const log = opts.log ?? ((line: string) => console.error(line));
   const git = opts.git ?? spawnGit;
   const timers: SettleTimers = opts.settleTimers ?? { set: (fn, ms) => setTimeout(fn, ms), clear: (t) => clearTimeout(t) };
-  const clients = new Map<Client, Form>();
+  const clients = new Map<Client, ClientInfo>();
   let projects = new Map<string, Project>();
   let stopped = false;
 
@@ -423,12 +458,14 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     return { installed, state: releaseState(installed, running) };
   };
 
-  // Resolves every project's name and release and returns the list. `info` holds what connected
+  // Resolves every project's name and release and returns the local list. `info` holds what connected
   // clients were last sent: when a resolved name or release differs from it (or `force`, for a
-  // registry change), the list is sent to every connected client as a `projects` event. Runs one
-  // at a time, so clients always end on the latest list.
+  // registry change), the list is sent to every connected client as a `projects` event: the local
+  // list to `scope=local` clients, the merged list (this machine's, then each peer's) to the rest.
+  // `peers` (a peer's projects changed) sends the merged list to the rest even when the local list
+  // is unchanged. Runs one at a time, so clients always end on the latest list.
   let announcing: Promise<unknown> = Promise.resolve();
-  function announce(force: boolean): Promise<ProjectInfo[]> {
+  function announce(force: boolean, peers = false): Promise<ProjectInfo[]> {
     const run = announcing.then(async () => {
       const open = [...projects.values()];
       const [names, releases] = await Promise.all([Promise.all(open.map(resolveName)), Promise.all(open.map(resolveRelease))]);
@@ -447,14 +484,15 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
         return !p.closed;
       });
       const list = current.map((p) => ({ ...p.info, release: { ...p.info.release } }));
-      if (changed) broadcast('projects', { projects: list });
+      if (changed) broadcast('projects', { projects: list }, undefined, 'local');
+      if (changed || peers) broadcast('projects', { projects: merged(list) }, undefined, 'merged');
       return list;
     });
     announcing = run.catch(() => undefined);
     return run;
   }
 
-  const hasForm = (form: Form): boolean => [...clients.values()].includes(form);
+  const hasForm = (form: Form): boolean => [...clients.values()].some((c) => c.form === form);
 
   // Removes a client; when it was the last narrow one, every settle timer is cleared.
   function removeClient(c: Client): void {
@@ -462,11 +500,12 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     if (!hasForm('narrow')) for (const p of projects.values()) clearSettle(p);
   }
 
-  // Sends to every client, or only to those of one form.
-  function broadcast(event: string, data: unknown, form?: Form): void {
+  // Sends to every client, or only to those of one form, and of one scope.
+  function broadcast(event: string, data: unknown, form?: Form, scope: Scope = 'every'): void {
     const bytes = frame(event, data);
-    for (const [c, f] of [...clients]) {
-      if (form !== undefined && f !== form) continue;
+    for (const [c, info] of [...clients]) {
+      if (form !== undefined && info.form !== form) continue;
+      if ((scope === 'local' && !info.local) || (scope === 'merged' && info.local)) continue;
       try {
         c.enqueue(bytes);
       } catch {
@@ -683,7 +722,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
 
   function openProject(root: string): Project {
     const p: Project = {
-      info: { id: projectId(root), name: basename(root), root, release: { installed: null, state: 'unknown' } },
+      info: { id: projectId(root), name: basename(root), root, release: { installed: null, state: 'unknown' }, machine },
       factory: join(root, 'factory'),
       lastGood: new Map(),
       lastGoodEpic: new Map(),
@@ -794,16 +833,167 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     }, debounceMs);
   }
 
-  // Watch the registry's directory (the file itself is replaced by rename on every write).
-  const registryDir = dirname(opts.registryPath);
-  let registryWatcher: FSWatcher | null = null;
-  try {
-    await mkdir(registryDir, { recursive: true });
-    registryWatcher = watch(registryDir, () => scheduleRegistry());
-    registryWatcher.on('error', (e) => log(`andon: watching ${registryDir}: ${message(e)}`));
-  } catch (e) {
-    log(`andon: cannot watch ${registryDir}: ${message(e)}`);
+  // ---- peers (peers.ts) ----
+
+  const reconnectTimers: ReconnectTimers = opts.reconnectTimers ?? { set: (fn, ms) => setTimeout(fn, ms), clear: (t) => clearTimeout(t) };
+  const transport: Transport = opts.transport ?? ((u, init) => fetch(u, init));
+  let followers: Follower[] = [];
+
+  // This machine's projects, then each merged peer's, in peers.json order.
+  const merged = (local: ProjectInfo[]): unknown[] => [...local, ...followers.flatMap((f) => f.projects())];
+
+  let boundPort = 0;
+  const ownEntry = (): MachineEntry => ({
+    name: machine,
+    url: tailnetHost === undefined ? `http://${HOSTNAME}:${boundPort}` : `https://${tailnetHost}:${boundPort}`,
+    state: 'live',
+    since: startedAt,
+    reason: null,
+    release: running,
+  });
+  const machinesBody = (): { machines: MachineEntry[] } => ({ machines: [ownEntry(), ...followers.map((f) => f.entry())] });
+
+  // A follower's machine entry changed: every merged client gets a fresh `machines` event (sent
+  // after the current tick, so one change of several fields is one event).
+  let machinesQueued = false;
+  function machinesChanged(): void {
+    if (stopped || machinesQueued) return;
+    machinesQueued = true;
+    queueMicrotask(() => {
+      machinesQueued = false;
+      if (!stopped) broadcast('machines', machinesBody(), undefined, 'merged');
+    });
   }
+
+  // A peer's name is refused when it is this machine's, or an earlier listed peer's (one not in
+  // error); a later peer that has it is put in error instead.
+  function claim(f: Follower, name: string): string | null {
+    if (name === machine) return `${f.url} reports this hub's own machine name ${name}`;
+    const i = followers.indexOf(f);
+    for (const [j, g] of followers.entries()) {
+      if (g === f || g.entry().state === 'error' || g.name() !== name || !g.merged()) continue;
+      if (j < i) return `${f.url} reports the name ${name}, already the name of ${g.url}`;
+      g.clash(`${g.url} reports the name ${name}, already the name of ${f.url}`);
+    }
+    return null;
+  }
+
+  function follow(url: string): Follower {
+    return createFollower({
+      url,
+      transport,
+      timers: reconnectTimers,
+      hooks: {
+        changed: machinesChanged,
+        projects: () => {
+          if (!stopped) void announce(false, true);
+        },
+        event: (form, event, data) => {
+          if (!stopped) broadcast(event, data, form, 'merged');
+        },
+        claim,
+        log,
+      },
+    });
+  }
+
+  // Re-reads peers.json. An unreadable or invalid file keeps the current peers (one line logged).
+  // A change applies with no restart: new peers are followed, removed ones dropped, and every
+  // merged client gets fresh `machines` and `projects` events.
+  async function loadPeers(): Promise<void> {
+    if (stopped || opts.peersPath === undefined) return;
+    let urls: string[];
+    try {
+      urls = (await readPeers(opts.peersPath)).peers.map((p) => p.url);
+    } catch (e) {
+      log(`andon: ${opts.peersPath}: ${message(e)}; keeping the current peers`);
+      return;
+    }
+    if (stopped) return;
+    const before = followers.map((f) => f.url).join(',');
+    if (urls.join(',') === before) return;
+    const known = new Map(followers.map((f) => [f.url, f]));
+    const next = urls.map((u) => known.get(u) ?? follow(u));
+    for (const f of followers) if (!urls.includes(f.url)) f.stop();
+    const fresh = next.filter((f) => !known.has(f.url));
+    followers = next;
+    // A peer in error for a name clash may be clear now (the other one left, or moved).
+    for (const f of next) if (f.clashed()) f.restart();
+    for (const f of fresh) f.start();
+    broadcast('machines', machinesBody(), undefined, 'merged');
+    await announce(false, true);
+  }
+
+  let peersLoading: Promise<void> = Promise.resolve();
+  let peersTimer: ReturnType<typeof setTimeout> | null = null;
+  const reloadPeers = (): Promise<void> => {
+    peersLoading = peersLoading.then(loadPeers);
+    return peersLoading;
+  };
+  function schedulePeers(): void {
+    if (stopped || opts.peersPath === undefined || peersTimer !== null) return;
+    peersTimer = setTimeout(() => {
+      peersTimer = null;
+      void reloadPeers();
+    }, debounceMs);
+  }
+
+  // A forwarded read's target: a local project, or a peer's (`<pid>@<machine>`, `@` also written
+  // `%40`); null (a 404, with no request sent) for an unknown local id, a part before `@` that isn't
+  // 12 lowercase hex, a second `@`, or a machine that isn't a listed peer's (in error: unknown).
+  type Target = { kind: 'local'; p: Project } | { kind: 'peer'; f: Follower; pid: string };
+  function target(raw: string): Target | null {
+    const id = raw.replace(/%40/gi, '@');
+    const at = id.indexOf('@');
+    if (at === -1) {
+      const p = projects.get(id);
+      return p === undefined ? null : { kind: 'local', p };
+    }
+    const pid = id.slice(0, at);
+    const name = id.slice(at + 1);
+    if (!isPid(pid) || name === '' || name.includes('@')) return null;
+    const f = followers.find((g) => g.entry().state !== 'error' && g.name() === name);
+    return f === undefined ? null : { kind: 'peer', f, pid };
+  }
+
+  // A peer project's board: forwarded while the peer is live; else the last board of the asked
+  // form the hub holds, or a 502 naming the machine.
+  async function peerBoard(f: Follower, pid: string, search: string, form: Form): Promise<Response> {
+    if (f.entry().state === 'live') return f.forward(`/projects/${pid}/board`, search, form);
+    const held = f.board(pid, form);
+    if (held !== undefined) return json(held);
+    return text(`${f.name()} is ${f.entry().state}, and the hub holds no board for ${pid}@${f.name()}`, 502);
+  }
+
+  // Watch the registry's directory (the file itself is replaced by rename on every write), and the
+  // peers file's the same way (one watch when they share a directory, as they do by default).
+  const registryDir = dirname(opts.registryPath);
+  const peersDir = opts.peersPath === undefined ? null : dirname(opts.peersPath);
+  const homeWatchers: FSWatcher[] = [];
+  function watchHome(dir: string, on: () => void): void {
+    try {
+      const w = watch(dir, () => on());
+      w.on('error', (e) => log(`andon: watching ${dir}: ${message(e)}`));
+      homeWatchers.push(w);
+    } catch (e) {
+      log(`andon: cannot watch ${dir}: ${message(e)}`);
+    }
+  }
+  const made = async (dir: string): Promise<boolean> =>
+    mkdir(dir, { recursive: true }).then(
+      () => true,
+      (e: unknown) => {
+        log(`andon: cannot watch ${dir}: ${message(e)}`);
+        return false;
+      },
+    );
+  if (await made(registryDir)) {
+    watchHome(registryDir, () => {
+      scheduleRegistry();
+      if (peersDir === registryDir) schedulePeers();
+    });
+  }
+  if (peersDir !== null && peersDir !== registryDir && (await made(peersDir))) watchHome(peersDir, schedulePeers);
   await reload();
 
   // The clone's release files: `CHANGELOG.md` in its root and the version file (`package.json` in
@@ -841,11 +1031,14 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     }
   }
 
-  // The connecting client gets the freshly resolved list (any change is first sent to the others).
-  // Then it gets the `release` event.
-  async function events(req: Request, form: Form): Promise<Response> {
-    const list = await announce(false);
+  // The connecting client gets the freshly resolved list (any change is first sent to the others),
+  // merged with the peers' unless it asked for `scope=local`. Then it gets the `release` event, and
+  // the `machines` event (a `scope=local` client's lists only this machine).
+  async function events(req: Request, form: Form, local: boolean): Promise<Response> {
+    const own = await announce(false);
+    const list = local ? own : merged(own);
     const release = await releaseBody();
+    const machinesNow = local ? { machines: [ownEntry()] } : machinesBody();
     let self: Client | null = null;
     const drop = (): void => {
       if (self === null) return;
@@ -860,9 +1053,10 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       start(c) {
         self = c;
         const first = form === 'narrow' && !hasForm('narrow');
-        clients.set(c, form);
+        clients.set(c, { form, local });
         c.enqueue(frame('projects', { projects: list }));
         c.enqueue(frame('release', release));
+        c.enqueue(frame('machines', machinesNow));
         // The first narrow client arms every project's settle timer (later ones find them armed).
         if (first) for (const p of projects.values()) void armFromBuild(p);
       },
@@ -876,13 +1070,16 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
 
   // DNS-rebinding guard: loopback binding alone does not stop a page whose hostname resolves to
   // 127.0.0.1, so the Host must name this service, and an Origin, when sent, must be this service's.
-  let boundPort = 0;
+  // With a tailnet host, `tailscale serve` (HTTPS on the same port) passes the client's Host
+  // through: exactly `<name>:<port>` is also this service, and `https://<name>:<port>` its Origin.
   function trusted(req: Request): boolean {
-    const hosts = [`127.0.0.1:${boundPort}`, `localhost:${boundPort}`];
-    const host = req.headers.get('host');
-    if (host === null || !hosts.includes(host.toLowerCase())) return false;
-    const origin = req.headers.get('origin');
-    return origin === null || hosts.some((h) => origin.toLowerCase() === `http://${h}`);
+    const loopback = [`127.0.0.1:${boundPort}`, `localhost:${boundPort}`];
+    const tailnet = tailnetHost === undefined ? [] : [`${tailnetHost}:${boundPort}`];
+    const host = req.headers.get('host')?.toLowerCase();
+    if (host === undefined || !(loopback.includes(host) || tailnet.includes(host))) return false;
+    const origin = req.headers.get('origin')?.toLowerCase();
+    if (origin === undefined) return true;
+    return loopback.some((h) => origin === `http://${h}`) || tailnet.some((h) => origin === `https://${h}`);
   }
 
   async function handle(req: Request): Promise<Response> {
@@ -892,14 +1089,22 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     const { pathname } = url;
     // Only the exact value `summary` opts in; no parameter, or any other value, is the plain form.
     const summary = url.searchParams.get('settled') === 'summary';
-    if (pathname === '/projects') return json({ projects: await announce(false) });
-    if (pathname === '/events') return events(req, summary ? 'narrow' : 'plain');
+    // Likewise only the exact value `local` narrows `/projects` and `/events` to this machine.
+    const local = url.searchParams.get('scope') === 'local';
+    if (pathname === '/projects') {
+      const own = await announce(false);
+      return json({ projects: local ? own : merged(own) });
+    }
+    if (pathname === '/events') return events(req, summary ? 'narrow' : 'plain', local);
     if (pathname === '/release') return json(await releaseBody());
+    if (pathname === '/machines') return json(machinesBody());
 
     const b = pathname.match(/^\/projects\/([^/]+)\/(board|settled)$/);
     if (b !== null) {
-      const p = projects.get(b[1] ?? '');
-      if (p === undefined) return notFound();
+      const t = target(b[1] ?? '');
+      if (t === null) return notFound();
+      if (t.kind === 'peer') return b[2] === 'board' ? peerBoard(t.f, t.pid, url.search, summary ? 'narrow' : 'plain') : t.f.forward(`/projects/${t.pid}/settled`, url.search);
+      const p = t.p;
       try {
         await archiveReady(p);
         const full = await board(p);
@@ -913,9 +1118,11 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
 
     const d = pathname.match(/^\/projects\/([^/]+)\/jobs\/([^/]+)\/docs$/);
     if (d !== null) {
-      const p = projects.get(d[1] ?? '');
+      const t = target(d[1] ?? '');
       const id = d[2] ?? '';
-      if (p === undefined || !JOB_ID.test(id)) return notFound(); // checked before any path is built
+      if (t === null || !JOB_ID.test(id)) return notFound(); // checked before any path is built, or any request sent
+      if (t.kind === 'peer') return t.f.forward(`/projects/${t.pid}/jobs/${id}/docs`, url.search);
+      const p = t.p;
       try {
         await archiveReady(p);
         return json(await docs(p, id));
@@ -926,9 +1133,11 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
 
     const e = pathname.match(/^\/projects\/([^/]+)\/epics\/([^/]+)\/docs$/);
     if (e !== null) {
-      const p = projects.get(e[1] ?? '');
+      const t = target(e[1] ?? '');
       const slug = e[2] ?? '';
-      if (p === undefined || !isEpicSlug(slug)) return notFound(); // checked before any path is built
+      if (t === null || !isEpicSlug(slug)) return notFound(); // checked before any path is built, or any request sent
+      if (t.kind === 'peer') return t.f.forward(`/projects/${t.pid}/epics/${slug}/docs`, url.search);
+      const p = t.p;
       try {
         await archiveReady(p);
         const docs = await epicDocs(p, slug);
@@ -940,17 +1149,21 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
 
     const bl = pathname.match(/^\/projects\/([^/]+)\/backlog$/);
     if (bl !== null) {
-      const p = projects.get(bl[1] ?? '');
-      return p === undefined ? notFound() : json(await backlogOf(p));
+      const t = target(bl[1] ?? '');
+      if (t === null) return notFound();
+      if (t.kind === 'peer') return t.f.forward(`/projects/${t.pid}/backlog`, url.search);
+      return json(await backlogOf(t.p));
     }
 
     // A brief's or plan's text. The slug is checked (on the raw path, never decoded) before any
     // path is built, and the file is read only as a regular file inside factory/.
     const f = pathname.match(/^\/projects\/([^/]+)\/(briefs|plans)\/([^/]+)$/);
     if (f !== null) {
-      const p = projects.get(f[1] ?? '');
+      const t = target(f[1] ?? '');
       const slug = f[3] ?? '';
-      if (p === undefined || !isBacklogSlug(slug)) return notFound();
+      if (t === null || !isBacklogSlug(slug)) return notFound();
+      if (t.kind === 'peer') return t.f.forward(`/projects/${t.pid}/${f[2] ?? ''}/${slug}`, url.search);
+      const p = t.p;
       const path = `${f[2] === 'briefs' ? 'briefs' : 'epics'}/${slug}.md`;
       const body = await readInside(p, path);
       return body === null ? notFound() : json({ path, text: body });
@@ -966,13 +1179,16 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     fetch: handle,
   });
   boundPort = server.port ?? 0;
+  await reloadPeers();
 
   return {
     url: `http://${HOSTNAME}:${server.port}`,
     async stop() {
       stopped = true;
       if (registryTimer !== null) clearTimeout(registryTimer);
-      registryWatcher?.close();
+      if (peersTimer !== null) clearTimeout(peersTimer);
+      for (const w of homeWatchers) w.close();
+      for (const f of followers) f.stop();
       if (releaseTimer !== null) clearTimeout(releaseTimer);
       for (const w of cloneWatchers) w.close();
       cloneWatchers.clear();

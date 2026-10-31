@@ -1,20 +1,25 @@
 // `factory service` (docs/contract/v1.md "CLI" → "`service`"): makes the Andon service a per-user OS
 // service, owned by the OS service manager only, and starts, stops, restarts, and reports on it:
 //   service install     write the unit, enable it, and start it (again: rewrite it and restart)
+//   service install --tailnet   the same, after publishing it on the tailnet with `tailscale serve`
 //   service uninstall   stop and disable it and remove the unit; ~/.andon (the registry) stays
 //   service start | stop | restart   pass through to launchctl / systemctl --user
 //   service status      installed, running (pid), the URL, the running and on-disk release, the logs
 //   service run         the service in the foreground, for this CLI's tree: what the unit runs
 // macOS: a launchd LaunchAgent, label `dev.factory.andon`, in `gui/<uid>`. Linux: a systemd `--user`
 // unit, `andon.service`. Nothing runs `sudo`, and lingering is only reported, never changed.
+// `--tailnet` publishes the loopback service with `tailscale serve --https=<port>` and records the
+// machine's MagicDNS name in the unit (`ANDON_TAILNET_HOST`), which the service's guard then accepts;
+// `install` without it, and `uninstall`, remove that serve entry. Only that port's entry is touched.
 // Everything that touches the machine (the platform, home, uid, env, the process runner, the
 // port-holder lookup, the filesystem, the HTTP probe, and the service itself) comes in through
 // `ServiceHost`, so this module renders and decides the same on any machine; `servicehost.ts` is
 // the real one.
 import { dirname, isAbsolute, join } from 'node:path';
+import { isTailnetHost } from '@factory/andon-service/entry';
 import type { Tree } from '@factory/andon-service/entry';
 
-export const SERVICE_USAGE = 'usage: service install|uninstall|start|stop|restart|status|run';
+export const SERVICE_USAGE = 'usage: service install [--tailnet]|uninstall|start|stop|restart|status|run';
 /** The launchd label, and the plist's name without `.plist`. */
 export const LABEL = 'dev.factory.andon';
 /** The systemd `--user` unit's name. */
@@ -23,6 +28,10 @@ export const UNIT = 'andon.service';
 export const DEFAULT_PORT = 8766;
 /** What `install` prints when lingering is off on Linux; the CLI never runs it. */
 export const LINGER_HINT = `hint: lingering is off, so ${UNIT} stops when you log out; to keep it running, run: loginctl enable-linger`;
+/** The macOS app bundle's `tailscale` CLI, used when `tailscale` isn't on PATH. */
+export const TAILSCALE_APP = '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
+/** What `install --tailnet` prints, and stops, when Linux's `tailscale serve` needs an operator; the CLI never runs it. `$USER` is literal, for the shell. */
+export const OPERATOR_LINE = 'service: tailscale serve needs operator permission on this machine; run once: sudo tailscale set --operator=$USER, then run factory service install --tailnet again';
 
 export interface Ran {
   code: number;
@@ -55,13 +64,31 @@ export interface ServiceHost {
   systemd(): Promise<boolean>;
   /** The pid listening on `127.0.0.1:<port>`, or null when nothing is. */
   portHolder(port: number): Promise<number | null>;
+  /** The `tailscale` CLI's path (on PATH, else on macOS the app bundle's), or null when there is none. Runs no command. */
+  tailscale(): Promise<string | null>;
   fs: ServiceFs;
-  /** GET `url` and parse its JSON; throws when nothing answers or the answer isn't a 2xx. */
-  getJson(url: string): Promise<unknown>;
+  /** This machine's OS hostname (`os.hostname()`), for the machine name when no tailnet host is recorded. */
+  hostname: string;
+  /**
+   * GET `url` and parse its JSON, following no redirect, within `timeoutMs` (default 2000). Throws a
+   * `GetJsonError` when the answer is a redirect, any other non-2xx, or not JSON, and the transport's
+   * error when nothing answers.
+   */
+  getJson(url: string, timeoutMs?: number): Promise<unknown>;
   sleep(ms: number): Promise<void>;
   /** Starts the Andon service in this process for `tree` (entry.ts `serve`). */
   serve(tree: Tree): Promise<void>;
   stdout(line: string): void;
+}
+
+/** Why `getJson` refused an answer: a 3xx (never followed), another non-2xx status, or a body that isn't JSON. */
+export class GetJsonError extends Error {
+  constructor(
+    readonly kind: 'redirect' | 'status' | 'not json',
+    readonly status: number,
+  ) {
+    super(kind === 'redirect' ? `redirect (HTTP ${status}) refused` : kind === 'status' ? `HTTP ${status}` : 'not JSON');
+  }
 }
 
 // ---- the platform ----
@@ -118,13 +145,21 @@ export const systemctl = {
 /** The one `loginctl` argv the CLI runs: a read of the user's lingering setting. */
 export const lingerQuery = (uid: number): string[] => ['loginctl', 'show-user', String(uid), '--property=Linger', '--value'];
 
+/** Every `tailscale` argv the CLI runs, for the CLI at `bin`. Only the `--https=<port>` entry is ever changed. */
+export const tailscale = {
+  status: (bin: string): string[] => [bin, 'status', '--json'],
+  serveStatus: (bin: string): string[] => [bin, 'serve', 'status', '--json'],
+  serve: (bin: string, port: number): string[] => [bin, 'serve', '--bg', `--https=${port}`, `http://127.0.0.1:${port}`],
+  off: (bin: string, port: number): string[] => [bin, 'serve', `--https=${port}`, 'off'],
+};
+
 // ---- the unit ----
 
 export interface UnitSpec {
   factory: string; // the absolute `factory` path the unit runs `service run` with
   bun: string; // the absolute `bun` path: the unit's program, and first on its PATH
   home: string;
-  env: { ANDON_PORT?: string; ANDON_HOME?: string }; // recorded only when set at install
+  env: { ANDON_PORT?: string; ANDON_HOME?: string; ANDON_TAILNET_HOST?: string }; // recorded only when set at install (the tailnet host: only by `install --tailnet`)
 }
 
 // launchd and systemd don't see the login shell's PATH: the unit's PATH is the installing bun's
@@ -138,11 +173,12 @@ export function unitPathVar(kind: 'launchd' | 'systemd', bun: string): string {
   return [...new Set([dirname(bun), ...SYSTEM_PATH[kind]])].join(':');
 }
 
-/** The unit's environment, in a fixed order: PATH, then ANDON_PORT and ANDON_HOME when set. */
+/** The unit's environment, in a fixed order: PATH, then ANDON_PORT, ANDON_HOME, and ANDON_TAILNET_HOST when set. */
 function unitEnv(kind: 'launchd' | 'systemd', spec: UnitSpec): [string, string][] {
   const out: [string, string][] = [['PATH', unitPathVar(kind, spec.bun)]];
   if (spec.env.ANDON_PORT !== undefined) out.push(['ANDON_PORT', spec.env.ANDON_PORT]);
   if (spec.env.ANDON_HOME !== undefined) out.push(['ANDON_HOME', spec.env.ANDON_HOME]);
+  if (spec.env.ANDON_TAILNET_HOST !== undefined) out.push(['ANDON_TAILNET_HOST', spec.env.ANDON_TAILNET_HOST]);
   return out;
 }
 
@@ -217,6 +253,12 @@ export function renderUnit(spec: UnitSpec): string {
 export function recordedPort(text: string): number | null {
   const m = /<key>ANDON_PORT<\/key>\s*<string>(\d+)<\/string>/.exec(text) ?? /^Environment="ANDON_PORT=(\d+)"$/m.exec(text);
   return m?.[1] === undefined ? null : Number(m[1]);
+}
+
+/** The ANDON_TAILNET_HOST a unit file records, or null when it records none. */
+export function recordedTailnetHost(text: string): string | null {
+  const m = /<key>ANDON_TAILNET_HOST<\/key>\s*<string>([^<]+)<\/string>/.exec(text) ?? /^Environment="ANDON_TAILNET_HOST=([^"]+)"$/m.exec(text);
+  return m?.[1] ?? null;
 }
 
 // ---- checks ----
@@ -309,19 +351,89 @@ async function bootout(host: ServiceHost, uid: number): Promise<void> {
 
 const named = (m: Manager): string => (m.kind === 'launchd' ? LABEL : UNIT);
 const urlOf = (port: number): string => `http://127.0.0.1:${port}/`;
+const tailnetUrlOf = (name: string, port: number): string => `https://${name}:${port}/`;
+
+// ---- the tailnet ----
+
+const get = (v: unknown, k: string): unknown => (typeof v === 'object' && v !== null && !Array.isArray(v) ? Reflect.get(v, k) : undefined);
+
+function parseJson(text: string): unknown {
+  try {
+    const v: unknown = JSON.parse(text);
+    return v;
+  } catch {
+    return undefined;
+  }
+}
+
+/** What `tailscale status --json` says about this machine: whether it is up, its MagicDNS name, and whether that name can have an HTTPS certificate. */
+export type TailnetSelf = { ok: true; name: string } | { ok: false; reason: string };
+
+/** Reads `tailscale status --json`: `BackendState` must be `Running`, `Self.DNSName` (trailing dot stripped, lowercased) a DNS name, and in `CertDomains`. */
+export function parseTailscaleStatus(stdout: string): TailnetSelf {
+  const v = parseJson(stdout);
+  if (typeof v !== 'object' || v === null) return { ok: false, reason: 'service: tailscale status --json did not print a JSON object' };
+  const state = get(v, 'BackendState');
+  if (state !== 'Running') {
+    return { ok: false, reason: `service: Tailscale is not running or logged out (BackendState ${typeof state === 'string' ? state : 'unknown'}); connect it, then run factory service install --tailnet again` };
+  }
+  const dns = get(get(v, 'Self'), 'DNSName');
+  const name = typeof dns === 'string' ? dns.replace(/\.$/, '').toLowerCase() : '';
+  if (!isTailnetHost(name)) return { ok: false, reason: `service: Tailscale reports no MagicDNS name for this machine (Self.DNSName ${JSON.stringify(dns ?? null)}); turn on MagicDNS for the tailnet` };
+  const certs = get(v, 'CertDomains');
+  const listed = Array.isArray(certs) && certs.some((c) => typeof c === 'string' && c.replace(/\.$/, '').toLowerCase() === name);
+  if (!listed) return { ok: false, reason: `service: HTTPS certificates are not enabled on this tailnet (CertDomains lacks ${name}); enable HTTPS in the Tailscale admin console, then run factory service install --tailnet again` };
+  return { ok: true, name };
+}
+
+/** Whether `tailscale serve status --json` shows an entry on HTTPS port `port` (a `TCP` port, or a `Web` `<host>:<port>`); null when it isn't JSON. */
+export function hasServeEntry(stdout: string, port: number): boolean | null {
+  const v = parseJson(stdout);
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
+  const tcp = get(v, 'TCP');
+  if (get(tcp, String(port)) !== undefined) return true;
+  const web = get(v, 'Web');
+  return typeof web === 'object' && web !== null && Object.keys(web).some((k) => k.endsWith(`:${port}`));
+}
+
+async function tailscaleBin(host: ServiceHost, why: string): Promise<string> {
+  const bin = await host.tailscale();
+  if (bin !== null) return bin;
+  const where = host.platform === 'darwin' ? `not on PATH, and not at ${TAILSCALE_APP}` : 'not on PATH';
+  throw new Error(`service: no tailscale CLI found (${where}); ${why}`);
+}
+
+/** Whether the `--https=<port>` serve entry is there, read from `tailscale serve status --json` (a read). */
+async function serveEntry(host: ServiceHost, bin: string, port: number): Promise<boolean> {
+  const argv = tailscale.serveStatus(bin);
+  const r = await must(host, argv);
+  const has = hasServeEntry(r.stdout, port);
+  if (has === null) throw new Error(`service: ${argv.join(' ')} did not print a JSON object`);
+  return has;
+}
+
+/** Removes the `--https=<port>` serve entry when `tailscale serve status --json` shows it; true when it removed one. */
+async function removeServeEntry(host: ServiceHost, bin: string, port: number): Promise<boolean> {
+  if (!(await serveEntry(host, bin, port))) return false;
+  await must(host, tailscale.off(bin, port));
+  return true;
+}
+
+const OPERATOR = /operator|access denied/i;
+
+/** Publishes `127.0.0.1:<port>` on HTTPS port `<port>`. On Linux, a denial for want of an operator is the one `sudo tailscale set --operator=$USER` line. */
+async function makeServeEntry(host: ServiceHost, bin: string, port: number): Promise<void> {
+  const argv = tailscale.serve(bin, port);
+  const r = await host.run(argv);
+  if (r.code === 0) return;
+  if (host.platform === 'linux' && OPERATOR.test(`${r.stderr}\n${r.stdout}`)) throw new Error(OPERATOR_LINE);
+  throw new Error(`service: ${argv.join(' ')} failed: ${lastLine(r.stderr) || lastLine(r.stdout) || `exit ${r.code}`}`);
+}
 
 // ---- the subcommands ----
 
-async function install(host: ServiceHost, m: Manager): Promise<void> {
-  const spec = unitSpec(host);
-  const port = envPort(host.env) ?? DEFAULT_PORT;
-  // A port held by anything but the installed unit's service (an app-spawned or terminal one)
-  // would make the new unit crash-loop: refuse, writing nothing and changing nothing.
-  const holder = await host.portHolder(port);
-  if (holder !== null && holder !== (await unitState(host, m)).pid) {
-    throw new Error(`service: port ${port} is held by pid ${holder}, not the installed Andon service; stop it, then run factory service install again`);
-  }
-  const existed = await host.fs.exists(m.unitPath);
+/** Writes the unit and (re)starts it through the service manager. */
+async function writeAndStart(host: ServiceHost, m: Manager, spec: UnitSpec, existed: boolean): Promise<void> {
   if (m.kind === 'launchd') {
     await host.fs.mkdir(dirname(logPath(host.home))); // launchd opens the log but makes no directory
     await host.fs.write(m.unitPath, renderPlist(spec));
@@ -334,8 +446,65 @@ async function install(host: ServiceHost, m: Manager): Promise<void> {
     await must(host, systemctl.enableNow());
     if (existed) await must(host, systemctl.restart());
   }
+}
+
+async function install(host: ServiceHost, m: Manager, tailnet: boolean): Promise<void> {
+  const spec = unitSpec(host);
+  const port = envPort(host.env) ?? DEFAULT_PORT;
+  // A port held by anything but the installed unit's service (an app-spawned or terminal one)
+  // would make the new unit crash-loop: refuse, writing nothing and changing nothing.
+  const holder = await host.portHolder(port);
+  if (holder !== null && holder !== (await unitState(host, m)).pid) {
+    throw new Error(`service: port ${port} is held by pid ${holder}, not the installed Andon service; stop it, then run factory service install again`);
+  }
+  const old = await host.fs.read(m.unitPath);
+  const existed = old !== null || (await host.fs.exists(m.unitPath));
+  const oldName = old === null ? null : recordedTailnetHost(old);
+  const oldPort = old === null ? DEFAULT_PORT : (recordedPort(old) ?? DEFAULT_PORT);
+
+  let name: string | null = null;
+  if (tailnet) {
+    // Every tailnet refusal comes before anything is written or changed.
+    const bin = await tailscaleBin(host, 'install Tailscale, then run factory service install --tailnet again');
+    const self = parseTailscaleStatus((await must(host, tailscale.status(bin))).stdout);
+    if (!self.ok) throw new Error(self.reason);
+    name = self.name;
+    spec.env.ANDON_TAILNET_HOST = name;
+    // The entry is made before the unit is written; when a later unit step fails, the entry this
+    // install made is removed again and the old unit put back, so a recorded name and its entry
+    // never part. An entry that was already there (a reinstall) is left as it was.
+    const had = await serveEntry(host, bin, port);
+    await makeServeEntry(host, bin, port);
+    try {
+      await writeAndStart(host, m, spec, existed);
+    } catch (e) {
+      try {
+        if (old === null) await host.fs.remove(m.unitPath);
+        else await host.fs.write(m.unitPath, old);
+      } catch {
+        // the unit step's failure is the one to report
+      }
+      const why = e instanceof Error ? e.message : String(e);
+      if (!had && (await host.run(tailscale.off(bin, port))).code !== 0) throw new Error(`${why}; removing the serve entry again failed too: run ${tailscale.off('tailscale', port).join(' ')}`);
+      throw e;
+    }
+    // The old unit's entry on another port is this install's to remove, now that nothing serves it.
+    if (oldName !== null && oldPort !== port) {
+      try {
+        await removeServeEntry(host, bin, oldPort);
+      } catch (e) {
+        throw new Error(`${e instanceof Error ? e.message : String(e)}; the service is installed on port ${port}, but the old serve entry on https port ${oldPort} is still there: run ${tailscale.off('tailscale', oldPort).join(' ')}`);
+      }
+    }
+  } else {
+    // Turning tailnet access off: the entry goes before the unit stops recording its name.
+    if (oldName !== null) await removeServeEntry(host, await tailscaleBin(host, `remove the serve entry on https port ${oldPort} (tailscale serve --https=${oldPort} off), then run factory service install again`), oldPort);
+    await writeAndStart(host, m, spec, existed);
+  }
   host.stdout(`${existed ? 'reinstalled' : 'installed'} ${named(m)}: ${m.unitPath}`);
   host.stdout(`Andon service: ${urlOf(port)} (runs ${spec.factory} service run)`);
+  if (name !== null) host.stdout(`tailnet: ${tailnetUrlOf(name, port)}`);
+  else if (oldName !== null) host.stdout('tailnet: off');
   if (m.kind === 'systemd') {
     const linger = await host.run(lingerQuery(host.uid));
     if (linger.code === 0 && linger.stdout.trim() === 'no') host.stdout(LINGER_HINT);
@@ -343,7 +512,18 @@ async function install(host: ServiceHost, m: Manager): Promise<void> {
 }
 
 async function uninstall(host: ServiceHost, m: Manager): Promise<void> {
-  const existed = await host.fs.exists(m.unitPath);
+  const text = await host.fs.read(m.unitPath);
+  const name = text === null ? null : recordedTailnetHost(text);
+  if (text !== null && name !== null) {
+    // The serve entry goes first; when it can't be removed, the unit (and its record of it) stays.
+    const port = recordedPort(text) ?? DEFAULT_PORT;
+    try {
+      await removeServeEntry(host, await tailscaleBin(host, `remove the serve entry on https port ${port} (tailscale serve --https=${port} off)`), port);
+    } catch (e) {
+      throw new Error(`${e instanceof Error ? e.message : String(e)}; the unit is kept`);
+    }
+  }
+  const existed = text !== null || (await host.fs.exists(m.unitPath));
   if (m.kind === 'launchd') {
     const loaded = (await unitState(host, m)).loaded;
     if (!existed && !loaded) return host.stdout(`not installed: ${named(m)}`);
@@ -412,6 +592,8 @@ async function status(host: ServiceHost, m: Manager): Promise<number> {
   host.stdout(`service: ${manager}, ${text === null ? 'not installed' : `installed (${m.unitPath})`}`);
   host.stdout(`running: ${state.pid === null ? 'no' : `pid ${state.pid}${body === null ? ', but not answering' : ''}`}`);
   host.stdout(`url: ${urlOf(port)}`);
+  const name = text === null ? null : recordedTailnetHost(text);
+  if (name !== null) host.stdout(`tailnet: ${tailnetUrlOf(name, port)}`);
   host.stdout(releaseLine(body));
   host.stdout(`logs: ${m.kind === 'launchd' ? logPath(host.home) : JOURNAL}`);
   return running ? 0 : 1;
@@ -424,13 +606,14 @@ async function status(host: ServiceHost, m: Manager): Promise<number> {
  */
 export async function service(rest: readonly string[], host: ServiceHost, tree: Tree): Promise<number> {
   const [sub, ...args] = rest;
-  if (args.length > 0) throw new Error(SERVICE_USAGE);
+  const tailnet = sub === 'install' && args.length === 1 && args[0] === '--tailnet';
+  if (args.length > 0 && !tailnet) throw new Error(SERVICE_USAGE);
   switch (sub) {
     case 'run':
       await host.serve(tree);
       return 0;
     case 'install':
-      await install(host, await manager(host));
+      await install(host, await manager(host), tailnet);
       return 0;
     case 'uninstall':
       await uninstall(host, await manager(host));

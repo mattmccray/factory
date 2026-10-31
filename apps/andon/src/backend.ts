@@ -84,6 +84,7 @@ import type { HandoffOutcome } from './handoff';
 import { backlogPath, needsBacklog, startArgv, startShape, startWorkFrom } from './startwork';
 import { APP_NAMES, BUNDLE_IDS, GHOSTTY_APP, OPEN_IN_APPS, VSCODE_APP, appFallbacks, exitReason, failureText, mdfindHit, mdfindQuery, menuProject, menuRequest, projectMenuItems, resolveAction, t3Candidates } from './projectmenu';
 import type { AppIcons, Availability, MenuProject, OpenInApp, ProjectAction } from './projectmenu';
+import { isRemote } from './state';
 
 // ---- the Tiny this adapter uses ----
 // Tiny's and txiki's own declarations (vendored unedited from Tiny's template; `tinyjs
@@ -587,7 +588,7 @@ const listedProjects = (): readonly MenuProject[] => andon?.state().projects ?? 
 /** The last app check; null until the first one finishes. */
 let apps: Availability | null = null;
 /** The project menu set now (its project id and the request that set it), or null when another menu (or none) is. */
-let armedProject: { pid: string; seq: number } | null = null;
+let armedProject: { pid: string; machine: string | null; seq: number } | null = null;
 /** Bumped by every request (project, job, or epic), so a slower app check or board fetch can't set an older menu. */
 let menuSeq = 0;
 /** The job menu set now (its `<pid>/<job id>` and whether Open in T3 Code is enabled), or null when
@@ -788,7 +789,7 @@ function noteFound(app: MacApp, now: Record<OpenInApp, boolean>): void {
 function rearmProjectMenu(app: MacApp): void {
   const armed = armedProject;
   if (armed === null || armed.seq !== menuSeq) return;
-  app.menu.setContext(projectMenuItems(armed.pid, apps ?? NO_APPS, icons));
+  app.menu.setContext(projectMenuItems(armed.pid, apps ?? NO_APPS, icons, armed.machine));
 }
 
 const sameApps = (a: Availability, b: Availability): boolean => a.vscode === b.vscode && a.ghostty === b.ghostty && a.t3 === b.t3;
@@ -811,12 +812,12 @@ export async function showProjectMenu(params: unknown, app: MacApp, projects: re
     app.menu.setContext(null);
     return;
   }
-  armedProject = { pid: p.id, seq };
+  armedProject = { pid: p.id, machine: p.machine, seq };
   const known = apps;
-  if (known !== null) app.menu.setContext(projectMenuItems(p.id, known, icons));
+  if (known !== null) app.menu.setContext(projectMenuItems(p.id, known, icons, p.machine));
   const fresh = await refreshApps(app);
   if (seq !== menuSeq) return;
-  if (known === null || !sameApps(known, fresh)) app.menu.setContext(projectMenuItems(p.id, fresh, icons));
+  if (known === null || !sameApps(known, fresh)) app.menu.setContext(projectMenuItems(p.id, fresh, icons, p.machine));
 }
 
 /** The failure reason of an action, or null when it worked. */
@@ -912,7 +913,9 @@ export async function setSetting(params: unknown, app: MacApp, meta: unknown): P
 // has already copied its own command; this builds the command again from the checked request, and,
 // as the T3 Code setting says, opens it as a draft (by the project's GitHub origin) or sends it to a
 // new thread (in the project folder), each as an argv with no shell. A request that fails a check
-// does nothing and answers null.
+// does nothing and answers null. A remote project's (another machine's) request that passes its
+// checks answers "copy-only" in every mode: its root isn't on this Mac, so nothing reads its
+// `origin` or runs anything with it (starting threads elsewhere is a later member's).
 
 /** What the hand-off needs from the host; tests pass fakes. */
 export interface HandoffHost {
@@ -943,15 +946,16 @@ let handing = false;
 /**
  * The main window's hand-off: the request checked (handoff.ts `handoffRequest`), then, by the T3 Code
  * setting, a draft opened (`open <prompt link>`, only with a GitHub `repo`) or the command sent
- * (`<t3> thread start --title "<action> <job>" <root> <command>`). Copy mode or no `t3`: nothing
- * runs, "copy-only". A failed open or send notifies, and answers "copy-only" (the page copied).
- * Null, with nothing run, opened, or notified, for any other window, a request that fails a check,
- * or a hand-off already running.
+ * (`<t3> thread start --title "<action> <job>" <root> <command>`). Copy mode, no `t3`, or a remote
+ * project: nothing runs, "copy-only". A failed open or send notifies, and answers "copy-only" (the
+ * page copied). Null, with nothing run, opened, or notified, for any other window, a request that
+ * fails a check, or a hand-off already running.
  */
 export async function handOff(params: unknown, app: MacApp, meta: unknown, host: HandoffHost = hostHandoff): Promise<HandoffOutcome | null> {
   if (!fromMainWindow(meta)) return null;
   const h = handoffRequest(params, host.projects());
   if (h === null || handing) return null;
+  if (isRemote(h.project)) return 'copy-only'; // its root is on another machine
   handing = true;
   try {
     const mode = await readHandoffMode(app);
@@ -979,7 +983,8 @@ export async function handOff(params: unknown, app: MacApp, meta: unknown, host:
 // Answered only when Tiny's api meta names the main window, like the hand-off. The page has already
 // copied its own command; this checks the request (startwork.ts), reads the service's live
 // `GET /projects/<pid>/backlog` over HTTP when the action names an item, builds the command again
-// from the service's copy, and then drafts, sends, or only copies exactly as `handOff` does.
+// from the service's copy, and then drafts, sends, or only copies exactly as `handOff` does (a remote
+// project's start, once checked, only copies: the backlog is read through the hub, as any read is).
 
 /** What starting work needs from the host: the hand-off's, plus the project's live backlog. */
 export interface StartWorkHost extends HandoffHost {
@@ -1003,8 +1008,8 @@ let starting = false;
  * The main window's start: the request's shape checked (startwork.ts `startShape`), the backlog
  * fetched when its action names an item, the item checked in its group and the command built
  * (`startWorkFrom`), then, by the T3 Code setting, a draft opened (`open <prompt link>`, only with a
- * GitHub `repo`) or the command sent (`<t3> thread start --title <title> <root> <command>`). Copy mode
- * or no `t3`: nothing runs, "copy-only". A failed open or send notifies, and answers "copy-only".
+ * GitHub `repo`) or the command sent (`<t3> thread start --title <title> <root> <command>`). Copy mode,
+ * no `t3`, or a remote project: nothing runs, "copy-only". A failed open or send notifies, and answers "copy-only".
  * Null, with nothing run, opened, or notified, for any other window, a request that fails a check, a
  * backlog fetch that fails, or a start already running.
  */
@@ -1025,6 +1030,7 @@ export async function startWork(params: unknown, app: MacApp, meta: unknown, hos
     }
     const w = startWorkFrom(shape, backlog);
     if (w === null) return null;
+    if (isRemote(w.project)) return 'copy-only'; // its root is on another machine
     const mode = await readHandoffMode(app);
     if (mode === 'copy') return 'copy-only';
     const t3 = await host.findT3();

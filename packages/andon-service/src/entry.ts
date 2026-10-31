@@ -2,10 +2,16 @@
 // `release-main.ts` (from the release bundle), and the factory CLI's `factory service run` (from
 // either). Each passes the tree it runs in: where the built Andon UI is, and the root and version
 // file of the release it reports. Listens on 127.0.0.1:$ANDON_PORT (default 8766) and reads the
-// registry at $ANDON_HOME/projects.json (default ~/.andon/projects.json).
+// registry at $ANDON_HOME/projects.json (default ~/.andon/projects.json). With $ANDON_TAILNET_HOST
+// (recorded in the unit by `factory service install --tailnet`), the guard also accepts that name.
+// The machine name is that host's first label, else the OS hostname's (`machineName`, shared with
+// the CLI); the peers it follows are listed in $ANDON_HOME/peers.json, beside the registry.
+import { hostname } from 'node:os';
 import { join } from 'node:path';
-import { registryPath } from '@factory/contract';
-import { startService } from './index';
+import { machineName, peersPath, registryPath } from '@factory/contract';
+import { isTailnetHost, startService } from './index';
+
+export { isTailnetHost } from './index';
 import { BUNDLE_VERSION_FILE, SOURCE_VERSION_FILE } from './release';
 
 export interface Tree {
@@ -29,9 +35,18 @@ export async function serve(tree: Tree): Promise<void> {
     console.error(`andon: ANDON_PORT must be a port number (0-65535), got ${JSON.stringify(raw)}`);
     process.exit(1);
   }
+  const tailnetHost = process.env.ANDON_TAILNET_HOST;
+  if (tailnetHost !== undefined && !isTailnetHost(tailnetHost)) {
+    console.error(`andon: ANDON_TAILNET_HOST must be a lowercase DNS name, got ${JSON.stringify(tailnetHost)}`);
+    process.exit(1);
+  }
   const registry = registryPath(process.env.ANDON_HOME);
-  const service = await startService({ port, registryPath: registry, ...tree });
+  const peers = peersPath(process.env.ANDON_HOME);
+  const machine = machineName(tailnetHost ?? hostname());
+  const service = await startService({ port, registryPath: registry, peersPath: peers, machine, ...tree, ...(tailnetHost === undefined ? {} : { tailnetHost }) });
   console.log(`Andon service: ${service.url} (registry ${registry})`);
+  if (tailnetHost !== undefined) console.log(`Andon service: also https://${tailnetHost}:${new URL(service.url).port}/ through tailscale serve`);
+  console.log(`Andon service: machine ${machine}, following the peers in ${peers}`);
 
   const shutdown = (): void => {
     void service.stop().then(() => process.exit(0));

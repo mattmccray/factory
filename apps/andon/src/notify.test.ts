@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { diffBoard, diffEpics, epicNoticeText, noBaselines, noEpicBaselines, noticeText, retainProjects } from './notify';
+import { diffBoard, diffEpics, epicNoticeText, noBaselines, noEpicBaselines, noticeText, projectLabel, retainProjects } from './notify';
 import type { Baselines, Notice } from './notify';
 import type { AppEpic, AppJob } from './state';
 
@@ -120,4 +120,35 @@ test("056 AC8: a project's first board notifies nothing, epics included; baselin
   let base = diffEpics(noEpicBaselines(), P, [epic('auth', 'running')]).base;
   base = retainProjects(base, [Q]);
   expect(diffEpics(base, P, [epic('auth', 'landed')]).notices).toEqual([]); // dropped and back: a baseline again
+});
+
+// ---- machines (081) ----
+
+const S = '1a2b3c4d5e6f@studio';
+
+test('081 AC3: a remote project is labeled `<name> · <machine>`; a local one by its name, as today', () => {
+  expect(projectLabel({ name: 'factory', machine: 'studio' })).toBe('factory · studio');
+  expect(projectLabel({ name: '', machine: 'studio' })).toBe('studio');
+  expect(projectLabel({ name: 'factory', machine: null })).toBe('factory');
+  expect(projectLabel({ name: '', machine: null })).toBe('');
+});
+
+test('081 AC3: a remote job or epic notice names the machine in its subtitle; titles and bodies are unchanged', () => {
+  const label = projectLabel({ name: 'factory', machine: 'studio' });
+  const base = diffBoard(noBaselines(), S, [job('081-x', 'review'), job('082-y', 'approved')]).base;
+  const r = diffBoard(base, S, [job('081-x', 'needs-human', 'round limit'), job('082-y', 'merged', 'merged abc1234')]);
+  expect(r.notices.map((n) => noticeText(n, label))).toEqual([
+    { title: 'Title 081-x needs a human', subtitle: 'factory · studio · 081-x', body: 'round limit' },
+    { title: 'Title 082-y merged', subtitle: 'factory · studio · 082-y', body: 'merged abc1234' },
+  ]);
+  const eBase = diffEpics(noEpicBaselines(), S, [epic('auth', 'landing'), epic('billing', 'running')]).base;
+  const e = diffEpics(eBase, S, [epic('auth', 'landed', null, '', 2), epic('billing', 'waiting', 'you', 'gate red')]);
+  expect(e.notices.map((n) => epicNoticeText(n, label))).toEqual([
+    { title: 'Epic landed', subtitle: 'factory · studio · Auth rewrite', body: 'Auth rewrite: 2 members' },
+    { title: 'Epic waiting on you', subtitle: 'factory · studio · billing', body: 'gate red' },
+  ]);
+  // the same notices on a local project read as today
+  const local = projectLabel({ name: 'factory', machine: null });
+  expect(r.notices.map((n) => noticeText(n, local).subtitle)).toEqual(['factory · 081-x', 'factory · 082-y']);
+  expect(e.notices.map((n) => epicNoticeText(n, local).subtitle)).toEqual(['factory · Auth rewrite', 'factory · billing']);
 });

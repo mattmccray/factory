@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { HOUR, NOW, before, job } from './fixtures';
 import { abbr, chipLabel, chipTime, clock, fmt, fmtShort, reviewerSpan } from './time';
+import { clockTime } from './time';
+import { localAt } from './fixtures';
 
 describe('formatting', () => {
   test('fmt and fmtShort match the vendored dashboard', () => {
@@ -60,5 +62,16 @@ describe('token chip labels (025 AC6)', () => {
     expect(['security', 'contract', 'code', 'ui', 'ux'].map(chipLabel)).toEqual(['se', 'ct', 'cd', 'ui', 'ux']);
     expect(['perf', 'a11y', 'docs-site', 'q'].map(chipLabel)).toEqual(['pe', 'a1', 'do', 'q']);
     expect(abbr('security')).toBe('SEC'); // the drawer keeps abbr
+  });
+});
+
+describe("a machine's since and as-of time (brief andon-machines-ui)", () => {
+  test('local 24-hour HH:MM today, with a short date before it otherwise', () => {
+    const now = localAt(16, 30);
+    expect(clockTime(localAt(14, 2), now)).toBe('14:02');
+    expect(clockTime(localAt(0, 5), now)).toBe('00:05');
+    expect(clockTime(localAt(23, 59), now)).toBe('23:59');
+    expect(clockTime(localAt(14, 2, 21), now)).toBe('Oct 21 14:02');
+    expect(clockTime(new Date(2025, 9, 22, 9, 7).getTime(), now)).toBe('Oct 22 09:07'); // a year ago is not today
   });
 });

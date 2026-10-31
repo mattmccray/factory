@@ -4,7 +4,8 @@
 // doesn't need a human to look at it, every sub-lane whose epic has none and doesn't wait on you,
 // and every lane left with neither.
 // Search also finds backlog items (brief andon-backlog-ui): queued and exploring items with a page
-// whose title matches, listed under the search field; they never dim or light the board.
+// whose title matches, listed under the search field; they never dim or light the board. Each names
+// its project by its label ("factory · studio" for a remote project; machines.ts).
 import { BACKLOG_HITS_MAX, docKey, pageOf } from './backlog';
 import type { BacklogHit, BacklogList } from './backlog';
 import { isEpicSettled, isSettled } from './board';
@@ -12,6 +13,7 @@ import type { BoardEpic, BoardJob } from './board';
 import { epicName } from './job';
 import type { Epic } from './job';
 import { isReviewFailed } from './lanes';
+import { projectLabel } from './machines';
 
 /** The query as matched: trimmed and lower-cased. Empty means no search. */
 export const normalize = (query: string): string => query.trim().toLowerCase();
@@ -86,7 +88,7 @@ export function needsFilter<P extends { id: string }>(projects: readonly P[], jo
  * backlogs whose title contains the query (as `normalize` reads it) and that has a page (a `text`
  * line has none), in project order, at most `BACKLOG_HITS_MAX`. An empty query has none.
  */
-export function backlogHits(projects: ReadonlyArray<{ id: string; name: string }>, lists: Readonly<Record<string, BacklogList>>, query: string): BacklogHit[] {
+export function backlogHits(projects: ReadonlyArray<{ id: string; name: string; remote?: string }>, lists: Readonly<Record<string, BacklogList>>, query: string): BacklogHit[] {
   const q = normalize(query);
   if (q === '') return [];
   const out: BacklogHit[] = [];
@@ -103,7 +105,7 @@ export function backlogHits(projects: ReadonlyArray<{ id: string; name: string }
         if (page === null || !item.title.toLowerCase().includes(q)) continue;
         const key = docKey(page);
         if (out.some((h) => h.key === key)) continue; // two lines naming one brief: one result
-        out.push({ key, title: item.title, project: p.name, kindLabel: page.kind === 'brief' ? 'Brief' : 'Epic', group, page });
+        out.push({ key, title: item.title, project: projectLabel(p), kindLabel: page.kind === 'brief' ? 'Brief' : 'Epic', group, page });
         if (out.length >= BACKLOG_HITS_MAX) return out;
       }
     }

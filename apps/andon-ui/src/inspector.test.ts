@@ -3,6 +3,15 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TIMING, groupsOf, pickFile } from './docs';
 import { HOUR, NOW, before, epic, inEpic, job, tag, tagEpic } from './fixtures';
+import { HUB, LOCAL_FACTORY, STUDIO_FACTORY, localAt, machineEntry, machinesBody } from './fixtures';
+import { jobHeader } from './inspector';
+import { epicPage as epicPageOf, settledRows as settledRowsOf } from './inspector';
+import { nowFor } from './machines';
+import { ALL, boardEpics, boardJobs } from './projects';
+import { applyEvent, emptyState } from './state';
+import type { UiState } from './state';
+import { summary, timingView } from './timing';
+import { clock } from './time';
 import {
   AUTO_HIDE_BELOW,
   INSPECTOR_DEFAULT,
@@ -337,5 +346,58 @@ describe('settled epics in the Settled sheet (056 AC7)', () => {
     expect(sheet).toContain('settledItems(settled, epics, project?.id ?? null)');
     const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
     expect(app).toMatch(/<SettledSheet[\s\S]*?onopenepic=\{openEpicPage\}/);
+  });
+});
+
+/** rocinante (the hub) and studio, each with a `factory`; studio's has a needs-human job and an epic. */
+function twoFactories(studio: Record<string, unknown> = machineEntry('studio')): UiState {
+  let s = applyEvent(emptyState(), 'projects', { projects: [LOCAL_FACTORY, STUDIO_FACTORY] });
+  const at = new Date(localAt(13, 50)).toISOString();
+  s = applyEvent(s, 'board', { project: LOCAL_FACTORY.id, config: {}, jobs: [{ id: '001-a', stage: 'build', startedAt: at, stageEnteredAt: at }] });
+  s = applyEvent(s, 'board', {
+    project: STUDIO_FACTORY.id,
+    config: {},
+    jobs: [{ id: '007-x', stage: 'needs-human', startedAt: new Date(localAt(12, 0)).toISOString(), stageEnteredAt: at, epic: 'auth', kind: 'member' }],
+    epics: [{ schema: 'factory/v1', slug: 'auth', branch: 'factory/epic/auth', target: 'main', plan: 'factory/epics/auth.md', planError: null, state: 'running', waitingOn: null, note: '', session: null, sha: null, members: [], generated: [], counts: {}, startedAt: new Date(localAt(11, 0)).toISOString(), endedAt: null, updated: at }],
+  });
+  return applyEvent(s, 'machines', machinesBody(machineEntry(HUB), studio));
+}
+
+describe('machines in the inspector (brief andon-machines-ui)', () => {
+  test("AC4: a remote job's header and crumbs name its machine; a local one's don't, and the two factories are told apart", () => {
+    const jobs = boardJobs(twoFactories(), ALL);
+    const remote = jobs.find((b) => b.project.id === STUDIO_FACTORY.id);
+    const local = jobs.find((b) => b.project.id === LOCAL_FACTORY.id);
+    if (remote === undefined || local === undefined) throw new Error('missing jobs');
+    expect(jobHeader(remote)).toEqual({ bar: 'factory · studio / 007-x', project: 'factory · studio' });
+    expect(jobHeader(local)).toEqual({ bar: 'factory / 001-a', project: 'factory' });
+    const e = boardEpics(twoFactories(), ALL)[0];
+    if (e === undefined) throw new Error('no epic');
+    expect(epicPageOf(e, [remote], localAt(14, 0)).project).toBe('factory · studio');
+    expect(settledRowsOf([remote, local], null).map((r) => r.project).sort()).toEqual(['factory', 'factory · studio']);
+    const src = readFileSync(join(import.meta.dir, 'Inspector.svelte'), 'utf8');
+    expect(src).toContain('<span class="lbl">{jobHeader(item).bar}</span>');
+    expect(src).toContain('<div class="crumbs"><span>{jobHeader(item).project}</span>');
+  });
+
+  test("AC5: a stale machine's job is timed at its as-of time: its card clock, timing summary, and timing view don't advance", () => {
+    const s = twoFactories(machineEntry('studio', 'down', new Date(localAt(14, 2)).toISOString()));
+    const remote = boardJobs(s, ALL).find((b) => b.project.id === STUDIO_FACTORY.id);
+    if (remote === undefined) throw new Error('no remote job');
+    const at = (now: number) => nowFor(s, STUDIO_FACTORY.id, now);
+    expect(at(localAt(16, 0))).toBe(localAt(14, 2));
+    expect(clock(remote.job, at(localAt(16, 0)))).toEqual(clock(remote.job, at(localAt(19, 0))));
+    expect(clock(remote.job, at(localAt(16, 0)))?.main).toBe('waiting 12m 0s');
+    expect(summary(remote.job, at(localAt(16, 0)))).toEqual(summary(remote.job, at(localAt(19, 0))));
+    expect(timingView(remote.job, at(localAt(16, 0)))).toEqual(timingView(remote.job, at(localAt(19, 0))));
+    expect(nowFor(s, LOCAL_FACTORY.id, localAt(16, 0))).toBe(localAt(16, 0)); // a local job counts from the clock
+    const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
+    expect(app).toContain('const inspectorNow = $derived(nowFor(ui, inspectorPid, now));');
+    expect(app).toContain('now={inspectorNow}');
+  });
+
+  test('AC1: with only the hub listed, the header carries no machine', () => {
+    const s = applyEvent(twoFactories(), 'machines', machinesBody(machineEntry(HUB)));
+    for (const b of boardJobs(s, ALL)) expect(jobHeader(b).project).toBe('factory');
   });
 });

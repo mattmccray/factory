@@ -38,6 +38,21 @@ export function ago(iso: string, now: number): string {
 /** A short local date and time, e.g. "Oct 22, 3:04 PM". */
 export const when = (t: number): string => new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+/**
+ * A machine's "since" or "as of" time (brief andon-machines-ui): local 24-hour "14:02", prefixed
+ * with a short date ("Oct 29 14:02") when it isn't today (by `now`'s local date).
+ */
+export function clockTime(t: number, now: number): string {
+  const d = new Date(t);
+  const today = new Date(now);
+  const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const same = d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();
+  return same ? hm : `${MONTHS[d.getMonth()] ?? ''} ${d.getDate()} ${hm}`;
+}
+
 export interface Clock {
   /** The left-hand timer: "<stage> · <time in stage>", "waiting <wait>", or a merged job's "total <t>". */
   main: string;

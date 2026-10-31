@@ -55,12 +55,14 @@ again comes back at the width last set; collapsible with the toolbar's sidebar b
   state: red needs-human, orange review failed, blue working, gray idle), the name, and a badge
   (red with the needs-human count, or gray with the active count, or none when idle). Selecting a
   project focuses it (section 7). This replaces today's project `<select>`, and the selection
-  still persists under the existing `andon.project` key.
+  still persists under the existing `andon.project` key. When the service follows other machines,
+  the projects sit under a heading per machine (section 16, "Machines").
 - **Footer**: the service connection on one line ("Connected · 12 projects", or "Connecting…" or
   "Unreachable"), with a green, gray, or red dot; it never wraps, and truncates with an ellipsis
   if it can't fit. It is 28px, aligned with the status bar: the same height, so their top
   dividers meet on one line. The hover tooltip names the service
   ("Connected to the Andon service"), the same text screen readers announce. This replaces the header's status.
+  With other machines followed, it also counts the machines and names any in trouble (section 16).
 - The mock-up's disabled "Reports" section (Weekly and Monthly ledger) is **left out** until the
   Ledger report exists.
 
@@ -470,7 +472,8 @@ in exploration.
 - The Ledger as a weekly, monthly, or project **report**. It's a later design (mock-up 03).
 - Running approve, rework, or abandon from Andon (a later exploration; see section 15).
 - The mock-up's Replay demo, and its fake menu bar and traffic lights.
-- Multi-machine Andon.
+- Multi-machine actions: sending an action to the machine that owns the project. Seeing every
+  machine's projects on one board is section 16.
 
 ## 15. Decisions (2026-10-26)
 
@@ -495,3 +498,58 @@ in exploration.
 
   Multi-machine follows decision 10 (`docs/decisions.md`): each machine's service owns its projects, and Andon sends
   each action to the owning service (over Tailscale or an SSH tunnel), with no central server.
+
+## 16. Machines (brief `andon-machines-ui`, 2026-10-30)
+
+A service that follows other machines (a *hub*; `docs/contract/v1.md`, "Andon service", "Peers")
+serves their projects beside its own, each with its `machine`, plus `GET /machines` and a
+`machines` event. The page still talks only to the service that served it. This section was added
+under the brief's contract call (approved by Matt, 2026-10-30); the rest of this design holds.
+
+**Local and remote.** The hub's own machine is the first `GET /machines` entry. A project is
+*remote* when its `machine` is another name; it is never guessed from its root. With no machine
+data (a service from before the hub, or before the first event), or a list of the hub alone (no
+peers), every project is local and nothing on the page names a machine: the sidebar, board, and
+footer are exactly as sections 3–15 describe.
+
+**Sidebar.** Under **Projects**, one heading per machine: the hub first, then the peers by name,
+each with its projects sorted by name under it (the rows keep the bare name; the heading tells
+same-named projects apart). A machine with no projects (a peer that was down when the hub started,
+or one in error) still gets its heading. The heading shows the machine's state after its name:
+- `live`: nothing;
+- `connecting`: a gray "connecting…";
+- `down`: a red "down since 14:02";
+- `error` from a peer that needs `factory upgrade`: a red "needs upgrade"; any other `error` (a
+  name clash, or not an Andon service): a red "error".
+
+The heading's tooltip and accessible description carry the machine's reason, when there is one,
+and its factory release, when known. Headings are not selectable and are never a keyboard stop.
+All Projects, its badge, the toolbar's counts, and Needs Me cover every machine. Times read as
+local 24-hour `HH:MM`, with a short date before them ("Oct 29 14:02") when not today.
+
+**One board, trouble first.** Lanes stay one list in the tier order of section 5, across every
+machine, never split by machine: a needs-human job on a peer sits in the top tier beside the hub's.
+A remote project is labeled "<name> · <machine>" ("factory · studio") wherever its name shows: the
+lane gutter, the inspector's bar and crumbs, search results, token popovers, the Settled sheet, the
+toolbar title when it is focused, and the Backlog sheet. Its reads go to the usual routes with its
+id (`<pid>@<machine>`, encoded); a down peer's failed read shows its reason as any read failure does.
+
+**Down and stale.** A machine's lanes are *stale* while it is `down`, and through the `connecting`
+that follows, until it is `live` again. A stale lane keeps its tier position, is dimmed, and reads
+"as of 14:02" in its gutter: the time it went down as the page last saw it (or, if the page opened
+while it was already connecting, the time it started connecting). Every live timer for its jobs
+(token and gutter times, the needs-human wait, popovers, the inspector's timers) is computed at that
+as-of time from the snapshot's timestamps, never counted on from the clock and never modeled. Once
+the machine is `live` again, its lanes count from the clock.
+
+**Footer.** With peers: "Connected · 3 machines · 12 projects", then each machine in trouble in
+sidebar order ("studio down", "agentbox needs upgrade", "agentbox error"), then the release part
+as section 3 and brief `andon-version-ui` describe. The trouble is red, and in a narrow sidebar the
+counts truncate before it does; hovering the text shows the whole line. The dot still tracks only
+the hub connection. In the inspector, a stale machine's job or epic adds "as of 14:02" to its timing line.
+
+**Actions.** The hand-off, Start Work, Run Next, and New Exploration controls stay for remote
+projects and name the project's id as for any project. When a remote action's copy succeeded and
+the outcome is `copy-only` or none (a browser, or a refused call), the toast reads "Copied. Run it
+on studio". `drafted`, `sent`, and `no-github-remote` read as section 8 and brief
+`t3-start-work` describe.

@@ -12,25 +12,31 @@ import {
   JOURNAL,
   LABEL,
   LINGER_HINT,
+  OPERATOR_LINE,
   SERVICE_USAGE,
+  TAILSCALE_APP,
   UNIT,
+  hasServeEntry,
   launchctl,
   launchdPath,
   lingerQuery,
   logPath,
   parseLaunchctlPrint,
   parseSystemctlShow,
+  parseTailscaleStatus,
   recordedPort,
+  recordedTailnetHost,
   releaseLine,
   renderPlist,
   renderUnit,
   service,
   systemctl,
   systemdPath,
+  tailscale,
   unitPathVar,
 } from './service';
 import type { Ran, ServiceHost } from './service';
-import { factoryCommand, lookupPortHolder, parseLsof, parseSs } from './servicehost';
+import { factoryCommand, findTailscale, lookupPortHolder, parseLsof, parseSs } from './servicehost';
 
 const HOME = '/Users/me';
 const FACTORY = '/Users/me/.bun/bin/factory';
@@ -62,10 +68,30 @@ interface World {
   release: unknown; // null: nothing answers
   failOn?: string; // an argv (joined) that exits 1
   paths?: Partial<Pick<ServiceHost, 'factory' | 'bun' | 'home'>>; // overrides FACTORY, BUN, HOME
+  /** The `tailscale` CLI's path (null: none on this machine), what its `status --json` prints, and the HTTPS ports with a serve entry. */
+  tsBin: string | null;
+  tsStatus: unknown;
+  entries: Set<number>;
+  answers: Record<string, Ran>; // an argv (joined) and what it answers instead
+  steps: string[]; // every run (joined) and unit write or remove (`write <path>`, `remove <path>`), in order
+}
+
+const TS = '/usr/local/bin/tailscale';
+const NAME = 'studio.manticore-hue.ts.net';
+const RUNNING = { BackendState: 'Running', Self: { DNSName: `${NAME}.` }, CertDomains: [NAME] };
+
+/** `tailscale serve status --json` with an entry on each port (as Tailscale 1.104 prints it), or `{}`. */
+function serveConfig(ports: Iterable<number>): unknown {
+  const list = [...ports];
+  if (list.length === 0) return {};
+  return {
+    TCP: Object.fromEntries(list.map((p) => [String(p), { HTTPS: true }])),
+    Web: Object.fromEntries(list.map((p) => [`${NAME}:${p}`, { Handlers: { '/': { Proxy: `http://127.0.0.1:${p}` } } }])),
+  };
 }
 
 function world(over: Partial<World> = {}): World {
-  return { platform: 'darwin', env: {}, systemd: true, files: new Map(), dirs: [], removed: [], runs: [], out: [], served: [], loaded: false, pid: null, holder: null, linger: 'yes', release: null, ...over };
+  return { platform: 'darwin', env: {}, systemd: true, files: new Map(), dirs: [], removed: [], runs: [], out: [], served: [], loaded: false, pid: null, holder: null, linger: 'yes', release: null, tsBin: null, tsStatus: RUNNING, entries: new Set(), answers: {}, steps: [], ...over };
 }
 
 function host(w: World): ServiceHost {
@@ -80,7 +106,18 @@ function host(w: World): ServiceHost {
       const a = [...argv];
       w.runs.push(a);
       const line = a.join(' ');
+      w.steps.push(line);
       if (w.failOn === line) return fail('Boom\nlast reason');
+      const answer = w.answers[line];
+      if (answer !== undefined) return answer;
+      if (w.tsBin !== null && a[0] === w.tsBin) {
+        if (line === tailscale.status(w.tsBin).join(' ')) return ok(JSON.stringify(w.tsStatus));
+        if (line === tailscale.serveStatus(w.tsBin).join(' ')) return ok(JSON.stringify(serveConfig(w.entries)));
+        const port = Number(/--https=(\d+)/.exec(line)?.[1]);
+        if (line === tailscale.serve(w.tsBin, port).join(' ')) w.entries.add(port);
+        if (line === tailscale.off(w.tsBin, port).join(' ')) w.entries.delete(port);
+        return ok();
+      }
       if (line === launchctl.print(UID).join(' ')) return w.loaded ? ok(`gui/${UID}/${LABEL} = {\n\tstate = ${w.pid === null ? 'not running' : 'running'}\n${w.pid === null ? '' : `\tpid = ${w.pid}\n`}}`) : fail('Could not find service', 113);
       if (line === launchctl.bootout(UID).join(' ')) w.loaded = false;
       if (line === launchctl.bootstrap(UID, PLIST).join(' ')) w.loaded = true;
@@ -90,16 +127,22 @@ function host(w: World): ServiceHost {
     },
     systemd: async () => w.systemd,
     portHolder: async () => w.holder,
+    tailscale: async () => w.tsBin,
     fs: {
       exists: async (p) => w.files.has(p),
       read: async (p) => w.files.get(p) ?? null,
-      write: async (p, t) => void w.files.set(p, t),
+      write: async (p, t) => {
+        w.steps.push(`write ${p}`);
+        w.files.set(p, t);
+      },
       mkdir: async (p) => void w.dirs.push(p),
       remove: async (p) => {
+        w.steps.push(`remove ${p}`);
         w.removed.push(p);
         w.files.delete(p);
       },
     },
+    hostname: 'Rocinante.local',
     getJson: async (url) => {
       if (w.release === null) throw new Error(`refused: ${url}`);
       return w.release;
@@ -118,7 +161,7 @@ async function cli(w: World, ...args: string[]): Promise<{ code: number; err: st
   return { code, err };
 }
 
-const MUTATING = /^(launchctl (bootstrap|bootout|kickstart|enable|disable|load|unload|remove|kill)|systemctl --user (?!show)|loginctl (?!show-user))/;
+const MUTATING = /^(launchctl (bootstrap|bootout|kickstart|enable|disable|load|unload|remove|kill)|systemctl --user (?!show)|loginctl (?!show-user)|\S*[Tt]ailscale (?!status|serve status))/;
 const mutations = (w: World): string[] => w.runs.map((a) => a.join(' ')).filter((l) => MUTATING.test(l));
 const noSudo = (w: World): void => {
   for (const a of w.runs) expect(a).not.toContain('sudo');
@@ -364,7 +407,7 @@ describe('AC5: unsupported platforms and Linux without systemd --user', () => {
       expect(await cli(w, ...args)).toEqual({ code: 1, err: [SERVICE_USAGE] });
       expect(w.runs).toEqual([]);
     }
-    expect(SERVICE_USAGE).toBe('usage: service install|uninstall|start|stop|restart|status|run');
+    expect(SERVICE_USAGE).toBe('usage: service install [--tailnet]|uninstall|start|stop|restart|status|run');
   });
 });
 
@@ -530,5 +573,408 @@ describe('AC8: the docs point to factory service, not bun run andon:service', ()
     expect(andon).toContain('`factory service run`');
     expect(andon).not.toContain('bun run andon:service');
     expect(section(v1, '## Versioning')).toContain('- **2026-10-30: `service`.** Additive within v1');
+  });
+});
+
+// ---- job 078: the tailnet ----
+
+const SPEC = { factory: FACTORY, bun: BUN, home: HOME, env: {} };
+/** With no ANDON_PORT, and with one. */
+const ENVS: Record<string, string>[] = [{}, { ANDON_PORT: '9001' }];
+const unitAt = (platform: string): string => (platform === 'darwin' ? PLIST : SYSTEMD);
+const render = (platform: string, env: Record<string, string>): string => (platform === 'darwin' ? renderPlist({ ...SPEC, env }) : renderUnit({ ...SPEC, env }));
+const tsRuns = (w: World): string[] => w.runs.filter((a) => a[0] === w.tsBin || /tailscale/i.test(a[0] ?? '')).map((a) => a.join(' '));
+const serveLine = (port: number, bin = TS): string => tailscale.serve(bin, port).join(' ');
+const offLine = (port: number, bin = TS): string => tailscale.off(bin, port).join(' ');
+const statusLine = (bin = TS): string => tailscale.status(bin).join(' ');
+const serveStatusLine = (bin = TS): string => tailscale.serveStatus(bin).join(' ');
+
+describe('job 078 AC3: install --tailnet', () => {
+  for (const platform of ['darwin', 'linux']) {
+    test(`${platform}: reads status, makes the serve entry, then writes ANDON_TAILNET_HOST beside ANDON_PORT and starts the service`, async () => {
+      for (const env of ENVS) {
+        const w = world({ platform, env, tsBin: TS });
+        const port = env.ANDON_PORT === undefined ? DEFAULT_PORT : 9001;
+        expect(await cli(w, 'install', '--tailnet')).toEqual({ code: 0, err: [] });
+        expect(tsRuns(w)).toEqual([statusLine(), serveStatusLine(), `${TS} serve --bg --https=${port} http://127.0.0.1:${port}`]);
+        expect(w.steps.indexOf(serveLine(port))).toBeLessThan(w.steps.indexOf(`write ${unitAt(platform)}`));
+        const unit = w.files.get(unitAt(platform)) ?? '';
+        expect(unit).toBe(render(platform, { ...env, ANDON_TAILNET_HOST: NAME }));
+        if (platform === 'darwin') expect(unit).toContain(`<key>ANDON_TAILNET_HOST</key>\n    <string>${NAME}</string>`);
+        else expect(unit).toContain(`Environment="ANDON_TAILNET_HOST=${NAME}"`);
+        if (env.ANDON_PORT !== undefined) {
+          const before = unit.indexOf('ANDON_PORT');
+          expect(before).toBeGreaterThan(0);
+          expect(unit.indexOf('ANDON_TAILNET_HOST')).toBeGreaterThan(before);
+        }
+        expect(recordedTailnetHost(unit)).toBe(NAME);
+        expect(w.entries).toEqual(new Set([port]));
+        expect(mutations(w).filter((l) => !l.startsWith(TS))).toEqual(
+          platform === 'darwin' ? [`launchctl bootstrap gui/${UID} ${PLIST}`, `launchctl kickstart gui/${UID}/${LABEL}`] : ['systemctl --user daemon-reload', `systemctl --user enable --now ${UNIT}`],
+        );
+        expect(w.out.slice(0, 3)).toEqual([`installed ${platform === 'darwin' ? LABEL : UNIT}: ${unitAt(platform)}`, `Andon service: http://127.0.0.1:${port}/ (runs ${FACTORY} service run)`, `tailnet: https://${NAME}:${port}/`]);
+        noSudo(w);
+      }
+    });
+  }
+
+  test('the name is Self.DNSName with its trailing dot stripped and lowercased', async () => {
+    const w = world({ tsBin: TS, tsStatus: { BackendState: 'Running', Self: { DNSName: 'Studio.Manticore-Hue.TS.net.' }, CertDomains: ['studio.manticore-hue.ts.net'] } });
+    expect(await cli(w, 'install', '--tailnet')).toEqual({ code: 0, err: [] });
+    expect(recordedTailnetHost(w.files.get(PLIST) ?? '')).toBe(NAME);
+  });
+
+  test('a reinstall over an entry already on the port re-serves it, and other serve entries are left alone', async () => {
+    const w = world({ tsBin: TS, files: new Map([[PLIST, renderPlist({ ...SPEC, env: { ANDON_TAILNET_HOST: NAME } })]]), loaded: true, pid: 7, holder: 7, entries: new Set([443, DEFAULT_PORT]) });
+    expect(await cli(w, 'install', '--tailnet')).toEqual({ code: 0, err: [] });
+    expect(tsRuns(w)).toEqual([statusLine(), serveStatusLine(), serveLine(DEFAULT_PORT)]);
+    expect(w.entries).toEqual(new Set([443, DEFAULT_PORT]));
+    expect(w.out[0]).toBe(`reinstalled ${LABEL}: ${PLIST}`);
+  });
+
+  test('the CLI is found on PATH, or else on macOS at the app-bundle path, and install runs the one it found', async () => {
+    const which = (found: string | null) => (cmd: string): string | null => (cmd === 'tailscale' ? found : null);
+    expect(findTailscale('darwin', which('/opt/homebrew/bin/tailscale'), () => true)).toBe('/opt/homebrew/bin/tailscale');
+    expect(findTailscale('darwin', which(null), (p) => p === TAILSCALE_APP)).toBe(TAILSCALE_APP);
+    expect(findTailscale('darwin', which(null), () => false)).toBeNull();
+    expect(findTailscale('linux', which('/usr/bin/tailscale'), () => false)).toBe('/usr/bin/tailscale');
+    expect(findTailscale('linux', which(null), () => true)).toBeNull();
+    expect(TAILSCALE_APP).toBe('/Applications/Tailscale.app/Contents/MacOS/Tailscale');
+    const w = world({ tsBin: TAILSCALE_APP });
+    expect(await cli(w, 'install', '--tailnet')).toEqual({ code: 0, err: [] });
+    expect(tsRuns(w)).toEqual([statusLine(TAILSCALE_APP), serveStatusLine(TAILSCALE_APP), serveLine(DEFAULT_PORT, TAILSCALE_APP)]);
+  });
+});
+
+describe('job 078 AC4: install --tailnet refusals', () => {
+  // `tried`: a changing command that ran and failed, so changed nothing (a denied `tailscale serve`).
+  const refused = (w: World, r: { code: number; err: string[] }, tried: string[] = []): void => {
+    expect(r.code).toBe(1);
+    expect(r.err).toHaveLength(1);
+    expect(w.files.size).toBe(0);
+    expect(w.dirs).toEqual([]);
+    expect(w.entries.size).toBe(0);
+    expect(mutations(w)).toEqual(tried);
+    expect(w.out).toEqual([]);
+    noSudo(w);
+  };
+
+  for (const platform of ['darwin', 'linux']) {
+    test(`${platform}: no tailscale CLI`, async () => {
+      const w = world({ platform, tsBin: null });
+      const r = await cli(w, 'install', '--tailnet');
+      refused(w, r);
+      expect(r.err[0]).toStartWith('service: no tailscale CLI found (not on PATH');
+      if (platform === 'darwin') expect(r.err[0]).toContain(TAILSCALE_APP);
+      else expect(r.err[0]).not.toContain(TAILSCALE_APP);
+    });
+
+    test(`${platform}: Tailscale logged out or stopped (BackendState not Running)`, async () => {
+      for (const state of ['NeedsLogin', 'Stopped', 'Starting']) {
+        const w = world({ platform, tsBin: TS, tsStatus: { BackendState: state, Self: { DNSName: `${NAME}.` }, CertDomains: [NAME] } });
+        const r = await cli(w, 'install', '--tailnet');
+        refused(w, r);
+        expect(r.err[0]).toContain(`BackendState ${state}`);
+        expect(tsRuns(w)).toEqual([statusLine()]);
+      }
+    });
+
+    test(`${platform}: HTTPS certificates not enabled (CertDomains lacks the name)`, async () => {
+      for (const certs of [{}, { CertDomains: [] }, { CertDomains: ['rocinante.manticore-hue.ts.net'] }, { CertDomains: null }]) {
+        const w = world({ platform, tsBin: TS, tsStatus: { BackendState: 'Running', Self: { DNSName: `${NAME}.` }, ...certs } });
+        const r = await cli(w, 'install', '--tailnet');
+        refused(w, r);
+        expect(r.err[0]).toBe(`service: HTTPS certificates are not enabled on this tailnet (CertDomains lacks ${NAME}); enable HTTPS in the Tailscale admin console, then run factory service install --tailnet again`);
+      }
+    });
+
+    test(`${platform}: tailscale status failing, or not naming this machine, is one line`, async () => {
+      let w = world({ platform, tsBin: TS, answers: { [statusLine()]: fail('failed to connect to local tailscaled; it doesn’t appear to be running') } });
+      let r = await cli(w, 'install', '--tailnet');
+      refused(w, r);
+      expect(r.err[0]).toStartWith(`service: ${statusLine()} failed: failed to connect`);
+      for (const tsStatus of [{ BackendState: 'Running', CertDomains: [NAME] }, { BackendState: 'Running', Self: { DNSName: 'not a name' }, CertDomains: [NAME] }]) {
+        w = world({ platform, tsBin: TS, tsStatus });
+        r = await cli(w, 'install', '--tailnet');
+        refused(w, r);
+        expect(r.err[0]).toStartWith('service: Tailscale reports no MagicDNS name for this machine');
+      }
+      w = world({ platform, tsBin: TS, answers: { [statusLine()]: ok('not json') } });
+      r = await cli(w, 'install', '--tailnet');
+      refused(w, r);
+    });
+  }
+
+  test('linux: tailscale serve denied for want of an operator is exactly the sudo tailscale set --operator=$USER line, and no sudo runs', async () => {
+    for (const denial of [fail("Access denied: serve config denied\nUse 'sudo tailscale serve --bg 8766' or 'tailscale set --operator=$USER' to allow"), { code: 1, stdout: 'access denied', stderr: '' }]) {
+      const w = world({ platform: 'linux', tsBin: TS, answers: { [serveLine(DEFAULT_PORT)]: denial } });
+      const r = await cli(w, 'install', '--tailnet');
+      refused(w, r, [serveLine(DEFAULT_PORT)]);
+      expect(r.err).toEqual([OPERATOR_LINE]);
+      expect(OPERATOR_LINE).toContain('sudo tailscale set --operator=$USER');
+      expect(tsRuns(w)).toEqual([statusLine(), serveStatusLine(), serveLine(DEFAULT_PORT)]);
+    }
+  });
+
+  test('another tailscale serve failure is one line naming it; on macOS an operator-like denial is not the Linux line', async () => {
+    for (const platform of ['darwin', 'linux']) {
+      const w = world({ platform, tsBin: TS, answers: { [serveLine(DEFAULT_PORT)]: fail(platform === 'darwin' ? 'access denied' : 'serve: port in use') } });
+      const r = await cli(w, 'install', '--tailnet');
+      refused(w, r, [serveLine(DEFAULT_PORT)]);
+      expect(r.err[0]).toBe(`service: ${serveLine(DEFAULT_PORT)} failed: ${platform === 'darwin' ? 'access denied' : 'serve: port in use'}`);
+    }
+  });
+
+  test('the existing refusals come first and run no tailscale command', async () => {
+    const cases: World[] = [
+      world({ tsBin: TS, holder: 4242 }),
+      world({ platform: 'linux', tsBin: TS, holder: 4242 }),
+      world({ tsBin: TS, env: { ANDON_PORT: 'x' } }),
+      world({ tsBin: TS, env: { ANDON_HOME: 'rel' } }),
+      world({ tsBin: TS, paths: { factory: 'rel/factory' } }),
+      world({ platform: 'linux', tsBin: TS, paths: { bun: `${BUN}\nX=1` } }),
+      world({ platform: 'win32', tsBin: TS }),
+    ];
+    for (const w of cases) {
+      const r = await cli(w, 'install', '--tailnet');
+      refused(w, r);
+      expect(tsRuns(w)).toEqual([]);
+    }
+  });
+
+  for (const platform of ['darwin', 'linux']) {
+    test(`${platform}: a unit step failing after tailscale serve removes the entry again and puts the old unit back`, async () => {
+      const step = platform === 'darwin' ? `launchctl bootstrap gui/${UID} ${PLIST}` : `systemctl --user enable --now ${UNIT}`;
+      for (const old of [null, render(platform, {})]) {
+        const w = world({ platform, tsBin: TS, failOn: step, entries: new Set([443]), files: old === null ? new Map() : new Map([[unitAt(platform), old]]) });
+        const r = await cli(w, 'install', '--tailnet');
+        expect(r).toEqual({ code: 1, err: [`service: ${step} failed: last reason`] });
+        expect(tsRuns(w)).toEqual([statusLine(), serveStatusLine(), serveLine(DEFAULT_PORT), offLine(DEFAULT_PORT)]);
+        expect(w.entries).toEqual(new Set([443]));
+        expect(w.files.get(unitAt(platform)) ?? null).toBe(old);
+        noSudo(w);
+      }
+    });
+  }
+
+  test('when the rollback\'s off fails too, the one line says so and names the command to run', async () => {
+    const step = `launchctl bootstrap gui/${UID} ${PLIST}`;
+    const w = world({ tsBin: TS, answers: { [step]: fail('Bootstrap failed: 5'), [offLine(DEFAULT_PORT)]: fail('no') } });
+    expect(await cli(w, 'install', '--tailnet')).toEqual({ code: 1, err: [`service: ${step} failed: Bootstrap failed: 5; removing the serve entry again failed too: run tailscale serve --https=${DEFAULT_PORT} off`] });
+    expect(w.files.size).toBe(0);
+  });
+
+  test('when removing the old port\'s entry fails after the new unit runs, the one line names it and the command to run', async () => {
+    const w = world({ tsBin: TS, failOn: offLine(9001), files: new Map([[PLIST, renderPlist({ ...SPEC, env: { ANDON_PORT: '9001', ANDON_TAILNET_HOST: NAME } })]]), entries: new Set([9001]) });
+    const r = await cli(w, 'install', '--tailnet');
+    expect(r).toEqual({ code: 1, err: [`service: ${offLine(9001)} failed: last reason; the service is installed on port ${DEFAULT_PORT}, but the old serve entry on https port 9001 is still there: run tailscale serve --https=9001 off`] });
+    expect(w.entries).toEqual(new Set([9001, DEFAULT_PORT]));
+  });
+
+  test('a failed unit step over a unit that already records the name keeps that entry and that unit', async () => {
+    const old = renderPlist({ ...SPEC, env: { ANDON_TAILNET_HOST: NAME } });
+    const w = world({ tsBin: TS, failOn: `launchctl bootstrap gui/${UID} ${PLIST}`, files: new Map([[PLIST, old]]), entries: new Set([DEFAULT_PORT]) });
+    expect((await cli(w, 'install', '--tailnet')).code).toBe(1);
+    expect(tsRuns(w)).toEqual([statusLine(), serveStatusLine(), serveLine(DEFAULT_PORT)]);
+    expect(w.entries).toEqual(new Set([DEFAULT_PORT]));
+    expect(w.files.get(PLIST)).toBe(old);
+  });
+});
+
+describe('job 078 AC5: install without --tailnet', () => {
+  for (const platform of ['darwin', 'linux']) {
+    test(`${platform}: a unit recording no tailnet host is rewritten byte-identical, and no tailscale command runs`, async () => {
+      const w = world({ platform, tsBin: TS, files: new Map([[unitAt(platform), render(platform, {})]]), entries: new Set([DEFAULT_PORT]) });
+      expect(await cli(w, 'install')).toEqual({ code: 0, err: [] });
+      expect(w.files.get(unitAt(platform))).toBe(render(platform, {}));
+      expect(w.files.get(unitAt(platform))).not.toContain('ANDON_TAILNET_HOST');
+      expect(tsRuns(w)).toEqual([]);
+      expect(w.entries).toEqual(new Set([DEFAULT_PORT])); // not ours: untouched
+      expect(w.out.some((l) => l.startsWith('tailnet:'))).toBe(false);
+    });
+
+    test(`${platform}: a unit recording one: the --https=<port> entry is removed before the unit is rewritten without it`, async () => {
+      for (const env of ENVS) {
+        const port = env.ANDON_PORT === undefined ? DEFAULT_PORT : 9001;
+        const w = world({ platform, env, tsBin: TS, files: new Map([[unitAt(platform), render(platform, { ...env, ANDON_TAILNET_HOST: NAME })]]), entries: new Set([443, port]) });
+        expect(await cli(w, 'install')).toEqual({ code: 0, err: [] });
+        expect(tsRuns(w)).toEqual([serveStatusLine(), offLine(port)]);
+        expect(w.steps.indexOf(offLine(port))).toBeLessThan(w.steps.indexOf(`write ${unitAt(platform)}`));
+        expect(w.files.get(unitAt(platform))).toBe(render(platform, env));
+        expect(w.entries).toEqual(new Set([443]));
+        expect(w.out).toContain('tailnet: off');
+        noSudo(w);
+      }
+    });
+  }
+
+  test('a recorded host whose entry is already gone: no off, and the unit is rewritten without it', async () => {
+    const w = world({ tsBin: TS, files: new Map([[PLIST, renderPlist({ ...SPEC, env: { ANDON_TAILNET_HOST: NAME } })]]) });
+    expect(await cli(w, 'install')).toEqual({ code: 0, err: [] });
+    expect(tsRuns(w)).toEqual([serveStatusLine()]);
+    expect(w.files.get(PLIST)).toBe(renderPlist(SPEC));
+  });
+
+  test('when the entry cannot be removed (no CLI, or off failing), install exits 1 with one line and keeps the unit', async () => {
+    const recorded = renderPlist({ ...SPEC, env: { ANDON_TAILNET_HOST: NAME } });
+    for (const over of [{ tsBin: null }, { tsBin: TS, failOn: offLine(DEFAULT_PORT) }, { tsBin: TS, answers: { [serveStatusLine()]: fail('no tailscaled') } }]) {
+      const w = world({ ...over, files: new Map([[PLIST, recorded]]), entries: new Set([DEFAULT_PORT]) });
+      const r = await cli(w, 'install');
+      expect(r.code).toBe(1);
+      expect(r.err).toHaveLength(1);
+      expect(w.files.get(PLIST)).toBe(recorded);
+      expect(mutations(w).filter((l) => l.startsWith('launchctl'))).toEqual([]);
+      expect(w.entries).toEqual(new Set([DEFAULT_PORT]));
+    }
+  });
+
+  test('install --tailnet over a unit recording another port removes the old port\'s entry, after the new unit runs', async () => {
+    const w = world({ tsBin: TS, files: new Map([[PLIST, renderPlist({ ...SPEC, env: { ANDON_PORT: '9001', ANDON_TAILNET_HOST: NAME } })]]), entries: new Set([443, 9001]) });
+    expect(await cli(w, 'install', '--tailnet')).toEqual({ code: 0, err: [] });
+    expect(tsRuns(w)).toEqual([statusLine(), serveStatusLine(), serveLine(DEFAULT_PORT), serveStatusLine(), offLine(9001)]);
+    expect(w.steps.indexOf(offLine(9001))).toBeGreaterThan(w.steps.indexOf(`launchctl kickstart gui/${UID}/${LABEL}`));
+    expect(w.entries).toEqual(new Set([443, DEFAULT_PORT]));
+    expect(w.files.get(PLIST)).toBe(renderPlist({ ...SPEC, env: { ANDON_TAILNET_HOST: NAME } }));
+  });
+});
+
+describe('job 078 AC6: uninstall, status, and usage', () => {
+  for (const platform of ['darwin', 'linux']) {
+    test(`${platform}: uninstall removes the recorded port's serve entry before the unit`, async () => {
+      for (const env of ENVS) {
+        const port = env.ANDON_PORT === undefined ? DEFAULT_PORT : 9001;
+        const w = world({ platform, tsBin: TS, loaded: true, pid: 3, files: new Map([[unitAt(platform), render(platform, { ...env, ANDON_TAILNET_HOST: NAME })]]), entries: new Set([443, port]) });
+        expect(await cli(w, 'uninstall')).toEqual({ code: 0, err: [] });
+        expect(tsRuns(w)).toEqual([serveStatusLine(), offLine(port)]);
+        expect(w.steps.indexOf(offLine(port))).toBeLessThan(w.steps.indexOf(`remove ${unitAt(platform)}`));
+        expect(w.removed).toEqual([unitAt(platform)]);
+        expect(w.entries).toEqual(new Set([443]));
+        noSudo(w);
+      }
+    });
+
+    test(`${platform}: when removing the entry fails, uninstall exits 1 with one line and keeps the unit`, async () => {
+      const recorded = render(platform, { ANDON_TAILNET_HOST: NAME });
+      for (const over of [{ tsBin: TS, failOn: offLine(DEFAULT_PORT) }, { tsBin: null }]) {
+        const w = world({ platform, ...over, loaded: true, pid: 3, files: new Map([[unitAt(platform), recorded]]), entries: new Set([DEFAULT_PORT]) });
+        const r = await cli(w, 'uninstall');
+        expect(r.code).toBe(1);
+        expect(r.err).toHaveLength(1);
+        expect(r.err[0]).toEndWith('; the unit is kept');
+        expect(w.files.get(unitAt(platform))).toBe(recorded);
+        expect(w.removed).toEqual([]);
+        expect(mutations(w).filter((l) => !l.startsWith(TS))).toEqual([]);
+      }
+    });
+  }
+
+  test('uninstall of a unit recording no host runs no tailscale command', async () => {
+    const w = world({ tsBin: TS, loaded: true, pid: 3, files: new Map([[PLIST, renderPlist(SPEC)]]), entries: new Set([DEFAULT_PORT]) });
+    expect(await cli(w, 'uninstall')).toEqual({ code: 0, err: [] });
+    expect(tsRuns(w)).toEqual([]);
+    expect(w.entries).toEqual(new Set([DEFAULT_PORT]));
+  });
+
+  test('status prints the tailnet line after url: when the unit records a host, and exactly five lines when not', async () => {
+    const release = { running: '0.3.0', onDisk: '0.3.0', changelog: [] };
+    let w = world({ tsBin: TS, files: new Map([[PLIST, renderPlist({ ...SPEC, env: { ANDON_PORT: '9001', ANDON_TAILNET_HOST: NAME } })]]), loaded: true, pid: 321, release });
+    expect(await cli(w, 'status')).toEqual({ code: 0, err: [] });
+    expect(w.out).toEqual([`service: launchd ${LABEL}, installed (${PLIST})`, 'running: pid 321', 'url: http://127.0.0.1:9001/', `tailnet: https://${NAME}:9001/`, 'release: running v0.3.0, on disk v0.3.0', `logs: ${HOME}/.andon/service.log`]);
+    expect(tsRuns(w)).toEqual([]);
+    w = world({ platform: 'linux', tsBin: TS, files: new Map([[SYSTEMD, renderUnit({ ...SPEC, env: { ANDON_TAILNET_HOST: NAME } })]]), loaded: true, pid: 12, release });
+    await cli(w, 'status');
+    expect(w.out[3]).toBe(`tailnet: https://${NAME}:${DEFAULT_PORT}/`);
+    expect(w.out).toHaveLength(6);
+    w = world({ tsBin: TS, files: new Map([[PLIST, renderPlist(SPEC)]]), loaded: true, pid: 321, release });
+    await cli(w, 'status');
+    expect(w.out).toHaveLength(5);
+    expect(w.out.some((l) => l.startsWith('tailnet:'))).toBe(false);
+  });
+
+  test('the usage line names install [--tailnet]; --tailnet anywhere else, or any other flag, is a usage error', async () => {
+    expect(SERVICE_USAGE).toContain('install [--tailnet]');
+    for (const args of [['install', '--tailnet', '--tailnet'], ['install', '--tailnet', 'x'], ['install', '--other'], ['install', '--tailnet=1'], ['install', '--TAILNET'], ['uninstall', '--tailnet'], ['start', '--tailnet'], ['stop', '--tailnet'], ['restart', '--tailnet'], ['status', '--tailnet'], ['run', '--tailnet'], ['--tailnet'], ['--tailnet', 'install']]) {
+      const w = world({ tsBin: TS });
+      expect({ args, ...(await cli(w, ...args)) }).toEqual({ args, code: 1, err: [SERVICE_USAGE] });
+      expect(w.runs).toEqual([]);
+      expect(w.files.size).toBe(0);
+    }
+  });
+});
+
+describe('job 078: what tailscale prints', () => {
+  test('status --json: Running, a DNS name, and that name in CertDomains', () => {
+    expect(parseTailscaleStatus(JSON.stringify(RUNNING))).toEqual({ ok: true, name: NAME });
+    expect(parseTailscaleStatus(JSON.stringify({ ...RUNNING, CertDomains: [`${NAME}.`] }))).toEqual({ ok: true, name: NAME });
+    for (const bad of ['', '[]', 'null', '"x"', JSON.stringify({ ...RUNNING, BackendState: 'NeedsLogin' }), JSON.stringify({ ...RUNNING, Self: null }), JSON.stringify({ ...RUNNING, Self: { DNSName: 'x:1.ts.net' } }), JSON.stringify({ ...RUNNING, CertDomains: 'x' })]) {
+      expect({ bad, ok: parseTailscaleStatus(bad).ok }).toEqual({ bad, ok: false });
+    }
+  });
+  test('serve status --json: an entry on the port is a TCP port or a Web <host>:<port>; anything else is none', () => {
+    expect(hasServeEntry(JSON.stringify(serveConfig([8766])), 8766)).toBe(true);
+    expect(hasServeEntry(JSON.stringify({ Web: { [`${NAME}:8766`]: {} } }), 8766)).toBe(true);
+    expect(hasServeEntry(JSON.stringify({ TCP: { '8766': {} } }), 8766)).toBe(true);
+    expect(hasServeEntry(JSON.stringify(serveConfig([443])), 8766)).toBe(false);
+    expect(hasServeEntry(JSON.stringify(serveConfig([18766])), 8766)).toBe(false);
+    expect(hasServeEntry('{}', 8766)).toBe(false);
+    expect(hasServeEntry('', 8766)).toBeNull();
+    expect(hasServeEntry('[]', 8766)).toBeNull();
+  });
+  test('recordedTailnetHost reads the plist and the systemd unit', () => {
+    expect(recordedTailnetHost(renderPlist({ ...SPEC, env: { ANDON_TAILNET_HOST: NAME } }))).toBe(NAME);
+    expect(recordedTailnetHost(renderUnit({ ...SPEC, env: { ANDON_PORT: '1', ANDON_TAILNET_HOST: NAME } }))).toBe(NAME);
+    expect(recordedTailnetHost(renderPlist(SPEC))).toBeNull();
+    expect(recordedTailnetHost(renderUnit(SPEC))).toBeNull();
+  });
+});
+
+describe('job 078 AC7: the contract and the decisions record the tailnet', () => {
+  const doc = (...p: string[]): Promise<string> => readFile(join(SOURCE_ROOT, ...p), 'utf8');
+  const section = (text: string, heading: string, next = '\n## '): string => {
+    const start = text.indexOf(`${heading}\n`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = text.indexOf(next, start + heading.length);
+    return text.slice(start, end < 0 ? undefined : end);
+  };
+
+  test('"Andon service" states the guard accepts the recorded tailnet host, and only when one is recorded', async () => {
+    const andon = section(await doc('docs', 'contract', 'v1.md'), '## Andon service');
+    for (const s of ['`$ANDON_TAILNET_HOST`', '`Host` of `<name>:<port>`', '`Origin` of `https://<name>:<port>`', 'When a tailnet host is recorded', 'never another `*.ts.net` name', 'With no tailnet host, the guard is as\nabove', 'listens on `127.0.0.1` only']) {
+      expect({ s, found: andon.includes(s) }).toEqual({ s, found: true });
+    }
+  });
+
+  test('"`service`" states install --tailnet and its refusals, the unit, turning it off, uninstall, status, and the usage line', async () => {
+    const v1 = await doc('docs', 'contract', 'v1.md');
+    const svc = section(v1, '### `service`', '\n### ');
+    for (const s of [
+      '`install --tailnet`',
+      '`tailscale serve --bg --https=<port> http://127.0.0.1:<port>`',
+      '`ANDON_TAILNET_HOST`',
+      'beside `ANDON_PORT`',
+      '`BackendState` is not `Running`',
+      '`CertDomains` lacks the',
+      'there is no `tailscale` CLI',
+      '`sudo tailscale set --operator=$USER`',
+      '`install` without `--tailnet` records no `ANDON_TAILNET_HOST`, so it turns tailnet access off',
+      'When the unit records a\n  tailnet host, it first removes that unit\'s `--https=<port>` serve entry',
+      '`tailnet: https://<name>:<port>/`',
+      SERVICE_USAGE,
+    ]) {
+      expect({ s, found: svc.includes(s) }).toEqual({ s, found: true });
+    }
+    expect(section(v1, '## CLI')).toMatch(/^factory service install --tailnet +# \(source or release bundle\)/m);
+    expect(section(v1, '## Versioning')).toContain('- **2026-10-30: the Andon service over the tailnet.** Additive within v1');
+  });
+
+  test('decision 10 carries the dated amendment, and "Andon across multiple machines" is gone from Deferred', async () => {
+    const decisions = await doc('docs', 'decisions.md');
+    const ten = decisions.slice(decisions.indexOf('10. **Andon architecture:**'), decisions.indexOf('11. **The factory builds itself.**'));
+    expect(ten).toContain('Amended 2026-10-30 (approved by Matt; brief `factory/briefs/andon-peer-access.md`)');
+    expect(ten).toContain('`factory service install --tailnet`');
+    expect(ten).toContain('`tailscale serve`');
+    const deferred = section(decisions, '## Deferred (don\'t build yet)');
+    expect(deferred).not.toContain('Andon across multiple machines');
+    expect(deferred).toContain('Adding or removing projects from Andon');
   });
 });

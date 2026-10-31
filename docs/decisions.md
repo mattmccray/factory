@@ -81,7 +81,10 @@ contract is `docs/contract/v1.md`.
       machine, watches their `factory/` trees (no polling), reuses the CLI's contract code,
       and streams changes over server-sent events. It is read-only.
     - The Andon UI is a Svelte web app that connects to one or more services. Supporting
-      multiple machines later just means adding more service URLs.
+      multiple machines later just means adding more service URLs. (Reconciled 2026-10-30, below:
+      multiple machines come through the hub instead. The UI and the Mac app keep one connection,
+      to the local service, which follows the other machines' services; no client adds service
+      URLs.)
     - Andon, the Mac app, is a thin **Tiny JS** wrapper (https://tinyjs.app) around the UI. It
       starts the local service if needed (amended 2026-10-30, below: it no longer does) and adds
       a tray badge with the needs-human count, plus native notifications on escalate and merge.
@@ -97,6 +100,29 @@ contract is `docs/contract/v1.md`.
       (or stops it on quit): when its probe finds none, it shows a notice naming
       `factory service install`. One owner, so an app-spawned copy and a launchd copy never race
       for the port, and a Linux box with no Mac app works the same way.
+    - Amended 2026-10-30 (approved by Matt; brief `factory/briefs/andon-peer-access.md`): a
+      machine's Andon service may be read from Matt's other machines over his tailnet through
+      `tailscale serve`, opted into with `factory service install --tailnet`. It is still bound
+      to loopback and read-only: `tailscale serve` publishes `127.0.0.1:<port>` on HTTPS port
+      `<port>`, the unit records the machine's MagicDNS name (`ANDON_TAILNET_HOST`), and the
+      `Host`/`Origin` guard accepts exactly that name, never any other `*.ts.net` name. Any
+      tailnet device may read it, with no identity check in the service (Tailscale ACLs are
+      where to narrow it). `install` without the flag, and `uninstall`, remove the serve entry.
+      No command runs `sudo`.
+    - Amended 2026-10-30 (approved by Matt; brief `factory/briefs/andon-hub.md`): a service may
+      follow its peers' services, one hop, still read-only. The peers are listed in
+      `$ANDON_HOME/peers.json`, written only by `factory peers add | remove` (the service watches
+      it and never writes it, and Andon never edits it). A hub asks each peer for its own data only
+      (`scope=local` on `/projects` and `/events`) and never passes on what it follows, so machines
+      may list each other with no cycle or duplicate. It reaches peers only at their listed HTTPS
+      URLs, through `tailscale serve`, following no redirect, and never polls (two event streams
+      per peer, and reads forwarded on demand). Each service has a machine name; a peer's project
+      is `<pid>@<machine>` beside the hub's bare ids, and `GET /machines` and the `machines` event
+      say each machine's state (`live`, `connecting`, `down`, `error`). A peer that drops keeps its
+      projects and last boards (`down`), nothing about peers is persisted, a peer on another
+      release passes through, and a peer from before peers is `error`. The hub's own listener
+      stays on loopback. This replaces "adding more service URLs" to the UI as the way to see
+      several machines.
 11. **The factory builds itself.**
     - This repo was seeded by hand once (2026-10-22) with a vendored v0 copy of Minerva's
       factory. Everything since goes through `/factory`.
@@ -217,7 +243,6 @@ Deliberately unfixed, but real:
 ## Deferred (don't build yet)
 
 - Codex, Pi and OpenCode orchestrator adapters, each starting with a research task.
-- Andon across multiple machines (the service design already allows it).
 - Adding or removing projects from Andon (decision 10). Today only `factory init` registers one,
   and the service is read-only.
 - Reviewers that run only when certain files change.
