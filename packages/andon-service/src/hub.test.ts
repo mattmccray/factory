@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { addPeer, addRoot, appendEvent, machineName, parseConfig, parseEventInput, peersPath, registryPath, removePeer } from '@factory/contract';
 import { projectId, startService } from './index';
 import type { ReconnectTimers, Service, ServiceOptions, Transport } from './index';
-import { backoff, parseSse } from './peers';
+import { backoff, parseSse, sseReader } from './peers';
 
 const CONFIG = { schema: 'factory/v1', reviewers: ['security', 'code'], maxRound: 2, dashboard: { settleAfterHours: 24 } };
 const TAILNET = 'manticore-hue.ts.net';
@@ -378,6 +378,40 @@ describe('forwarded reads (AC5)', () => {
     }
   });
 
+  test('a live peer\'s 5xx passes through: a bad config.json board is the peer\'s 500 and its reason, no-store', async () => {
+    const studio = await peer('studio', ['web']);
+    const root = studio.roots[0] ?? '';
+    const pid = projectId(root);
+    const hubHome = await makeHome('rocinante', []);
+    await addPeer(peersPath(hubHome.home), STUDIO);
+    const hub = await serve('rocinante', hubHome.home);
+    await live(hub, 'studio');
+    await writeFile(join(root, 'factory', 'config.json'), '{ nope');
+    for (const p of ['board', 'board?settled=summary', 'settled', 'jobs/001-first-job/docs']) {
+      const direct = await get(`${studio.service.url}/projects/${pid}/${p}`);
+      expect(direct.status).toBe(500);
+      const via = await get(`${hub.url}/projects/${pid}@studio/${p}`);
+      expect({ p, status: via.status, text: via.text, cache: via.cache }).toEqual({ p, status: 500, text: direct.text, cache: 'no-store' });
+      expect(via.text).toStartWith('config.json: ');
+    }
+    expect(await stateOf(hub, 'studio')).toBe('live');
+  });
+
+  test('a forwarded answer larger than 32 MiB is a 502 naming the machine', async () => {
+    const studio = await peer('studio', ['web']);
+    const pid = projectId(studio.roots[0] ?? '');
+    const hubHome = await makeHome('rocinante', []);
+    await addPeer(peersPath(hubHome.home), STUDIO);
+    const hub = await serve('rocinante', hubHome.home);
+    await live(hub, 'studio');
+    const huge = 'x'.repeat(32 * 2 ** 20 + 1);
+    intercept = (_origin, path) => (path === `/projects/${pid}/backlog` ? new Response(huge, { headers: { 'content-type': 'application/json' } }) : null);
+    const r = await get(`${hub.url}/projects/${pid}@studio/backlog`);
+    expect(r.status).toBe(502);
+    expect(r.text).toContain('studio');
+    expect(r.text).toContain('larger than 32 MiB');
+  });
+
   test('a malformed id, an unknown machine, or a bad job id, epic slug, or brief or plan slug is a 404 that sends no request', async () => {
     const studio = await peer('studio', ['web']);
     const pid = projectId(studio.roots[0] ?? '');
@@ -639,6 +673,20 @@ describe('a peer that goes down (AC7)', () => {
 });
 
 describe('the SSE parse', () => {
+  test('the incremental reader joins a frame and a CRLF split across chunks', () => {
+    const r = sseReader();
+    expect(r.push('event: a\r')).toEqual([]);
+    expect(r.push('\ndata: {"x"')).toEqual([]);
+    expect(r.push(':1}\r\n\r')).toEqual([]);
+    expect(r.push('\nevent: b\ndata: 2\n\nevent: c\n')).toEqual([
+      { event: 'a', data: '{"x":1}' },
+      { event: 'b', data: '2' },
+    ]);
+    expect(r.pending()).toBe('event: c\n'.length);
+    expect(r.push('data: 3\n')).toEqual([]);
+    expect(r.push('\n')).toEqual([{ event: 'c', data: '3' }]);
+  });
+
   test('frames split on blank lines; a partial frame is kept; comments and CRLF are handled', () => {
     expect(parseSse('event: a\ndata: {"x":1}\n\n: hi\n\nevent: b\r\ndata: 1\r\n\r\nevent: c\ndata: 2')).toEqual({
       frames: [

@@ -72,26 +72,58 @@ export interface SseFrame {
   data: string;
 }
 
+// One frame's lines (already `\n`-separated): its `event` (default `message`) and its `data` lines joined; null with no data.
+function parseBlock(block: string): SseFrame | null {
+  let event = 'message';
+  const data: string[] = [];
+  for (const line of block.split('\n')) {
+    if (line === '' || line.startsWith(':')) continue;
+    const colon = line.indexOf(':');
+    const key = colon === -1 ? line : line.slice(0, colon);
+    const value = colon === -1 ? '' : line.slice(colon + 1).replace(/^ /, '');
+    if (key === 'event') event = value;
+    else if (key === 'data') data.push(value);
+  }
+  return data.length > 0 ? { event, data: data.join('\n') } : null;
+}
+
 /** Splits complete `text/event-stream` frames off `buf`: each frame's `event` (default `message`) and its `data` lines joined. */
 export function parseSse(buf: string): { frames: SseFrame[]; rest: string } {
-  const frames: SseFrame[] = [];
-  const norm = buf.replace(/\r\n?/g, '\n');
-  const blocks = norm.split('\n\n');
+  const blocks = buf.replace(/\r\n?/g, '\n').split('\n\n');
   const rest = blocks.pop() ?? '';
-  for (const block of blocks) {
-    let event = 'message';
-    const data: string[] = [];
-    for (const line of block.split('\n')) {
-      if (line === '' || line.startsWith(':')) continue;
-      const colon = line.indexOf(':');
-      const key = colon === -1 ? line : line.slice(0, colon);
-      const value = colon === -1 ? '' : line.slice(colon + 1).replace(/^ /, '');
-      if (key === 'event') event = value;
-      else if (key === 'data') data.push(value);
-    }
-    if (data.length > 0) frames.push({ event, data: data.join('\n') });
-  }
+  const frames = blocks.map(parseBlock).filter((f) => f !== null);
   return { frames, rest };
+}
+
+/**
+ * An incremental `text/event-stream` reader: `push` takes each decoded chunk and returns the frames
+ * it completes. Only the new chunk is normalized (`\r\n` and `\r` to `\n`), a trailing `\r` is held
+ * back until the next chunk (so a `\r\n` split across chunks is one line break), and the search for
+ * a frame's end starts where the last one stopped, so a large frame costs linear time.
+ */
+export function sseReader(): { push: (chunk: string) => SseFrame[]; pending: () => number } {
+  let buf = '';
+  let scanned = 0;
+  let cr = false;
+  return {
+    push(chunk) {
+      let t = cr ? `\r${chunk}` : chunk;
+      cr = t.endsWith('\r');
+      if (cr) t = t.slice(0, -1);
+      buf += t.replace(/\r\n?/g, '\n');
+      const frames: SseFrame[] = [];
+      let i = buf.indexOf('\n\n', Math.max(0, scanned - 1));
+      while (i !== -1) {
+        const f = parseBlock(buf.slice(0, i));
+        if (f !== null) frames.push(f);
+        buf = buf.slice(i + 2);
+        i = buf.indexOf('\n\n');
+      }
+      scanned = buf.length;
+      return frames;
+    },
+    pending: () => buf.length,
+  };
 }
 
 /** What a follower tells the hub. */
@@ -206,8 +238,11 @@ export function createFollower(opts: FollowerOptions): Follower {
   }
 
   // One request to the peer, following no redirect, within the timeout: the whole exchange for a
-  // read, only until the headers for a stream (which then stays open).
-  async function request(path: string, signal: AbortSignal, stream = false): Promise<Response> {
+  // read, only until the headers for a stream (which then stays open). A 5xx is the peer being
+  // down for the `/machines` probe and the streams; a forwarded `read` passes it through (a bad
+  // `config.json` is a board's 500 carrying the reason).
+  async function request(path: string, signal: AbortSignal, kind: 'probe' | 'stream' | 'read'): Promise<Response> {
+    const stream = kind === 'stream';
     const limit = new AbortController();
     const timer = setTimeout(() => limit.abort(new Error(`GET ${path}: no answer within ${PEER_TIMEOUT_MS / 1000} s`)), PEER_TIMEOUT_MS);
     let res: Response;
@@ -221,19 +256,45 @@ export function createFollower(opts: FollowerOptions): Follower {
     if (stream) clearTimeout(timer);
     else timer.unref();
     if (res.status >= 300 && res.status < 400) throw new PeerFailure('error', `GET ${path} answered with a redirect (HTTP ${res.status}), which is never followed`);
-    if (res.status >= 500) throw new PeerFailure('down', `GET ${path}: HTTP ${res.status}`);
+    if (res.status >= 500 && kind !== 'read') throw new PeerFailure('down', `GET ${path}: HTTP ${res.status}`);
     return res;
   }
 
+  // A read's whole body, refused past `MAX_FRAME` bytes (a broken peer can't make the hub buffer any size).
+  async function body(res: Response, path: string): Promise<Uint8Array> {
+    if (res.body === null) return new Uint8Array();
+    const reader = res.body.getReader();
+    const parts: Uint8Array[] = [];
+    let size = 0;
+    let chunk = await reader.read();
+    while (!chunk.done) {
+      size += chunk.value.byteLength;
+      if (size > MAX_FRAME) {
+        reader.cancel().catch(() => undefined);
+        throw new PeerFailure('error', `GET ${path}: an answer larger than ${MAX_FRAME / 2 ** 20} MiB`);
+      }
+      parts.push(chunk.value);
+      chunk = await reader.read();
+    }
+    const out = new Uint8Array(size);
+    let at = 0;
+    for (const p of parts) {
+      out.set(p, at);
+      at += p.byteLength;
+    }
+    return out;
+  }
+  const textOf = async (res: Response, path: string): Promise<string> => new TextDecoder().decode(await body(res, path));
+
   async function getJson(path: string, signal: AbortSignal): Promise<unknown> {
-    const res = await request(path, signal);
+    const res = await request(path, signal, 'probe');
     if (res.status === 404 && path === '/machines') throw new PeerFailure('error', `its Andon service is from before peers (no GET /machines); ${UPGRADE}`);
     if (!res.ok) throw new PeerFailure('error', `not an Andon service (GET ${path}: HTTP ${res.status})`);
     try {
-      const body: unknown = JSON.parse(await res.text());
-      return body;
+      const parsed: unknown = JSON.parse(await textOf(res, path));
+      return parsed;
     } catch (e) {
-      if (signal.aborted) throw e;
+      if (signal.aborted || e instanceof PeerFailure) throw e;
       throw new PeerFailure('error', `not an Andon service (GET ${path} is not JSON)`);
     }
   }
@@ -297,7 +358,7 @@ export function createFollower(opts: FollowerOptions): Follower {
   // Opens one stream and reads it in the background; resolves when its first `projects` event has
   // been read. The stream ending, or failing, is a drop.
   async function open(gen: number, path: string, form: Form, signal: AbortSignal): Promise<void> {
-    const res = await request(path, signal, true);
+    const res = await request(path, signal, 'stream');
     if (res.status !== 200 || !(res.headers.get('content-type') ?? '').startsWith('text/event-stream') || res.body === null) {
       throw new PeerFailure('error', `not an Andon service (GET ${path}: HTTP ${res.status})`);
     }
@@ -309,16 +370,14 @@ export function createFollower(opts: FollowerOptions): Follower {
       firstFail = reject;
     });
     const decoder = new TextDecoder();
+    const sse = sseReader();
     void (async () => {
-      let buf = '';
       try {
         let chunk = await reader.read();
         while (!chunk.done) {
-          buf += decoder.decode(chunk.value, { stream: true });
-          const parsed = parseSse(buf);
-          buf = parsed.rest;
-          if (buf.length > MAX_FRAME) throw new PeerFailure('error', `not an Andon service (an event larger than ${MAX_FRAME / 2 ** 20} MiB)`);
-          for (const f of parsed.frames) onFrame(gen, form, f, first);
+          const frames = sse.push(decoder.decode(chunk.value, { stream: true }));
+          if (sse.pending() > MAX_FRAME) throw new PeerFailure('error', `not an Andon service (an event larger than ${MAX_FRAME / 2 ** 20} MiB)`);
+          for (const f of frames) onFrame(gen, form, f, first);
           chunk = await reader.read();
         }
         throw new PeerFailure('down', 'its event stream closed');
@@ -344,11 +403,12 @@ export function createFollower(opts: FollowerOptions): Follower {
         FORMS.map(async (form) => {
           const pid = String(p.id);
           try {
-            const res = await request(`/projects/${pid}/board${form === 'narrow' ? '?settled=summary' : ''}`, signal);
+            const path = `/projects/${pid}/board${form === 'narrow' ? '?settled=summary' : ''}`;
+            const res = await request(path, signal, 'read');
             if (!res.ok) return;
-            const body: unknown = JSON.parse(await res.text());
-            if (gen !== generation || stopped || !isRecord(body) || !list.some((q) => q.id === pid)) return;
-            const data = { project: `${pid}@${name()}`, ...body };
+            const board: unknown = JSON.parse(await textOf(res, path));
+            if (gen !== generation || stopped || !isRecord(board) || !list.some((q) => q.id === pid)) return;
+            const data = { project: `${pid}@${name()}`, ...board };
             keepBoard(pid, form, data);
             if (state === 'live') hooks.event(form, 'board', data);
           } catch {
@@ -417,23 +477,23 @@ export function createFollower(opts: FollowerOptions): Follower {
     board: (pid, form) => boards.get(pid)?.[form],
     async forward(path, search, form) {
       const who = name();
-      if (state !== 'live') return new Response(`${who} is ${state}${reason === null ? '' : `: ${reason}`}`, { status: 502, headers: NO_STORE });
+      if (state !== 'live' || ctl === null) return new Response(`${who} is ${state}${reason === null ? '' : `: ${reason}`}`, { status: 502, headers: NO_STORE });
       try {
-        const res = await request(`${path}${search}`, ctl?.signal ?? new AbortController().signal);
-        const body = await res.arrayBuffer();
+        const res = await request(`${path}${search}`, ctl.signal, 'read');
+        const read = await body(res, path);
         // Only the two types the service itself answers with: a peer can't have the hub serve HTML.
         const json = (res.headers.get('content-type') ?? '').toLowerCase().startsWith('application/json');
         const headers = { ...NO_STORE, 'content-type': json ? 'application/json;charset=utf-8' : 'text/plain;charset=utf-8' };
         if (res.status === 200 && form !== undefined) {
           try {
-            const parsed: unknown = JSON.parse(new TextDecoder().decode(body));
+            const parsed: unknown = JSON.parse(new TextDecoder().decode(read));
             const pid = path.split('/')[2] ?? '';
             if (isRecord(parsed)) keepBoard(pid, form, parsed);
           } catch {
             // not JSON: passed through, not kept
           }
         }
-        return new Response(body, { status: res.status, headers });
+        return new Response(read, { status: res.status, headers });
       } catch (e) {
         return new Response(`${who}: ${message(e)}`, { status: 502, headers: NO_STORE });
       }
