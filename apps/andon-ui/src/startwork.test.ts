@@ -38,7 +38,7 @@ import { remoteOfId } from './machines';
 import { applyEvent, emptyState } from './state';
 
 const PID = 'aaaaaaaaaaaa';
-const PROJECTS = [{ id: PID, name: 'factory', root: '/Users/me/code/factory', machine: null }];
+const PROJECTS = [{ id: PID, name: 'factory', root: '/Users/me/code/factory', machine: null, machineName: null, repositories: [] }];
 const loaded = (data: unknown): BacklogList => ({ status: 'loaded', ...toBacklog(data), reason: null, rev: 1 });
 
 describe('068 AC2: the page builds the same commands as the Mac app', () => {
@@ -347,6 +347,16 @@ describe('starting work on a remote project (brief andon-machines-ui, AC7)', () 
     const quiet: Array<HandoffOutcome | null> = ['copy-only', null];
     for (const o of quiet) expect(await run(o, LOCAL_FACTORY.id)).toEqual({ text: 'Copied /factory next', ok: true });
     expect(await copyThenStart(async () => false, async () => 'copy-only', nextStart(ID).req, NEXT_COMMAND, 'studio')).toEqual({ text: COPY_FAILED, ok: false });
+  });
+
+  test('086 AC7: a remote start that drafted instead of sending, or whose repository is on several machines, toasts so; the caller narrows both', async () => {
+    const s = state();
+    const answer = (r: unknown) => startWorkCaller('mac', { api: { call: async () => r } });
+    const run = async (r: unknown) => copyThenStart(async () => true, answer(r), nextStart(STUDIO_FACTORY.id).req, NEXT_COMMAND, remoteOfId(s, STUDIO_FACTORY.id));
+    expect(await run({ outcome: 'drafted-not-sent', machine: 'studio' })).toEqual({ text: "Opened a draft in T3 Code (sending can't reach studio)", ok: true });
+    expect(await run({ outcome: 'several-machines', project: 'factory', machines: ['rocinante', 'studio'] })).toEqual({ text: 'factory is on rocinante and studio; copied /factory next', ok: true });
+    expect(await run('no-github-remote')).toEqual({ text: 'No GitHub remote; copied /factory next', ok: true });
+    expect(await run({ outcome: 'several-machines', project: 'factory', machines: [] })).toEqual({ text: 'Copied. Run it on studio', ok: true }); // junk reads as null
   });
 
   test('AC1: with only the hub listed, no project is remote, so no toast names a machine', () => {

@@ -17,12 +17,52 @@ export const HAND_OFF_METHOD = 'handOff';
 /** What the page names for a hand-off: approve takes no note; rework and abandon carry the typed one. */
 export type HandoffRequest = { project: string; job: string; action: 'approve' } | { project: string; job: string; action: 'rework' | 'abandon'; note: string };
 
-/** What the Mac app did: a draft opened, a thread sent, copy only, or no GitHub remote for a draft. */
-export type HandoffOutcome = 'drafted' | 'sent' | 'copy-only' | 'no-github-remote';
-const OUTCOMES: readonly HandoffOutcome[] = ['drafted', 'sent', 'copy-only', 'no-github-remote'];
+/** Send mode for a remote project: the Mac app opened a draft instead (`machine`: where the project is). */
+export interface DraftedNotSent {
+  outcome: 'drafted-not-sent';
+  machine: string;
+}
 
-/** The outcome in a backend answer, or null for anything else (a refused call's null, or junk). */
-export const narrowOutcome = (data: unknown): HandoffOutcome | null => OUTCOMES.find((o) => o === data) ?? null;
+/** The project's repository is on several machines: nothing opened, copy only. */
+export interface SeveralMachines {
+  outcome: 'several-machines';
+  project: string;
+  machines: string[];
+}
+
+/** What the Mac app did: a draft opened, a thread sent, copy only, no GitHub remote for a draft, a
+ *  draft opened in place of a send (a remote project), or a repository on several machines. */
+export type HandoffOutcome = 'drafted' | 'sent' | 'copy-only' | 'no-github-remote' | DraftedNotSent | SeveralMachines;
+type PlainOutcome = Extract<HandoffOutcome, string>;
+const OUTCOMES: readonly PlainOutcome[] = ['drafted', 'sent', 'copy-only', 'no-github-remote'];
+
+const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v.trim() !== '';
+const sameKeys = (r: Record<string, unknown>, want: readonly string[]): boolean => {
+  const keys = Object.keys(r).sort();
+  return keys.length === want.length && keys.every((k, i) => k === want[i]);
+};
+
+/** The outcome in a backend answer, or null for anything else (a refused call's null, or junk): one
+ *  of the four strings, `{ outcome: 'drafted-not-sent', machine }`, or `{ outcome:
+ *  'several-machines', project, machines }` (a non-empty list), each with exactly those fields of
+ *  non-empty strings. */
+export function narrowOutcome(data: unknown): HandoffOutcome | null {
+  const plain = OUTCOMES.find((o) => o === data);
+  if (plain !== undefined) return plain;
+  if (!isRecord(data)) return null;
+  if (data.outcome === 'drafted-not-sent' && sameKeys(data, ['machine', 'outcome']) && nonEmpty(data.machine)) return { outcome: 'drafted-not-sent', machine: data.machine };
+  if (data.outcome === 'several-machines' && sameKeys(data, ['machines', 'outcome', 'project']) && nonEmpty(data.project)) {
+    const { machines } = data;
+    if (!Array.isArray(machines) || machines.length === 0) return null;
+    const names: string[] = [];
+    for (const m of machines) {
+      if (!nonEmpty(m)) return null;
+      names.push(m);
+    }
+    return { outcome: 'several-machines', project: data.project, machines: names };
+  }
+  return null;
+}
 
 /** Ask the Mac app to hand a command off; resolves with what it did, or null. */
 export type HandOff = (req: HandoffRequest) => Promise<HandoffOutcome | null>;
@@ -59,9 +99,18 @@ export const COPY_FAILED = "Couldn't copy: select the command and copy it yourse
 /** The copy-only toast for a remote project's action: the command is on the clipboard, to run on that machine. */
 export const remoteCopiedText = (machine: string): string => `Copied. Run it on ${machine}`;
 
+/** Names joined for a sentence: "a", "a and b", "a, b, and c". */
+export function joinNames(names: readonly string[]): string {
+  if (names.length <= 2) return names.join(' and ');
+  return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1] ?? ''}`;
+}
+
 /**
  * The toast after a copy and a hand-off: "Opened a draft in T3 Code" or "Sent to T3 Code" when the
- * Mac app did that; "No GitHub remote; copied …" when a draft had no GitHub origin; otherwise (copy
+ * Mac app did that; "Opened a draft in T3 Code (sending can't reach <machine>)" when send mode opened
+ * a remote project's draft instead; "No GitHub remote; copied …" when a draft had no GitHub
+ * primary remote; "<project> is on <m1> and <m2>; copied …" when its repository is on several
+ * machines (so no draft could pick the right one); otherwise (copy
  * only, no `t3`, a refused call, a browser's null) "Copied …" as before, or, for a remote project
  * (`machine`, the machine it is on; brief andon-machines-ui), "Copied. Run it on <machine>". A
  * failed copy says so, unless T3 Code got the command anyway.
@@ -69,8 +118,10 @@ export const remoteCopiedText = (machine: string): string => `Copied. Run it on 
 export function handoffToast(copied: boolean, outcome: HandoffOutcome | null, command: string, machine: string | null = null): Toast {
   if (outcome === 'drafted') return { text: 'Opened a draft in T3 Code', ok: true };
   if (outcome === 'sent') return { text: 'Sent to T3 Code', ok: true };
+  if (typeof outcome === 'object' && outcome?.outcome === 'drafted-not-sent') return { text: `Opened a draft in T3 Code (sending can't reach ${outcome.machine})`, ok: true };
   if (!copied) return { text: COPY_FAILED, ok: false };
   if (outcome === 'no-github-remote') return { text: `No GitHub remote; copied ${command}`, ok: true };
+  if (typeof outcome === 'object' && outcome?.outcome === 'several-machines') return { text: `${outcome.project} is on ${joinNames(outcome.machines)}; copied ${command}`, ok: true };
   if (machine !== null) return { text: remoteCopiedText(machine), ok: true };
   return { text: copiedText(command), ok: true };
 }

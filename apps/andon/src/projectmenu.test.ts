@@ -5,9 +5,9 @@ import type { AppIcons, Availability, ContextItem, MenuProject, ProjectAction, P
 const PID = 'aaaaaaaaaaaa';
 const ROOT = '/Users/me/code/factory';
 const PROJECTS: MenuProject[] = [
-  { id: PID, name: 'factory', root: ROOT, machine: null },
-  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null, machine: null },
-  { id: 'cccccccccccc', name: '', root: '/r/unnamed', machine: null },
+  { id: PID, name: 'factory', root: ROOT, machine: null, machineName: null, repositories: [] },
+  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null, machine: null, machineName: null, repositories: [] },
+  { id: 'cccccccccccc', name: '', root: '/r/unnamed', machine: null, machineName: null, repositories: [] },
 ];
 const KINDS: ProjectItem[] = ['copy', 'reveal', 'vscode', 't3', 'ghostty'];
 const ALL_THERE: Availability = { vscode: true, ghostty: true, t3: '/home/me/.t3/bin/t3' };
@@ -243,7 +243,7 @@ describe('075 AC2/AC3: New Exploration… and Run Next', () => {
 describe("081 AC5: a remote project's menu", () => {
   const RID = '1a2b3c4d5e6f@studio';
   const RROOT = '/Users/studio-me/code/factory';
-  const REMOTE: MenuProject[] = [...PROJECTS, { id: RID, name: 'factory', root: RROOT, machine: 'studio' }];
+  const REMOTE: MenuProject[] = [...PROJECTS, { id: RID, name: 'factory', root: RROOT, machine: 'studio', machineName: 'studio', repositories: [] }];
   const t3 = '/Users/me/.t3/bin/t3';
   const ICONS: AppIcons = { vscode: '/tmp/vscode.png', t3: '/tmp/t3.png', ghostty: '/tmp/ghostty.png' };
 

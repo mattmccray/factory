@@ -79,10 +79,14 @@ describe('cat-file --batch parsing', () => {
 });
 
 describe('the git runner (AC6)', () => {
-  test('refuses any command but rev-parse, ls-tree, and cat-file', async () => {
-    for (const cmd of ['update-ref', 'fetch', 'push', 'commit-tree', 'hash-object', 'config', '-c']) {
+  test('refuses any command but rev-parse, ls-tree, cat-file, and exactly `remote -v`', async () => {
+    for (const cmd of ['update-ref', 'fetch', 'push', 'commit-tree', 'hash-object', 'config', '-c', 'remote']) {
       await expect(spawnGit([cmd, 'x'], { cwd: import.meta.dir })).rejects.toThrow('not a read-only command');
     }
+    for (const args of [['remote'], ['remote', 'add', 'x', 'y'], ['remote', '-v', 'x'], ['remote', 'set-url', 'origin', 'y']]) {
+      await expect(spawnGit(args, { cwd: import.meta.dir })).rejects.toThrow('not a read-only command');
+    }
+    expect((await spawnGit(['remote', '-v'], { cwd: import.meta.dir })).code).toBe(0);
   });
 
   test('spawns git directly, without a shell, and names only the fixed archive ref', async () => {

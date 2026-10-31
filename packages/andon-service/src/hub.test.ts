@@ -197,7 +197,7 @@ describe('a service with no peers.json (AC3)', () => {
     const s = await serve('studio', home, { machine: undefined, tailnetHost: `studio.${TAILNET}` });
     const port = new URL(s.url).port;
     const projects = await get(`${s.url}/projects`);
-    expect(projects.body).toEqual({ projects: [{ id: projectId(root), name: 'alpha', root, release: { installed: null, state: 'unknown' }, machine: 'studio' }] });
+    expect(projects.body).toEqual({ projects: [{ id: projectId(root), name: 'alpha', root, release: { installed: null, state: 'unknown' }, machine: 'studio', repositories: [] }] });
     expect(String(ids(projects.body)[0])).toMatch(/^[0-9a-f]{12}$/);
     const machines = await get(`${s.url}/machines`);
     expect(machines.cache).toBe('no-store');
@@ -259,7 +259,7 @@ describe('a hub with one peer (AC4)', () => {
     const peerEntry = list(peerProjects, 'projects')[0];
     const want = {
       projects: [
-        { id: projectId(hubRoot), name: 'hubproj', root: hubRoot, release: { installed: null, state: 'unknown' }, machine: 'rocinante' },
+        { id: projectId(hubRoot), name: 'hubproj', root: hubRoot, release: { installed: null, state: 'unknown' }, machine: 'rocinante', repositories: [] },
         { ...(isRec(peerEntry) ? peerEntry : {}), id: `${pid}@studio`, machine: 'studio' },
       ],
     };
@@ -695,5 +695,73 @@ describe('the SSE parse', () => {
       ],
       rest: 'event: c\ndata: 2',
     });
+  });
+});
+
+// Runs git for a fixture (never the service's runner), with no inherited GIT_* setting.
+function gitFx(cwd: string, args: string[]): void {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith('GIT_')) env[k] = v;
+  const p = Bun.spawnSync(['git', ...args], { cwd, env, stdout: 'pipe', stderr: 'pipe' });
+  if (p.exitCode !== 0) throw new Error(`git ${args.join(' ')}: ${p.stderr.toString().trim()}`);
+}
+
+describe('repositories through the hub (job 086, AC3)', () => {
+  test('a peer\'s repositories pass through unchanged, an older peer\'s projects carry none, and a change re-sends merged projects', async () => {
+    const studio = await peer('studio', ['infra']);
+    const infra = studio.roots[0] ?? '';
+    gitFx(infra, ['init', '--quiet']);
+    gitFx(infra, ['remote', 'add', 'origin', 'ssh://git@localhost:222/mattm/infra.git']);
+    const studioPid = projectId(infra);
+
+    // An older peer: its projects event entries carry machine but no repositories.
+    const oldEntry = { id: '0123456789ab', name: 'legacy', root: '/r', release: { installed: '0.1.0', state: 'current' }, machine: 'oldbox' };
+    const server = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: (req) => {
+        const path = new URL(req.url).pathname;
+        if (path === '/machines') return Response.json({ machines: [{ name: 'oldbox', url: 'x', state: 'live', since: 'x', reason: null, release: '0.1.0' }] });
+        if (path === '/events') {
+          const body = `event: projects\ndata: ${JSON.stringify({ projects: [oldEntry] })}\n\nevent: release\ndata: {}\n\n`;
+          return new Response(new ReadableStream({ start: (c) => c.enqueue(new TextEncoder().encode(body)) }), { headers: { 'content-type': 'text/event-stream' } });
+        }
+        return Response.json({ projects: [oldEntry] });
+      },
+    });
+    servers.push(server);
+    routes.set(urlOf('oldbox'), `http://127.0.0.1:${server.port}`);
+
+    const hubHome = await makeHome('rocinante', ['hubproj']);
+    await addPeer(peersPath(hubHome.home), STUDIO);
+    await addPeer(peersPath(hubHome.home), urlOf('oldbox'));
+    const hub = await serve('rocinante', hubHome.home);
+    await live(hub, 'studio');
+    await live(hub, 'oldbox');
+
+    const peerEntry = list((await get(`${studio.service.url}/projects?scope=local`)).body, 'projects')[0];
+    expect(field(peerEntry, 'repositories')).toEqual([{ remote: 'origin', host: 'localhost:222', owner: 'mattm', name: 'infra' }]);
+    const studioMerged = { ...(isRec(peerEntry) ? peerEntry : {}), id: `${studioPid}@studio`, machine: 'studio' };
+    const oldMerged = { ...oldEntry, id: '0123456789ab@oldbox' };
+    const peersOf = (body: unknown): unknown[] => list(body, 'projects').slice(1);
+    expect(peersOf((await get(`${hub.url}/projects`)).body)).toEqual([studioMerged, oldMerged]);
+    expect(field(peersOf((await get(`${hub.url}/projects`)).body)[1], 'repositories')).toBeUndefined();
+
+    const client = await connect(hub.url);
+    const first = await client.next((e) => e.event === 'projects');
+    expect(peersOf(first.data)).toEqual([studioMerged, oldMerged]);
+
+    // Studio's Infra gains a GitHub upstream; its next config.json change re-sends projects up to the hub's clients.
+    gitFx(infra, ['remote', 'add', 'upstream', 'https://github.com/mattmccray/infra.git']);
+    const from = client.seen.length;
+    await writeFile(join(infra, 'factory', 'config.json'), JSON.stringify({ ...CONFIG, maxRound: 3 }));
+    const changed = await client.next((e) => client.seen.indexOf(e) >= from && e.event === 'projects' && JSON.stringify(e.data).includes('upstream'));
+    expect(field(peersOf(changed.data)[0], 'repositories')).toEqual([
+      { remote: 'origin', host: 'localhost:222', owner: 'mattm', name: 'infra' },
+      { remote: 'upstream', host: 'github.com', owner: 'mattmccray', name: 'infra' },
+    ]);
+    expect(peersOf(changed.data)[1]).toEqual(oldMerged);
+    expect(field(peersOf((await get(`${hub.url}/projects`)).body)[0], 'repositories')).toEqual(field(peersOf(changed.data)[0], 'repositories'));
+    client.close();
   });
 });

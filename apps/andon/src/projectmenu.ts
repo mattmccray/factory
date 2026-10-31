@@ -15,6 +15,7 @@
 import { startWorkPayload } from './appmenu';
 import type { StartWorkPush } from './appmenu';
 import { isRecord, isRemote } from './state';
+import type { AppRepository } from './state';
 
 /** The one custom backend method the page may call (tinyjs.json's `api` gate names it). */
 export const PROJECT_MENU_METHOD = 'projectMenu';
@@ -40,6 +41,10 @@ export interface MenuProject {
   root: string | null;
   /** The machine of a remote project; null for a local one (state.ts `AppProject.machine`). */
   machine: string | null;
+  /** The name of the machine it is on, for toasts (state.ts `AppProject.machineName`). */
+  machineName: string | null;
+  /** Its repositories, as its service listed them (state.ts `AppProject.repositories`). */
+  repositories: readonly AppRepository[];
 }
 
 /** Which apps exist, checked when the menu is built: VS Code and Ghostty installed, and the `t3` found (or null). */
