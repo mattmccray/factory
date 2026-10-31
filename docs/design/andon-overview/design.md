@@ -172,10 +172,18 @@ job finishing a stage never reshuffles lanes.
 
 The name is a button that focuses the project.
 
-**Idle lanes** (no job that isn't settled) collapse to one 28px row: the gray name, "Idle · last
-merge 3d 12h ago" across the columns, and a "Settled 2" button on the right. The last merge is the
-later of the settled summary's `lastMergedAt` and any merge still on the board ("Idle · no merges
-yet" when there is neither).
+**Idle lanes** (no job that isn't settled, and no epic on the board but landed ones) collapse to
+one 28px row: the gray name, "Idle · last merge 3d 12h ago" across the columns, and a "Settled 2"
+button on the right. The last merge is the latest of the settled summary's `lastMergedAt`, any
+merge still on the board, and a landed epic's landing (its `endedAt`) ("Idle · no merges yet" when
+there is none).
+
+A **landed epic** (brief `andon-landed-epic-row`, approved 2026-10-31; `docs/design/epics/design.md`
+decision 9), until it settles, is one 28px row under its project, idle or not: the indented gutter
+with its elbow, the green dot, and the epic's name (which opens the epic page), then, green-toned
+across the columns, "Landed `<sha>` · N members · took `<duration>` · `<age>` ago". Its jobs are on
+no cell and in no column count while it is landed, and don't keep the project out of idle; the epic
+page lists them. Focusing the project never expands the row, and Needs Me never shows it.
 
 **Crowded cells and lane height.** Tokens stack vertically in a cell, newest first, with 4px
 between them. A lane is as tall as its **fullest cell**, not its job count: four jobs in four

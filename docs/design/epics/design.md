@@ -151,6 +151,18 @@ These bind every brief below. Each brief cites them by number and records only i
    counts once; an epic waiting on Matt for an epic-level reason (landing blocked) counts as one
    more needs-human item and turns its gutter red. Andon stays read-only. Why: Matt sees members
    move through the stations instead of one stuck card, and the gutter carries the epic's state.
+   **A landed epic is one line** (amended by brief `andon-landed-epic-row`, approved by Matt on
+   2026-10-31): until it settles (`settleAfterHours` after its landing), a `landed` epic's sub-lane
+   is one 28px row styled like an idle lane, with the indented gutter and its elbow, the green dot,
+   and the epic's name (which opens the epic page), then, green-toned across the columns, "Landed
+   `<sha>` · N members · took `<duration>` · `<age>` ago" (a missing part is dropped). Its member,
+   `sync`, and `fix` jobs leave every cell (and the header's column counts) while it is landed; the
+   epic page lists them with their job links, and once it settles it leaves the board for the
+   Settled sheet. A landed epic doesn't keep its project out of idle: a project whose only shown
+   epics are landed, with no other job on the board, is an idle lane (its landing counts as its last
+   merge) with the landed row under it. Focus never expands the row and Needs Me never shows it.
+   A `landing` epic keeps its full sub-lane. Why: a landed epic is a record with nothing to act on,
+   and the epic page shows its members better than a row of Merged tokens.
 10. The name? → **Epic.** `/factory epic <slug>`, `factory/epics/<slug>.md`, branch
     `factory/epic/<slug>`. Why: it reads cleanly in every sentence the factory says ("the epic is
     waiting on you", "the epic landed on main", "a member of the epic"), it's short, and humans

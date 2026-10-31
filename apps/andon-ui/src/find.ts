@@ -2,7 +2,9 @@
 // epic's name and slug, case-insensitively, and an epic's name and slug; the board dims what doesn't
 // match to 25% (tokens, sub-lanes, and whole lanes) and hides nothing. Needs Me hides every job that
 // doesn't need a human to look at it, every sub-lane whose epic has none and doesn't wait on you,
-// and every lane left with neither.
+// and every lane left with neither. A landed epic (brief andon-landed-epic-row) needs nothing: Needs
+// Me never keeps it, nor its jobs. Its jobs are no longer tokens, but a search hit on one still
+// lights its one-line row and its lane.
 // Search also finds backlog items (brief andon-backlog-ui): queued and exploring items with a page
 // whose title matches, listed under the search field; they never dim or light the board. Each names
 // its project by its label ("factory · studio" for a remote project; machines.ts).
@@ -45,7 +47,8 @@ const none = (): Find => ({ active: false, keys: new Set(), epics: new Set(), di
  * The search over the board: which jobs and epics match, which lanes are dimmed (exactly those with
  * no matching job or epic on them), and which sub-lanes are (those whose epic misses and whose jobs
  * all miss). A lane's jobs are the ones it shows: never settled or abandoned ones, focused or not;
- * its epics are its unsettled ones. An empty or whitespace query dims nothing.
+ * its epics are its unsettled ones. A landed epic's jobs are in no cell, but a hit on one still lights
+ * the epic's one-line row and its lane. An empty or whitespace query dims nothing.
  */
 export function find(projects: ReadonlyArray<{ id: string }>, jobs: readonly BoardJob[], query: string, now: number, epics: readonly BoardEpic[] = []): Find {
   if (normalize(query) === '') return none();
@@ -73,12 +76,15 @@ export const needsMe = (b: BoardJob): boolean => b.job.stage === 'needs-human' |
 
 /**
  * Needs Me over the board: only the jobs that need me; only the epics waiting on you or with a job
- * that needs me (their sub-lanes); and only the projects with any of either left.
+ * that needs me (their sub-lanes); and only the projects with any of either left. A landed epic is
+ * never kept, nor any job of it.
  */
 export function needsFilter<P extends { id: string }>(projects: readonly P[], jobs: readonly BoardJob[], epics: readonly BoardEpic[] = []): { projects: P[]; jobs: BoardJob[]; epics: BoardEpic[] } {
-  const kept = jobs.filter(needsMe);
+  const landed = new Set(epics.filter((e) => e.epic.state === 'landed').map((e) => e.key));
+  const open = epics.filter((e) => !landed.has(e.key));
+  const kept = jobs.filter((b) => needsMe(b) && !(b.job.epic !== null && landed.has(`${b.project.id}/${b.job.epic}`)));
   const needed = new Set(kept.filter((b) => b.job.epic !== null).map((b) => `${b.project.id}/${b.job.epic}`));
-  const keptEpics = epics.filter((e) => e.epic.waitingOn === 'you' || needed.has(e.key));
+  const keptEpics = open.filter((e) => e.epic.waitingOn === 'you' || needed.has(e.key));
   const ids = new Set([...kept.map((b) => b.project.id), ...keptEpics.map((e) => e.project.id)]);
   return { projects: projects.filter((p) => ids.has(p.id)), jobs: kept, epics: keptEpics };
 }
