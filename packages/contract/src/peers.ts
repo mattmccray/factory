@@ -113,7 +113,7 @@ export async function readPeers(path: string): Promise<Peers> {
     text = await readFile(path, 'utf8');
   } catch (e) {
     if (isNotFound(e)) return { schema: SCHEMA, peers: [] };
-    throw e;
+    throw new Error(`peers: cannot read ${path}: ${(e instanceof Error ? e.message : String(e)).split('\n')[0] ?? ''}`);
   }
   let raw: unknown;
   try {

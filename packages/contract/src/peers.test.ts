@@ -123,6 +123,13 @@ describe('peers.json (AC1)', () => {
     });
   }
 
+  test('an unreadable file is a one-line peers: reason', async () => {
+    await mkdir(file, { recursive: true }); // a directory where the file should be
+    const err = await readPeers(file).catch((e: unknown) => e);
+    expect(String(err)).toContain('peers: cannot read');
+    expect(String(err)).not.toContain('\n');
+  });
+
   test('invalid JSON is rejected with a one-line reason', async () => {
     await mkdir(home, { recursive: true });
     await writeFile(file, '{nope');
