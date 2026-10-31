@@ -9,6 +9,10 @@
 // Epics (docs/design/epics/design.md decision 9): each unsettled epic gets a sub-lane under its
 // project's lane, in the same six columns, holding only its jobs; its gutter says how the epic is
 // doing and what it waits on. A project's tier counts its epics' jobs and each epic waiting on you.
+// A landed epic (brief andon-landed-epic-row), until it settles, is one line instead: its gutter's
+// name and green dot, and "Landed <sha> · N members · took <duration> · <age> ago" across the
+// columns. Its jobs are in no cell (nor the header's counts) and don't keep the project out of idle;
+// its landing counts as the project's last merge. Focus and Needs Me never expand it.
 // The Mac app's "Show Merged column" setting (063) can hide the Merged column: the header, every
 // lane, and every sub-lane then have the other five, and a merged job shows only in the Settled
 // sheet and a focused project's recent activity.
@@ -389,8 +393,9 @@ export interface SubLane {
   key: string; // `<pid>/<slug>`, the epic it opens
   slug: string;
   hot: boolean; // waiting on you: the gutter turns red
+  landed: string | null; // a landed, unsettled epic: its one-line row's text ("Landed abc1234 · 3 members · took 5h 0m · 2h 0m ago"); null otherwise
   gutter: EpicGutter;
-  cells: Cell[]; // one per column, in COLUMNS order: only the epic's jobs
+  cells: Cell[]; // one per column, in COLUMNS order: only the epic's jobs (none for a landed epic)
   rows: number;
 }
 
@@ -405,7 +410,7 @@ export interface Lane {
   label: string; // the gutter's name: "<name> · <machine>" for a remote project, else the name
   stale: Stale | null; // its machine is stale: dimmed, "as of …", and timed at `asOf`
   index: number; // registration order
-  idle: boolean; // no job that isn't settled, and no epic on the board
+  idle: boolean; // no job that isn't settled, and no epic on the board but landed ones (their jobs don't count)
   header: boolean; // Needs Me shows the lane only for its sub-lanes: a collapsed one-line header
   tier: string; // the lane moves only when this changes
   counts: { human: number; failed: number; active: number }; // every job of the project, its epics' included, plus each epic waiting on you
@@ -415,7 +420,7 @@ export interface Lane {
   cells: Cell[]; // one per column, in COLUMNS order: the project's jobs that are in no shown epic
   rows: number; // the lane's height in token rows; 0 for a collapsed idle lane or header
   subs: SubLane[]; // its epics' sub-lanes, oldest start first
-  lastMergeAt: number | null; // the later of the summary's lastMergedAt and any merge held on the board
+  lastMergeAt: number | null; // the latest of the summary's lastMergedAt, any merge held on the board, and a shown landed epic's landing
   idleText: string; // "Idle · last merge 3d 12h ago"
 }
 
@@ -509,6 +514,23 @@ export function epicGutter(e: Epic, jobs: readonly BoardJob[], now: number): Epi
   return { name: epicName(e), dot, state: epicStateLabel(e), progress, waiting };
 }
 
+/**
+ * A landed epic's one-line row text: "Landed <sha> · <N> members · took <duration> · <age> ago",
+ * `now` being the lane's time. No sha gives "Landed · …"; no `startedAt` drops "took …"; no
+ * `endedAt` drops "… ago" (and "took …", which runs to it).
+ */
+export function landedText(e: Pick<Epic, 'sha' | 'members' | 'startedAt' | 'endedAt'>, now: number): string {
+  const ended = e.endedAt === null ? null : time(e.endedAt);
+  const started = e.startedAt === null ? null : time(e.startedAt);
+  const parts = [
+    e.sha !== null && e.sha !== '' ? `Landed ${e.sha}` : 'Landed',
+    plural(e.members.length, 'member', 'members'),
+    ...(started !== null && ended !== null ? [`took ${age(ended - started)}`] : []),
+    ...(ended !== null ? [`${age(now - ended)} ago`] : []),
+  ];
+  return parts.join(' · ');
+}
+
 /** Oldest start first, then by slug. */
 const byStart = (a: BoardEpic, b: BoardEpic): number => time(a.epic.startedAt) - time(b.epic.startedAt) || a.epic.slug.localeCompare(b.epic.slug);
 
@@ -534,14 +556,18 @@ function laneOf(
   const shownEpics = epics.filter((e) => !isEpicSettled(e.epic, e.settleAfterHours, now)).sort(byStart);
   const slugs = new Set(shownEpics.map((e) => e.epic.slug));
   const inSub = (b: BoardJob): boolean => b.job.epic !== null && slugs.has(b.job.epic);
+  // A landed epic's row is one line: its jobs are in no cell and count for nothing on the lane.
+  const isLanded = (e: BoardEpic): boolean => e.epic.state === 'landed';
+  const landedSlugs = new Set(shownEpics.filter(isLanded).map((e) => e.epic.slug));
+  const inLanded = (b: BoardJob): boolean => b.job.epic !== null && landedSlugs.has(b.job.epic);
 
-  // The tier counts every job of the project, its epics' too, and each epic waiting on you.
-  const live = jobs.filter(isLive);
+  // The tier counts every job of the project, its epics' too (but a landed epic's), and each epic waiting on you.
+  const live = jobs.filter((b) => isLive(b) && !inLanded(b));
   const active = live.filter((b) => k(b) !== 'merged');
   const humanJobs = active.filter((b) => isHuman(k(b))).length;
-  const human = humanJobs + shownEpics.filter((e) => hotEpic(e.epic)).length;
+  const human = humanJobs + shownEpics.filter((e) => !isLanded(e) && hotEpic(e.epic)).length;
   const failed = active.filter((b) => k(b) === 'review-failed').length;
-  const idle = !live.some(onBoard) && shownEpics.length === 0;
+  const idle = !live.some(onBoard) && shownEpics.every(isLanded);
   const working = active.length - humanJobs;
   const state: LaneState = human > 0 ? 'needs-human' : failed > 0 ? 'review-failed' : working > 0 ? 'active' : 'idle';
 
@@ -561,14 +587,19 @@ function laneOf(
     queued,
   };
 
-  const merges = [...jobs.filter((b) => b.job.stage === 'merged').map((b) => mergedAt(b.job)), summary.lastMergedAt === null ? 0 : time(summary.lastMergedAt)].filter((t) => t > 0);
+  const landings = shownEpics.filter(isLanded).map((e) => (e.epic.endedAt === null ? 0 : time(e.epic.endedAt)));
+  const merges = [...jobs.filter((b) => b.job.stage === 'merged').map((b) => mergedAt(b.job)), ...landings, summary.lastMergedAt === null ? 0 : time(summary.lastMergedAt)].filter((t) => t > 0);
   const lastMergeAt = merges.length > 0 ? Math.max(...merges) : null;
 
   const cells = cellsOf(ownShown, k, now, focused, columns);
   const subs = shownEpics.map((e): SubLane => {
+    if (isLanded(e)) {
+      const empty = cellsOf([], k, now, focused, columns);
+      return { key: e.key, slug: e.epic.slug, hot: false, landed: landedText(e.epic, now), gutter: { ...epicGutter(e.epic, [], now), dot: 'green' }, cells: empty, rows: 1 };
+    }
     const mine = jobs.filter((b) => b.job.epic === e.epic.slug);
     const subCells = cellsOf(mine.filter(onBoard), k, now, focused, columns);
-    return { key: e.key, slug: e.epic.slug, hot: hotEpic(e.epic), gutter: epicGutter(e.epic, mine, now), cells: subCells, rows: rowsOf(subCells) };
+    return { key: e.key, slug: e.epic.slug, hot: hotEpic(e.epic), landed: null, gutter: epicGutter(e.epic, mine, now), cells: subCells, rows: rowsOf(subCells) };
   });
   const header = needs && ownShown.length === 0 && subs.length > 0;
   const rows = (idle && !focused) || header ? 0 : rowsOf(cells);
@@ -600,7 +631,8 @@ function laneOf(
  * not `now`. `focused` is a single focused project: its cells, its sub-lanes' too, are uncapped. `summaries` are the projects'
  * settled summaries (a missing one is none); settled jobs never sit in a cell, focused or not.
  * `epics` are the board's epics: each unsettled one gets a sub-lane under its project's lane, oldest
- * start first, holding its jobs (a job whose epic isn't among them stays in the project's cells).
+ * start first, holding its jobs (a job whose epic isn't among them stays in the project's cells); a
+ * landed one's sub-lane is one line with no tokens, focused or not, and its jobs leave the lane.
  * `needs` is Needs Me: a lane shown only for its sub-lanes collapses to a one-line header.
  * `mergedHidden` drops the Merged column: every lane's and sub-lane's cells are the other five, and a
  * lane whose only live jobs are merged is idle. `backlogs` are the projects' narrow-board backlog

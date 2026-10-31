@@ -517,6 +517,14 @@ dialog.sheet::backdrop { background: var(--scrim); }
 .egut .meta.wrap { white-space: normal; }
 .egut .nw { white-space: nowrap; }
 .t-green { color: var(--green-ink); }
+/* a landed epic (brief andon-landed-epic-row): one 28px row, the elbow and green dot, its text green-toned across the columns */
+.row.sub.landed { min-height: 28px; height: 28px; }
+.row.sub.landed > div { padding-top: 4px; padding-bottom: 4px; justify-content: center; }
+.row.sub.landed .en { align-items: center; }
+.row.sub.landed .edot { margin-top: 0; }
+.row.sub.landed .ename { -webkit-line-clamp: 1; }
+.row.sub.landed > .span { grid-column: 2 / -1; flex-direction: row; align-items: center; color: var(--green-ink); font-size: 11px; padding-left: 10px; padding-right: 10px; overflow: hidden; white-space: nowrap; }
+.row.sub.landed .ltext { overflow: hidden; text-overflow: ellipsis; }
 /* a generated job's tag */
 .htag { flex: none; align-self: center; font: 600 9px/13px var(--mono); padding: 0 4px; border-radius: 3px; background: var(--ctl-h); color: var(--label); letter-spacing: .02em; }
 .k-approve .htag { background: var(--on-accent); color: #fff; }

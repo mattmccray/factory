@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BoardJob } from './board';
 import { HOUR, MINUTE, NOW, before, epic, fleetJobs, inEpic, job, narrowBoard, reviewerSpan, stageSpans, stopped, tag, tagEpic } from './fixtures';
-import { COLUMNS, activity, age, boardColumns, buildLanes, columnOf, epicGutter, ghostOf, headerOf, isReviewFailed, kindOf, orderLanes, popoverOf, tagOf, tokenOf } from './lanes';
+import { COLUMNS, activity, age, boardColumns, buildLanes, columnOf, compareLanes, epicGutter, ghostOf, headerOf, isReviewFailed, kindOf, landedText, orderLanes, popoverOf, tagOf, tokenOf } from './lanes';
 import { MARK_LEGEND } from './sidebar';
 import type { Kind, Lane } from './lanes';
 import { ALL, withSettled } from './projects';
@@ -701,15 +701,120 @@ describe('epic sub-lanes (056 AC2)', () => {
     ]);
   });
 
-  test('a landed epic keeps its sub-lane until it settles; then its sub-lane and its merged jobs leave the board', () => {
+  test('a landed epic keeps its sub-lane, as one line with no tokens, until it settles; then its sub-lane and its merged jobs leave the board', () => {
     const landed = epic({ slug: 'auth', state: 'landed', sha: 'abc1234', endedAt: before(2 * HOUR), members: [member('a', 'merged', { job: '051-a', stage: 'merged' })] });
     const merged = inEpic({ id: '051-a', stage: 'merged', endedAt: before(30 * HOUR) }, landed);
     const fresh = buildLanes([P1], [merged], NOW, false, {}, [tagEpic(landed)])[0];
     expect(fresh?.subs.map((s) => s.key)).toEqual(['p1/auth']);
-    expect(keysIn(fresh?.subs[0]?.cells ?? [])).toEqual(['merged:051']);
+    expect(keysIn(fresh?.subs[0]?.cells ?? [])).toEqual([]);
+    expect(fresh?.subs[0]?.landed).toBe('Landed abc1234 · 1 member · took 9h 40m · 2h 0m ago');
     const old = epic({ ...landed, endedAt: before(25 * HOUR) });
     const settled = buildLanes([P1], [{ ...merged, epic: old }], NOW, false, {}, [tagEpic(old)])[0];
     expect([settled?.subs.length, settled?.idle]).toEqual([0, true]);
+  });
+});
+
+describe('a landed epic is one line (082)', () => {
+  const P2 = { id: 'p2', name: 'two' };
+  const landed = epic({
+    slug: 'auth',
+    title: 'Login rewrite',
+    state: 'landed',
+    sha: 'abc1234',
+    startedAt: before(7 * HOUR),
+    endedAt: before(2 * HOUR),
+    members: [member('a', 'merged', { job: '051-a', stage: 'merged' }), member('b', 'merged', { job: '052-b', stage: 'merged' }), member('c', 'merged', { job: '053-c', stage: 'merged' })],
+  });
+  const jobs: BoardJob[] = [
+    inEpic({ id: '051-a', stage: 'merged', endedAt: before(6 * HOUR) }, landed),
+    inEpic({ id: '052-b', stage: 'merged', endedAt: before(5 * HOUR) }, landed),
+    inEpic({ id: '053-c', stage: 'merged', endedAt: before(4 * HOUR) }, landed),
+    inEpic({ id: '054-sync-main', stage: 'merged', kind: 'sync', endedAt: before(3 * HOUR) }, landed),
+  ];
+  const lanesOf = (extra: BoardJob[] = [], focused = false, needs = false, summary = {}): Lane[] => buildLanes([P1, P2], [...jobs, ...extra], NOW, focused, summary, [tagEpic(landed)], needs);
+  const p1 = (ls: Lane[]): Lane => {
+    const l = ls.find((x) => x.project.id === 'p1');
+    if (l === undefined) throw new Error('no lane');
+    return l;
+  };
+
+  test('AC1: its sub-lane is marked landed with its text, holds no tokens or ghosts, has a green dot, is not hot, and still opens the epic page (focused or not)', () => {
+    for (const focused of [false, true]) {
+      const sub = p1(lanesOf([], focused)).subs[0];
+      expect(sub?.landed).toBe('Landed abc1234 · 3 members · took 5h 0m · 2h 0m ago');
+      expect(sub?.cells.map((c) => c.column)).toEqual(COLUMNS.map((c) => c.key));
+      expect(sub?.cells.every((c) => c.tokens.length === 0 && c.ghosts.length === 0 && c.more === 0)).toBe(true);
+      expect([sub?.gutter.dot, sub?.hot, sub?.key, sub?.slug, sub?.rows]).toEqual(['green', false, 'p1/auth', 'auth', 1]);
+    }
+    // a needs-human job of the landed epic is no ghost or token either, and doesn't turn the dot red
+    const odd = inEpic({ id: '055-fix', stage: 'needs-human', kind: 'fix', ...stopped('escalated', 'build') }, landed);
+    const sub = p1(lanesOf([odd])).subs[0];
+    expect([sub?.gutter.dot, sub?.cells.flatMap((c) => [...c.tokens, ...c.ghosts]).length]).toEqual(['green', 0]);
+  });
+
+  test('AC1: the text drops its parts when their inputs are missing, and says "1 member" for one', () => {
+    const at = (fields: Record<string, unknown>): string => landedText(epic({ ...landed, ...fields }), NOW);
+    expect(at({ sha: null })).toBe('Landed · 3 members · took 5h 0m · 2h 0m ago');
+    expect(at({ startedAt: null })).toBe('Landed abc1234 · 3 members · 2h 0m ago');
+    expect(at({ endedAt: null })).toBe('Landed abc1234 · 3 members');
+    expect(at({ members: [member('a', 'merged')] })).toBe('Landed abc1234 · 1 member · took 5h 0m · 2h 0m ago');
+    // a stale machine's lane: the age is at its as-of time
+    const stale = buildLanes([{ ...P1, asOf: NOW - HOUR }], jobs, NOW, false, {}, [tagEpic(landed)])[0];
+    expect(stale?.subs[0]?.landed).toBe('Landed abc1234 · 3 members · took 5h 0m · 1h 0m ago');
+  });
+
+  test('AC2: a project with only a landed epic and its merged members is idle, in the idle tier, sorted after live lanes, and counted idle', () => {
+    const ls = lanesOf([at({ id: '090-live', stage: 'build', stageEnteredAt: before(HOUR) }, P2)]);
+    const l = p1(ls);
+    expect([l.idle, l.tier, l.state, l.counts, l.rows]).toEqual([true, 'idle|0|0', 'idle', { human: 0, failed: 0, active: 0 }, 0]);
+    expect(l.subs.map((s) => s.key)).toEqual(['p1/auth']);
+    expect(l.lastMergeAt).toBe(NOW - 2 * HOUR);
+    expect(l.idleText).toBe('Idle · last merge 2h 0m ago');
+    expect(orderLanes(ls, null).lanes.map((x) => x.project.id)).toEqual(['p2', 'p1']);
+    const [a, b] = ls;
+    if (a === undefined || b === undefined) throw new Error('no lanes');
+    expect(compareLanes(b, a)).toBeLessThan(0); // p2 (live) before p1 (idle)
+    const h = headerOf(ls, [24]);
+    expect(h.corner).toBe('1 active · 1 idle');
+    expect(h.columns.map((c) => [c.key, c.count])).toEqual([['andon', 0], ['spec', 0], ['build', 1], ['review', 0], ['approve', 0], ['merged', 0]]);
+    // a later merge in the summary wins the idle text
+    const later = p1(lanesOf([], false, false, { p1: { count: 2, lastMergedAt: before(HOUR) } }));
+    expect(later.idleText).toBe('Idle · last merge 1h 0m ago');
+  });
+
+  test('AC2: one other live job keeps the project out of idle; a focused idle project renders its lane, the landed row still one line', () => {
+    const l = p1(lanesOf([at({ id: '091-own', stage: 'build', stageEnteredAt: before(HOUR) })]));
+    expect([l.idle, l.tier, l.counts.active]).toEqual([false, 'live|0|0', 1]);
+    const focused = p1(lanesOf([], true));
+    expect([focused.idle, focused.rows, focused.subs[0]?.landed !== null]).toEqual([true, 1, true]);
+  });
+
+  test('AC3: under Needs Me with the project focused, the landed row stays one line with no tokens', () => {
+    const sub = p1(lanesOf([], true, true)).subs[0];
+    expect([sub?.landed, sub?.cells.flatMap((c) => c.tokens).length]).toEqual(['Landed abc1234 · 3 members · took 5h 0m · 2h 0m ago', 0]);
+  });
+
+  test('AC5: a landing epic keeps its full sub-lane; a landed epic past settleAfterHours leaves the board', () => {
+    const landing = epic({ ...landed, state: 'landing', sha: null, endedAt: null });
+    const l = buildLanes([P1], jobs.map((b) => ({ ...b, epic: landing })), NOW, false, {}, [tagEpic(landing)])[0];
+    expect([l?.idle, l?.subs[0]?.landed, l?.subs[0]?.cells.find((c) => c.column === 'merged')?.tokens.length]).toEqual([false, null, 3]);
+    const old = epic({ ...landed, endedAt: before(25 * HOUR) });
+    const gone = buildLanes([P1], jobs.map((b) => ({ ...b, epic: old })), NOW, false, {}, [tagEpic(old)])[0];
+    expect([gone?.subs.length, gone?.idle]).toEqual([0, true]);
+  });
+
+  test('the markup: a landed sub-lane is its own one-line row, under a full lane or an idle one, with the elbow, the name opening the epic page, and green-toned text (Lane.svelte, app.css)', () => {
+    const src = readFileSync(join(import.meta.dir, 'Lane.svelte'), 'utf8');
+    expect(src).toMatch(/\{#if sub\.landed !== null\}\s*<div class="row lane sub landed" class:last=\{i === lane\.subs\.length - 1\}/);
+    expect(src).toMatch(/<div class="span" role="cell"><span class="ltext">\{@render parts\(sub\.landed\)\}<\/span><\/div>/);
+    const landedRow = src.slice(src.indexOf('class="row lane sub landed"'), src.indexOf('{:else}', src.indexOf('class="row lane sub landed"')));
+    expect(landedRow).toContain('{@render epicButton(sub)}');
+    expect(src).toMatch(/\{#snippet epicButton\(sub: SubLane\)\}\s*<button class="en"[^>]*onclick=\{\(\) => onopenepic\(sub\.key\)\}>/);
+    expect(landedRow).not.toContain('cellOf');
+    expect(src.match(/\{@render subRows\(\)\}/g)?.length).toBe(2); // under the idle row and the full lane
+    const css = readFileSync(join(import.meta.dir, 'app.css'), 'utf8');
+    expect(css).toMatch(/\.row\.sub\.landed \{[^}]*height: 28px/);
+    expect(css).toMatch(/\.row\.sub\.landed > \.span \{[^}]*grid-column: 2 \/ -1;[^}]*color: var\(--green-ink\)/);
   });
 });
 

@@ -147,6 +147,37 @@ describe('epics in search and Needs Me (056 AC5, AC7)', () => {
   });
 });
 
+describe('a landed epic in search and Needs Me (082 AC3, AC4)', () => {
+  const landed = epic({ slug: 'auth', title: 'Login rewrite', state: 'landed', sha: 'abc1234', endedAt: before(2 * HOUR) });
+  const hot = epic({ slug: 'billing', state: 'waiting', waitingOn: 'you' });
+  const jobs = [
+    inEpic({ id: '010-session', title: 'Session store', stage: 'merged', endedAt: before(3 * HOUR) }, landed),
+    inEpic({ id: '011-fix', title: 'Fix gate', stage: 'needs-human', kind: 'fix', ...stopped('escalated', 'build') }, landed),
+    at({ id: '020-other', title: 'Other work', stage: 'build' }, P2),
+  ];
+  const epics = [tagEpic(landed), tagEpic({ ...hot, waitingOn: 'you', state: 'landed' }, P3)];
+
+  test('Needs Me never keeps a landed epic or its jobs; its project is kept only for a job or a non-landed epic that needs Matt', () => {
+    const r = needsFilter([P1, P2, P3], jobs, epics);
+    expect([r.projects, r.jobs, r.epics]).toEqual([[], [], []]);
+    const own = at({ id: '030-mine', stage: 'needs-human', ...stopped('escalated', 'review') });
+    const kept = needsFilter([P1, P2, P3], [...jobs, own], [...epics, tagEpic(hot)]);
+    expect([kept.projects.map((p) => p.id), kept.jobs.map((b) => b.key), kept.epics.map((e) => e.key)]).toEqual([['p1'], ['p1/030-mine'], ['p1/billing']]);
+  });
+
+  test("a hit on a landed epic's member job lights its row and its lane; its title or slug lights it as today; a miss dims it", () => {
+    for (const q of ['010', 'session']) {
+      const f = find([P1, P2, P3], jobs, q, NOW, epics);
+      expect([f.dimSubs.has('p1/auth'), f.dimLanes.has('p1'), [...f.epics]]).toEqual([false, false, []]);
+    }
+    const title = find([P1, P2, P3], jobs, 'login', NOW, epics);
+    expect([[...title.epics], title.dimSubs.has('p1/auth'), title.dimLanes.has('p1')]).toEqual([['p1/auth'], false, false]);
+    expect([...find([P1, P2, P3], jobs, 'AUTH', NOW, epics).epics]).toEqual(['p1/auth']);
+    const miss = find([P1, P2, P3], jobs, 'other', NOW, epics);
+    expect([miss.dimSubs.has('p1/auth'), miss.dimLanes.has('p1')]).toEqual([true, true]);
+  });
+});
+
 describe('067 AC6: search over the backlog', () => {
   const lists = (data: unknown): Record<string, BacklogList> => ({ p1: { status: 'loaded', ...toBacklog(data), reason: null, rev: 1 } });
   const cached = lists(backlogBody());

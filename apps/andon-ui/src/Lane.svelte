@@ -13,14 +13,16 @@
   // move with it: an indented gutter with an elbow from the project and a faint tint, whose name
   // opens the epic page, then the same six cells holding only the epic's jobs ("+N more" focuses the
   // project). An epic waiting on you turns its gutter red. Under Needs Me, a lane shown only for its
-  // sub-lanes collapses to a one-line header.
+  // sub-lanes collapses to a one-line header. A landed epic's sub-lane (brief andon-landed-epic-row) is
+  // one 28px row, focused or not, under a full lane or an idle one: the elbow, the green dot, and
+  // the name, then its green-toned "Landed <sha> · N members · took … · … ago" across the columns.
   // Machines (brief andon-machines-ui): a remote project's gutter names its machine ("factory · studio",
   // `lane.label`), and a stale machine's lane (and its sub-lanes) is dimmed, with "as of 14:02" in the
   // gutter; its times were computed at that as-of time (lanes.ts). It keeps its tier position.
   import { cubicOut } from 'svelte/easing';
   import { crossfade } from 'svelte/transition';
   import type { Find } from './find';
-  import type { Cell, Lane } from './lanes';
+  import type { Cell, Lane, SubLane } from './lanes';
   import { motionMs } from './motion';
   import Token from './Token.svelte';
 
@@ -111,11 +113,17 @@
 
 {#snippet subRows()}
   {#each lane.subs as sub, i (sub.key)}
+    {#if sub.landed !== null}
+    <div class="row lane sub landed" class:last={i === lane.subs.length - 1} class:miss={subMiss(sub.key)} class:stale={lane.stale !== null} role="row" aria-label="{sub.gutter.name}, an epic in {name}, {sub.landed}">
+      <div class="gut egut" role="rowheader">
+        {@render epicButton(sub)}
+      </div>
+      <div class="span" role="cell"><span class="ltext">{@render parts(sub.landed)}</span></div>
+    </div>
+    {:else}
     <div class="row lane sub" class:last={i === lane.subs.length - 1} class:hotgut={sub.hot} class:miss={subMiss(sub.key)} class:stale={lane.stale !== null} role="row" data-rows={sub.rows} aria-label="{sub.gutter.name}, an epic in {name}">
       <div class="gut egut" role="rowheader">
-        <button class="en" class:sel={selectedEpic === sub.key} class:hit={found.epics.has(sub.key)} type="button" data-epic-menu={sub.slug} data-epic-menu-project={lane.project.id} aria-haspopup="dialog" title="Open epic {sub.gutter.name} · {sub.gutter.state}" onclick={() => onopenepic(sub.key)}>
-          <span class="edot {sub.gutter.dot}" aria-hidden="true"></span><span class="ename">{sub.gutter.name}</span><span class="sr-only">, epic, {sub.gutter.state}</span>
-        </button>
+        {@render epicButton(sub)}
         <span class="meta wrap" title="members merged into the epic branch · running · since the epic started">{@render parts(sub.gutter.progress)}</span>
         {#if sub.gutter.waiting !== null}
           <span class="meta wrap">
@@ -127,7 +135,15 @@
         {@render cellOf(cell, (key) => missIn(sub.key, key))}
       {/each}
     </div>
+    {/if}
   {/each}
+{/snippet}
+
+<!-- An epic's name in its sub-lane gutter: its dot, and it opens the epic page (and carries the epic menu's ids). -->
+{#snippet epicButton(sub: SubLane)}
+  <button class="en" class:sel={selectedEpic === sub.key} class:hit={found.epics.has(sub.key)} type="button" data-epic-menu={sub.slug} data-epic-menu-project={lane.project.id} aria-haspopup="dialog" title="Open epic {sub.gutter.name} · {sub.gutter.state}" onclick={() => onopenepic(sub.key)}>
+    <span class="edot {sub.gutter.dot}" aria-hidden="true"></span><span class="ename">{sub.gutter.name}</span><span class="sr-only">, epic, {sub.gutter.state}</span>
+  </button>
 {/snippet}
 
 <!-- A gutter line's " · "-separated parts, each kept whole when the line wraps. -->
