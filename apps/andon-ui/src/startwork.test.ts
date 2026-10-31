@@ -35,7 +35,7 @@ import {
 import type { StartItem, StartWorkRequest } from './startwork';
 
 const PID = 'aaaaaaaaaaaa';
-const PROJECTS = [{ id: PID, name: 'factory', root: '/Users/me/code/factory' }];
+const PROJECTS = [{ id: PID, name: 'factory', root: '/Users/me/code/factory', machine: null }];
 const loaded = (data: unknown): BacklogList => ({ status: 'loaded', ...toBacklog(data), reason: null, rev: 1 });
 
 describe('068 AC2: the page builds the same commands as the Mac app', () => {

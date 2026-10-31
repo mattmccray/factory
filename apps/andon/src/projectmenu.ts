@@ -7,9 +7,14 @@
 // and fallback `.app` locations and which item gets which icon, what a clicked item does (built only
 // from the root the backend's own `/projects` feed holds), and the failure text. backend.ts sets the
 // menu, checks the apps, finds their icons, and runs the actions.
+// A remote project (`<pid>@<machine>`, state.ts `machineOf`) gets the same items in the same order,
+// but its root is a path on its own machine, not on this Mac: Reveal in Finder and Open in's three
+// apps are grayed out (the submenu labeled "Open in (on <machine>)"), and `resolveAction` refuses
+// them, so no item id, stale or forged, reveals or spawns anything with that root. New
+// Exploration…, Run Next, and Copy Project Path work as for a local project.
 import { startWorkPayload } from './appmenu';
 import type { StartWorkPush } from './appmenu';
-import { isRecord } from './state';
+import { isRecord, isRemote } from './state';
 
 /** The one custom backend method the page may call (tinyjs.json's `api` gate names it). */
 export const PROJECT_MENU_METHOD = 'projectMenu';
@@ -33,6 +38,8 @@ export interface MenuProject {
   id: string;
   name: string;
   root: string | null;
+  /** The machine of a remote project; null for a local one (state.ts `AppProject.machine`). */
+  machine: string | null;
 }
 
 /** Which apps exist, checked when the menu is built: VS Code and Ghostty installed, and the `t3` found (or null). */
@@ -145,22 +152,30 @@ function openInItem(pid: string, app: OpenInApp, enabled: boolean, icons: AppIco
   return item;
 }
 
-/** A project's menu, for the apps that are there, with the Open in icons found so far. */
-export function projectMenuItems(pid: string, apps: Availability, icons: AppIcons = {}): ContextItem[] {
+/** The Open in submenu's label: "Open in", or "Open in (on <machine>)" for a remote project. */
+export const openInLabel = (machine: string | null): string => (machine === null ? 'Open in' : `Open in (on ${machine})`);
+
+/** A project's menu, for the apps that are there, with the Open in icons found so far. For a remote
+ *  project (`machine` set) Reveal in Finder and every Open in app are grayed out, whatever the app
+ *  check found, and the submenu's label names the machine. */
+export function projectMenuItems(pid: string, apps: Availability, icons: AppIcons = {}, machine: string | null = null): ContextItem[] {
+  const here = machine === null;
+  const reveal: ContextItem = { id: itemId('reveal', pid), label: 'Reveal in Finder' };
+  if (!here) reveal.enabled = false;
   return [
     { id: itemId('explore', pid), label: 'New Exploration…' },
     { id: itemId('next', pid), label: 'Run Next' },
     { separator: true },
     { id: itemId('copy', pid), label: 'Copy Project Path' },
-    { id: itemId('reveal', pid), label: 'Reveal in Finder' },
+    reveal,
     { separator: true },
     {
       id: OPEN_IN_ID,
-      label: 'Open in',
+      label: openInLabel(machine),
       submenu: [
-        openInItem(pid, 'vscode', apps.vscode, icons),
-        openInItem(pid, 't3', apps.t3 !== null, icons),
-        openInItem(pid, 'ghostty', apps.ghostty, icons),
+        openInItem(pid, 'vscode', here && apps.vscode, icons),
+        openInItem(pid, 't3', here && apps.t3 !== null, icons),
+        openInItem(pid, 'ghostty', here && apps.ghostty, icons),
       ],
     },
   ];
@@ -191,10 +206,13 @@ export type ProjectAction =
 
 const display = (p: MenuProject): string => (p.name === '' ? p.id : p.name);
 
+/** The items that act on the root on this Mac: refused for a remote project. */
+const LOCAL_ONLY: readonly ProjectItem[] = ['reveal', 'vscode', 't3', 'ghostty'];
+
 /**
  * The action for a clicked item id: its project looked up again in the backend's list, its root
  * from there. Null (nothing runs) for an id that isn't ours, a project that isn't listed or has no
- * root, and T3 Code with no `t3` found.
+ * root, T3 Code with no `t3` found, and Reveal in Finder or an Open in app on a remote project.
  */
 export function resolveAction(id: unknown, projects: readonly MenuProject[], t3: string | null): ProjectAction | null {
   if (typeof id !== 'string') return null;
@@ -202,6 +220,7 @@ export function resolveAction(id: unknown, projects: readonly MenuProject[], t3:
   if (parsed === null) return null;
   const p = menuProject(projects, parsed.pid);
   if (p === null) return null;
+  if (isRemote(p) && LOCAL_ONLY.includes(parsed.item)) return null; // its root isn't on this Mac
   const project = display(p);
   switch (parsed.item) {
     case 'explore':

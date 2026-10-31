@@ -5,15 +5,15 @@ import type { MenuProject } from './projectmenu';
 const PID = 'aaaaaaaaaaaa';
 const ROOT = '/Users/me/code/factory';
 const PROJECTS: MenuProject[] = [
-  { id: PID, name: 'factory', root: ROOT },
-  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null },
-  { id: 'cccccccccccc', name: 'relative', root: 'code/relative' },
+  { id: PID, name: 'factory', root: ROOT, machine: null },
+  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null, machine: null },
+  { id: 'cccccccccccc', name: 'relative', root: 'code/relative', machine: null },
 ];
 const JOB = '036-t3-handoff';
 
 describe('036 AC1: the hand-off request', () => {
   test('a valid approve, rework, or abandon gets the project, the job, the action, and the built command', () => {
-    expect(handoffRequest({ project: PID, job: JOB, action: 'approve' }, PROJECTS)).toEqual({ project: { id: PID, name: 'factory', root: ROOT }, job: JOB, action: 'approve', command: '/factory approve 036-t3-handoff' });
+    expect(handoffRequest({ project: PID, job: JOB, action: 'approve' }, PROJECTS)).toEqual({ project: { id: PID, name: 'factory', root: ROOT, machine: null }, job: JOB, action: 'approve', command: '/factory approve 036-t3-handoff' });
     expect(handoffRequest({ project: PID, job: JOB, action: 'rework', note: 'add the test' }, PROJECTS)?.command).toBe('/factory rework 036-t3-handoff "add the test"');
     expect(handoffRequest({ project: PID, job: JOB, action: 'abandon', note: ' superseded\n' }, PROJECTS)?.command).toBe('/factory abandon 036-t3-handoff "superseded"');
   });

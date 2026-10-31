@@ -1,12 +1,16 @@
 // The Mac app's logic, wired together behind a small host interface: follow the service, keep the
 // tray (its needs-human count and its lantern), the Dock lantern, and the Dock badge current, and
-// send a notification on escalate and merge, and when an epic lands or starts waiting on you. Each host hook fires only when its value changes. The Tiny
+// send a notification on escalate and merge, and when an epic lands or starts waiting on you. Each host hook fires only when its value changes.
+// Every listed project counts and notifies, a remote one (another machine's, through the local
+// service as a hub) included: its notices name the machine, and a down machine's projects stay
+// listed with their last boards, so they still count and keep their baselines (only a reconnect to
+// the local service, `onOpen`, resets them). The Tiny
 // adapter (backend.ts) supplies the host. Runtime-neutral.
 import { needsHumanCount, traySpec } from './badge';
 import type { TraySpec } from './badge';
 import { startFollow } from './follow';
 import type { Http } from './http';
-import { diffBoard, diffEpics, epicNoticeText, noBaselines, noEpicBaselines, noticeText, retainProjects } from './notify';
+import { diffBoard, diffEpics, epicNoticeText, noBaselines, noEpicBaselines, noticeText, projectLabel, retainProjects } from './notify';
 import type { Baselines, EpicBaselines, NoticeText } from './notify';
 import { badgeText, dockLook, trayRunning } from './lantern';
 import type { DockLook } from './lantern';
@@ -72,7 +76,8 @@ export function startApp(host: AppHost, opts: { retryMs?: number } = {}): App {
       base = diff.base;
       const epicDiff = diffEpics(epicBase, pid, epics);
       epicBase = epicDiff.base;
-      const name = follower.state().projects.find((p) => p.id === pid)?.name ?? '';
+      const p = follower.state().projects.find((x) => x.id === pid);
+      const name = p === undefined ? '' : projectLabel(p); // a remote project's label names its machine
       for (const n of diff.notices) host.notify(noticeText(n, name));
       for (const n of epicDiff.notices) host.notify(epicNoticeText(n, name));
     },

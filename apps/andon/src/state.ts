@@ -3,7 +3,10 @@
 // fields the tray and notifications use and ignores everything else. Every update returns a new
 // state. Runtime-neutral, and independent of the contract package and the UI. Epics: each job's
 // `epic`, and each board's `epics` (their slug, state, waitingOn, note, member count, and `title` when
-// the payload carries one), read here without the contract code.
+// the payload carries one), read here without the contract code. Machines: a project is remote,
+// on another machine the local service follows as a peer, exactly when its id is `<pid>@<machine>`
+// (docs/contract/v1.md "Andon service", "Peers", *Ids*); a bare id is always local. Remoteness is
+// decided here, once, from the id alone: never from `root`, nor from an entry's `machine` field.
 
 export interface AppJob {
   id: string;
@@ -27,8 +30,11 @@ export interface AppEpic {
 export interface AppProject {
   id: string;
   name: string;
-  /** The project's folder, for its right-click menu; null when the feed gives no non-empty string. */
+  /** The project's folder, for its right-click menu; null when the feed gives no non-empty string.
+   *  A remote project's root is a path on its own machine, never on this Mac. */
   root: string | null;
+  /** The machine of a remote project (the part of its id after `@`); null for a local one. */
+  machine: string | null;
 }
 
 export interface AppBoard {
@@ -88,13 +94,31 @@ export const epicsOf = (b: AppBoard | undefined): AppEpic[] => b?.epics ?? [];
 /** An epic waiting on a human for an epic-level reason. */
 export const waitsOnYou = (e: AppEpic): boolean => e.waitingOn === 'you';
 
+/** Where a project id says it lives: `{ machine: null }` for a bare id (local), `{ machine }` for
+ *  `<pid>@<machine>` (remote; split at the first `@`), or null for an id with an `@` but an empty
+ *  pid or machine, which is neither. */
+export function machineOf(id: string): { machine: string | null } | null {
+  const at = id.indexOf('@');
+  if (at < 0) return { machine: null };
+  const machine = id.slice(at + 1);
+  return at === 0 || machine === '' ? null : { machine };
+}
+
+/** A project on another machine: one whose id carried `@<machine>`. */
+export const isRemote = (p: { machine: string | null }): boolean => p.machine !== null;
+
 /** The project list of a `projects` payload, or null when it isn't one. A project without a
- *  non-empty string `root` is kept, with `root: null` (it gets no right-click menu). */
+ *  non-empty string `root` is kept, with `root: null` (it gets no right-click menu). Each project's
+ *  machine comes from its id (`machineOf`); an id that is neither bare nor `<pid>@<machine>` is
+ *  skipped, as an entry with no string id is. */
 export function toProjects(v: unknown): AppProject[] | null {
   if (!isRecord(v) || !Array.isArray(v.projects)) return null;
   const out: AppProject[] = [];
   for (const p of v.projects) {
-    if (isRecord(p) && typeof p.id === 'string') out.push({ id: p.id, name: str(p.name), root: typeof p.root === 'string' && p.root !== '' ? p.root : null });
+    if (!isRecord(p) || typeof p.id !== 'string') continue;
+    const where = machineOf(p.id);
+    if (where === null) continue;
+    out.push({ id: p.id, name: str(p.name), root: typeof p.root === 'string' && p.root !== '' ? p.root : null, machine: where.machine });
   }
   return out;
 }

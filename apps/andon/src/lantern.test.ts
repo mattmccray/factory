@@ -9,14 +9,14 @@ const job = (id: string, stage: string): AppJob => ({ id, title: id, stage, note
 const board = (...jobs: AppJob[]) => ({ jobs, error: null, rev: 1 });
 /** Project A listed with the given jobs; project B has a board but isn't listed. */
 const listed = (jobs: AppJob[], unlisted: AppJob[] = []): AppState => ({
-  projects: [{ id: A, name: 'one', root: null }],
+  projects: [{ id: A, name: 'one', root: null, machine: null }],
   boards: { [A]: board(...jobs), [B]: board(...unlisted) },
 });
 
 test('AC1: idle for no projects, no jobs, or only merged jobs', () => {
   expect(dockLook({ projects: [], boards: {} })).toBe('idle');
   expect(dockLook(listed([]))).toBe('idle');
-  expect(dockLook({ projects: [{ id: A, name: 'one', root: null }], boards: {} })).toBe('idle'); // listed, no board yet
+  expect(dockLook({ projects: [{ id: A, name: 'one', root: null, machine: null }], boards: {} })).toBe('idle'); // listed, no board yet
   expect(dockLook(listed([job('001-a', 'merged'), job('002-b', 'merged')]))).toBe('idle');
   for (const s of [listed([]), listed([job('001-a', 'merged')])]) expect(trayRunning(s)).toBe(false);
 });
@@ -44,8 +44,8 @@ test('AC1: jobs of unlisted projects and unknown stages are ignored', () => {
   // across several listed projects: any one of them counts
   const two: AppState = {
     projects: [
-      { id: A, name: 'one', root: null },
-      { id: B, name: 'two', root: null },
+      { id: A, name: 'one', root: null, machine: null },
+      { id: B, name: 'two', root: null, machine: null },
     ],
     boards: { [A]: board(job('001-a', 'merged')), [B]: board(job('001-a', 'review')) },
   };
