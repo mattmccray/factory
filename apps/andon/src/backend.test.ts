@@ -15,6 +15,8 @@ import type { MenuState } from './appmenu';
 import { QUIT_ID, trayNotice, traySpec } from './badge';
 import { INSTALL_NOTICE, PROBE_MS } from './autostart';
 import { noServicePage } from './noservice';
+import { boardPath } from './follow';
+import { toProjects } from './state';
 
 /** Which window ops fail. Mutable, so a test can heal the window between clicks. Each failing op is
  *  still recorded, then `getState` rejects and `restore`/`show` throw. */
@@ -1367,8 +1369,8 @@ test('063 AC6: setViewState from any window but main, or with any params but the
 const PID = 'aaaaaaaaaaaa';
 const ROOT = '/Users/me/code/factory';
 const PROJECTS: MenuProject[] = [
-  { id: PID, name: 'factory', root: ROOT },
-  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null },
+  { id: PID, name: 'factory', root: ROOT, machine: null },
+  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null, machine: null },
 ];
 
 /** A process that exits with `code`, having written `stderr`. */
@@ -2756,4 +2758,300 @@ test('043 AC5: a re-lookup that replaces an icon deletes the old png; a failed d
   expect(w.removed).toEqual([png(GHOSTTY)]);
   expect(logged.some((l) => l.includes(`could not delete the old icon ${png(GHOSTTY)}`))).toBe(true);
   expect(contexts(log).at(-1)).toEqual(projectMenuItems(PID, NO_T3, { ...LAUNCH_ICONS, ghostty: png(GHOSTTY, 2) }));
+});
+
+// ---- machines (081): a remote project (`<pid>@<machine>`, through the local service as a hub) ----
+
+const RPID = '1a2b3c4d5e6f@studio';
+const RROOT = '/Users/studio-me/code/factory';
+/** The projects as the backend's feed holds them: read by state.ts, so remoteness comes from the id. */
+const hubProjects = (remoteRoot: string): MenuProject[] =>
+  toProjects({
+    projects: [
+      { id: PID, name: 'factory', root: ROOT, machine: 'rocinante' },
+      { id: RPID, name: 'factory', root: remoteRoot, machine: 'studio' },
+    ],
+  }) ?? [];
+const REMOTE_PROJECTS = hubProjects(RROOT);
+const ALL_APPS: Availability = { vscode: true, ghostty: true, t3: '/opt/homebrew/bin/t3' };
+const MODES: HandoffMode[] = ['copy', 'draft', 'send'];
+const HANDOFFS: Record<string, unknown>[] = [
+  { project: RPID, job: JOB, action: 'approve' },
+  { project: RPID, job: JOB, action: 'rework', note: 'add the test' },
+  { project: RPID, job: JOB, action: 'abandon', note: 'not needed' },
+];
+const REMOTE_STARTS: Record<string, unknown>[] = START_CASES.map((c) => ({ ...c.req, project: RPID }));
+
+/** A fake hand-off and start host over the hub's projects: records every runner argv, `origin` call, and backlog fetch. */
+function hubHost(projects: readonly MenuProject[], opts: { t3?: string | null; backlog?: unknown; fail?: boolean } = {}): { host: StartWorkHost; ran: string[][]; origins: string[]; fetched: string[] } {
+  const ran: string[][] = [];
+  const origins: string[] = [];
+  const fetched: string[] = [];
+  const host: StartWorkHost = {
+    projects: () => projects,
+    findT3: async () => (opts.t3 === undefined ? T3 : opts.t3),
+    origin: async (root) => {
+      origins.push(root);
+      return 'git@github.com:mattmccray/factory.git\n';
+    },
+    run: async (argv) => {
+      ran.push(argv);
+      return { ok: true, reason: '' };
+    },
+    backlog: async (pid) => {
+      fetched.push(pid);
+      if (opts.fail === true) throw new Error('studio: the peer is unreachable');
+      return opts.backlog === undefined ? START_BACKLOG : opts.backlog;
+    },
+  };
+  return { host, ran, origins, fetched };
+}
+
+test("081 AC5: a remote project's menu is armed with today's items, Reveal in Finder and Open in (on studio) grayed out even with every app there", async () => {
+  fakeMachine(['Visual Studio Code', 'Ghostty'], ['/opt/homebrew/bin/t3']);
+  const { app, log } = contextApp();
+  await showProjectMenu({ project: RPID }, app, REMOTE_PROJECTS);
+  const menu = contexts(log).at(-1);
+  expect(menu).toEqual(projectMenuItems(RPID, ALL_APPS, {}, 'studio'));
+  expect(menu).toEqual([
+    { id: itemId('explore', RPID), label: 'New Exploration…' },
+    { id: itemId('next', RPID), label: 'Run Next' },
+    { separator: true },
+    { id: itemId('copy', RPID), label: 'Copy Project Path' },
+    { id: itemId('reveal', RPID), label: 'Reveal in Finder', enabled: false },
+    { separator: true },
+    {
+      id: 'project-menu:open-in',
+      label: 'Open in (on studio)',
+      submenu: [
+        { id: itemId('vscode', RPID), label: 'VS Code', enabled: false },
+        { id: itemId('t3', RPID), label: 'T3 Code', enabled: false },
+        { id: itemId('ghostty', RPID), label: 'Ghostty', enabled: false },
+      ],
+    },
+  ]);
+  // a local project beside it is armed as today
+  log.length = 0;
+  await showProjectMenu({ project: PID }, app, REMOTE_PROJECTS);
+  expect(contexts(log).at(-1)).toEqual(projectMenuItems(PID, ALL_APPS));
+});
+
+test('081 AC5: on a remote project, New Exploration… and Run Next push startwork, Copy Project Path copies the remote root, and Reveal and Open in do nothing', async () => {
+  const m = menuApp(null);
+  const c = contextApp();
+  m.app.clipboard = c.app.clipboard;
+  m.app.shell.reveal = async (path) => {
+    m.log.push(['shell.reveal', path]);
+    return true;
+  };
+  const ran: string[][] = [];
+  const runner = async (argv: string[]): Promise<RunResult> => {
+    ran.push(argv);
+    return ok();
+  };
+  await runProjectItem(itemId('explore', RPID), m.app, REMOTE_PROJECTS, T3, runner);
+  await runProjectItem(itemId('next', RPID), m.app, REMOTE_PROJECTS, T3, runner);
+  for (const item of ['reveal', 'vscode', 't3', 'ghostty'] satisfies Parameters<typeof itemId>[0][]) await runProjectItem(itemId(item, RPID), m.app, REMOTE_PROJECTS, T3, runner);
+  expect(m.log).toEqual([['main.allSpaces', true], ['main.show'], ['main.allSpaces', false], ['push', 'startwork', { action: 'new-exploration', project: RPID }], ['push', 'startwork', { action: 'next', project: RPID }]]);
+  await runProjectItem(itemId('copy', RPID), c.app, REMOTE_PROJECTS, T3, runner);
+  expect(c.log).toEqual([['clipboard.write', { text: RROOT }]]);
+  expect(ran).toEqual([]);
+});
+
+test('081 AC6: a remote hand-off (approve, rework, abandon) answers copy-only in every mode, with t3 found or not, and never reads origin or runs anything', async () => {
+  for (const mode of MODES) {
+    for (const t3 of [T3, null]) {
+      for (const params of HANDOFFS) {
+        const { app, log } = handoffApp(mode);
+        const h = hubHost(REMOTE_PROJECTS, { t3 });
+        expect({ mode, t3, params, r: await handOff(params, app, MAIN_META, h.host) }).toEqual({ mode, t3, params, r: 'copy-only' });
+        expect({ mode, t3, params, ran: h.ran, origins: h.origins, log }).toEqual({ mode, t3, params, ran: [], origins: [], log: [] });
+      }
+    }
+  }
+  // the local project beside it hands off as today
+  const { app } = handoffApp('send');
+  const h = hubHost(REMOTE_PROJECTS);
+  expect(await handOff(APPROVE, app, MAIN_META, h.host)).toBe('sent');
+  expect(h.ran).toEqual([[T3, 'thread', 'start', '--title', `approve ${JOB}`, ROOT, `/factory approve ${JOB}`]]);
+});
+
+test('081 AC6: a remote start answers copy-only for each action in every mode, with t3 found or not; the backlog is read through the hub for item actions only', async () => {
+  for (const mode of MODES) {
+    for (const t3 of [T3, null]) {
+      for (const params of REMOTE_STARTS) {
+        const { app, log } = handoffApp(mode);
+        const h = hubHost(REMOTE_PROJECTS, { t3 });
+        expect({ mode, t3, params, r: await startWork(params, app, MAIN_META, h.host) }).toEqual({ mode, t3, params, r: 'copy-only' });
+        const item = params.action === 'run' || params.action === 'epic' || params.action === 'explore';
+        expect({ params, ran: h.ran, origins: h.origins, fetched: h.fetched, log }).toEqual({ params, ran: [], origins: [], fetched: item ? [RPID] : [], log: [] });
+      }
+    }
+  }
+});
+
+test('081 AC6: an invalid remote request (bad shape, item not in the backlog, failed backlog fetch, wrong window) still answers null', async () => {
+  const badHandoffs: unknown[] = [
+    { project: RPID, job: '36-x', action: 'approve' },
+    { project: RPID, job: JOB, action: 'merge' },
+    { project: RPID, job: JOB, action: 'rework', note: '  ' },
+    { project: RPID, job: JOB, action: 'approve', root: RROOT },
+    { project: '1a2b3c4d5e6f@elsewhere', job: JOB, action: 'approve' },
+  ];
+  const badStarts: unknown[] = [
+    { project: RPID, action: 'next', slug: 'auth' },
+    { project: RPID, action: 'new-exploration', idea: ' ' },
+    { project: RPID, action: 'epic', slug: 'notes-search' }, // not an epic in the backlog
+    { project: RPID, action: 'run', slug: 'missing' }, // not in the backlog
+    { project: RPID, action: 'explore', slug: 'notes-search' }, // not in exploring
+  ];
+  await quietly(async () => {
+    for (const mode of MODES) {
+      for (const params of badHandoffs) {
+        const { app, log } = handoffApp(mode);
+        const h = hubHost(REMOTE_PROJECTS);
+        expect({ mode, params, r: await handOff(params, app, MAIN_META, h.host) }).toEqual({ mode, params, r: null });
+        expect([h.ran, h.origins, log]).toEqual([[], [], []]);
+      }
+      for (const params of badStarts) {
+        const { app, log } = handoffApp(mode);
+        const h = hubHost(REMOTE_PROJECTS);
+        expect({ mode, params, r: await startWork(params, app, MAIN_META, h.host) }).toEqual({ mode, params, r: null });
+        expect([h.ran, h.origins, log]).toEqual([[], [], []]);
+      }
+      // studio down: the backlog fetch through the hub fails
+      for (const params of REMOTE_STARTS.filter((p) => p.action === 'run' || p.action === 'epic' || p.action === 'explore')) {
+        const { app, log } = handoffApp(mode);
+        const h = hubHost(REMOTE_PROJECTS, { fail: true });
+        expect({ mode, params, r: await startWork(params, app, MAIN_META, h.host) }).toEqual({ mode, params, r: null });
+        expect([h.fetched, h.ran, h.origins, log]).toEqual([[RPID], [], [], []]);
+      }
+      for (const meta of [{ window: 'settings' }, { window: 'about' }, {}, null]) {
+        const { app, log } = handoffApp(mode);
+        const h = hubHost(REMOTE_PROJECTS);
+        expect(await handOff(HANDOFFS[0], app, meta, h.host)).toBeNull();
+        expect(await startWork({ project: RPID, action: 'next' }, app, meta, h.host)).toBeNull();
+        expect([h.ran, h.origins, h.fetched, log]).toEqual([[], [], [], []]);
+      }
+    }
+  });
+});
+
+/** A fake job and epic menu host over the hub's projects: the board fetched through the hub, recorded by project id. */
+function hubMenuHost(board: unknown, t3: string | null = T3): { host: JobMenuHost; fetched: string[] } {
+  const fetched: string[] = [];
+  const host: JobMenuHost = {
+    projects: () => REMOTE_PROJECTS,
+    board: async (pid) => {
+      fetched.push(pid);
+      return board;
+    },
+    findT3: async () => t3,
+  };
+  return { host, fetched };
+}
+
+const REMOTE_BOARD = { jobs: [{ id: MENU_JOB, stage: 'needs-human', session: GOOD_SESSION }], epics: [{ slug: MENU_EPIC, state: 'running', session: EPIC_SESSION }] };
+
+test('081 AC7: a remote job and epic open their recorded thread from the board fetched through the hub; Copy Job ID and Copy Epic Name copy', async () => {
+  expect(boardPath(RPID)).toBe('/projects/1a2b3c4d5e6f%40studio/board'); // the real host's read, `@` as `%40`
+  const { app, log } = jobApp();
+  const h = hubMenuHost(REMOTE_BOARD);
+  await showJobMenu(null, app, h.host); // disarm: an earlier test may have armed a job
+  log.length = 0;
+  await showJobMenu({ project: RPID, job: MENU_JOB }, app, h.host);
+  expect(contexts(log).at(-1)).toEqual(jobMenuItems(RPID, MENU_JOB, true));
+  await runJobItem(jobItemId('t3', RPID, MENU_JOB), app, h.host);
+  await runJobItem(jobItemId('copy', RPID, MENU_JOB), app, h.host);
+  await showEpicMenu({ project: RPID, epic: MENU_EPIC }, app, MAIN, h.host);
+  expect(contexts(log).at(-1)).toEqual(epicMenuItems(RPID, MENU_EPIC, true));
+  await runEpicItem(epicItemId('t3', RPID, MENU_EPIC), app, h.host);
+  await runEpicItem(epicItemId('copy', RPID, MENU_EPIC), app, h.host);
+  expect(log.filter((e) => e[0] === 'shell.open' || e[0] === 'clipboard.write')).toEqual([
+    ['shell.open', LINK],
+    ['clipboard.write', { text: MENU_JOB }],
+    ['shell.open', EPIC_LINK],
+    ['clipboard.write', { text: MENU_EPIC }],
+  ]);
+  expect(h.fetched).toEqual([RPID, RPID, RPID, RPID]); // each menu ask and each Open click, through the hub; no copy reads it
+});
+
+test('081 AC7: with no recorded session, or no t3, a remote job or epic grays out Open in T3 Code, as a local one does', async () => {
+  const cases: { label: string; h: ReturnType<typeof hubMenuHost> }[] = [
+    { label: 'no session', h: hubMenuHost({ jobs: [{ id: MENU_JOB, stage: 'build' }], epics: [{ slug: MENU_EPIC, state: 'running' }] }) },
+    { label: 'no t3', h: hubMenuHost(REMOTE_BOARD, null) },
+  ];
+  for (const c of cases) {
+    const { app, log } = jobApp();
+    await quietly(async () => {
+      await showJobMenu(null, app, c.h.host);
+      log.length = 0;
+      await showJobMenu({ project: RPID, job: MENU_JOB }, app, c.h.host);
+      expect({ c: c.label, menu: contexts(log).at(-1) }).toEqual({ c: c.label, menu: jobMenuItems(RPID, MENU_JOB, false) });
+      await runJobItem(jobItemId('t3', RPID, MENU_JOB), app, c.h.host);
+      await showEpicMenu(null, app, MAIN, c.h.host);
+      await showEpicMenu({ project: RPID, epic: MENU_EPIC }, app, MAIN, c.h.host);
+      expect({ c: c.label, menu: contexts(log).at(-1) }).toEqual({ c: c.label, menu: epicMenuItems(RPID, MENU_EPIC, false) });
+      await runEpicItem(epicItemId('t3', RPID, MENU_EPIC), app, c.h.host);
+    });
+    expect({ c: c.label, opened: opened(log) }).toEqual({ c: c.label, opened: [] });
+  }
+});
+
+/** Drives every native path that takes a project, for `pid` among `projects`, and returns every
+ *  runner argv, `origin` call, `shell.reveal`, and `shell.open` it saw (and what it copied). */
+async function driveEveryPath(pid: string, projects: readonly MenuProject[]): Promise<{ seen: string[][]; copied: unknown[] }> {
+  const spawned = fakeMachine(['Visual Studio Code', 'Ghostty'], [T3]);
+  const seen: string[][] = [];
+  const copied: unknown[] = [];
+  const watch = (log: unknown[][]): void => {
+    for (const e of log) {
+      if (e[0] === 'shell.reveal' || e[0] === 'shell.open') seen.push([String(e[0]), String(e[1])]);
+      if (e[0] === 'clipboard.write') copied.push(e[1]);
+    }
+  };
+  await quietly(async () => {
+    // the project menu: armed, then each item clicked, with the real runner (it spawns through `tjs`)
+    const menu = handoffApp('send');
+    await showProjectMenu({ project: pid }, menu.app, projects);
+    for (const item of ['explore', 'next', 'copy', 'reveal', 'vscode', 't3', 'ghostty'] satisfies Parameters<typeof itemId>[0][]) await runProjectItem(itemId(item, pid), menu.app, projects, T3);
+    watch(menu.log);
+    // the hand-off for each action, and Start Work for each action, each in each mode, t3 found or not
+    for (const mode of MODES) {
+      for (const t3 of [T3, null]) {
+        for (const params of [...HANDOFFS.map((p) => ({ ...p, project: pid })), ...START_CASES.map((c) => ({ ...c.req, project: pid }))]) {
+          const { app, log } = handoffApp(mode);
+          const h = hubHost(projects, { t3 });
+          if ('job' in params) await handOff(params, app, MAIN_META, h.host);
+          else await startWork(params, app, MAIN_META, h.host);
+          seen.push(...h.ran, ...h.origins.map((o) => ['origin', o]));
+          watch(log);
+        }
+      }
+    }
+    // the job and epic menus: armed and clicked
+    const j = jobApp();
+    const h = hubMenuHost(REMOTE_BOARD);
+    await showJobMenu({ project: pid, job: MENU_JOB }, j.app, h.host);
+    for (const item of ['t3', 'copy'] as const) await runJobItem(jobItemId(item, pid, MENU_JOB), j.app, h.host);
+    await showEpicMenu({ project: pid, epic: MENU_EPIC }, j.app, MAIN, h.host);
+    for (const item of ['t3', 'copy'] as const) await runEpicItem(epicItemId(item, pid, MENU_EPIC), j.app, h.host);
+    watch(j.log);
+  });
+  seen.push(...spawned);
+  return { seen, copied };
+}
+
+test('081 AC8: no native path ever spawns, opens, reveals, or reads origin with a remote root', async () => {
+  const MARKER = '/Users/nobody-here/MARKER-081-remote-root-7f3a';
+  const has = (seen: string[][]): string[][] => seen.filter((argv) => argv.some((a) => a.includes(MARKER)));
+  const remote = await driveEveryPath(RPID, hubProjects(MARKER));
+  expect(has(remote.seen)).toEqual([]);
+  expect(remote.seen.length).toBeGreaterThan(0); // the menus' app checks and the thread links were seen
+  expect(remote.copied).toContainEqual({ text: MARKER }); // Copy Project Path is the one place the remote root goes
+  // the control: the same paths for a local project at the marker do reach it, so the recorders see what they guard
+  const local = toProjects({ projects: [{ id: PID, name: 'factory', root: MARKER, machine: 'rocinante' }] }) ?? [];
+  const control = await driveEveryPath(PID, local);
+  expect(has(control.seen).length).toBeGreaterThan(0);
+  expect(has(control.seen).map((a) => a[0])).toEqual(expect.arrayContaining(['shell.reveal', 'open', T3, 'origin']));
 });

@@ -5,9 +5,9 @@ import type { AppIcons, Availability, ContextItem, MenuProject, ProjectAction, P
 const PID = 'aaaaaaaaaaaa';
 const ROOT = '/Users/me/code/factory';
 const PROJECTS: MenuProject[] = [
-  { id: PID, name: 'factory', root: ROOT },
-  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null },
-  { id: 'cccccccccccc', name: '', root: '/r/unnamed' },
+  { id: PID, name: 'factory', root: ROOT, machine: null },
+  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null, machine: null },
+  { id: 'cccccccccccc', name: '', root: '/r/unnamed', machine: null },
 ];
 const KINDS: ProjectItem[] = ['copy', 'reveal', 'vscode', 't3', 'ghostty'];
 const ALL_THERE: Availability = { vscode: true, ghostty: true, t3: '/home/me/.t3/bin/t3' };
@@ -235,5 +235,74 @@ describe('075 AC2/AC3: New Exploration… and Run Next', () => {
       for (const pid of ['zzzzzzzzzzzz', 'bbbbbbbbbbbb', ROOT, '; rm -rf ~']) expect({ item, pid, action: resolveAction(itemId(item, pid), PROJECTS, t3) }).toEqual({ item, pid, action: null });
       expect(resolveAction(itemId(item, PID), [], t3)).toBeNull();
     }
+  });
+});
+
+// ---- machines (081) ----
+
+describe("081 AC5: a remote project's menu", () => {
+  const RID = '1a2b3c4d5e6f@studio';
+  const RROOT = '/Users/studio-me/code/factory';
+  const REMOTE: MenuProject[] = [...PROJECTS, { id: RID, name: 'factory', root: RROOT, machine: 'studio' }];
+  const t3 = '/Users/me/.t3/bin/t3';
+  const ICONS: AppIcons = { vscode: '/tmp/vscode.png', t3: '/tmp/t3.png', ghostty: '/tmp/ghostty.png' };
+
+  test("has today's items in today's order: Reveal in Finder and every Open in app grayed out, the submenu naming the machine", () => {
+    expect(projectMenuItems(RID, ALL_THERE, {}, 'studio')).toEqual([
+      { id: `project-menu:explore:${RID}`, label: 'New Exploration…' },
+      { id: `project-menu:next:${RID}`, label: 'Run Next' },
+      { separator: true },
+      { id: `project-menu:copy:${RID}`, label: 'Copy Project Path' },
+      { id: `project-menu:reveal:${RID}`, label: 'Reveal in Finder', enabled: false },
+      { separator: true },
+      {
+        id: OPEN_IN_ID,
+        label: 'Open in (on studio)',
+        submenu: [
+          { id: `project-menu:vscode:${RID}`, label: 'VS Code', enabled: false },
+          { id: `project-menu:t3:${RID}`, label: 'T3 Code', enabled: false },
+          { id: `project-menu:ghostty:${RID}`, label: 'Ghostty', enabled: false },
+        ],
+      },
+    ]);
+  });
+
+  test('stays grayed out whatever the app check found, and keeps the icons found', () => {
+    for (const apps of [ALL_THERE, { vscode: false, ghostty: true, t3: null }, { vscode: false, ghostty: false, t3: null }]) {
+      const items = projectMenuItems(RID, apps, ICONS, 'studio');
+      expect(items[4]?.enabled).toBe(false);
+      expect(items[6]?.submenu?.map((i) => [i.enabled, i.icon])).toEqual([
+        [false, '/tmp/vscode.png'],
+        [false, '/tmp/t3.png'],
+        [false, '/tmp/ghostty.png'],
+      ]);
+    }
+  });
+
+  test('a local project, with no machine, is as today', () => {
+    expect(projectMenuItems(PID, ALL_THERE, {}, null)).toEqual(projectMenuItems(PID, ALL_THERE));
+    expect(projectMenuItems(PID, ALL_THERE)[6]?.label).toBe('Open in');
+    expect(projectMenuItems(PID, ALL_THERE)[4]).toEqual({ id: itemId('reveal', PID), label: 'Reveal in Finder' });
+  });
+
+  test('resolveAction refuses reveal, VS Code, T3 Code, and Ghostty on it, so a stale or forged id runs nothing', () => {
+    for (const item of ['reveal', 'vscode', 't3', 'ghostty'] satisfies ProjectItem[]) {
+      for (const found of [t3, null]) expect({ item, found, action: resolveAction(itemId(item, RID), REMOTE, found) }).toEqual({ item, found, action: null });
+    }
+  });
+
+  test('New Exploration… and Run Next push startwork for it, and Copy Project Path copies the remote root', () => {
+    expect(resolveAction(itemId('explore', RID), REMOTE, t3)).toEqual({ kind: 'push', payload: { action: 'new-exploration', project: RID }, show: true, project: 'factory' });
+    expect(resolveAction(itemId('next', RID), REMOTE, null)).toEqual({ kind: 'push', payload: { action: 'next', project: RID }, show: false, project: 'factory' });
+    expect(resolveAction(itemId('copy', RID), REMOTE, t3)).toEqual({ kind: 'copy', root: RROOT, project: 'factory' });
+  });
+
+  test("a local project's actions are unchanged beside it", () => {
+    expect(resolveAction(itemId('reveal', PID), REMOTE, t3)).toEqual({ kind: 'reveal', root: ROOT, project: 'factory' });
+    expect(resolveAction(itemId('t3', PID), REMOTE, t3)).toEqual({ kind: 'spawn', argv: [t3, 'app', ROOT], app: 'T3 Code', project: 'factory' });
+  });
+
+  test('its item ids round-trip with the @-suffixed project id', () => {
+    for (const item of ['explore', 'next', 'copy', 'reveal', 'vscode', 't3', 'ghostty'] satisfies ProjectItem[]) expect(parseItemId(itemId(item, RID))).toEqual({ item, pid: RID });
   });
 });

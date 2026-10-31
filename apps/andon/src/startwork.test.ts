@@ -6,9 +6,9 @@ import { NEXT_COMMAND, START_WORK_METHOD, backlogPath, liveBacklog, needsBacklog
 const PID = 'aaaaaaaaaaaa';
 const ROOT = '/Users/me/code/factory';
 const PROJECTS: MenuProject[] = [
-  { id: PID, name: 'factory', root: ROOT },
-  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null },
-  { id: 'cccccccccccc', name: 'relative', root: 'code/relative' },
+  { id: PID, name: 'factory', root: ROOT, machine: null },
+  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null, machine: null },
+  { id: 'cccccccccccc', name: 'relative', root: 'code/relative', machine: null },
 ];
 const item = (kind: string, slug: string | null, title: string): Record<string, unknown> => ({ kind, slug, title, done: null, status: null, members: kind === 'epic' ? 2 : null, abandoned: [] });
 const BACKLOG = {
@@ -24,7 +24,7 @@ describe('068 AC1: the start request, checked against the projects and the live 
   });
 
   test('each valid request gets the listed project, the action, the command, and the thread title', () => {
-    const p = { id: PID, name: 'factory', root: ROOT };
+    const p = { id: PID, name: 'factory', root: ROOT, machine: null };
     expect(startWorkRequest({ project: PID, action: 'run', slug: 'notes-search' }, PROJECTS, BACKLOG)).toEqual({ project: p, action: 'run', command: '/factory next Full-text search', title: 'next notes-search' });
     expect(startWorkRequest({ project: PID, action: 'run', title: 'Tidy the README' }, PROJECTS, BACKLOG)).toEqual({ project: p, action: 'run', command: '/factory next Tidy the README', title: 'next Tidy the README' });
     expect(startWorkRequest({ project: PID, action: 'epic', slug: 'auth' }, PROJECTS, BACKLOG)).toEqual({ project: p, action: 'epic', command: '/factory epic auth', title: 'epic auth' });
