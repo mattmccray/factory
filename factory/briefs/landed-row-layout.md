@@ -1,6 +1,7 @@
 # A landed epic's row: a wider name, its text right-aligned
 
-- Status: ready
+- Status: done
+- Job: 085-landed-row-layout (merged 87813f7, 2026-10-31)
 - Sources: `/factory explore` on 2026-10-31; factory/briefs/andon-landed-epic-row.md (decision 1);
   docs/design/epics/design.md (decision 9); apps/andon-ui/src/Lane.svelte (the landed sub-row),
   apps/andon-ui/src/app.css (`.row.sub.landed`)
