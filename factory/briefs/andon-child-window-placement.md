@@ -1,6 +1,7 @@
 # Settings and About open centered on the main window
 
-- Status: ready
+- Status: done
+- Job: 077-andon-child-window-placement (merged c8a8dad, 2026-10-30)
 - Sources: the explore request of 2026-10-30 ("About window shouldn't remember its size or position: it should be a fixed size, centered on the parent window"); briefs `andon-about`, `andon-settings`; `apps/andon/tinyjs.json`, `apps/andon/src/appmenu.ts`, `apps/andon/src/backend.ts`
 - Date: 2026-10-30
 
