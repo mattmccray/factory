@@ -90,6 +90,13 @@ Upgrade refuses if a managed file was edited locally. Move the change into the o
 (`factory/config.json` or `factory/roles/<role>.md`), then rerun with `--force` to restore the
 rendered bytes.
 
+`factory upgrade --commit` also commits the result, as one
+`chore(factory): upgrade factory <old> -> <new>` commit holding exactly the files upgrade wrote or
+deleted and `factory/managed.json`; your other staged and unstaged changes (including your
+`factory/config.json` edit) stay as they were. It refuses, writing nothing, outside a git work
+tree, on a detached HEAD, or mid-merge, rebase, cherry-pick, or revert. If the commit itself fails
+(for example, a hook rejects it), the upgraded files stay written; commit them by hand.
+
 ## Self-upgrade of this repo
 
 This repo runs its own jobs with an installed copy (`.claude/`, `factory/`) that is kept

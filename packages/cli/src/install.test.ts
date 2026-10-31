@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { type Config, parseConfig, parseManifest } from '@factory/contract';
 import { VERSION, cliStampLine, contractStampLine, renderClaudeCode } from '@factory/templates';
-import { initRepo } from './gitrepo';
+import { gitIn, initRepo } from './gitrepo';
 import { DEFAULT_CONFIG, GITIGNORE_LINES, withRuntimeIgnores } from './install';
 import { USAGE, run } from './index';
 import { protectedReason } from './paths';
@@ -386,10 +386,217 @@ describe('upgrade refusals and usage (AC5)', () => {
     await refuses(['upgrade'], /^upgrade: factory\/config\.json: unknown key 'extra'$/);
   });
 
-  for (const argv of [['init', '--forse'], ['init', 'x'], ['init', '--force', '--force'], ['upgrade', '-f'], ['upgrade', '--force', 'x']]) {
+  for (const argv of [['init', '--forse'], ['init', 'x'], ['init', '--force', '--force'], ['init', '--commit'], ['init', '--force', '--commit']]) {
     test(`usage error: ${argv.join(' ')}`, async () => {
-      const cmd = argv[0] ?? '';
-      await refuses(argv, new RegExp(`^usage: ${cmd} \\[--force\\]$`));
+      await refuses(argv, /^usage: init \[--force\]$/);
+    });
+  }
+  for (const argv of [
+    ['upgrade', '-f'],
+    ['upgrade', '--force', 'x'],
+    ['upgrade', '--force', '--force'],
+    ['upgrade', '--commit', '--commit'],
+    ['upgrade', '--commit', '--force', '--commit'],
+    ['upgrade', '--commit', 'x'],
+    ['upgrade', '-c'],
+    ['upgrade', '--commit=yes'],
+  ]) {
+    test(`usage error: ${argv.join(' ')}`, async () => {
+      await refuses(argv, /^usage: upgrade \[--force\] \[--commit\]$/);
+      expect(USAGE.upgrade).toBe('usage: upgrade [--force] [--commit]');
+    });
+  }
+});
+
+describe('upgrade --commit', () => {
+  const OLD = '0.0.1-old';
+  const head = (): string => gitIn(dir, 'rev-parse', 'HEAD');
+  const staged = (): string => gitIn(dir, 'diff', '--cached', '--name-only');
+  const unstaged = (): string => gitIn(dir, 'diff', '--name-only');
+  const count = (): number => Number(gitIn(dir, 'rev-list', '--count', 'HEAD'));
+  // The paths HEAD's commit changed, as `<status>\t<path>` lines, sorted.
+  const committed = (): string[] => gitIn(dir, 'diff-tree', '--no-commit-id', '--name-status', '-r', 'HEAD').split('\n').filter((l) => l !== '').sort();
+  // The work tree minus `.git/`, so a refusal can be checked as a no-op on disk.
+  const files = async (): Promise<Record<string, string>> => Object.fromEntries(Object.entries(await snapshot(dir)).filter(([rel]) => !rel.startsWith('.git/')));
+  const changedSince = (before: Record<string, string>, after: Record<string, string>): string[] =>
+    [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((rel) => !rel.endsWith('/') && before[rel] !== after[rel]).sort();
+
+  // An installed project in a git repo with everything committed, a local identity, and its own
+  // hooks directory (so a machine-wide hooksPath never runs here). The manifest's version is set
+  // to OLD, so the commit's subject shows where `<old>` comes from.
+  beforeEach(async () => {
+    initRepo(dir);
+    for (const [k, v] of [['user.name', 'factory-test'], ['user.email', 'test@example.invalid'], ['commit.gpgsign', 'false'], ['core.hooksPath', join(dir, '.git', 'hooks')]] as const) gitIn(dir, 'config', k, v);
+    await writeAt(dir, 'factory/config.json', configWith(['alpha']));
+    expect((await cli(dir, 'init')).code).toBe(0);
+    await writeFile(join(dir, 'factory/managed.json'), JSON.stringify({ ...(await manifestOf(dir)), version: OLD }));
+    gitIn(dir, 'add', '-A');
+    gitIn(dir, 'commit', '--quiet', '-m', 'install');
+  });
+
+  test('AC1: one commit, the upgrade subject with no trailer, exactly the written files and managed.json', async () => {
+    await writeAt(dir, 'factory/config.json', configWith(['alpha', 'beta']));
+    gitIn(dir, 'commit', '--quiet', '-am', 'add beta');
+    const before = await files();
+    const n = count();
+    const r = await cli(dir, 'upgrade', '--commit');
+    expect(r.err).toEqual([]);
+    expect(r.code).toBe(0);
+    expect(count()).toBe(n + 1);
+    expect(gitIn(dir, 'log', '-1', '--format=%B')).toBe(`chore(factory): upgrade factory ${OLD} -> ${VERSION}`);
+    const changed = changedSince(before, await files());
+    expect(changed).toContain(agent('beta'));
+    expect(changed).toContain('factory/managed.json');
+    expect(committed().map((l) => l.split('\t')[1])).toEqual(changed);
+    const written = changed.filter((rel) => rel !== 'factory/managed.json').length;
+    expect(r.out).toEqual([`upgraded factory ${OLD} -> ${VERSION}: ${written} written, 0 removed`, `committed ${gitIn(dir, 'rev-parse', '--short', 'HEAD')}`]);
+    expect(gitIn(dir, 'status', '--porcelain')).toBe('');
+    expect(await doctorCode(dir)).toBe(0);
+  });
+
+  test('AC2: a staged and an unstaged change elsewhere stay out of the commit and keep their state', async () => {
+    await writeAt(dir, 'src/x.ts', 'export const x = 1;\n');
+    gitIn(dir, 'add', 'src/x.ts');
+    await writeAt(dir, 'factory/config.json', configWith(['alpha', 'beta']));
+    const r = await cli(dir, 'upgrade', '--commit');
+    expect(r.err).toEqual([]);
+    expect(r.code).toBe(0);
+    const paths = committed().map((l) => l.split('\t')[1]);
+    expect(paths).not.toContain('src/x.ts');
+    expect(paths).not.toContain('factory/config.json');
+    expect(paths).toContain(agent('beta'));
+    expect(staged()).toBe('src/x.ts');
+    expect(unstaged()).toBe('factory/config.json');
+  });
+
+  test('AC3: a reviewer swap commits the deletion of the old agent and the new, untracked agent', async () => {
+    await writeAt(dir, 'factory/config.json', configWith(['beta']));
+    expect(gitIn(dir, 'ls-files', '--', agent('beta'))).toBe('');
+    const r = await cli(dir, 'upgrade', '--commit');
+    expect(r.err).toEqual([]);
+    expect(r.code).toBe(0);
+    expect(r.out[0]).toEndWith(', 1 removed');
+    const lines = committed();
+    expect(lines).toContain(`D\t${agent('alpha')}`);
+    expect(lines).toContain(`A\t${agent('beta')}`);
+    expect(lines).toContain('M\tfactory/managed.json');
+    expect(staged()).toBe('');
+    expect(unstaged()).toBe('factory/config.json');
+  });
+
+  test('AC4: an install that is already current makes no commit and says nothing to commit', async () => {
+    expect((await cli(dir, 'upgrade')).code).toBe(0);
+    gitIn(dir, 'commit', '--quiet', '-am', 'current');
+    const at = head();
+    const r = await cli(dir, 'upgrade', '--commit');
+    expect(r).toEqual({ code: 0, out: [`upgraded factory ${VERSION} -> ${VERSION}: 0 written, 0 removed`, 'nothing to commit'], err: [] });
+    expect(head()).toBe(at);
+    expect(gitIn(dir, 'status', '--porcelain')).toBe('');
+  });
+
+  const refusesIn = async (want: RegExp): Promise<void> => {
+    await writeAt(dir, 'factory/config.json', configWith(['beta']));
+    const before = await files();
+    const r = await cli(dir, 'upgrade', '--commit');
+    expect(r.code).toBe(1);
+    expect(r.out).toEqual([]);
+    expect(r.err).toHaveLength(1);
+    expect(r.err[0]).toMatch(want);
+    expect(await files()).toEqual(before);
+  };
+
+  test('AC5: outside any git work tree it refuses and writes nothing', async () => {
+    await rm(join(dir, '.git'), { recursive: true, force: true });
+    await refusesIn(/^upgrade --commit: refusing, .* is not inside a git work tree$/);
+  });
+
+  test('AC5: a detached HEAD is refused', async () => {
+    gitIn(dir, 'checkout', '--quiet', '--detach');
+    await refusesIn(/^upgrade --commit: refusing, HEAD is detached/);
+  });
+
+  test('AC5: a merge in progress is refused', async () => {
+    gitIn(dir, 'checkout', '--quiet', '-b', 'other');
+    await writeAt(dir, 'notes.txt', 'theirs\n');
+    gitIn(dir, 'add', 'notes.txt');
+    gitIn(dir, 'commit', '--quiet', '-m', 'theirs');
+    gitIn(dir, 'checkout', '--quiet', 'main');
+    await writeAt(dir, 'notes.txt', 'ours\n');
+    gitIn(dir, 'add', 'notes.txt');
+    gitIn(dir, 'commit', '--quiet', '-m', 'ours');
+    expect(() => gitIn(dir, 'merge', '--quiet', 'other')).toThrow();
+    expect(await Bun.file(join(dir, '.git', 'MERGE_HEAD')).exists()).toBe(true);
+    await refusesIn(/^upgrade --commit: refusing, a merge is in progress$/);
+  });
+
+  for (const [marker, state] of [
+    ['rebase-merge/', 'a rebase'],
+    ['rebase-apply/', 'a rebase'],
+    ['CHERRY_PICK_HEAD', 'a cherry-pick'],
+    ['REVERT_HEAD', 'a revert'],
+  ] as const) {
+    test(`AC5: ${state} in progress (${marker}) is refused`, async () => {
+      if (marker.endsWith('/')) await mkdir(join(dir, '.git', marker));
+      else await writeFile(join(dir, '.git', marker), `${head()}\n`);
+      await refusesIn(new RegExp(`^upgrade --commit: refusing, ${state} is in progress$`));
+    });
+  }
+
+  test('AC6: a rejecting pre-commit hook runs; the files stay written, doctor passes, no commit, one stderr line', async () => {
+    await writeAt(dir, '.git/hooks/pre-commit', `#!/bin/sh\ntouch "${join(dir, 'hook-ran')}"\necho "pre-commit says no" >&2\nexit 1\n`);
+    await chmod(join(dir, '.git', 'hooks', 'pre-commit'), 0o755);
+    await writeAt(dir, 'factory/config.json', configWith(['beta']));
+    const at = head();
+    const r = await cli(dir, 'upgrade', '--commit');
+    expect(r.code).toBe(1);
+    expect(r.out).toEqual([]);
+    expect(r.err).toHaveLength(1);
+    const line = r.err[0] ?? '';
+    expect(line).toContain(`upgraded factory ${OLD} -> ${VERSION}: `);
+    expect(line).toContain('pre-commit says no');
+    expect(line).toContain('commit the upgraded files by hand');
+    expect(await Bun.file(join(dir, 'hook-ran')).exists()).toBe(true);
+    expect(head()).toBe(at);
+    expect(await Bun.file(join(dir, agent('beta'))).exists()).toBe(true);
+    expect(await Bun.file(join(dir, agent('alpha'))).exists()).toBe(false);
+    expect((await manifestOf(dir)).version).toBe(VERSION);
+    expect(await doctorCode(dir)).toBe(0);
+  });
+
+  test('AC7: plain upgrade in a git repo makes no commit and prints only the summary', async () => {
+    await writeAt(dir, 'factory/config.json', configWith(['beta']));
+    const at = head();
+    const r = await cli(dir, 'upgrade');
+    expect(r.err).toEqual([]);
+    expect(r.code).toBe(0);
+    expect(r.out).toEqual([`upgraded factory ${OLD} -> ${VERSION}: ${r.out[0]?.split(': ')[1] ?? ''}`]);
+    expect(r.out[0]).toEndWith(', 1 removed');
+    expect(head()).toBe(at);
+  });
+
+  test('AC7: plain upgrade outside git still works, and a detached HEAD is not checked', async () => {
+    gitIn(dir, 'checkout', '--quiet', '--detach');
+    await writeAt(dir, 'factory/config.json', configWith(['beta']));
+    expect((await cli(dir, 'upgrade')).code).toBe(0);
+    await rm(join(dir, '.git'), { recursive: true, force: true });
+    await writeAt(dir, 'factory/config.json', configWith(['gamma']));
+    const r = await cli(dir, 'upgrade');
+    expect(r.err).toEqual([]);
+    expect(r.code).toBe(0);
+    expect(r.out).toHaveLength(1);
+  });
+
+  for (const flags of [['--force', '--commit'], ['--commit', '--force']]) {
+    test(`AC7: ${flags.join(' ')} is accepted and --force still replaces an edited file`, async () => {
+      await writeFile(join(dir, agent('builder')), 'local edit\n');
+      gitIn(dir, 'commit', '--quiet', '-am', 'edit');
+      expect((await cli(dir, 'upgrade', '--commit')).code).toBe(1);
+      const r = await cli(dir, 'upgrade', ...flags);
+      expect(r.err).toEqual([]);
+      expect(r.code).toBe(0);
+      expect(r.out[1]).toBe(`committed ${gitIn(dir, 'rev-parse', '--short', 'HEAD')}`);
+      expect(committed().map((l) => l.split('\t')[1])).toEqual([agent('builder'), 'factory/managed.json'].sort());
+      expect(gitIn(dir, 'status', '--porcelain')).toBe('');
     });
   }
 });

@@ -271,7 +271,7 @@ describe('usage (AC6)', () => {
     expect(USAGE.projects).toBe('usage: projects [prune [--dry-run] | remove <path>]');
     expect(USAGE.all).toBe('usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id>');
     // `projects` is not on the top-level line; ` | --version` comes from 060-cli-global-install.
-    expect(USAGE.source).toBe(`${USAGE.all} | doctor | init [--force] | upgrade [--force] | --version`);
+    expect(USAGE.source).toBe(`${USAGE.all} | doctor | init [--force] | upgrade [--force] [--commit] | --version`);
   });
 
   test('the installed CLI does not offer projects', async () => {
