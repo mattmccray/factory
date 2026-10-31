@@ -5,9 +5,10 @@
 // Settings window's two settings methods (035), the main window's hand-off method (036), the
 // job menu method (040), the main window's start method (068), and its epic menu method (076), the
 // Mac app pins the Tiny JS it was tested on, and the backend entry is the Bun bundle of backend.ts.
-import { describe, expect, test } from 'bun:test';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { afterAll, describe, expect, test } from 'bun:test';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { BACKEND_OUT, appVersion, bundleBackend } from '../build';
 import { CLOSE_ABOUT_METHOD, GET_ABOUT_METHOD } from './about';
 import { BACKLOG_EVENT, INSPECTOR_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, START_WORK_EVENT, STATUS_BAR_EVENT, WHATS_NEW_EVENT } from './appmenu';
@@ -193,10 +194,33 @@ describe('071 AC6: the no-service page is a string from a runtime-neutral module
     return out;
   }
 
-  /** The git-tracked files under apps/andon, relative to it: what the repo ships, not build output on disk. */
-  function trackedFiles(): string[] {
-    const r = Bun.spawnSync(['git', 'ls-files', '-z'], { cwd: appDir, stdout: 'pipe', stderr: 'pipe' });
-    if (r.exitCode !== 0) throw new Error(`git ls-files failed in ${appDir}: ${new TextDecoder().decode(r.stderr)}`);
+  /** Whether git says `dir` is inside a git work tree. A `.git` check would miss a parent repo or a worktree's `.git` file. */
+  function insideWorkTree(dir: string): boolean {
+    const r = Bun.spawnSync(['git', 'rev-parse', '--is-inside-work-tree'], { cwd: dir, stdout: 'pipe', stderr: 'pipe' });
+    return r.exitCode === 0 && new TextDecoder().decode(r.stdout).trim() === 'true';
+  }
+
+  /** Every file on disk under `dir`, relative to it and `/`-separated, skipping each `node_modules` directory. */
+  function filesOnDisk(dir: string, rel = ''): string[] {
+    const out: string[] = [];
+    for (const e of readdirSync(join(dir, rel), { withFileTypes: true })) {
+      const path = rel === '' ? e.name : `${rel}/${e.name}`;
+      if (e.isDirectory()) {
+        if (e.name !== 'node_modules') out.push(...filesOnDisk(dir, path));
+      } else out.push(path);
+    }
+    return out;
+  }
+
+  /**
+   * The files `dir` ships, relative to it. In a git work tree, the git-tracked files (what the repo
+   * ships, not build output on disk). Outside one, as in the release's `git archive` copy of HEAD,
+   * the files on disk, minus the `node_modules` the release mirrors in.
+   */
+  function listFiles(dir: string): string[] {
+    if (!insideWorkTree(dir)) return filesOnDisk(dir);
+    const r = Bun.spawnSync(['git', 'ls-files', '-z'], { cwd: dir, stdout: 'pipe', stderr: 'pipe' });
+    if (r.exitCode !== 0) throw new Error(`git ls-files failed in ${dir}: ${new TextDecoder().decode(r.stderr)}`);
     return new TextDecoder().decode(r.stdout).split('\0').filter((p) => p !== '');
   }
 
@@ -216,10 +240,43 @@ describe('071 AC6: the no-service page is a string from a runtime-neutral module
   });
 
   test('apps/andon tracks no .html or .css file and no frontend directory', () => {
-    const tracked = trackedFiles();
+    const tracked = listFiles(appDir);
     expect(tracked.length).toBeGreaterThan(0);
     expect(tracked).toContain('tinyjs.json');
     expect(frontendViolations(tracked)).toEqual([]);
+  });
+
+  /** A fresh temp directory outside any git work tree, holding `files` (relative path to text). */
+  function noGitDir(files: readonly string[]): string {
+    const dir = mkdtempSync(join(tmpdir(), 'andon-boundary-'));
+    tempDirs.push(dir);
+    for (const f of files) {
+      mkdirSync(dirname(join(dir, f)), { recursive: true });
+      writeFileSync(join(dir, f), '');
+    }
+    expect(insideWorkTree(dir)).toBe(false);
+    return dir;
+  }
+
+  const tempDirs: string[] = [];
+  afterAll(() => {
+    for (const d of tempDirs) rmSync(d, { recursive: true, force: true });
+  });
+
+  test.if(insideWorkTree(appDir))('in a git work tree the listing of apps/andon is git ls-files -z', () => {
+    const r = Bun.spawnSync(['git', 'ls-files', '-z'], { cwd: appDir, stdout: 'pipe', stderr: 'pipe' });
+    expect(r.exitCode).toBe(0);
+    expect(listFiles(appDir)).toEqual(new TextDecoder().decode(r.stdout).split('\0').filter((p) => p !== ''));
+  });
+
+  test('outside a git work tree the listing is the files on disk, skipping every node_modules', () => {
+    const dir = noGitDir(['tinyjs.json', 'src/a.ts', 'node_modules/pkg/index.html', 'src/nested/node_modules/x.css']);
+    expect(listFiles(dir).sort()).toEqual(['src/a.ts', 'tinyjs.json']);
+  });
+
+  test('outside a git work tree the listing is as strict as the git one', () => {
+    const dir = noGitDir(['web/index.html', 'src/page.css']);
+    expect(frontendViolations(listFiles(dir).sort())).toEqual(['src/page.css', 'web/index.html', 'web/']);
   });
 
   test('tinyjs.json names no frontend or page of its own', () => {
