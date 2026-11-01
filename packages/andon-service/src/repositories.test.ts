@@ -17,6 +17,13 @@ describe('parseRemoteUrl (AC1)', () => {
     expect(parseRemoteUrl('https://bitbucket.org/team/repo.git')).toEqual({ host: 'bitbucket.org', owner: 'team', name: 'repo' });
   });
 
+  test("a default port is dropped (https's 443, ssh's 22); another port is kept", () => {
+    expect(parseRemoteUrl('https://github.com:443/o/n')).toEqual({ host: 'github.com', owner: 'o', name: 'n' });
+    expect(parseRemoteUrl('ssh://git@github.com:22/o/n.git')).toEqual({ host: 'github.com', owner: 'o', name: 'n' });
+    expect(parseRemoteUrl('https://10.0.0.5:8080/o/n')).toEqual({ host: '10.0.0.5:8080', owner: 'o', name: 'n' }); // an IPv4 host parses; IPv6 does not
+    expect(parseRemoteUrl('ssh://git@github.com:2222/o/n.git')).toEqual({ host: 'github.com:2222', owner: 'o', name: 'n' });
+  });
+
   test('local paths, file: URLs, relative paths, and deeper paths are null', () => {
     for (const url of ['/srv/repo.git', 'file:///x', '../other', 'https://github.com/a/b/c']) expect(parseRemoteUrl(url)).toBeNull();
   });
@@ -25,7 +32,7 @@ describe('parseRemoteUrl (AC1)', () => {
     expect(parseRemoteUrl('HTTPS://GitHub.COM/Owner/Name')).toEqual({ host: 'github.com', owner: 'Owner', name: 'Name' });
     expect(parseRemoteUrl('github.com:o/n.git')).toEqual({ host: 'github.com', owner: 'o', name: 'n' });
     expect(parseRemoteUrl('https://github.com/o/n/')).toEqual({ host: 'github.com', owner: 'o', name: 'n' });
-    for (const url of ['', '   ', 'https://github.com/./n', 'https://github.com/o/..', 'git://github.com/o/n', 'http://github.com/o/n', 'https://github.com/o', 'https://github.com/o/n?x=1', 'host:/abs/path', 'https://github.com/o%20x/n', 'git@github.com:o/n/extra', 'C:\\repo\\x']) {
+    for (const url of ['', '   ', 'https://github.com/./n', 'https://github.com/o/..', 'git://github.com/o/n', 'http://github.com/o/n', 'https://github.com/o', 'https://github.com/o/n?x=1', 'host:/abs/path', 'https://github.com/o%20x/n', 'git@github.com:o/n/extra', 'C:\\repo\\x', 'https://github.com/o/%zz', 'https://github.com/o/%6E', 'ssh://git@github.com/%E0%A4%A/n', 'https://[::1]/o/n']) {
       expect({ url, parsed: parseRemoteUrl(url) }).toEqual({ url, parsed: null });
     }
   });
@@ -48,6 +55,11 @@ describe('readRepositories', () => {
       { remote: 'origin', host: 'localhost:222', owner: 'mattm', name: 'infra' },
       { remote: 'upstream', host: 'github.com', owner: 'mattmccray', name: 'infra' },
     ]);
+  });
+
+  test('a malformed percent escape skips only that remote; the reader never rejects', async () => {
+    const out = ['bad\thttps://github.com/o/%zz (fetch)', 'origin\thttps://github.com/mattmccray/factory.git (fetch)', ''].join('\n');
+    expect(await readRepositories(answering(0, out), '/r')).toEqual([{ remote: 'origin', host: 'github.com', owner: 'mattmccray', name: 'factory' }]);
   });
 
   test('runs exactly `git remote -v` in the root; a failure, or a throw, is []', async () => {

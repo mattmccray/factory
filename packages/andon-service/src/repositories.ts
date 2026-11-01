@@ -38,8 +38,16 @@ function fromPath(host: string, path: string): ParsedRemote | null {
   return { host: h, owner, name };
 }
 
-/** Parses one remote URL to `{ host, owner, name }`, or null when it isn't a hosted two-part repository URL. */
+/** Parses one remote URL to `{ host, owner, name }`, or null when it isn't a hosted two-part repository URL. Never throws. */
 export function parseRemoteUrl(url: string): ParsedRemote | null {
+  try {
+    return parse(url);
+  } catch {
+    return null;
+  }
+}
+
+function parse(url: string): ParsedRemote | null {
   const s = url.trim();
   if (s === '' || /\s/.test(s)) return null;
   const scheme = s.match(/^([A-Za-z][A-Za-z0-9+.-]*):\/\//);
@@ -53,7 +61,10 @@ export function parseRemoteUrl(url: string): ParsedRemote | null {
       return null;
     }
     if (u.search !== '' || u.hash !== '' || u.hostname === '') return null;
-    return fromPath(u.port === '' ? u.hostname : `${u.hostname}:${u.port}`, decodeURIComponent(u.pathname));
+    // The path is never decoded: a `%` escape fails the part check, so an encoded path is skipped.
+    // `URL` drops https's default port; ssh's (22) is dropped the same way.
+    const port = kind === 'ssh' && u.port === '22' ? '' : u.port;
+    return fromPath(port === '' ? u.hostname : `${u.hostname}:${port}`, u.pathname);
   }
   const scp = s.match(SCP);
   if (scp === null) return null;

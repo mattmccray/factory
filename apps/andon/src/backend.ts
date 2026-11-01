@@ -971,8 +971,9 @@ async function deliver(app: MacApp, host: HandoffHost, mode: 'draft' | 'send', p
  * setting, a draft opened (`open <prompt link>`, only with a unique GitHub `repo`; `deliver`) or,
  * for a local project, the command sent (`<t3> thread start --title "<action> <job>" <root>
  * <command>`); a remote project in send mode gets the draft instead. Copy mode, or no `t3`: nothing
- * runs, "copy-only". A failed open or send notifies, and answers "copy-only" (the page copied). Null, with nothing run, opened, or notified, for any other window, a request that
- * fails a check, or a hand-off already running.
+ * runs, "copy-only". A failed open or send notifies, and answers "copy-only" (the page copied).
+ * Null, with nothing run, opened, or notified, for any other window, a request that fails a check,
+ * or a hand-off already running.
  */
 export async function handOff(params: unknown, app: MacApp, meta: unknown, host: HandoffHost = hostHandoff): Promise<HandoffOutcome | null> {
   if (!fromMainWindow(meta)) return null;
