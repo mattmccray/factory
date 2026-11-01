@@ -2024,7 +2024,7 @@ import { createHash } from "crypto";
 // packages/templates/package.json
 var package_default = {
   name: "@factory/templates",
-  version: "0.4.0",
+  version: "0.5.0",
   private: true,
   type: "module",
   main: "src/index.ts",

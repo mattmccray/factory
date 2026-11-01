@@ -1,3 +1,10 @@
+## v0.5.0 (2026-11-01)
+
+### Added
+
+- Andon: explain a non-primary GitHub remote and space the title (091-t3-primary-remote-toast)
+- Andon: add the desk widget (092-andon-desk-widget)
+
 ## v0.4.0 (2026-10-31)
 
 ### Added
