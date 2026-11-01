@@ -3,7 +3,7 @@
 // change it asks for, and the window check both methods make first. backend.ts owns the stored
 // values, answers the two methods only for the Settings window, and keeps the menu bar and every
 // window in step.
-import { MERGED_KEY, STATUS_BAR_KEY, SETTINGS_WINDOW_ID, storedHidden } from './appmenu';
+import { DESK_WIDGET_KEY, MERGED_KEY, STATUS_BAR_KEY, SETTINGS_WINDOW_ID, storedHidden, storedOn } from './appmenu';
 import type { ViewState } from './appmenu';
 import { isRecord } from './state';
 
@@ -32,6 +32,8 @@ export interface StoredSettings {
   statusBarHidden: boolean;
   t3Handoff: HandoffMode;
   mergedHidden: boolean;
+  /** The desk widget is on (092). */
+  deskWidget: boolean;
 }
 export type SettingKey = keyof StoredSettings;
 
@@ -41,18 +43,24 @@ export interface Settings extends StoredSettings {
 }
 
 /** The keys, in order. `statusBarHidden` is STATUS_BAR_KEY, so the choice stored before carries over;
- *  `mergedHidden` is MERGED_KEY. */
-export const SETTING_KEYS: readonly SettingKey[] = [STATUS_BAR_KEY, T3_HANDOFF_KEY, MERGED_KEY];
+ *  `mergedHidden` is MERGED_KEY, and `deskWidget` is DESK_WIDGET_KEY. */
+export const SETTING_KEYS: readonly SettingKey[] = [STATUS_BAR_KEY, T3_HANDOFF_KEY, MERGED_KEY, DESK_WIDGET_KEY];
 
 /** One change the Settings window may ask for: a known key and a value of its type. */
-export type SettingChange = { key: 'statusBarHidden'; value: boolean } | { key: 't3Handoff'; value: HandoffMode } | { key: 'mergedHidden'; value: boolean };
+export type SettingChange =
+  | { key: 'statusBarHidden'; value: boolean }
+  | { key: 't3Handoff'; value: HandoffMode }
+  | { key: 'mergedHidden'; value: boolean }
+  | { key: 'deskWidget'; value: boolean };
 
 /** The snapshot from the stored values: exactly `true` means hidden (the status bar, the Merged
- *  column), anything else (or nothing) shown; a hand-off mode that isn't one of the three is the default, draft. */
+ *  column), anything else (or nothing) shown; a hand-off mode that isn't one of the three is the default,
+ *  draft; exactly `true` means the desk widget is on, anything else (or nothing) off. */
 export const settingsSnapshot = (stored: Readonly<Partial<Record<SettingKey, unknown>>>, t3Found: boolean): Settings => ({
   statusBarHidden: storedHidden(stored.statusBarHidden),
   t3Handoff: storedMode(stored.t3Handoff),
   mergedHidden: storedHidden(stored.mergedHidden),
+  deskWidget: storedOn(stored.deskWidget),
   t3Found,
 });
 
@@ -68,6 +76,7 @@ export function settingChange(params: unknown): SettingChange | null {
   if (key === 'statusBarHidden' && typeof value === 'boolean') return { key, value };
   if (key === 't3Handoff' && isHandoffMode(value)) return { key, value };
   if (key === 'mergedHidden' && typeof value === 'boolean') return { key, value };
+  if (key === 'deskWidget' && typeof value === 'boolean') return { key, value };
   return null;
 }
 

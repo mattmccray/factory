@@ -6,9 +6,11 @@
 // main window and asks the board to open its What's New sheet, and the project on GitHub).
 // File also leads with New Exploration… (⌘N), which shows the main window and asks its page to
 // open the New exploration sheet (the `startwork` event, a request only: the page checks it).
+// Window also ends with Desk Widget, a checkmark item that turns the desk widget (092) on and off.
 // The menu spec, its ids, the label for a status bar state, what a click does, how the stored status
-// bar choice reads, and the Settings and About windows' ids, titles, sizes, pages, and chrome all live here,
-// runtime-neutral; backend.ts sets the menu, opens the window, and carries out the actions.
+// bar choice reads, the Settings and About windows' ids, titles, sizes, pages, and chrome, and the desk
+// widget window's options, its window behavior, and where it opens all live here, runtime-neutral;
+// backend.ts sets the menu, opens the windows, and carries out the actions.
 import { serviceUrl } from './autostart';
 
 /** The repo page Help → Factory on GitHub opens. One constant, easy to change at publication. */
@@ -32,6 +34,14 @@ export const SETTLED_EVENT = 'settled';
 export const BACKLOG_EVENT = 'backlog';
 export const SIDEBAR_EVENT = 'sidebar';
 export const INSPECTOR_EVENT = 'inspector';
+/** The store key holding the desk widget choice (092): `true` when on. */
+export const DESK_WIDGET_KEY = 'deskWidget';
+/** The event the Mac app pushes to every window with the desk widget choice (`{ on }`), so the
+ *  Settings window's checkbox follows a change made in a menu. */
+export const DESK_WIDGET_EVENT = 'deskwidget';
+/** The event the Mac app pushes to the main window's page when a desk widget pill is clicked
+ *  (`{ project, id }`): a request the page checks, then it selects that job. */
+export const OPEN_JOB_EVENT = 'openjob';
 /** The event the Mac app pushes to ask the main window's page to start work: File → New
  *  Exploration… and a project's right-click New Exploration… and Run Next. Its payload is a request
  *  only (`StartWorkPush`): the page checks it, and `startWork` stays the one path that builds a command. */
@@ -62,6 +72,9 @@ export const MERGED_ID = 'merged';
 export const MINIMIZE_ID = 'minimize';
 export const ZOOM_ID = 'zoom';
 export const SHOW_MAIN_ID = 'andon';
+export const DESK_WIDGET_ID = 'deskwidget';
+/** The Desk Widget item's label: one label in the Window menu and the tray menu; a checkmark shows its state. */
+export const DESK_WIDGET_LABEL = 'Desk Widget';
 export const WHATS_NEW_ID = 'whatsnew';
 export const GITHUB_ID = 'github';
 
@@ -73,6 +86,8 @@ export interface MenuItem {
   key?: string;
   /** false: grayed out */
   enabled?: boolean;
+  /** true: a checkmark */
+  checked?: boolean;
   separator?: boolean;
 }
 
@@ -95,10 +110,12 @@ export interface ViewState {
 /** The page's view on load, before it reports: everything, the sidebar shown, no inspector. */
 export const DEFAULT_VIEW: Readonly<ViewState> = { needsMe: false, sidebarShown: true, inspectorOpen: false };
 
-/** Everything the menu bar's labels depend on: the two stored choices and the page's view state. */
+/** Everything the menu bar's labels and checkmarks depend on: the three stored choices and the page's view state. */
 export interface MenuState {
   statusBarHidden: boolean;
   mergedHidden: boolean;
+  /** The desk widget is on (092): the Window menu's Desk Widget item is checked. */
+  deskWidget: boolean;
   view: ViewState;
 }
 
@@ -146,6 +163,14 @@ export function fileMenu(): MenuItem[] {
   ];
 }
 
+/** The Desk Widget checkmark item (092), as the Window menu and the tray menu both show it. */
+export const deskWidgetItem = (on: boolean): MenuItem => ({ id: DESK_WIDGET_ID, label: DESK_WIDGET_LABEL, checked: on });
+
+/** The Window menu, in order: Minimize, Zoom, Andon, then Desk Widget (checked while it is on). */
+export function windowMenu(deskWidget: boolean): MenuItem[] {
+  return [{ id: MINIMIZE_ID, label: 'Minimize', key: 'm' }, { id: ZOOM_ID, label: 'Zoom' }, { separator: true }, { id: SHOW_MAIN_ID, label: 'Andon', key: '0' }, { separator: true }, deskWidgetItem(deskWidget)];
+}
+
 /** The whole menu bar, in bar order, for a state. */
 export function appMenu(s: MenuState): Menu[] {
   return [
@@ -155,7 +180,7 @@ export function appMenu(s: MenuState): Menu[] {
     { title: 'View', items: viewMenu(s) },
     {
       title: 'Window',
-      items: [{ id: MINIMIZE_ID, label: 'Minimize', key: 'm' }, { id: ZOOM_ID, label: 'Zoom' }, { separator: true }, { id: SHOW_MAIN_ID, label: 'Andon', key: '0' }],
+      items: windowMenu(s.deskWidget),
     },
     { title: 'Help', role: 'help', items: [{ id: WHATS_NEW_ID, label: "What's New" }, { id: GITHUB_ID, label: 'Factory on GitHub' }] },
   ];
@@ -168,6 +193,7 @@ export type MenuAction =
   | { kind: 'close-window' } // close the focused Settings or About window, or hide the focused main window
   | { kind: 'toggle-status-bar' }
   | { kind: 'toggle-merged' }
+  | { kind: 'toggle-desk-widget' }
   | { kind: 'page'; event: PageEvent; show: boolean } // push `event` to the page; `show`: show the main window first
   | { kind: 'minimize' }
   | { kind: 'zoom' }
@@ -201,6 +227,8 @@ export function menuAction(id: string): MenuAction | null {
       return { kind: 'page', event: SIDEBAR_EVENT, show: false };
     case INSPECTOR_ID:
       return { kind: 'page', event: INSPECTOR_EVENT, show: false };
+    case DESK_WIDGET_ID:
+      return { kind: 'toggle-desk-widget' };
     case MINIMIZE_ID:
       return { kind: 'minimize' };
     case ZOOM_ID:
@@ -218,6 +246,12 @@ export function menuAction(id: string): MenuAction | null {
 
 /** The stored status bar choice: exactly `true` is hidden; missing or anything else is shown. */
 export const storedHidden = (value: unknown): boolean => value === true;
+
+/** The stored desk widget choice: exactly `true` is on; missing or anything else is off. */
+export const storedOn = (value: unknown): boolean => value === true;
+
+/** The payload of the desk widget event. */
+export const deskWidgetPayload = (on: boolean): { on: boolean } => ({ on });
 
 /** The payload of the What's New event: nothing to carry, the page opens the whole sheet. */
 export const whatsNewPayload = (): Record<string, never> => ({});
@@ -415,4 +449,144 @@ export function placeOnMain(state: MainPlacementState, size: string): Point | nu
   const child = parseSize(size);
   if (frames === null || child === null) return null;
   return childPosition(frames.main, frames.screen, child);
+}
+
+// ---- the desk widget window (092) ----
+// A small, live view of the board on the desktop: the Andon UI's widget view in a window of its own.
+// It is transparent and frameless with no window controls, a non-activating panel (so it is kept out
+// of the Window menu's window list and ⌘` cycling), and, once open, at the `desktop` level (behind
+// normal windows) on every Space, never click-through. Its place is remembered per display; the first
+// time, it opens in the top-right corner of the main display.
+
+/** The desk widget window's id: Tiny's api meta names it, and only calls from it are answered (widget.ts). */
+export const WIDGET_WINDOW_ID = 'widget';
+export const WIDGET_TITLE = 'Andon Desk Widget';
+/** Fixed width; the page fits the height to its rows (`fitWidget`), between these bounds. */
+export const WIDGET_WIDTH = 332;
+export const WIDGET_MIN_HEIGHT = 48;
+export const WIDGET_MAX_HEIGHT = 720;
+/** The size it opens at, before its page reports its height: the nearly empty glass panel. */
+export const WIDGET_SIZE = `${WIDGET_WIDTH}x64`;
+/** The query that tells the page it is the desk widget view (in the Mac app). */
+export const WIDGET_QUERY = '?shell=mac&view=widget';
+/** The store key holding where the widget sits on each display. */
+export const WIDGET_PLACES_KEY = 'deskWidgetPlaces';
+/** The first placement's gap from the main display's top-right corner (below the menu bar), in points. */
+export const WIDGET_MARGIN = 20;
+
+/** The widget page: the same index.html the service serves at `/`, in its widget view. */
+export const widgetUrl = (port: number): string => `${serviceUrl(port)}/${WIDGET_QUERY}`;
+
+/** The widget window's options: what `widgetWindow` returns. */
+export interface WidgetWindowOptions {
+  page: string;
+  title: string;
+  size: string;
+  chrome: { frame: false; windowControls: []; transparent: true; vibrancy: false; panel: true; acceptsFirstMouse: true };
+  /** The top-left, from `widgetPlacement`: an explicit position beats the one Tiny remembers. */
+  x?: number;
+  y?: number;
+}
+
+/** How the widget window opens: frameless and transparent with no window controls, so only the
+ *  page's glass shows; a non-activating panel (open-time only in Tiny), which keeps it out of the
+ *  Window menu's window list and ⌘` cycling; the first click reaches the page (a pill or the glass);
+ *  not a child of the main window (it stays when the board hides). */
+export const widgetWindow = (port: number, at: Point | null = null): WidgetWindowOptions => {
+  const base: WidgetWindowOptions = {
+    page: widgetUrl(port),
+    title: WIDGET_TITLE,
+    size: WIDGET_SIZE,
+    chrome: { frame: false, windowControls: [], transparent: true, vibrancy: false, panel: true, acceptsFirstMouse: true },
+  };
+  return at === null ? base : { ...base, x: at.x, y: at.y };
+};
+
+/** What the widget window is set to right after it opens: the `desktop` level (behind normal windows,
+ *  never over a fullscreen app's window), on every Space, and never click-through. */
+export interface WidgetBehavior {
+  level: 'desktop';
+  allSpaces: true;
+  clickThrough: false;
+}
+export const WIDGET_BEHAVIOR: Readonly<WidgetBehavior> = { level: 'desktop', allSpaces: true, clickThrough: false };
+
+/** A display, as the placement reads it: its stable id, whether it is the main display, its frame,
+ *  and its visible frame (minus the menu bar and the Dock), in Tiny's top-left screen coordinates. */
+export interface WidgetScreen extends Rect {
+  uid: string;
+  primary: boolean;
+  visible: Rect;
+}
+
+/** Where the widget was left: on each display (by its uid), its top-left relative to that display's
+ *  frame, and the display it was on last. */
+export interface WidgetPlaces {
+  last: string | null;
+  spots: Record<string, Point>;
+}
+
+export const NO_PLACES: Readonly<WidgetPlaces> = { last: null, spots: {} };
+/** At most this many displays are remembered; the oldest entries give way. */
+export const MAX_PLACES = 16;
+
+const finitePoint = (v: unknown): Point | null => {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
+  const x: unknown = Reflect.get(v, 'x');
+  const y: unknown = Reflect.get(v, 'y');
+  return typeof x === 'number' && typeof y === 'number' && Number.isFinite(x) && Number.isFinite(y) ? { x: Math.round(x), y: Math.round(y) } : null;
+};
+
+/** The stored places, narrowed: a malformed store (or none) is no places; a malformed entry is dropped. */
+export function storedPlaces(v: unknown): WidgetPlaces {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return { last: null, spots: {} };
+  const last: unknown = Reflect.get(v, 'last');
+  const raw: unknown = Reflect.get(v, 'spots');
+  const kept: Array<[string, Point]> = [];
+  if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+    for (const [uid, spot] of Object.entries(raw)) {
+      const p = finitePoint(spot);
+      if (uid !== '' && p !== null) kept.push([uid, p]);
+    }
+  }
+  // own data properties only (a uid such as `__proto__` stays an ordinary key)
+  return { last: typeof last === 'string' && last !== '' ? last : null, spots: Object.fromEntries(kept.slice(-MAX_PLACES)) };
+}
+
+/** The places after the widget was seen at `local` (relative to its display's frame) on display `uid`. */
+export function rememberPlace(places: WidgetPlaces, uid: string, local: Point): WidgetPlaces {
+  const p = finitePoint(local);
+  if (uid === '' || p === null) return places;
+  const kept: Array<[string, Point]> = [...Object.entries(places.spots).filter(([k]) => k !== uid), [uid, p]];
+  return { last: uid, spots: Object.fromEntries(kept.slice(-MAX_PLACES)) }; // the newest last; the oldest give way
+}
+
+/** One axis: `at`, clamped so `[at, at + len]` stays inside `[lo, lo + span]`, in whole points;
+ *  longer than the span: the span's start. */
+function clampAxis(at: number, len: number, lo: number, span: number): number {
+  const min = Math.ceil(lo);
+  const max = Math.floor(lo + span - len);
+  if (max < min) return min;
+  return Math.min(Math.max(Math.round(at), min), max);
+}
+
+const usable = (r: Rect): boolean => [r.x, r.y, r.width, r.height].every(Number.isFinite) && r.width > 0 && r.height > 0;
+
+/**
+ * Where the widget opens: on the display it was left on last (when that display is connected), else
+ * the main display. On that display, at its remembered spot when there is one, kept inside the
+ * display's visible frame; else in the visible frame's top-right corner, `WIDGET_MARGIN` in from its
+ * edges. Null when no display gives a usable frame: the window opens where Tiny puts it.
+ */
+export function widgetPlacement(screens: readonly WidgetScreen[], places: WidgetPlaces, size: Size): Point | null {
+  const ok = screens.filter((s) => usable(s) && usable(s.visible));
+  const lastOn = places.last === null ? undefined : ok.find((s) => s.uid === places.last);
+  const screen = lastOn ?? ok.find((s) => s.primary) ?? ok[0];
+  if (screen === undefined) return null;
+  const v = screen.visible;
+  const spot = Object.hasOwn(places.spots, screen.uid) ? places.spots[screen.uid] : undefined;
+  if (spot !== undefined) {
+    return { x: clampAxis(screen.x + spot.x, size.width, v.x, v.width), y: clampAxis(screen.y + spot.y, size.height, v.y, v.height) };
+  }
+  return { x: clampAxis(v.x + v.width - size.width - WIDGET_MARGIN, size.width, v.x, v.width), y: clampAxis(v.y + WIDGET_MARGIN, size.height, v.y, v.height) };
 }

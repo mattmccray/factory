@@ -122,7 +122,7 @@ describe('Andon never writes job state (026 AC5)', () => {
     }
   });
 
-  test("the page calls the Mac app's backend in eight places only, each with its own fixed method names (032, 033, 035, 036, 040, 063, 065, 068, 076)", () => {
+  test("the page calls the Mac app's backend in nine places only, each with its own fixed method names (032, 033, 035, 036, 040, 063, 065, 068, 076, 092)", () => {
     // Every mention of Tiny's `api.call` (or a `'call'` key) across the page's sources.
     const hits: { file: string; hit: string }[] = [];
     for (const file of sources) {
@@ -137,6 +137,7 @@ describe('Andon never writes job state (026 AC5)', () => {
       { file: 'settings.ts', hit: 'api.call' },
       { file: 'sidebar.ts', hit: 'api.call' },
       { file: 'startwork.ts', hit: 'api.call' },
+      { file: 'widget.ts', hit: 'api.call' },
     ]);
     const text = read(join(import.meta.dir, 'projectmenu.ts'));
     // The one method name, fixed; the one call site passes it and a `{ project }` and nothing else.
@@ -153,7 +154,21 @@ describe('Andon never writes job state (026 AC5)', () => {
       "call, api, [SET_SETTING_METHOD, { key: 'statusBarHidden', value: hidden }]",
       "call, api, [SET_SETTING_METHOD, { key: 't3Handoff', value: mode }]",
       "call, api, [SET_SETTING_METHOD, { key: 'mergedHidden', value: hidden }]",
+      "call, api, [SET_SETTING_METHOD, { key: 'deskWidget', value: on }]",
     ]);
+    // The desk widget caller (092): its three fixed method names, each call site passing one of them
+    // and only a pill's `{ project, job }`, nothing, or the glass's `{ height }`; and Tiny's own
+    // window drag (`win.startDrag`, already in the gate), with no arguments.
+    const widget = read(join(import.meta.dir, 'widget.ts'));
+    expect(widget).toContain("export const OPEN_JOB_METHOD = 'openJob';");
+    expect(widget).toContain("export const SHOW_ANDON_METHOD = 'showAndon';");
+    expect(widget).toContain("export const FIT_WIDGET_METHOD = 'fitWidget';");
+    expect([...widget.matchAll(/Reflect\.apply\(([^;]*?)\)\)/g)].map((m) => m[1])).toEqual([
+      'call, api, [OPEN_JOB_METHOD, { project, job }]',
+      'call, api, [SHOW_ANDON_METHOD, null]',
+      'call, api, [FIT_WIDGET_METHOD, { height }]',
+    ]);
+    expect([...widget.matchAll(/Reflect\.apply\(([^;]*?)\);/g)].map((m) => m[1])).toEqual(['startDrag, win, []']);
     // The view-state reporter (063): its one fixed method name, and the one call site passes it and
     // only the three booleans. sidebar.ts's other Reflect.apply calls are the push subscriber's.
     const sidebar = read(join(import.meta.dir, 'sidebar.ts'));
@@ -195,23 +210,26 @@ describe('Andon never writes job state (026 AC5)', () => {
     // No other file reaches Tiny's api object: only sidebar.ts's push subscriber reads `api.on`.
     for (const file of sources) {
       const name = file.slice(import.meta.dir.length + 1);
-      if (name === 'projectmenu.ts' || name === 'jobmenu.ts' || name === 'epicmenu.ts' || name === 'sidebar.ts' || name === 'settings.ts' || name === 'handoff.ts' || name === 'about.ts' || name === 'startwork.ts') continue;
+      if (name === 'projectmenu.ts' || name === 'jobmenu.ts' || name === 'epicmenu.ts' || name === 'sidebar.ts' || name === 'settings.ts' || name === 'handoff.ts' || name === 'about.ts' || name === 'startwork.ts' || name === 'widget.ts') continue;
       expect({ file: name, hit: /\bhost\.api\b|\btiny\.api\b|\bapi\.on\b/.exec(read(file))?.[0] ?? null }).toEqual({ file: name, hit: null });
     }
   });
 
-  test("the page hears exactly the Mac app's pushed events its api gate names: statusbar and whatsnew (059), the View menu's (063), Show Backlog…'s (067), and startwork (075)", () => {
+  test("the page hears exactly the Mac app's pushed events its api gate names: statusbar and whatsnew (059), the View menu's (063), Show Backlog…'s (067), startwork (075), and deskwidget and openjob (092)", () => {
     expect(STATUS_BAR_EVENT).toBe('statusbar');
     expect(WHATS_NEW_EVENT).toBe('whatsnew');
     expect(START_WORK_EVENT).toBe('startwork');
-    expect(PUSHED_EVENTS).toEqual(['statusbar', 'whatsnew', 'merged', 'needsme', 'settled', 'backlog', 'sidebar', 'inspector', 'startwork']);
+    expect(PUSHED_EVENTS).toEqual(['statusbar', 'whatsnew', 'merged', 'needsme', 'settled', 'backlog', 'sidebar', 'inspector', 'startwork', 'deskwidget', 'openjob']);
     const tiny: unknown = JSON.parse(read(join(app, '..', 'andon', 'tinyjs.json')));
     const gate = isRecord(tiny) && isRecord(tiny.api) && Array.isArray(tiny.api.enable) ? tiny.api.enable : [];
     expect(gate.filter((e): e is string => typeof e === 'string' && e.startsWith('event.'))).toEqual(PUSHED_EVENTS.map((e) => `event.${e}`));
     expect(gate).toContain('event.whatsnew');
     // Every subscription goes through pushSubscriber with one of those names, in App.svelte only.
     const subs = [...read(join(import.meta.dir, 'App.svelte')).matchAll(/subscribe\?\.\((\w+),/g)].map((m) => m[1]);
-    expect(subs).toEqual(['STATUS_BAR_EVENT', 'WHATS_NEW_EVENT', 'MERGED_EVENT', 'NEEDS_ME_EVENT', 'SETTLED_EVENT', 'BACKLOG_EVENT', 'SIDEBAR_EVENT', 'INSPECTOR_EVENT', 'START_WORK_EVENT']);
+    expect(subs).toEqual(['STATUS_BAR_EVENT', 'WHATS_NEW_EVENT', 'MERGED_EVENT', 'NEEDS_ME_EVENT', 'SETTLED_EVENT', 'BACKLOG_EVENT', 'SIDEBAR_EVENT', 'INSPECTOR_EVENT', 'START_WORK_EVENT', 'OPEN_JOB_EVENT']);
+    // The Settings view hears the Desk Widget setting (092); the desk widget page hears no event.
+    expect([...read(join(import.meta.dir, 'Settings.svelte')).matchAll(/subscribe\?\.\((\w+),/g)].map((m) => m[1])).toEqual(['STATUS_BAR_EVENT', 'MERGED_EVENT', 'DESK_WIDGET_EVENT']);
+    expect(read(join(import.meta.dir, 'DeskWidget.svelte'))).not.toContain('pushSubscriber');
   });
 
   test('Fetcher stays path-only', () => {

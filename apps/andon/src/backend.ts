@@ -3,7 +3,7 @@
 // `app.badge`, `app.notify`, `app.menu`, `app.store`, `app.push`, `app.shell`, `app.clipboard`,
 // `app.thumbnail` (the Open in apps' icons), `app.reload` (the no-service page: see noservice.ts), the
 // `app.win.open` and `app.windows` (the Settings and About windows), the `onTray`, `onMenu`, `onNavigate`, and
-// `onContextMenu` hooks, and the ten custom `api` methods, and to
+// `onContextMenu` hooks, and the thirteen custom `api` methods, and to
 // txiki's `tjs.spawn`, `tjs.stat`, and `tjs.remove` (for curl: see curl.ts, for a project's
 // right-click menu: see projectmenu.ts, for a job's: see jobmenu.ts, for the T3 Code hand-off:
 // see handoff.ts, and for starting work in T3 Code: see startwork.ts). `bun run
@@ -24,11 +24,16 @@
 // a free-text line's title, or an idea, and answers only when the meta names the main window, and
 // the About window's `closeAbout` (Escape), which takes no params and closes only the About window
 // when the meta names it, and `epicMenu` (see epicmenu.ts), which takes a project id and an epic
-// slug and nothing else, and answers only when the meta names the main window: tinyjs.json's `api`
-// gate denies the rest.
+// slug and nothing else, and answers only when the meta names the main window, and the desk widget's
+// `openJob`, `showAndon`, and `fitWidget` (see widget.ts), which answer only when the meta names the
+// widget window: tinyjs.json's `api` gate denies the rest. The desk widget (092) is a window of its
+// own (appmenu.ts `widgetWindow`), opened and closed by the one remembered Desk Widget setting, which
+// the Window menu, the tray menu, and the Settings window show and change, kept in step; the Mac app
+// pushes the setting (`event.deskwidget`) and, for a pill's click, the job to select to the main
+// window's page (`event.openjob`, a request the page checks).
 /// <reference path="../types/tiny.d.ts" />
 /// <reference path="../types/tjs.d.ts" />
-import { QUIT_ID, SHOW_ID, trayNotice } from './badge';
+import { QUIT_ID, SHOW_ID, trayNotice, withDeskWidget } from './badge';
 import type { TraySpec } from './badge';
 import { serviceUrl, DEFAULT_PORT, INSTALL_NOTICE, pageUrl, probeService, resolvePort, waitForService } from './autostart';
 import { curlArgv, responseFromCurl } from './curl';
@@ -43,6 +48,22 @@ import { noServicePage, windowLoad } from './noservice';
 import type { App } from './app';
 import { bringBackAction, oneAtATime, trayClickAction } from './trayclick';
 import {
+  DESK_WIDGET_EVENT,
+  DESK_WIDGET_ID,
+  DESK_WIDGET_KEY,
+  NO_PLACES,
+  OPEN_JOB_EVENT,
+  WIDGET_BEHAVIOR,
+  WIDGET_PLACES_KEY,
+  WIDGET_SIZE,
+  WIDGET_WIDTH,
+  WIDGET_WINDOW_ID,
+  deskWidgetPayload,
+  rememberPlace,
+  storedOn,
+  storedPlaces,
+  widgetPlacement,
+  widgetWindow,
   ABOUT_SIZE,
   ABOUT_TITLE,
   ABOUT_WINDOW_ID,
@@ -74,8 +95,9 @@ import {
   viewLabelUpdates,
   whatsNewPayload,
 } from './appmenu';
-import type { AboutWindowOptions, Point, SettingsWindowOptions, ViewState } from './appmenu';
+import type { AboutWindowOptions, Point, SettingsWindowOptions, ViewState, WidgetPlaces, WidgetScreen, WidgetWindowOptions } from './appmenu';
 import { aboutAnswer, fromAboutWindow, noParams } from './about';
+import { fitRequest, fromWidgetWindow, openJobPayload, openJobRequest } from './widget';
 import type { About } from './about';
 import { DEFAULT_HANDOFF_MODE, T3_HANDOFF_KEY, fromSettingsWindow, settingChange, settingsSnapshot, storedMode, viewStateParams } from './settings';
 import type { HandoffMode, Settings } from './settings';
@@ -95,9 +117,9 @@ import type { AppRepository } from './state';
 
 /** The fields of a window's state the tray click, the bring-back step, Close Window, and the
  *  placement of About and Settings (the main window's frame and screen: `placeOnMain`) read. */
-export type MacWinState = Pick<TinyWinState, 'minimized' | 'fullscreen' | 'allSpaces' | 'visible' | 'focused' | 'x' | 'y' | 'width' | 'height' | 'outer' | 'screen' | 'local'>;
+export type MacWinState = Pick<TinyWinState, 'minimized' | 'fullscreen' | 'allSpaces' | 'visible' | 'focused' | 'x' | 'y' | 'width' | 'height' | 'outer' | 'screen' | 'local' | 'screenId'>;
 /** The window ops the adapter calls. `getState` resolves null when there is no state to give. */
-export type MacWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpaces' | 'eval' | 'minimize' | 'zoom' | 'setResizable' | 'setSize' | 'close' | 'hide'> & {
+export type MacWindow = Pick<TinyWindowHandle, 'show' | 'restore' | 'setAllSpaces' | 'eval' | 'minimize' | 'zoom' | 'setResizable' | 'setSize' | 'close' | 'hide' | 'setLevel' | 'setClickThrough' | 'push'> & {
   getState(): Promise<MacWinState | null>;
 };
 /** The backend `app` object Tiny passes to `init` and the hooks, narrowed to what the Mac app uses.
@@ -112,6 +134,8 @@ export type MacApp = Pick<TinyApp, 'icon' | 'badge' | 'notify' | 'setHideOnClose
     clipboard: Pick<TinyApp['clipboard'], 'write'>;
     win: Pick<TinyApp['win'], 'open'>;
     window(id: string): MacWindow;
+    /** Every display (the desk widget's placement): the fields `widgetPlacement` reads, plus the session id a window state names. */
+    screens(): Promise<Array<WidgetScreen & Pick<TinyScreen, 'id'>>>;
   };
 /** The fields of a navigation event `onNavigate` reads. */
 export type MacNavEvent = Pick<TinyNavEvent, 'window' | 'kind' | 'isMainFrame'>;
@@ -125,6 +149,10 @@ type TinyAppIsMacApp = Holds<TinyApp extends MacApp ? true : false>;
 type SettingsOptionsOpen = Holds<SettingsWindowOptions extends TinyOpenWindowOptions ? true : false>;
 /** Compile-time proof that the About window's options are options Tiny's `win.open` takes. */
 type AboutOptionsOpen = Holds<AboutWindowOptions extends TinyOpenWindowOptions ? true : false>;
+/** Compile-time proof that the desk widget window's options are options Tiny's `win.open` takes. */
+type WidgetOptionsOpen = Holds<WidgetWindowOptions extends TinyOpenWindowOptions ? true : false>;
+/** Compile-time proof that Tiny's screens are the screens the widget placement reads. */
+type ScreensAreWidgetScreens = Holds<TinyScreen extends WidgetScreen ? true : false>;
 
 // Fixed at build time by build.ts (`Bun.build` `define`): the repo the lantern images are read from.
 declare const __ANDON_REPO__: string;
@@ -149,8 +177,12 @@ export function setDock(app: MacApp, repo: string, look: DockLook): void {
   if (!app.icon(dockIcon(repo, look))) console.log(`andon: could not set the ${look} Dock icon`);
 }
 
-export const setTray = (app: MacApp, repo: string, spec: TraySpec, running: boolean): void =>
-  app.tray.set({ ...spec, icon: trayIcon(repo, running), template: true });
+/** Sets the tray: the spec, with its menu showing the desk widget's state, and the lantern. The last
+ *  one set is kept, so a desk widget change can set it again with the new checkmark. */
+export const setTray = (app: MacApp, repo: string, spec: TraySpec, running: boolean): void => {
+  lastTray = { repo, spec, running };
+  app.tray.set({ ...withDeskWidget(spec, deskWidget), icon: trayIcon(repo, running), template: true });
+};
 
 /** No board to show (the service hasn't answered yet, or isn't installed): the idle look, no badge, and the notice. */
 function showNotice(app: MacApp, repo: string, text: string): void {
@@ -224,6 +256,10 @@ let serviceHttp: Http | null = null;
 let statusBarHidden = false;
 let mergedHidden = false;
 let view: ViewState = { ...DEFAULT_VIEW };
+/** The desk widget choice (092): read at init with the other two, and changed only through setDeskWidget. */
+let deskWidget = false;
+/** The last tray set (setTray), so a desk widget change can check its item in the tray menu. */
+let lastTray: { repo: string; spec: TraySpec; running: boolean } | null = null;
 /** Settles once init has read the stored choices and set the menu bar. */
 let statusBarRead: Promise<void> = Promise.resolve();
 
@@ -237,11 +273,24 @@ async function readHidden(app: MacApp, key: string, what: string): Promise<boole
   }
 }
 
+/** The stored desk widget choice: exactly `true` is on; a store that fails reads as off. */
+async function readDeskWidget(app: MacApp): Promise<boolean> {
+  try {
+    return storedOn(await app.store.get(DESK_WIDGET_KEY));
+  } catch (err) {
+    console.log(`andon: could not read the desk widget choice (${String(err)}); leaving it off`);
+    return false;
+  }
+}
+
 async function readStatusBar(app: MacApp): Promise<void> {
-  const [bar, merged] = await Promise.all([readHidden(app, STATUS_BAR_KEY, 'status bar'), readHidden(app, MERGED_KEY, 'Merged column')]);
+  const [bar, merged, widget] = await Promise.all([readHidden(app, STATUS_BAR_KEY, 'status bar'), readHidden(app, MERGED_KEY, 'Merged column'), readDeskWidget(app)]);
   statusBarHidden = bar;
   mergedHidden = merged;
-  app.menu.set(appMenu({ statusBarHidden, mergedHidden, view }));
+  deskWidget = widget;
+  app.menu.set(appMenu({ statusBarHidden, mergedHidden, deskWidget, view }));
+  if (widget && lastTray !== null) setTray(app, lastTray.repo, lastTray.spec, lastTray.running); // check its tray item
+  void syncWidget(app);
 }
 
 const pushStatusBar = (app: MacApp): void => app.push(STATUS_BAR_EVENT, statusBarPayload(statusBarHidden));
@@ -281,6 +330,165 @@ async function toggleMerged(app: MacApp): Promise<void> {
   return setMerged(app, !mergedHidden);
 }
 
+// ---- the desk widget (092) ----
+// One remembered choice, on or off, changed from the Window menu, the tray menu, or the Settings
+// window through setDeskWidget, which writes it back, checks or unchecks the Window menu's and the
+// tray menu's items, pushes it to every window (the Settings window's checkbox follows), and opens or
+// closes the widget window. The window opens only once the service answers (its page is the
+// service's). Where it sits is remembered per display (appmenu.ts `widgetPlacement`): read when it
+// opens, and written each time its page reports a fit (after a drag, too) and when it closes.
+
+/** The service has answered in this lifecycle: the widget's page can load. */
+let serviceUp = false;
+/** Where the widget sits on each display; null until read from the store. */
+let places: WidgetPlaces | null = null;
+/** Every open or close runs after the last one, so a quick on-off-on never opens two windows. */
+let widgetQueue: Promise<void> = Promise.resolve();
+/** This lifecycle opened the widget window and hasn't closed it. */
+let widgetShown = false;
+
+const pushDeskWidget = (app: MacApp): void => app.push(DESK_WIDGET_EVENT, deskWidgetPayload(deskWidget));
+
+/** The one path for a desk widget change, as setStatusBar is for the status bar: the state, the
+ *  store, the Window menu's checkmark, the tray menu's, the push to every window, and the window.
+ *  Setting the value it already holds changes nothing. */
+async function setDeskWidget(app: MacApp, on: boolean): Promise<void> {
+  await statusBarRead;
+  if (on === deskWidget) return;
+  deskWidget = on;
+  const saved = app.store.set(DESK_WIDGET_KEY, on);
+  app.menu.update(DESK_WIDGET_ID, { checked: on });
+  if (lastTray !== null) setTray(app, lastTray.repo, lastTray.spec, lastTray.running);
+  pushDeskWidget(app);
+  await syncWidget(app);
+  if (!(await saved)) console.log('andon: could not save the desk widget choice');
+}
+
+async function toggleDeskWidget(app: MacApp): Promise<void> {
+  await statusBarRead;
+  return setDeskWidget(app, !deskWidget);
+}
+
+/** Opens or closes the widget window to match the choice (open only once the service answers), after any open or close still running. */
+function syncWidget(app: MacApp): Promise<void> {
+  widgetQueue = widgetQueue.then(() => applyWidget(app)).catch((err: unknown) => console.log(`andon: the desk widget window failed (${String(err)})`));
+  return widgetQueue;
+}
+
+async function widgetOpen(app: MacApp): Promise<boolean> {
+  try {
+    return (await app.windows()).includes(WIDGET_WINDOW_ID);
+  } catch (err) {
+    console.log(`andon: could not list the windows (${String(err)})`);
+    return false;
+  }
+}
+
+async function applyWidget(app: MacApp): Promise<void> {
+  const want = deskWidget && serviceUp && !quitting;
+  if (want === widgetShown) return;
+  if (want) await openWidget(app);
+  else await closeWidget(app);
+}
+
+/** The displays, or none when Tiny can't say (the widget then opens where Tiny puts it). */
+async function readScreens(app: MacApp): Promise<Array<WidgetScreen & { id: number }>> {
+  try {
+    return await app.screens();
+  } catch (err) {
+    console.log(`andon: could not list the displays (${String(err)})`);
+    return [];
+  }
+}
+
+async function readPlaces(app: MacApp): Promise<WidgetPlaces> {
+  if (places !== null) return places;
+  try {
+    places = storedPlaces(await app.store.get(WIDGET_PLACES_KEY));
+  } catch (err) {
+    console.log(`andon: could not read where the desk widget was (${String(err)})`);
+    places = { ...NO_PLACES };
+  }
+  return places;
+}
+
+/** Opens the widget window where it was left on its display (or, the first time, in the main
+ *  display's top-right corner), then sets it to the desktop level, on every Space, not click-through. */
+async function openWidget(app: MacApp): Promise<void> {
+  widgetShown = true;
+  if (await widgetOpen(app)) return; // already up (an earlier lifecycle's): leave it where it is
+  const [screens, saved] = await Promise.all([readScreens(app), readPlaces(app)]);
+  const size = parseSize(WIDGET_SIZE);
+  const at = size === null ? null : widgetPlacement(screens, saved, size);
+  app.win.open(WIDGET_WINDOW_ID, widgetWindow(servicePort, at));
+  const win = app.window(WIDGET_WINDOW_ID);
+  win.setLevel(WIDGET_BEHAVIOR.level);
+  win.setAllSpaces(WIDGET_BEHAVIOR.allSpaces);
+  win.setClickThrough(WIDGET_BEHAVIOR.clickThrough);
+}
+
+/** Remembers where the widget sits now, then closes it. */
+async function closeWidget(app: MacApp): Promise<void> {
+  widgetShown = false;
+  await rememberWidget(app);
+  app.window(WIDGET_WINDOW_ID).close();
+}
+
+/** Writes where the widget window sits now, on its display (by uid), to the store. No state, or a
+ *  display that isn't listed: nothing is written. */
+async function rememberWidget(app: MacApp): Promise<void> {
+  let state: MacWinState | null;
+  try {
+    state = await app.window(WIDGET_WINDOW_ID).getState();
+  } catch (err) {
+    console.log(`andon: desk widget state unavailable (${String(err)})`);
+    return;
+  }
+  if (state === null) return;
+  const { screenId, local } = state;
+  const [screens, saved] = await Promise.all([readScreens(app), readPlaces(app)]);
+  const screen = screens.find((x) => x.id === screenId);
+  if (screen === undefined) return;
+  const next = rememberPlace(saved, screen.uid, local);
+  const was = Object.hasOwn(saved.spots, screen.uid) ? saved.spots[screen.uid] : undefined;
+  if (next === saved || (saved.last === screen.uid && was !== undefined && was.x === next.spots[screen.uid]?.x && was.y === next.spots[screen.uid]?.y)) return; // nothing moved
+  places = next;
+  if (!(await app.store.set(WIDGET_PLACES_KEY, next))) console.log('andon: could not save where the desk widget is');
+}
+
+/** A pill's click on the desk widget: answered only for the widget window and only for exactly a
+ *  well-formed project id and job id. Shows the main window in front, on this Space (as the tray click
+ *  does), then asks its page to select the job. False, with nothing done, for anything else. */
+export async function openJob(params: unknown, app: MacApp, meta: unknown): Promise<boolean> {
+  if (!fromWidgetWindow(meta)) return false;
+  const req = openJobRequest(params);
+  if (req === null) return false;
+  await showMain(app);
+  app.window('main').push(OPEN_JOB_EVENT, openJobPayload(req));
+  return true;
+}
+
+/** A click elsewhere on the desk widget: answered only for the widget window, with no params; brings
+ *  Andon's main window forward, on this Space. False, with nothing done, for anything else. */
+export async function showAndon(params: unknown, app: MacApp, meta: unknown): Promise<boolean> {
+  if (!fromWidgetWindow(meta)) return false;
+  if (!noParams(params)) return false;
+  await showMain(app);
+  return true;
+}
+
+/** The widget page reports its glass's height: answered only for the widget window and only for a
+ *  whole height within the widget's bounds. Sizes the window to it (top-left anchored), then
+ *  remembers where the window sits (the page reports after a drag, too). False for anything else. */
+export async function fitWidget(params: unknown, app: MacApp, meta: unknown): Promise<boolean> {
+  if (!fromWidgetWindow(meta)) return false;
+  const req = fitRequest(params);
+  if (req === null) return false;
+  app.window(WIDGET_WINDOW_ID).setSize(WIDGET_WIDTH, req.height);
+  await rememberWidget(app);
+  return true;
+}
+
 /** The main window's page reports its view state: answered only for the main window and only for
  *  exactly the three booleans; relabels the items whose state changed and answers the state. Null,
  *  with no label changed, for anything else. */
@@ -312,6 +520,10 @@ export function init(app: MacApp): void {
   serviceHttp = http;
   const repo = __ANDON_REPO__;
   view = { ...DEFAULT_VIEW }; // the page reports its own once it loads
+  serviceUp = false; // the desk widget opens once the service answers
+  widgetShown = false;
+  places = null;
+  lastTray = null;
   statusBarRead = readStatusBar(app);
   void refreshApps(app); // warm the menu's app check, so the first right-click has it
   resetIcons();
@@ -343,6 +555,8 @@ export function init(app: MacApp): void {
     // The window loaded tinyjs.json's URL (or the no-service page) before the service answered, or
     // on another port: load the board now, keeping `?shell=mac` so the page keeps its Mac frame.
     if (windowLoad({ kind: 'done', found, port }, true) === 'board') app.window('main').eval(reloadScript(port));
+    serviceUp = true;
+    void syncWidget(app); // the desk widget, when it was left on
     andon = startApp({
       http,
       tray: (spec, running) => setTray(app, repo, spec, running),
@@ -391,6 +605,7 @@ const showMain = oneAtATime(async (app: MacApp): Promise<void> => {
 export async function onTray(id: string | null, app: MacApp): Promise<void> {
   if (id === null) return showMain(app);
   if (id === SHOW_ID) app.window('main').show();
+  if (id === DESK_WIDGET_ID) return toggleDeskWidget(app);
   if (id === QUIT_ID) {
     stopAll();
     app.quit();
@@ -538,6 +753,8 @@ export async function onMenu(id: string, app: MacApp): Promise<void> {
       return toggleStatusBar(app);
     case 'toggle-merged':
       return toggleMerged(app);
+    case 'toggle-desk-widget':
+      return toggleDeskWidget(app);
     case 'page':
       // Ask the board's page to act (it owns Needs Me, the Settled sheet, the sidebar, and the
       // inspector); it reports its new state back. A sheet shows the board first, as What's New does.
@@ -887,7 +1104,7 @@ async function readHandoffMode(app: MacApp): Promise<HandoffMode> {
 async function snapshot(app: MacApp): Promise<Settings> {
   await statusBarRead;
   const [t3Handoff, t3] = await Promise.all([readHandoffMode(app), findT3()]);
-  return settingsSnapshot({ statusBarHidden, t3Handoff, mergedHidden }, t3 !== null);
+  return settingsSnapshot({ statusBarHidden, t3Handoff, mergedHidden, deskWidget }, t3 !== null);
 }
 
 /** The settings, from the stored choices (once init has read them); null for any other window. */
@@ -911,6 +1128,9 @@ export async function setSetting(params: unknown, app: MacApp, meta: unknown): P
       break;
     case 'mergedHidden':
       await setMerged(app, change.value);
+      break;
+    case 'deskWidget':
+      await setDeskWidget(app, change.value);
       break;
   }
   return snapshot(app);
@@ -1306,7 +1526,7 @@ export async function closeAbout(params: unknown, app: MacApp, meta: unknown): P
   return true;
 }
 
-/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, `handOff`, `jobMenu`, `setViewState`, `getAbout`, `startWork`, `closeAbout`, and `epicMenu` (tinyjs.json's gate enables each by name). */
+/** The pages' api: `projectMenu`, `getSettings`, `setSetting`, `handOff`, `jobMenu`, `setViewState`, `getAbout`, `startWork`, `closeAbout`, `epicMenu`, and the desk widget's `openJob`, `showAndon`, and `fitWidget` (tinyjs.json's gate enables each by name). */
 export const api = {
   projectMenu: (params: unknown, app: MacApp): Promise<void> => showProjectMenu(params, app, listedProjects()),
   getSettings: (_params: unknown, app: MacApp, meta: unknown): Promise<Settings | null> => getSettings(app, meta),
@@ -1318,6 +1538,9 @@ export const api = {
   startWork: (params: unknown, app: MacApp, meta: unknown): Promise<HandoffOutcome | null> => startWork(params, app, meta),
   closeAbout: (params: unknown, app: MacApp, meta: unknown): Promise<boolean> => closeAbout(params, app, meta),
   epicMenu: (params: unknown, app: MacApp, meta: unknown): Promise<void> => showEpicMenu(params, app, meta),
+  openJob: (params: unknown, app: MacApp, meta: unknown): Promise<boolean> => openJob(params, app, meta),
+  showAndon: (params: unknown, app: MacApp, meta: unknown): Promise<boolean> => showAndon(params, app, meta),
+  fitWidget: (params: unknown, app: MacApp, meta: unknown): Promise<boolean> => fitWidget(params, app, meta),
 };
 
 /** A click in the right-click menu: an `epic-menu:` id goes to the epic menu, a `job-menu:` id to the

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { GET_SETTINGS_METHOD, HANDOFF_CHOICES, SET_SETTING_METHOD, narrowSettings, settingsCaller, showsMerged, showsStatusBar } from './settings';
 
-const S = { statusBarHidden: false, t3Handoff: 'draft', mergedHidden: false, t3Found: true } as const;
+const S = { statusBarHidden: false, t3Handoff: 'draft', mergedHidden: false, deskWidget: false, t3Found: true } as const;
 import { appView, pushSubscriber, shellMode } from './sidebar';
 
 describe('035 AC6: which view a URL gets', () => {
@@ -12,7 +12,7 @@ describe('035 AC6: which view a URL gets', () => {
   });
 
   test('every other URL is the board, including a plain browser with view=settings', () => {
-    for (const q of ['', '?', '?shell=mac', '?view=settings', '?shell=browser&view=settings', '?shell=mac&view=board', '?shell=mac&view=Settings', '?shell=mac&view=', '?shell=MAC&view=settings', '?shell=mac&view=settingsx']) {
+    for (const q of ['', '?', '?shell=mac', '?view=settings', '?view=widget', '?shell=browser&view=widget', '?shell=mac&view=board', '?shell=mac&view=Settings', '?shell=mac&view=Widget', '?shell=mac&view=', '?shell=MAC&view=settings', '?shell=mac&view=settingsx', '?shell=mac&view=widgets']) {
       expect({ q, v: appView(q) }).toEqual({ q, v: 'board' });
     }
   });
@@ -87,7 +87,7 @@ describe('035: the settings payload', () => {
   });
 
   test('036 AC7: narrowed with the T3 Code choice (one of three) and whether t3 was found', () => {
-    for (const t3Handoff of ['draft', 'send', 'copy'] as const) for (const t3Found of [true, false]) expect(narrowSettings({ statusBarHidden: false, t3Handoff, mergedHidden: false, t3Found })).toEqual({ statusBarHidden: false, t3Handoff, mergedHidden: false, t3Found });
+    for (const t3Handoff of ['draft', 'send', 'copy'] as const) for (const t3Found of [true, false]) expect(narrowSettings({ statusBarHidden: false, t3Handoff, mergedHidden: false, deskWidget: false, t3Found })).toEqual({ statusBarHidden: false, t3Handoff, mergedHidden: false, deskWidget: false, t3Found });
     for (const d of [{ statusBarHidden: false }, { ...S, t3Handoff: 'auto' }, { ...S, t3Handoff: null }, { ...S, t3Found: 'yes' }, { statusBarHidden: false, t3Handoff: 'draft' }, { statusBarHidden: false, t3Found: true }]) expect({ d, s: narrowSettings(d) }).toEqual({ d, s: null });
     expect(HANDOFF_CHOICES).toEqual([
       { mode: 'draft', label: 'Open a draft in T3 Code' },
@@ -131,5 +131,39 @@ describe('063 AC2: the Merged column setting in the page', () => {
     expect(src).toContain('<span>Show Merged column</span>');
     expect(src).toContain('subscribe?.(MERGED_EVENT,');
     expect(src).toContain('await api?.setMergedHidden(!show)');
+  });
+});
+
+describe('092 AC1: the Desk Widget setting in the page', () => {
+  test('narrowSettings requires deskWidget to be a boolean', () => {
+    expect(narrowSettings({ ...S, deskWidget: true })).toEqual({ ...S, deskWidget: true });
+    const { deskWidget: _drop, ...without } = S;
+    for (const d of [without, { ...S, deskWidget: 'true' }, { ...S, deskWidget: 1 }, { ...S, deskWidget: null }]) expect({ d, s: narrowSettings(d) }).toEqual({ d, s: null });
+  });
+
+  test('the caller sets it with the one fixed method and only the desk widget change; refused or malformed answers are null', async () => {
+    const calls: unknown[][] = [];
+    const api = settingsCaller('mac', {
+      api: {
+        call: async (method: string, params: unknown) => {
+          calls.push([method, params]);
+          return { ...S, deskWidget: true };
+        },
+      },
+    });
+    expect(await api?.setDeskWidget(true)).toEqual({ ...S, deskWidget: true });
+    expect(calls).toEqual([['setSetting', { key: 'deskWidget', value: true }]]);
+    for (const a of [() => null, () => ({ ...S, deskWidget: 'yes' }), () => Promise.reject(new Error('denied'))]) expect(await settingsCaller('mac', { api: { call: a } })?.setDeskWidget(false)).toBeNull();
+  });
+
+  test('the Settings view shows "Show desk widget" and follows the pushed desk widget event', () => {
+    const view = readFileSync(join(import.meta.dir, 'Settings.svelte'), 'utf8');
+    expect(view).toContain('<span>Show desk widget</span>');
+    expect(view).toContain('subscribe?.(DESK_WIDGET_EVENT,');
+    expect(view).toContain('api?.setDeskWidget(on)');
+  });
+
+  test('only shell=mac together with view=widget is the desk widget view', () => {
+    for (const q of ['?shell=mac&view=widget', '?view=widget&shell=mac', '?shell=mac&view=widget&x=1']) expect({ q, v: appView(q) }).toEqual({ q, v: 'widget' });
   });
 });

@@ -408,3 +408,29 @@ export const STUDIO_FACTORY = machineProject('1a2b3c4d5e6f', 'factory', 'studio'
 export const STUDIO_API = machineProject('b2b2b2b2b2b2', 'api', 'studio');
 export const AGENT_LAB = machineProject('c3c3c3c3c3c3', 'lab', 'agentbox');
 export const MACHINE_PROJECTS = [LOCAL_FACTORY, LOCAL_NOTES, STUDIO_FACTORY, STUDIO_API, AGENT_LAB];
+
+// ---- the desk widget (092) ----
+// Boards as the live stream sends them, on the three-machine fleet's hub and studio: `widgetEvents`
+// is the `projects` and `machines` events, then one `board` event per project; `widgetState` applies
+// them the way live.ts does (state.ts `applyEvent`).
+
+/** A `board` event's data for a project: its jobs and epics, as JSON, with one reviewer. */
+export const boardEvent = (project: string, jobs: ReadonlyArray<Record<string, unknown>>, epics: ReadonlyArray<Record<string, unknown>> = []): Record<string, unknown> => ({
+  project,
+  jobs,
+  epics,
+  config: { reviewers: ['code'], dashboard: { settleAfterHours: 24 } },
+  settled: { count: 0, lastMergedAt: null },
+});
+
+/** A job.json value as the service sends it, at a stage and round. */
+export const streamJob = (id: string, stage: string, fields: Record<string, unknown> = {}): Record<string, unknown> => ({ id, title: id, branch: `factory/${id}`, stage, round: 0, note: '', ...fields });
+
+/** The widget's fleet: factory and notes on the hub, factory on studio. */
+export const WIDGET_PROJECTS = [LOCAL_FACTORY, LOCAL_NOTES, STUDIO_FACTORY];
+
+/** The events that set up the fleet: its projects and its two live machines. */
+export const widgetEvents = (): Array<[string, unknown]> => [
+  ['projects', { projects: WIDGET_PROJECTS }],
+  ['machines', machinesBody(machineEntry(HUB), machineEntry('studio'))],
+];

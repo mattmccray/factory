@@ -53,6 +53,7 @@
   import NewExplorationSheet from './NewExplorationSheet.svelte';
   import { copyThenStart, exploreOpen, loadLastExplored, nextStart, saveLastExplored, startWorkCaller, startWorkPush } from './startwork';
   import type { ExploreProject, StartItem } from './startwork';
+  import { openJobPush } from './widget';
   import { epicMenuCaller } from './epicmenu';
   import { jobMenuCaller } from './jobmenu';
   import { menuArmer, projectMenuCaller, swallowsClick } from './projectmenu';
@@ -98,6 +99,7 @@
     INSPECTOR_EVENT,
     MERGED_EVENT,
     START_WORK_EVENT,
+    OPEN_JOB_EVENT,
     NEEDS_ME_EVENT,
     SETTLED_EVENT,
     SIDEBAR_EVENT,
@@ -220,6 +222,12 @@
     // File → New Exploration… and a project's right-click New Exploration… and Run Next: a request,
     // checked against the listed projects; anything else does nothing.
     const offStartWork = subscribe?.(START_WORK_EVENT, (data) => onstartwork(data));
+    // A desk widget pill's click (092): the Mac app shows this window and asks for that job; the
+    // request is checked against the listed projects, and a job not on the board does nothing.
+    const offOpenJob = subscribe?.(OPEN_JOB_EVENT, (data) => {
+      const ref = openJobPush(data, ui.projects);
+      if (ref !== null) openJob(jobKey(ref));
+    });
     // The Mac app's right-click menu on a project row or gutter, a board job token, or an epic's name
     // in its sub-lane: armed for the project, job, or epic under the pointer, and a control-click
     // there doesn't click through (projectmenu.ts, jobmenu.ts, epicmenu.ts). A browser: nothing.
@@ -257,6 +265,7 @@
       offSidebar?.();
       offInspector?.();
       offStartWork?.();
+      offOpenJob?.();
       started.stop();
       live = null;
       clearInterval(timer);
