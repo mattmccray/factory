@@ -110,8 +110,7 @@ clone. Then, in each project:
 
 ```sh
 cd /path/to/project
-factory upgrade
-bun factory/cli.ts doctor
+factory upgrade              # also runs the installed doctor; exits 1 when it fails
 git add .claude factory .gitignore && git commit -m "chore(factory): upgrade the factory"
 ```
 
@@ -232,8 +231,7 @@ backlog line.
 After a new factory release, or after changing `reviewers` or `roles`:
 
 ```sh
-factory upgrade
-bun factory/cli.ts doctor
+factory upgrade   # then runs bun factory/cli.ts doctor itself, and exits 1 when doctor fails
 ```
 
 If someone edited a managed file (say `.claude/agents/factory-builder.md`), upgrade refuses and

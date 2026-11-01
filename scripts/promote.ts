@@ -1,8 +1,9 @@
 // `bun run promote`: the local-dev promotion in one command (docs/upgrade.md, "Self-upgrade of
 // this repo"). Root tooling run by a human on `main`, after `bun run release`, never mid-job. It
 // checks that `factory` runs this checkout's source (`bun run cli:link`), then runs
-// `factory upgrade` and `bun factory/cli.ts doctor`, commits whatever the upgrade changed under
-// `.claude/` and `factory/` as `chore(factory): promote vX.Y.Z`, and runs
+// `factory upgrade` (which runs the installed doctor itself and exits non-zero when it fails),
+// commits whatever the upgrade changed under `.claude/` and `factory/` as
+// `chore(factory): promote vX.Y.Z`, and runs
 // `factory service restart` so the Andon service runs the new copy. It never pushes.
 // It refuses, changing nothing, off `main` (or detached), with changes outside `.claude/` and
 // `factory/`, or when `factory --version` does not name this checkout as its source. Changes
@@ -52,10 +53,8 @@ export function promote(repo: string, run: Run = spawn, log: (line: string) => v
 
   log('factory upgrade');
   const upgraded = run(['factory', 'upgrade'], repo);
+  // `factory upgrade` runs the installed doctor itself: a red doctor is a non-zero exit here.
   if (upgraded.code !== 0) return fail('factory upgrade', upgraded);
-  log('bun factory/cli.ts doctor');
-  const doctor = run(['bun', 'factory/cli.ts', 'doctor'], repo);
-  if (doctor.code !== 0) return fail('doctor', doctor);
 
   const lines: string[] = [];
   const added = git('add', '-A', '--', ...INSTALLED);

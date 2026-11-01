@@ -1,13 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { type Config, parseConfig, parseManifest } from '@factory/contract';
 import { VERSION, cliStampLine, contractStampLine, renderClaudeCode } from '@factory/templates';
 import { gitIn, initRepo } from './gitrepo';
-import { DEFAULT_CONFIG, GITIGNORE_LINES, withRuntimeIgnores } from './install';
+import { installedContract } from './bundle';
+import type { ReleaseFiles } from './bundle';
+import { DEFAULT_CONFIG, GITIGNORE_LINES, runInstalledDoctor, upgrade, withRuntimeIgnores } from './install';
+import type { DoctorRunner } from './install';
 import { USAGE, run } from './index';
+import type { Origin } from './index';
 import { protectedReason } from './paths';
 
 const REPO = join(import.meta.dir, '..', '..', '..');
@@ -36,6 +40,12 @@ async function cli(project: string, ...argv: string[]): Promise<Result> {
   return { code, out, err };
 }
 const doctorCode = async (project: string): Promise<number> => (await cli(project, 'doctor')).code;
+// The lines the project's installed `factory/cli.ts doctor` prints, run on its own.
+async function installedDoctor(project: string): Promise<string[]> {
+  const p = Bun.spawn([process.execPath, 'factory/cli.ts', 'doctor'], { cwd: project, stdout: 'pipe', stderr: 'pipe' });
+  const [out] = await Promise.all([new Response(p.stdout).text(), p.exited]);
+  return out.split('\n').filter((l) => l !== '');
+}
 
 // Every file and directory under `root`, with each file's hash and each symlink's target, so a
 // refusal can be checked as a byte-for-byte no-op.
@@ -449,7 +459,7 @@ describe('upgrade --commit', () => {
     expect(changed).toContain('factory/managed.json');
     expect(committed().map((l) => l.split('\t')[1])).toEqual(changed);
     const written = changed.filter((rel) => rel !== 'factory/managed.json').length;
-    expect(r.out).toEqual([`upgraded factory ${OLD} -> ${VERSION}: ${written} written, 0 removed`, `committed ${gitIn(dir, 'rev-parse', '--short', 'HEAD')}`]);
+    expect(r.out).toEqual([`upgraded factory ${OLD} -> ${VERSION}: ${written} written, 0 removed`, ...(await installedDoctor(dir)), `committed ${gitIn(dir, 'rev-parse', '--short', 'HEAD')}`]);
     expect(gitIn(dir, 'status', '--porcelain')).toBe('');
     expect(await doctorCode(dir)).toBe(0);
   });
@@ -489,7 +499,7 @@ describe('upgrade --commit', () => {
     gitIn(dir, 'commit', '--quiet', '-am', 'current');
     const at = head();
     const r = await cli(dir, 'upgrade', '--commit');
-    expect(r).toEqual({ code: 0, out: [`upgraded factory ${VERSION} -> ${VERSION}: 0 written, 0 removed`, 'nothing to commit'], err: [] });
+    expect(r).toEqual({ code: 0, out: [`upgraded factory ${VERSION} -> ${VERSION}: 0 written, 0 removed`, ...(await installedDoctor(dir)), 'nothing to commit'], err: [] });
     expect(head()).toBe(at);
     expect(gitIn(dir, 'status', '--porcelain')).toBe('');
   });
@@ -549,7 +559,7 @@ describe('upgrade --commit', () => {
     const at = head();
     const r = await cli(dir, 'upgrade', '--commit');
     expect(r.code).toBe(1);
-    expect(r.out).toEqual([]);
+    expect(r.out).toEqual([expect.stringMatching(new RegExp(`^upgraded factory ${OLD} -> ${VERSION}: `)), ...(await installedDoctor(dir))]);
     expect(r.err).toHaveLength(1);
     const line = r.err[0] ?? '';
     expect(line).toContain(`upgraded factory ${OLD} -> ${VERSION}: `);
@@ -563,13 +573,13 @@ describe('upgrade --commit', () => {
     expect(await doctorCode(dir)).toBe(0);
   });
 
-  test('AC7: plain upgrade in a git repo makes no commit and prints only the summary', async () => {
+  test('AC7: plain upgrade in a git repo makes no commit and prints only the summary and doctor', async () => {
     await writeAt(dir, 'factory/config.json', configWith(['beta']));
     const at = head();
     const r = await cli(dir, 'upgrade');
     expect(r.err).toEqual([]);
     expect(r.code).toBe(0);
-    expect(r.out).toEqual([`upgraded factory ${OLD} -> ${VERSION}: ${r.out[0]?.split(': ')[1] ?? ''}`]);
+    expect(r.out).toEqual([`upgraded factory ${OLD} -> ${VERSION}: ${r.out[0]?.split(': ')[1] ?? ''}`, ...(await installedDoctor(dir))]);
     expect(r.out[0]).toEndWith(', 1 removed');
     expect(head()).toBe(at);
   });
@@ -583,7 +593,7 @@ describe('upgrade --commit', () => {
     const r = await cli(dir, 'upgrade');
     expect(r.err).toEqual([]);
     expect(r.code).toBe(0);
-    expect(r.out).toHaveLength(1);
+    expect(r.out).toEqual([expect.stringMatching(/^upgraded factory /), ...(await installedDoctor(dir))]);
   });
 
   for (const flags of [['--force', '--commit'], ['--commit', '--force']]) {
@@ -594,11 +604,181 @@ describe('upgrade --commit', () => {
       const r = await cli(dir, 'upgrade', ...flags);
       expect(r.err).toEqual([]);
       expect(r.code).toBe(0);
-      expect(r.out[1]).toBe(`committed ${gitIn(dir, 'rev-parse', '--short', 'HEAD')}`);
+      expect(r.out.at(-1)).toBe(`committed ${gitIn(dir, 'rev-parse', '--short', 'HEAD')}`);
       expect(committed().map((l) => l.split('\t')[1])).toEqual([agent('builder'), 'factory/managed.json'].sort());
       expect(gitIn(dir, 'status', '--porcelain')).toBe('');
     });
   }
+});
+
+describe('upgrade runs the installed doctor', () => {
+  const SUMMARY = new RegExp(`^upgraded factory \\S+ -> ${VERSION.replace(/\./g, '\\.')}: \\d+ written, \\d+ removed$`);
+  // A release whose installed CLI is `cli` (the contract from source), so a test controls what the
+  // freshly written `factory/cli.ts` does when upgrade runs it.
+  const releaseWith = (cli: string): Origin => {
+    const files: ReleaseFiles = { cli: async () => cli, contract: installedContract };
+    return { kind: 'release', root: tmp, files };
+  };
+  async function cliFrom(origin: Origin, ...argv: string[]): Promise<Result> {
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await run(argv, { root: join(dir, 'factory'), stdout: (l) => out.push(l), stderr: (l) => err.push(l) }, origin);
+    return { code, out, err };
+  }
+  // A plan doctor fails: it has no `- Status:` line, so it reads as ready and broken.
+  const brokenPlan = (): Promise<void> => writeAt(dir, 'factory/epics/nostatus.md', '# Epic\n');
+  const SAMPLE_FAIL = 'FAIL  factory/epics/nostatus.md: plan factory/epics/nostatus.md has no "- Status:" line';
+
+  beforeEach(async () => {
+    await writeAt(dir, 'factory/config.json', configWith(['alpha']));
+    expect((await cli(dir, 'init')).code).toBe(0);
+  });
+
+  test('AC1: the summary, then the installed doctor\'s lines, exit 0; also when nothing changed', async () => {
+    await writeAt(dir, 'factory/config.json', configWith(['beta']));
+    const r = await cli(dir, 'upgrade');
+    expect(r.err).toEqual([]);
+    expect(r.code).toBe(0);
+    expect(r.out[0]).toMatch(/: 1 written, 1 removed$/);
+    const lines = await installedDoctor(dir);
+    expect(lines).toContain('ok    config.json');
+    expect(r.out).toEqual([r.out[0] ?? '', ...lines]);
+
+    const again = await cli(dir, 'upgrade');
+    expect(again).toEqual({ code: 0, out: [`upgraded factory ${VERSION} -> ${VERSION}: 0 written, 0 removed`, ...lines], err: [] });
+  });
+
+  test('AC1: doctor is the freshly written factory/cli.ts, run with process.execPath from the project root', async () => {
+    const stub = "console.log('ok    stub ' + JSON.stringify([process.execPath, process.cwd(), process.argv.slice(2)]));\n";
+    const r = await cliFrom(releaseWith(stub), 'upgrade');
+    expect(r.err).toEqual([]);
+    expect(r.code).toBe(0);
+    expect(r.out).toEqual([expect.stringMatching(/: 1 written, 0 removed$/), `ok    stub ${JSON.stringify([process.execPath, await realpath(dir), ['doctor']])}`]);
+  });
+
+  test('AC2: a FAIL exits 1, keeps the upgraded files and managed.json, and the last line names the summary', async () => {
+    await brokenPlan();
+    await writeAt(dir, 'factory/config.json', configWith(['beta']));
+    const r = await cli(dir, 'upgrade');
+    expect(r.code).toBe(1);
+    expect(r.out[0]).toMatch(SUMMARY);
+    expect(r.out).toContain(SAMPLE_FAIL);
+    expect(r.out.slice(1)).toEqual(await installedDoctor(dir));
+    expect(r.err).toEqual([`upgrade: ${r.out[0] ?? ''}, but doctor failed (1 FAIL line, exit 1)`]);
+    expect(await Bun.file(join(dir, agent('beta'))).exists()).toBe(true);
+    expect(await Bun.file(join(dir, agent('alpha'))).exists()).toBe(false);
+    const manifest = await manifestOf(dir);
+    expect(Object.keys(manifest.files)).toContain(agent('beta'));
+    for (const [path, hash] of Object.entries(manifest.files)) expect({ path, hash }).toEqual({ path, hash: sha(await readFile(join(dir, path))) });
+  });
+
+  test('AC3: an installed CLI that throws on load exits 1 the same way, with the new files written', async () => {
+    const broken = "throw new Error('broken bundle');\n";
+    const r = await cliFrom(releaseWith(broken), 'upgrade');
+    expect(r.code).toBe(1);
+    expect(r.out[0]).toMatch(SUMMARY);
+    expect(r.out.join('\n')).toContain('broken bundle');
+    expect(r.err).toHaveLength(1);
+    expect(r.err[0]).toMatch(/^upgrade: upgraded factory .*: 1 written, 0 removed, but doctor failed \(exit 1\)$/);
+    expect(await text(dir, 'factory/cli.ts')).toBe(broken);
+    expect((await manifestOf(dir)).files['factory/cli.ts']).toBe(sha(broken));
+  });
+
+  test('AC3: a doctor that does not start, or exits non-zero with no FAIL line, fails the upgrade', async () => {
+    const lines: string[] = [];
+    const opts = { force: false, stdout: (l: string) => lines.push(l) };
+    const wont: DoctorRunner = async () => {
+      throw new Error('spawn bun ENOENT');
+    };
+    const root = join(dir, 'factory');
+    await expect(upgrade(root, { ...opts, doctor: wont })).rejects.toThrow(/^upgrade: upgraded factory .*: 0 written, 0 removed, but doctor failed \(it did not start: spawn bun ENOENT\)$/);
+    const quiet: DoctorRunner = async (_repo, line) => {
+      line('ok    config.json');
+      return 3;
+    };
+    await expect(upgrade(root, { ...opts, doctor: quiet })).rejects.toThrow(/, but doctor failed \(exit 3\)$/);
+  });
+
+  test('AC4: ok and note lines only exit 0', async () => {
+    for (const id of ['005-a', '005-b']) await writeAt(dir, `factory/jobs/${id}/events.jsonl`, '');
+    const r = await cli(dir, 'upgrade');
+    expect(r.err).toEqual([]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('note: job number 005 is used by 005-a, 005-b');
+    const noted: DoctorRunner = async (_repo, line) => {
+      line('ok    config.json');
+      line('note  factory/epics/wip.md: ## Members line 3 is malformed');
+      return 0;
+    };
+    const lines: string[] = [];
+    await upgrade(join(dir, 'factory'), { force: false, stdout: (l) => lines.push(l), doctor: noted });
+    expect(lines.slice(1)).toEqual(['ok    config.json', 'note  factory/epics/wip.md: ## Members line 3 is malformed']);
+  });
+
+  test('AC6: a refusal or a usage error runs no doctor and prints only its one-line reason', async () => {
+    let runs = 0;
+    const counted: DoctorRunner = async () => {
+      runs += 1;
+      return 0;
+    };
+    const root = join(dir, 'factory');
+    await writeFile(join(dir, agent('builder')), 'local edit\n');
+    await expect(upgrade(root, { force: false, stdout: () => {}, doctor: counted })).rejects.toThrow(/factory-builder\.md \(changed\)/);
+    await writeAt(dir, 'factory/config.json', '{"schema":"factory/v1","extra":1}\n');
+    await expect(upgrade(root, { force: true, stdout: () => {}, doctor: counted })).rejects.toThrow(/^upgrade: factory\/config\.json: /);
+    await expect(upgrade(root, { force: true, commit: true, stdout: () => {}, doctor: counted })).rejects.toThrow(/^upgrade --commit: refusing, /);
+    await unlink(join(dir, 'factory/managed.json'));
+    await expect(upgrade(root, { force: true, stdout: () => {}, doctor: counted })).rejects.toThrow(/use init$/);
+    expect(runs).toBe(0);
+    for (const argv of [['upgrade'], ['upgrade', '--bogus']]) {
+      const r = await cli(dir, ...argv);
+      expect(r).toMatchObject({ code: 1, out: [] });
+      expect(r.err).toHaveLength(1);
+    }
+  });
+});
+
+describe('upgrade --commit runs doctor before the commit (AC5)', () => {
+  const head = (): string => gitIn(dir, 'rev-parse', 'HEAD');
+  beforeEach(async () => {
+    initRepo(dir);
+    for (const [k, v] of [['user.name', 'factory-test'], ['user.email', 'test@example.invalid'], ['commit.gpgsign', 'false'], ['core.hooksPath', join(dir, '.git', 'hooks')]] as const) gitIn(dir, 'config', k, v);
+    await writeAt(dir, 'factory/config.json', configWith(['alpha']));
+    expect((await cli(dir, 'init')).code).toBe(0);
+    gitIn(dir, 'add', '-A');
+    gitIn(dir, 'commit', '--quiet', '-m', 'install');
+    await writeAt(dir, 'factory/config.json', configWith(['beta']));
+  });
+
+  test('a passing doctor: the summary, doctor\'s lines, then committed <sha>', async () => {
+    const r = await cli(dir, 'upgrade', '--commit');
+    expect(r.err).toEqual([]);
+    expect(r.code).toBe(0);
+    expect(r.out).toEqual([expect.stringMatching(/: 1 written, 1 removed$/), ...(await installedDoctor(dir)), `committed ${gitIn(dir, 'rev-parse', '--short', 'HEAD')}`]);
+  });
+
+  test('a failing doctor: no commit, exit 1, and the last line says to commit by hand once doctor passes', async () => {
+    await writeAt(dir, 'factory/epics/nostatus.md', '# Epic\n');
+    const at = head();
+    const r = await cli(dir, 'upgrade', '--commit');
+    expect(r.code).toBe(1);
+    expect(head()).toBe(at);
+    expect(r.out.at(-1)).toMatch(/^FAIL {2}factory\/epics\/nostatus\.md: /);
+    expect(r.out.some((l) => l.startsWith('committed '))).toBe(false);
+    expect(r.err).toEqual([`upgrade: ${r.out[0] ?? ''}, but doctor failed (1 FAIL line, exit 1); commit the upgraded files by hand once doctor passes`]);
+    expect(await Bun.file(join(dir, agent('beta'))).exists()).toBe(true);
+    expect(gitIn(dir, 'status', '--porcelain')).not.toBe('');
+  });
+});
+
+describe('runInstalledDoctor', () => {
+  test('passes each stdout and stderr line through, a last line with no newline included, and returns the exit code', async () => {
+    await writeAt(dir, 'factory/cli.ts', "process.stdout.write('one\\ntw');\nawait Bun.sleep(20);\nprocess.stdout.write('o\\nthree');\nconsole.error('err line');\nprocess.exit(4);\n");
+    const lines: string[] = [];
+    expect(await runInstalledDoctor(dir, (l) => lines.push(l))).toBe(4);
+    expect(lines.filter((l) => l !== 'err line')).toEqual(['one', 'two', 'three']);
+    expect(lines).toContain('err line');
+  });
 });
 
 describe('self-upgrade of a copy of this repo (AC6)', () => {

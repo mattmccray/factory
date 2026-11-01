@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { gitIn } from '../packages/cli/src/gitrepo';
 import { type Run, outsideInstalled, promote } from './promote';
 
-// A temp repo on `main`; `factory` and `bun` are faked, git is real.
+// A temp repo on `main`; `factory` is faked, git is real.
 let repo: string;
 beforeEach(async () => {
   repo = await realpath(await mkdtemp(join(tmpdir(), 'factory-promote-')));
@@ -26,7 +26,7 @@ async function put(path: string, text: string): Promise<void> {
 }
 
 const ok = { code: 0, out: '', err: '' };
-/** Fakes `factory` and `bun` (the test writes the upgrade's changes itself), recording each faked command. */
+/** Fakes `factory` (the test writes the upgrade's changes itself), recording each faked command. */
 function fake(opts: { source?: string; fail?: string } = {}): { run: Run; calls: string[] } {
   const calls: string[] = [];
   const run: Run = (cmd, cwd) => {
@@ -50,13 +50,13 @@ describe('outsideInstalled', () => {
 });
 
 describe('promote', () => {
-  test('upgrades, checks, commits only the installed copy, then restarts the service', async () => {
+  test('upgrades (doctor included), commits only the installed copy, then restarts the service', async () => {
     await put('factory/managed.json', '{ "version": "0.3.0" }\n');
     await put('.claude/skills/factory/SKILL.md', 'v0.3.0\n');
     const f = fake();
     const r = promote(repo, f.run);
     expect(r.code).toBe(0);
-    expect(f.calls).toEqual(['factory --version', 'factory upgrade', 'bun factory/cli.ts doctor', 'factory service restart']);
+    expect(f.calls).toEqual(['factory --version', 'factory upgrade', 'factory service restart']);
     expect(gitIn(repo, 'log', '-1', '--format=%s')).toBe('chore(factory): promote v0.3.0');
     expect(gitIn(repo, 'show', '--name-only', '--format=', 'HEAD').split('\n').sort()).toEqual(['.claude/skills/factory/SKILL.md', 'factory/managed.json']);
     expect(gitIn(repo, 'status', '--porcelain')).toBe('');
@@ -84,12 +84,13 @@ describe('promote', () => {
     expect(f.calls).toEqual([]);
   });
 
-  test('stops at a failing doctor: no commit, no restart', async () => {
+  test('stops at a failing factory upgrade (a red doctor included): no commit, no restart', async () => {
     await put('factory/managed.json', '{ "version": "0.3.0" }\n');
-    const f = fake({ fail: 'bun factory/cli.ts doctor' });
+    const f = fake({ fail: 'factory upgrade' });
     const r = promote(repo, f.run);
     expect(r.code).toBe(1);
-    expect(r.out).toStartWith('promote failed at doctor (exit 1)');
+    expect(r.out).toStartWith('promote failed at factory upgrade (exit 1)');
+    expect(f.calls).toEqual(['factory --version', 'factory upgrade']);
     expect(f.calls).not.toContain('factory service restart');
     expect(gitIn(repo, 'log', '-1', '--format=%s')).toBe('chore: seed');
   });
