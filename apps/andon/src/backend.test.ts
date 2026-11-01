@@ -18,6 +18,7 @@ import { noServicePage } from './noservice';
 import { boardPath } from './follow';
 import { toProjects } from './state';
 import type { AppRepository } from './state';
+import type { HandoffOutcome } from './handoff';
 
 /** Which window ops fail. Mutable, so a test can heal the window between clicks. Each failing op is
  *  still recorded, then `getState` rejects and `restore`/`show` throw. */
@@ -1630,16 +1631,23 @@ function fakeHost(opts: { t3?: string | null; repositories?: AppRepository[]; ru
   return { host, ran };
 }
 
-/** Repositories with no draftable primary remote: none, other hosts, and a
- *  GitHub remote that isn't the primary one (a self-hosted `origin` beside a `github` remote). */
+/** Repositories with no linkable remote at all: none, other hosts, and self-hosted only. */
 const UNDRAFTABLE: AppRepository[][] = [
   [],
   [{ remote: 'origin', host: 'gitlab.com', owner: 'a', name: 'b' }],
   [{ remote: 'origin', host: 'bitbucket.org', owner: 'team', name: 'factory' }],
   [
-    { remote: 'github', host: 'github.com', owner: 'mattmccray', name: 'factory' },
+    { remote: 'gitea', host: 'localhost:222', owner: 'mattm', name: 'factory' },
     { remote: 'origin', host: 'localhost:222', owner: 'mattm', name: 'factory' },
   ],
+];
+
+/** Infra's repositories (091): `gitea` and `origin` self-hosted, and a `github` remote on GitHub
+ *  that isn't T3 Code's primary one. */
+const INFRA_NOT_PRIMARY: AppRepository[] = [
+  { remote: 'gitea', host: 'localhost:222', owner: 'mattm', name: 'infra' },
+  { remote: 'origin', host: 'localhost:222', owner: 'mattm', name: 'infra' },
+  { remote: 'github', host: 'github.com', owner: 'mattmccray', name: 'infra' },
 ];
 
 /** A context app with the T3 Code choice stored. */
@@ -1681,6 +1689,26 @@ test('036 AC3: draft mode with no draftable GitHub remote opens nothing and answ
     expect({ repositories, r: await handOff(APPROVE, app, MAIN_META, h.host) }).toEqual({ repositories, r: 'no-github-remote' });
     expect(h.ran).toEqual([]);
     expect(log).toEqual([]);
+  }
+});
+
+test('091 AC2: draft mode with a GitHub remote that is not primary opens nothing and answers github-not-primary', async () => {
+  const { app, log } = handoffApp('draft');
+  const h = fakeHost({ repositories: INFRA_NOT_PRIMARY });
+  for (const req of [APPROVE, { project: PID, job: JOB, action: 'rework', note: 'add the test' }, { project: PID, job: JOB, action: 'abandon', note: 'not needed' }]) {
+    expect({ req, r: await handOff(req, app, MAIN_META, h.host) }).toEqual({ req, r: { outcome: 'github-not-primary', project: 'factory', primary: 'origin', github: 'github' } });
+  }
+  expect(h.ran).toEqual([]);
+  expect(log).toEqual([]);
+  // send mode for a local project still sends; copy mode, or no t3, is still copy-only
+  const send = handoffApp('send');
+  expect(await handOff(APPROVE, send.app, MAIN_META, h.host)).toBe('sent');
+  expect(h.ran).toEqual([[T3, 'thread', 'start', '--title', `approve ${JOB}`, ROOT, `/factory approve ${JOB}`]]);
+  for (const [mode, t3] of [['copy', T3], ['draft', null], ['send', null]] as const) {
+    const c = handoffApp(mode);
+    const q = fakeHost({ repositories: INFRA_NOT_PRIMARY, t3 });
+    expect({ mode, t3, r: await handOff(APPROVE, c.app, MAIN_META, q.host) }).toEqual({ mode, t3, r: 'copy-only' });
+    expect([q.ran, c.log]).toEqual([[], []]);
   }
 });
 
@@ -1905,6 +1933,15 @@ test('068 AC3: draft mode with no draftable GitHub remote opens nothing and answ
     expect(await startWork({ project: PID, action: 'next' }, app, MAIN_META, h.host)).toBe('no-github-remote');
     expect(h.ran).toEqual([]);
     expect(log).toEqual([]);
+  }
+});
+
+test('091 AC2: Start Work in draft mode with a GitHub remote that is not primary opens nothing and answers github-not-primary', async () => {
+  for (const c of START_CASES) {
+    const { app, log } = handoffApp('draft');
+    const h = fakeStartHost({ repositories: INFRA_NOT_PRIMARY });
+    expect({ req: c.req, r: await startWork(c.req, app, MAIN_META, h.host) }).toEqual({ req: c.req, r: { outcome: 'github-not-primary', project: 'factory', primary: 'origin', github: 'github' } });
+    expect({ req: c.req, ran: h.ran, log }).toEqual({ req: c.req, ran: [], log: [] });
   }
 });
 
@@ -2934,13 +2971,35 @@ test('086 AC5: a repository that is several listed projects\' primary answers se
   expect(h.ran).toEqual([]);
 });
 
-test('086 AC5: a remote project whose primary remote is not on GitHub answers no-github-remote, even with a GitHub remote that is not primary', async () => {
+test('086 AC5 / 091 AC3: a remote project with no linkable remote answers no-github-remote', async () => {
   for (const remote of UNDRAFTABLE) {
     const projects = hubProjects(RROOT, { local: GITHUB, remote });
     for (const mode of ['draft', 'send'] satisfies HandoffMode[]) {
       const { app, log } = handoffApp(mode);
       const h = hubHost(projects);
       expect({ remote, mode, r: await handOff(HANDOFFS[0], app, MAIN_META, h.host) }).toEqual({ remote, mode, r: 'no-github-remote' });
+      expect([h.ran, log]).toEqual([[], []]);
+    }
+  }
+});
+
+test('086 AC5 / 091 AC2: a remote project whose GitHub remote is not primary answers github-not-primary for every action, in draft and send mode, and runs nothing', async () => {
+  const projects = hubProjects(RROOT, { local: GITHUB, remote: INFRA_NOT_PRIMARY });
+  const want: HandoffOutcome = { outcome: 'github-not-primary', project: 'factory', primary: 'origin', github: 'github' };
+  for (const mode of ['draft', 'send'] satisfies HandoffMode[]) {
+    for (const c of REMOTE_COMMANDS) {
+      const { app, log } = handoffApp(mode);
+      const h = hubHost(projects);
+      expect({ mode, params: c.params, r: await ask(c.params, app, h.host) }).toEqual({ mode, params: c.params, r: want });
+      expect({ mode, params: c.params, ran: h.ran, log }).toEqual({ mode, params: c.params, ran: [], log: [] });
+    }
+  }
+  // copy mode, or no t3: still copy-only
+  for (const [mode, t3] of [['copy', T3], ['draft', null], ['send', null]] as const) {
+    for (const c of REMOTE_COMMANDS) {
+      const { app, log } = handoffApp(mode);
+      const h = hubHost(projects, { t3 });
+      expect({ mode, t3, params: c.params, r: await ask(c.params, app, h.host) }).toEqual({ mode, t3, params: c.params, r: 'copy-only' });
       expect([h.ran, log]).toEqual([[], []]);
     }
   }

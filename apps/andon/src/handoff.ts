@@ -86,6 +86,9 @@ export function handoffRequest(params: unknown, projects: readonly MenuProject[]
 /** The hosts a T3 Code link's `repo=` can name: the one allowlist (brief andon-remote-handoff, Decision 3). */
 export const T3_HOSTS: readonly string[] = ['github.com'];
 
+/** Repositories in remote-name order. */
+const byRemote = (a: AppRepository, b: AppRepository): number => (a.remote < b.remote ? -1 : a.remote > b.remote ? 1 : 0);
+
 /** The remotes T3 Code prefers, in order; with neither, the first by remote name. */
 const PREFERRED_REMOTES: readonly string[] = ['upstream', 'origin'];
 
@@ -98,8 +101,7 @@ export function primaryRepository(repos: readonly AppRepository[]): AppRepositor
     const r = repos.find((x) => x.remote === name);
     if (r !== undefined) return r;
   }
-  const sorted = [...repos].sort((a, b) => (a.remote < b.remote ? -1 : a.remote > b.remote ? 1 : 0));
-  return sorted[0] ?? null;
+  return [...repos].sort(byRemote)[0] ?? null;
 }
 
 /** Whether a link can name the repository: its host is on the allowlist, and its owner and name are
@@ -113,19 +115,32 @@ export const sameRepository = (a: AppRepository, b: AppRepository): boolean =>
 /** The name a toast gives a project's machine: its entry's, else its id's, else "this Mac". */
 export const machineLabel = (p: Pick<MenuProject, 'machine' | 'machineName'>): string => p.machineName ?? p.machine ?? 'this Mac';
 
-/** Where a draft for a project can go: a link's `repo` (`<owner>/<name>`), no linkable primary
- *  remote, or a primary repository that is also another listed project's (with every such project's
- *  machine, in feed order, each named once). */
-export type DraftTarget = { kind: 'repo'; repo: string } | { kind: 'no-github-remote' } | { kind: 'several-machines'; machines: string[] };
+/** Where a draft for a project can go: a link's `repo` (`<owner>/<name>`), no linkable remote at
+ *  all, a primary repository that is also another listed project's (with every such project's
+ *  machine, in feed order, each named once), or a primary remote that isn't linkable beside one
+ *  that is (`primary`: the primary's remote name; `github`: the first linkable other remote's, by
+ *  remote name; brief t3-primary-remote-toast). */
+export type DraftTarget =
+  | { kind: 'repo'; repo: string }
+  | { kind: 'no-github-remote' }
+  | { kind: 'several-machines'; machines: string[] }
+  | { kind: 'not-primary'; primary: string; github: string };
 
 /**
  * The draft target for `project` among `projects` (the backend's merged `/projects` list, local and
  * remote): its primary repository, when linkable, and exactly one listed project has it as its own
- * primary repository (brief andon-remote-handoff, Decision 5).
+ * primary repository (brief andon-remote-handoff, Decision 5). A primary that isn't linkable, beside
+ * another listed repository that is, is `not-primary`: T3 Code only matches its primary remote, so
+ * the draft still can't go there (brief t3-primary-remote-toast, Decision 1), but the toast can name
+ * the fix.
  */
 export function draftTarget(project: MenuProject, projects: readonly MenuProject[]): DraftTarget {
   const primary = primaryRepository(project.repositories);
-  if (primary === null || !linkable(primary)) return { kind: 'no-github-remote' };
+  if (primary === null) return { kind: 'no-github-remote' };
+  if (!linkable(primary)) {
+    const github = project.repositories.filter((r) => r !== primary && linkable(r)).sort(byRemote)[0];
+    return github === undefined ? { kind: 'no-github-remote' } : { kind: 'not-primary', primary: primary.remote, github: github.remote };
+  }
   const holders = projects.filter((p) => {
     const other = primaryRepository(p.repositories);
     return other !== null && sameRepository(other, primary);
@@ -162,10 +177,20 @@ export interface SeveralMachines {
   machines: string[]; // the machines of every project with that repository, in feed order
 }
 
+/** The project's GitHub remote isn't T3 Code's primary one: nothing opened, copy only, and the
+ *  toast names both remotes and the fix (make `github` the `upstream` remote). */
+export interface GithubNotPrimary {
+  outcome: 'github-not-primary';
+  project: string; // the project's name
+  primary: string; // T3 Code's primary remote's name, not on GitHub
+  github: string; // the first GitHub remote's name, by remote name
+}
+
 /** What the hand-off did, for the page's toast: a draft opened, a thread sent, copy only (the copy
  *  mode, no `t3`, or a failure, which a notification explains), no GitHub remote for a draft, a
- *  draft opened in place of a send (a remote project), or a repository on several machines. */
-export type HandoffOutcome = 'drafted' | 'sent' | 'copy-only' | 'no-github-remote' | DraftedNotSent | SeveralMachines;
+ *  draft opened in place of a send (a remote project), a repository on several machines, or a
+ *  GitHub remote that isn't the primary one. */
+export type HandoffOutcome = 'drafted' | 'sent' | 'copy-only' | 'no-github-remote' | DraftedNotSent | SeveralMachines | GithubNotPrimary;
 
 /** The notification text when sending failed. */
 export const sendFailureText = (reason: string): string => `Couldn't send to T3 Code: ${reason}`;

@@ -210,3 +210,42 @@ describe('086 AC7: the remote hand-off outcomes', () => {
     expect(joinNames(['a', 'b', 'c'])).toBe('a, b, and c');
   });
 });
+
+describe('091 AC4/AC5: a GitHub remote that is not the primary one', () => {
+  const infra: HandoffOutcome = { outcome: 'github-not-primary', project: 'infra', primary: 'origin', github: 'github' };
+  const TEXT = 'T3 Code knows infra by its origin remote, not GitHub; make github its upstream remote to draft. Copied /factory next';
+
+  test('a well-formed github-not-primary narrows to itself; a missing or extra key, a blank, empty, or non-string value narrows to null', () => {
+    expect(narrowOutcome({ ...infra })).toEqual(infra);
+    const junk: unknown[] = [
+      { outcome: 'github-not-primary', primary: 'origin', github: 'github' },
+      { outcome: 'github-not-primary', project: 'infra', github: 'github' },
+      { outcome: 'github-not-primary', project: 'infra', primary: 'origin' },
+      { ...infra, extra: 'x' },
+      { ...infra, machine: 'moya' },
+      { ...infra, project: '' },
+      { ...infra, primary: ' ' },
+      { ...infra, github: '' },
+      { ...infra, project: 7 },
+      { ...infra, primary: null },
+      { ...infra, github: ['github'] },
+      'github-not-primary',
+    ];
+    for (const o of junk) expect({ o, n: narrowOutcome(o) }).toEqual({ o, n: null });
+  });
+
+  test('the toast names both remotes and the upstream fix, with or without a machine; a failed copy says so; no-github-remote reads as before', () => {
+    const o = narrowOutcome(infra);
+    expect(handoffToast(true, o, '/factory next')).toEqual({ text: TEXT, ok: true });
+    expect(handoffToast(true, o, '/factory next', 'moya')).toEqual({ text: TEXT, ok: true });
+    expect(handoffToast(false, o, '/factory next')).toEqual({ text: COPY_FAILED, ok: false });
+    expect(handoffToast(false, o, '/factory next', 'moya')).toEqual({ text: COPY_FAILED, ok: false });
+    expect(handoffToast(true, 'no-github-remote', '/factory next')).toEqual({ text: 'No GitHub remote; copied /factory next', ok: true });
+  });
+
+  test('the caller narrows it', async () => {
+    const approve: HandoffRequest = { project: '6bb1e650df35@moya', job: '007-x', action: 'approve' };
+    expect(await handOffCaller('mac', { api: { call: async () => infra } })?.(approve)).toEqual(infra);
+    expect(await handOffCaller('mac', { api: { call: async () => ({ ...infra, github: '' }) } })?.(approve)).toBeNull();
+  });
+});

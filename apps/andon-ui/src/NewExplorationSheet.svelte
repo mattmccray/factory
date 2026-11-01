@@ -42,7 +42,7 @@
 
 <Sheet open={project !== null} labelledby="explore-title" {onclose} onopened={() => field?.focus()}>
   <header>
-    <h2 id="explore-title">New exploration{#if target !== null && picker === null} <span class="mono">{target.name}</span>{/if}</h2>
+    <h2 id="explore-title">New exploration{#if target !== null && picker === null}{' '}<span class="mono">{target.name}</span>{/if}</h2>
     {#if handsOff}
       <p>Starts an interview that turns your idea into a brief. Andon copies the command and, as chosen in Settings, hands it to T3 Code. You can also run it in your <code>/factory</code> session.</p>
     {:else}

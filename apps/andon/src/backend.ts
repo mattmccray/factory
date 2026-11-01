@@ -953,8 +953,8 @@ let handing = false;
 /**
  * Hands `command` to T3 Code for a checked project, by the mode, once `t3` is found: send mode for
  * a local project runs `send` (its `t3 thread start` argv); draft mode, and send mode for a remote
- * project, open the draft by `draftTarget` (answering "no-github-remote" or "several-machines", with
- * nothing run, when it can't). A failed open or send notifies, and answers "copy-only" (the page copied).
+ * project, open the draft by `draftTarget` (answering "no-github-remote", "several-machines", or
+ * "github-not-primary", with nothing run, when it can't). A failed open or send notifies, and answers "copy-only" (the page copied).
  */
 async function deliver(app: MacApp, host: HandoffHost, mode: 'draft' | 'send', project: MenuProject, command: string, send: string[]): Promise<HandoffOutcome> {
   if (mode === 'send' && !isRemote(project)) {
@@ -966,6 +966,7 @@ async function deliver(app: MacApp, host: HandoffHost, mode: 'draft' | 'send', p
   const target = draftTarget(project, host.projects());
   if (target.kind === 'no-github-remote') return 'no-github-remote';
   if (target.kind === 'several-machines') return { outcome: 'several-machines', project: project.name, machines: target.machines };
+  if (target.kind === 'not-primary') return { outcome: 'github-not-primary', project: project.name, primary: target.primary, github: target.github };
   const r = await host.run(['open', draftLink(command, target.repo)]);
   if (!r.ok) {
     await notifyFailure(app, draftFailureText(r.reason));

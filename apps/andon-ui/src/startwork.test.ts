@@ -36,6 +36,8 @@ import type { StartItem, StartWorkRequest } from './startwork';
 import { HUB, LOCAL_FACTORY, STUDIO_FACTORY, machineEntry, machinesBody } from './fixtures';
 import { remoteOfId } from './machines';
 import { applyEvent, emptyState } from './state';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const PID = 'aaaaaaaaaaaa';
 const PROJECTS = [{ id: PID, name: 'factory', root: '/Users/me/code/factory', machine: null, machineName: null, repositories: [] }];
@@ -362,5 +364,28 @@ describe('starting work on a remote project (brief andon-machines-ui, AC7)', () 
   test('AC1: with only the hub listed, no project is remote, so no toast names a machine', () => {
     const s = applyEvent(state(), 'machines', machinesBody(machineEntry(HUB)));
     expect([remoteOfId(s, LOCAL_FACTORY.id), remoteOfId(s, STUDIO_FACTORY.id)]).toEqual([null, null]);
+  });
+});
+
+describe('091: a GitHub remote that is not the primary one, and the New exploration title', () => {
+  const infra = { outcome: 'github-not-primary', project: 'infra', primary: 'origin', github: 'github' };
+  const TEXT = 'T3 Code knows infra by its origin remote, not GitHub; make github its upstream remote to draft. Copied /factory next';
+  const state = () => applyEvent(applyEvent(emptyState(), 'projects', { projects: [LOCAL_FACTORY, STUDIO_FACTORY] }), 'machines', machinesBody(machineEntry(HUB), machineEntry('studio')));
+
+  test('AC5: the Start Work toast path gives the github-not-primary text, local or remote; a failed copy says so', async () => {
+    const s = state();
+    const answer = (r: unknown) => startWorkCaller('mac', { api: { call: async () => r } });
+    for (const pid of [LOCAL_FACTORY.id, STUDIO_FACTORY.id]) {
+      expect(await copyThenStart(async () => true, answer(infra), nextStart(pid).req, NEXT_COMMAND, remoteOfId(s, pid))).toEqual({ text: TEXT, ok: true });
+      expect(await copyThenStart(async () => false, answer(infra), nextStart(pid).req, NEXT_COMMAND, remoteOfId(s, pid))).toEqual({ text: COPY_FAILED, ok: false });
+    }
+    expect(await copyThenStart(async () => true, answer('no-github-remote'), nextStart(LOCAL_FACTORY.id).req, NEXT_COMMAND)).toEqual({ text: 'No GitHub remote; copied /factory next', ok: true });
+  });
+
+  test("AC6: the explore-title heading's {#if} block starts with an explicit {' '} before the mono span, with no bare leading space", () => {
+    const src = readFileSync(join(import.meta.dir, 'NewExplorationSheet.svelte'), 'utf8');
+    const heading = src.split('\n').find((l) => l.includes('id="explore-title"')) ?? '';
+    expect(heading).toContain(`New exploration{#if target !== null && picker === null}{' '}<span class="mono">{target.name}</span>{/if}</h2>`);
+    expect(heading).not.toMatch(/\{#if [^}]*\} /);
   });
 });
