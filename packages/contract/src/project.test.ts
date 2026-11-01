@@ -349,6 +349,30 @@ describe('why a job stopped (stoppedBy / stoppedFrom)', () => {
     expect(s).toMatchObject({ stage: 'build', stoppedBy: null, stoppedFrom: null });
   });
 
+  test('job.reworked after a spec or claimed stop enters spec, timed as a spec stage', () => {
+    const fromSpec: EventInput[] = [claimed, { type: 'stage.entered', stage: 'spec' }, { type: 'job.escalated', reason: 'spec has 1 open question(s): q' }];
+    const fromClaimed: EventInput[] = [claimed, { type: 'job.escalated', reason: 'r' }];
+    for (const inputs of [fromSpec, fromClaimed]) {
+      const events = log([...inputs, { type: 'job.reworked', k: 1, maxRound: 2 }]);
+      const s = project(events);
+      const at = events[events.length - 1]?.ts;
+      expect(s).toMatchObject({ stage: 'spec', stoppedBy: null, stoppedFrom: null, reworks: 1, note: '', stageEnteredAt: at });
+      const open = s.timing.stages[s.timing.stages.length - 1];
+      expect(open).toMatchObject({ stage: 'spec', enteredAt: at, exitedAt: null });
+      // The existing spec → build transition takes the job on.
+      const built = project(log([...inputs, { type: 'job.reworked', k: 1, maxRound: 2 }, { type: 'job.titled', title: 'T' }, { type: 'stage.entered', stage: 'build' }]));
+      expect(built).toMatchObject({ stage: 'build', title: 'T' });
+    }
+  });
+
+  test('job.reworked after a build, review, or approve stop still enters build', () => {
+    const rework: EventInput = { type: 'job.reworked', k: 1, maxRound: 3 };
+    const toBuild: EventInput[] = [claimed, { type: 'stage.entered', stage: 'spec' }, { type: 'stage.entered', stage: 'build' }];
+    for (const inputs of [toBuild, toReview, toApprove]) {
+      expect(project(log([...inputs, { type: 'job.escalated', reason: 'r' }, rework])).stage).toBe('build');
+    }
+  });
+
   test('a job that never entered needs-human has both null, merged or not', () => {
     for (const s of [project(log(toReview)), project(log(twoRound))]) {
       expect(s.stoppedBy).toBeNull();

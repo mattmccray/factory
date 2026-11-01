@@ -7,6 +7,12 @@ export type WorkingStage = 'claimed' | 'spec' | 'build' | 'review' | 'approve';
 export const WORKING_STAGES: readonly WorkingStage[] = ['claimed', 'spec', 'build', 'review', 'approve'];
 /** Narrows a stage to a working stage, or null. */
 export const workingStage = (stage: Stage): WorkingStage | null => WORKING_STAGES.find((w) => w === stage) ?? null;
+/**
+ * The stage `job.reworked` enters, from the working stage the job stopped from: a stop before
+ * anything was built (`spec` or `claimed`) re-enters `spec`; any other stop, or none, `build`.
+ */
+export const reworkStage = (stoppedFrom: WorkingStage | null): 'spec' | 'build' =>
+  stoppedFrom === 'spec' || stoppedFrom === 'claimed' ? 'spec' : 'build';
 export type Role = 'spec-writer' | 'builder' | 'reviewer' | 'approver';
 export type Verdict = 'PASS' | 'CHANGES' | 'APPROVE' | 'ESCALATE';
 type EnteredStage = 'spec' | 'build' | 'approve';
@@ -498,10 +504,11 @@ interface State {
   finished: Set<string>; // reviewers with a verdict in the current round
   humanApproved: boolean;
   conflicts: number; // merge.conflicted events so far
+  stoppedFrom: WorkingStage | null; // the working stage the job last left for needs-human
 }
 
 function derive(prior: FactoryEvent[]): State {
-  const s: State = { stage: null, round: 0, maxRound: 0, reviewers: [], finished: new Set(), humanApproved: false, conflicts: 0 };
+  const s: State = { stage: null, round: 0, maxRound: 0, reviewers: [], finished: new Set(), humanApproved: false, conflicts: 0, stoppedFrom: null };
   for (const e of prior) {
     switch (e.type) {
       case 'job.claimed': s.stage = 'claimed'; s.maxRound = e.maxRound; break;
@@ -510,10 +517,11 @@ function derive(prior: FactoryEvent[]): State {
       case 'agent.finished':
         if (e.role === 'reviewer' && e.key !== undefined && e.verdict !== undefined && e.round === s.round) s.finished.add(e.key);
         break;
-      case 'job.escalated': s.stage = 'needs-human'; s.humanApproved = false; break;
-      case 'job.reworked': s.stage = 'build'; s.maxRound = e.maxRound; s.humanApproved = false; break;
+      case 'job.escalated': s.stoppedFrom = stoppedAt(s.stage); s.stage = 'needs-human'; s.humanApproved = false; break;
+      case 'job.reworked': s.stage = reworkStage(s.stoppedFrom); s.stoppedFrom = null; s.maxRound = e.maxRound; s.humanApproved = false; break;
       case 'job.human-approved': s.humanApproved = true; break;
-      case 'merge.failed': s.stage = 'needs-human'; s.humanApproved = false; break;
+      // From approve, that's where it stopped; a retry from needs-human keeps the original stage.
+      case 'merge.failed': if (s.stage !== 'needs-human') s.stoppedFrom = stoppedAt(s.stage); s.stage = 'needs-human'; s.humanApproved = false; break;
       // Back to build with a two-round budget past the current round; any human approval was of
       // the work before the resolution, so it no longer counts.
       case 'merge.conflicted': s.stage = 'build'; s.maxRound = s.round + 2; s.humanApproved = false; s.conflicts += 1; break;
@@ -524,6 +532,8 @@ function derive(prior: FactoryEvent[]): State {
   }
   return s;
 }
+
+const stoppedAt = (stage: Stage | null): WorkingStage | null => (stage === null ? null : workingStage(stage));
 
 function fail(msg: string): never {
   throw new Error(msg);

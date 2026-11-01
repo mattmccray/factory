@@ -1,0 +1,333 @@
+{
+  "schema": "factory/v1",
+  "id": "063-andon-view-menu",
+  "title": "Andon View Menu and a Merged Column Switch",
+  "branch": "factory/063-andon-view-menu",
+  "target": "main",
+  "builder": "builder-063-andon-view-menu",
+  "stage": "merged",
+  "round": 3,
+  "maxRound": 4,
+  "reviews": {
+    "security": "PASS",
+    "code": "PASS",
+    "contract": "PASS",
+    "ui": "PASS"
+  },
+  "history": [
+    {
+      "round": 1,
+      "reviews": {
+        "security": "CHANGES",
+        "code": "PASS",
+        "contract": "PASS",
+        "ui": "PASS"
+      }
+    },
+    {
+      "round": 2,
+      "reviews": {
+        "security": "CHANGES",
+        "code": "PASS",
+        "contract": "PASS",
+        "ui": "PASS"
+      }
+    }
+  ],
+  "reworks": 1,
+  "conflicts": 0,
+  "decision": "APPROVE (human)",
+  "note": "merged c9c7bf6",
+  "stoppedBy": "escalated",
+  "stoppedFrom": "approve",
+  "brief": "factory/briefs/andon-view-menu.md",
+  "issue": null,
+  "session": {
+    "app": "t3code",
+    "environment": "31b71739-338f-496d-b747-9971dd11451f",
+    "thread": "3c0abb44-5b56-45df-a996-764e788da29c"
+  },
+  "epic": null,
+  "kind": null,
+  "startedAt": "2026-10-30T18:10:06.139Z",
+  "stageEnteredAt": "2026-10-30T19:58:14.010Z",
+  "endedAt": "2026-10-30T19:58:14.010Z",
+  "updated": "2026-10-30T19:58:14.010Z",
+  "timing": {
+    "stages": [
+      {
+        "stage": "claimed",
+        "round": 0,
+        "enteredAt": "2026-10-30T18:10:06.139Z",
+        "exitedAt": "2026-10-30T18:10:09.456Z",
+        "ms": 3317
+      },
+      {
+        "stage": "spec",
+        "round": 0,
+        "enteredAt": "2026-10-30T18:10:09.456Z",
+        "exitedAt": "2026-10-30T18:11:28.912Z",
+        "ms": 79456
+      },
+      {
+        "stage": "build",
+        "round": 0,
+        "enteredAt": "2026-10-30T18:11:28.912Z",
+        "exitedAt": "2026-10-30T18:25:52.806Z",
+        "ms": 863894
+      },
+      {
+        "stage": "review",
+        "round": 1,
+        "enteredAt": "2026-10-30T18:25:52.806Z",
+        "exitedAt": "2026-10-30T18:28:26.570Z",
+        "ms": 153764
+      },
+      {
+        "stage": "build",
+        "round": 1,
+        "enteredAt": "2026-10-30T18:28:26.570Z",
+        "exitedAt": "2026-10-30T18:28:50.116Z",
+        "ms": 23546
+      },
+      {
+        "stage": "review",
+        "round": 2,
+        "enteredAt": "2026-10-30T18:28:50.116Z",
+        "exitedAt": "2026-10-30T18:30:37.281Z",
+        "ms": 107165
+      },
+      {
+        "stage": "approve",
+        "round": 2,
+        "enteredAt": "2026-10-30T18:30:37.281Z",
+        "exitedAt": "2026-10-30T18:32:15.739Z",
+        "ms": 98458
+      },
+      {
+        "stage": "needs-human",
+        "round": 2,
+        "enteredAt": "2026-10-30T18:32:15.739Z",
+        "exitedAt": "2026-10-30T19:27:39.658Z",
+        "ms": 3323919
+      },
+      {
+        "stage": "build",
+        "round": 2,
+        "enteredAt": "2026-10-30T19:27:39.658Z",
+        "exitedAt": "2026-10-30T19:29:20.432Z",
+        "ms": 100774
+      },
+      {
+        "stage": "review",
+        "round": 3,
+        "enteredAt": "2026-10-30T19:29:20.432Z",
+        "exitedAt": "2026-10-30T19:32:27.590Z",
+        "ms": 187158
+      },
+      {
+        "stage": "approve",
+        "round": 3,
+        "enteredAt": "2026-10-30T19:32:27.590Z",
+        "exitedAt": "2026-10-30T19:34:38.729Z",
+        "ms": 131139
+      },
+      {
+        "stage": "needs-human",
+        "round": 3,
+        "enteredAt": "2026-10-30T19:34:38.729Z",
+        "exitedAt": "2026-10-30T19:58:14.010Z",
+        "ms": 1415281
+      },
+      {
+        "stage": "merged",
+        "round": 3,
+        "enteredAt": "2026-10-30T19:58:14.010Z",
+        "exitedAt": null,
+        "ms": null
+      }
+    ],
+    "agents": [
+      {
+        "role": "spec-writer",
+        "key": null,
+        "round": null,
+        "name": null,
+        "startedAt": "2026-10-30T18:10:09.472Z",
+        "finishedAt": "2026-10-30T18:11:28.729Z",
+        "ms": 79257,
+        "verdict": null
+      },
+      {
+        "role": "builder",
+        "key": null,
+        "round": null,
+        "name": "builder-063-andon-view-menu",
+        "startedAt": "2026-10-30T18:11:28.929Z",
+        "finishedAt": "2026-10-30T18:25:52.786Z",
+        "ms": 863857,
+        "verdict": null
+      },
+      {
+        "role": "reviewer",
+        "key": "security",
+        "round": 1,
+        "name": null,
+        "startedAt": "2026-10-30T18:25:52.823Z",
+        "finishedAt": "2026-10-30T18:27:49.920Z",
+        "ms": 117097,
+        "verdict": "CHANGES"
+      },
+      {
+        "role": "reviewer",
+        "key": "code",
+        "round": 1,
+        "name": null,
+        "startedAt": "2026-10-30T18:25:52.839Z",
+        "finishedAt": "2026-10-30T18:28:26.548Z",
+        "ms": 153709,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "contract",
+        "round": 1,
+        "name": null,
+        "startedAt": "2026-10-30T18:25:52.856Z",
+        "finishedAt": "2026-10-30T18:27:56.239Z",
+        "ms": 123383,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "ui",
+        "round": 1,
+        "name": null,
+        "startedAt": "2026-10-30T18:25:52.873Z",
+        "finishedAt": "2026-10-30T18:28:01.710Z",
+        "ms": 128837,
+        "verdict": "PASS"
+      },
+      {
+        "role": "builder",
+        "key": null,
+        "round": 1,
+        "name": "builder-063-andon-view-menu",
+        "startedAt": "2026-10-30T18:28:26.586Z",
+        "finishedAt": "2026-10-30T18:28:50.097Z",
+        "ms": 23511,
+        "verdict": null
+      },
+      {
+        "role": "reviewer",
+        "key": "security",
+        "round": 2,
+        "name": null,
+        "startedAt": "2026-10-30T18:28:50.131Z",
+        "finishedAt": "2026-10-30T18:30:37.265Z",
+        "ms": 107134,
+        "verdict": "CHANGES"
+      },
+      {
+        "role": "reviewer",
+        "key": "code",
+        "round": 2,
+        "name": null,
+        "startedAt": "2026-10-30T18:28:50.146Z",
+        "finishedAt": "2026-10-30T18:30:33.157Z",
+        "ms": 103011,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "contract",
+        "round": 2,
+        "name": null,
+        "startedAt": "2026-10-30T18:28:50.161Z",
+        "finishedAt": "2026-10-30T18:30:28.977Z",
+        "ms": 98816,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "ui",
+        "round": 2,
+        "name": null,
+        "startedAt": "2026-10-30T18:28:50.177Z",
+        "finishedAt": "2026-10-30T18:29:30.331Z",
+        "ms": 40154,
+        "verdict": "PASS"
+      },
+      {
+        "role": "approver",
+        "key": null,
+        "round": null,
+        "name": null,
+        "startedAt": "2026-10-30T18:30:37.297Z",
+        "finishedAt": "2026-10-30T18:32:15.723Z",
+        "ms": 98426,
+        "verdict": "ESCALATE"
+      },
+      {
+        "role": "builder",
+        "key": null,
+        "round": 2,
+        "name": "builder-063-andon-view-menu",
+        "startedAt": "2026-10-30T19:27:39.674Z",
+        "finishedAt": "2026-10-30T19:29:20.412Z",
+        "ms": 100738,
+        "verdict": null
+      },
+      {
+        "role": "reviewer",
+        "key": "security",
+        "round": 3,
+        "name": null,
+        "startedAt": "2026-10-30T19:29:20.449Z",
+        "finishedAt": "2026-10-30T19:31:04.900Z",
+        "ms": 104451,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "code",
+        "round": 3,
+        "name": null,
+        "startedAt": "2026-10-30T19:29:20.465Z",
+        "finishedAt": "2026-10-30T19:31:29.918Z",
+        "ms": 129453,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "contract",
+        "round": 3,
+        "name": null,
+        "startedAt": "2026-10-30T19:29:20.482Z",
+        "finishedAt": "2026-10-30T19:32:27.573Z",
+        "ms": 187091,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "ui",
+        "round": 3,
+        "name": null,
+        "startedAt": "2026-10-30T19:29:20.498Z",
+        "finishedAt": "2026-10-30T19:29:58.183Z",
+        "ms": 37685,
+        "verdict": "PASS"
+      },
+      {
+        "role": "approver",
+        "key": null,
+        "round": null,
+        "name": null,
+        "startedAt": "2026-10-30T19:32:27.607Z",
+        "finishedAt": "2026-10-30T19:34:38.712Z",
+        "ms": 131105,
+        "verdict": "ESCALATE"
+      }
+    ]
+  }
+}

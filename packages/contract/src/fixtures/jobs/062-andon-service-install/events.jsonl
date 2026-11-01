@@ -1,0 +1,23 @@
+{"ts":"2026-10-30T17:12:09.985Z","type":"job.claimed","schema":"factory/v1","id":"062-andon-service-install","maxRound":2,"brief":"factory/briefs/andon-service-install.md","issue":null,"target":"factory/epic/factory-distribution","session":{"app":"t3code","environment":"31b71739-338f-496d-b747-9971dd11451f","thread":"36dfc7f2-8245-4f0e-a7ab-2e2bd3c315ed"},"epic":"factory-distribution","kind":"member"}
+{"ts":"2026-10-30T17:12:10.005Z","type":"stage.entered","stage":"spec"}
+{"ts":"2026-10-30T17:12:10.026Z","type":"agent.started","role":"spec-writer"}
+{"ts":"2026-10-30T17:13:41.705Z","type":"agent.finished","role":"spec-writer"}
+{"ts":"2026-10-30T17:13:41.733Z","type":"job.titled","title":"Factory Service Installs And Runs The Andon Service"}
+{"ts":"2026-10-30T17:13:41.915Z","type":"stage.entered","stage":"build"}
+{"ts":"2026-10-30T17:13:41.935Z","type":"agent.started","role":"builder","name":"builder-062-andon-service-install"}
+{"ts":"2026-10-30T17:28:26.665Z","type":"agent.finished","role":"builder","name":"builder-062-andon-service-install"}
+{"ts":"2026-10-30T17:28:26.690Z","type":"round.started","round":1,"reviewers":["security","code","contract","ui"]}
+{"ts":"2026-10-30T17:28:26.710Z","type":"agent.started","role":"reviewer","key":"security","round":1}
+{"ts":"2026-10-30T17:28:26.731Z","type":"agent.started","role":"reviewer","key":"code","round":1}
+{"ts":"2026-10-30T17:28:26.753Z","type":"agent.started","role":"reviewer","key":"contract","round":1}
+{"ts":"2026-10-30T17:28:26.775Z","type":"agent.started","role":"reviewer","key":"ui","round":1}
+{"ts":"2026-10-30T17:28:55.338Z","type":"agent.finished","role":"reviewer","key":"ui","round":1,"verdict":"PASS"}
+{"ts":"2026-10-30T17:30:07.648Z","type":"agent.finished","role":"reviewer","key":"code","round":1,"verdict":"PASS"}
+{"ts":"2026-10-30T17:30:20.555Z","type":"agent.finished","role":"reviewer","key":"contract","round":1,"verdict":"PASS"}
+{"ts":"2026-10-30T17:30:32.293Z","type":"agent.finished","role":"reviewer","key":"security","round":1,"verdict":"PASS"}
+{"ts":"2026-10-30T17:30:32.315Z","type":"stage.entered","stage":"approve"}
+{"ts":"2026-10-30T17:30:32.335Z","type":"agent.started","role":"approver"}
+{"ts":"2026-10-30T17:32:33.715Z","type":"agent.finished","role":"approver","verdict":"ESCALATE"}
+{"ts":"2026-10-30T17:32:35.658Z","type":"job.escalated","reason":"approver: builder amended binding decision 10 in docs/decisions.md; wording needs human confirmation"}
+{"ts":"2026-10-30T17:35:11.453Z","type":"job.human-approved","session":{"app":"t3code","environment":"31b71739-338f-496d-b747-9971dd11451f","thread":"36dfc7f2-8245-4f0e-a7ab-2e2bd3c315ed"}}
+{"ts":"2026-10-30T17:35:14.611Z","type":"job.merged","sha":"7ce7dc4"}

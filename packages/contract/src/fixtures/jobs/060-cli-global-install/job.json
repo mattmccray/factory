@@ -1,0 +1,319 @@
+{
+  "schema": "factory/v1",
+  "id": "060-cli-global-install",
+  "title": "The Factory CLI Installs Globally From GitHub",
+  "branch": "factory/060-cli-global-install",
+  "target": "factory/epic/factory-distribution",
+  "builder": "builder-060-cli-global-install",
+  "stage": "merged",
+  "round": 3,
+  "maxRound": 4,
+  "reviews": {
+    "security": "PASS",
+    "code": "PASS",
+    "contract": "PASS",
+    "ui": "PASS"
+  },
+  "history": [
+    {
+      "round": 1,
+      "reviews": {
+        "security": "PASS",
+        "code": "PASS",
+        "contract": "CHANGES",
+        "ui": "PASS"
+      }
+    },
+    {
+      "round": 2,
+      "reviews": {
+        "security": "PASS",
+        "code": "PASS",
+        "contract": "PASS",
+        "ui": "PASS"
+      }
+    }
+  ],
+  "reworks": 0,
+  "conflicts": 1,
+  "decision": "APPROVE",
+  "note": "merged ef3dbba",
+  "stoppedBy": null,
+  "stoppedFrom": null,
+  "brief": "factory/briefs/cli-global-install.md",
+  "issue": null,
+  "session": {
+    "app": "t3code",
+    "environment": "31b71739-338f-496d-b747-9971dd11451f",
+    "thread": "36dfc7f2-8245-4f0e-a7ab-2e2bd3c315ed"
+  },
+  "epic": "factory-distribution",
+  "kind": "member",
+  "startedAt": "2026-10-30T16:39:48.186Z",
+  "stageEnteredAt": "2026-10-30T17:12:03.978Z",
+  "endedAt": "2026-10-30T17:12:03.978Z",
+  "updated": "2026-10-30T17:12:03.978Z",
+  "timing": {
+    "stages": [
+      {
+        "stage": "claimed",
+        "round": 0,
+        "enteredAt": "2026-10-30T16:39:48.186Z",
+        "exitedAt": "2026-10-30T16:39:48.249Z",
+        "ms": 63
+      },
+      {
+        "stage": "spec",
+        "round": 0,
+        "enteredAt": "2026-10-30T16:39:48.249Z",
+        "exitedAt": "2026-10-30T16:41:39.198Z",
+        "ms": 110949
+      },
+      {
+        "stage": "build",
+        "round": 0,
+        "enteredAt": "2026-10-30T16:41:39.198Z",
+        "exitedAt": "2026-10-30T16:56:44.586Z",
+        "ms": 905388
+      },
+      {
+        "stage": "review",
+        "round": 1,
+        "enteredAt": "2026-10-30T16:56:44.586Z",
+        "exitedAt": "2026-10-30T16:59:10.169Z",
+        "ms": 145583
+      },
+      {
+        "stage": "build",
+        "round": 1,
+        "enteredAt": "2026-10-30T16:59:10.169Z",
+        "exitedAt": "2026-10-30T17:00:56.455Z",
+        "ms": 106286
+      },
+      {
+        "stage": "review",
+        "round": 2,
+        "enteredAt": "2026-10-30T17:00:56.455Z",
+        "exitedAt": "2026-10-30T17:02:44.313Z",
+        "ms": 107858
+      },
+      {
+        "stage": "approve",
+        "round": 2,
+        "enteredAt": "2026-10-30T17:02:44.313Z",
+        "exitedAt": "2026-10-30T17:04:35.071Z",
+        "ms": 110758
+      },
+      {
+        "stage": "build",
+        "round": 2,
+        "enteredAt": "2026-10-30T17:04:35.071Z",
+        "exitedAt": "2026-10-30T17:08:32.027Z",
+        "ms": 236956
+      },
+      {
+        "stage": "review",
+        "round": 3,
+        "enteredAt": "2026-10-30T17:08:32.027Z",
+        "exitedAt": "2026-10-30T17:10:22.564Z",
+        "ms": 110537
+      },
+      {
+        "stage": "approve",
+        "round": 3,
+        "enteredAt": "2026-10-30T17:10:22.564Z",
+        "exitedAt": "2026-10-30T17:12:03.978Z",
+        "ms": 101414
+      },
+      {
+        "stage": "merged",
+        "round": 3,
+        "enteredAt": "2026-10-30T17:12:03.978Z",
+        "exitedAt": null,
+        "ms": null
+      }
+    ],
+    "agents": [
+      {
+        "role": "spec-writer",
+        "key": null,
+        "round": null,
+        "name": null,
+        "startedAt": "2026-10-30T16:39:48.269Z",
+        "finishedAt": "2026-10-30T16:41:39.019Z",
+        "ms": 110750,
+        "verdict": null
+      },
+      {
+        "role": "builder",
+        "key": null,
+        "round": null,
+        "name": "builder-060-cli-global-install",
+        "startedAt": "2026-10-30T16:41:39.219Z",
+        "finishedAt": "2026-10-30T16:56:44.563Z",
+        "ms": 905344,
+        "verdict": null
+      },
+      {
+        "role": "reviewer",
+        "key": "security",
+        "round": 1,
+        "name": null,
+        "startedAt": "2026-10-30T16:56:44.604Z",
+        "finishedAt": "2026-10-30T16:58:44.774Z",
+        "ms": 120170,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "code",
+        "round": 1,
+        "name": null,
+        "startedAt": "2026-10-30T16:56:44.623Z",
+        "finishedAt": "2026-10-30T16:58:28.123Z",
+        "ms": 103500,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "contract",
+        "round": 1,
+        "name": null,
+        "startedAt": "2026-10-30T16:56:44.641Z",
+        "finishedAt": "2026-10-30T16:59:07.975Z",
+        "ms": 143334,
+        "verdict": "CHANGES"
+      },
+      {
+        "role": "reviewer",
+        "key": "ui",
+        "round": 1,
+        "name": null,
+        "startedAt": "2026-10-30T16:56:44.660Z",
+        "finishedAt": "2026-10-30T16:57:16.047Z",
+        "ms": 31387,
+        "verdict": "PASS"
+      },
+      {
+        "role": "builder",
+        "key": null,
+        "round": 1,
+        "name": "builder-060-cli-global-install",
+        "startedAt": "2026-10-30T16:59:10.191Z",
+        "finishedAt": "2026-10-30T17:00:56.432Z",
+        "ms": 106241,
+        "verdict": null
+      },
+      {
+        "role": "reviewer",
+        "key": "security",
+        "round": 2,
+        "name": null,
+        "startedAt": "2026-10-30T17:00:56.475Z",
+        "finishedAt": "2026-10-30T17:02:34.919Z",
+        "ms": 98444,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "code",
+        "round": 2,
+        "name": null,
+        "startedAt": "2026-10-30T17:00:56.495Z",
+        "finishedAt": "2026-10-30T17:02:44.291Z",
+        "ms": 107796,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "contract",
+        "round": 2,
+        "name": null,
+        "startedAt": "2026-10-30T17:00:56.513Z",
+        "finishedAt": "2026-10-30T17:02:38.561Z",
+        "ms": 102048,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "ui",
+        "round": 2,
+        "name": null,
+        "startedAt": "2026-10-30T17:00:56.532Z",
+        "finishedAt": "2026-10-30T17:01:25.206Z",
+        "ms": 28674,
+        "verdict": "PASS"
+      },
+      {
+        "role": "approver",
+        "key": null,
+        "round": null,
+        "name": null,
+        "startedAt": "2026-10-30T17:02:44.337Z",
+        "finishedAt": "2026-10-30T17:04:28.068Z",
+        "ms": 103731,
+        "verdict": "APPROVE"
+      },
+      {
+        "role": "builder",
+        "key": null,
+        "round": 2,
+        "name": "builder-060-cli-global-install",
+        "startedAt": "2026-10-30T17:04:35.091Z",
+        "finishedAt": "2026-10-30T17:08:32.002Z",
+        "ms": 236911,
+        "verdict": null
+      },
+      {
+        "role": "reviewer",
+        "key": "security",
+        "round": 3,
+        "name": null,
+        "startedAt": "2026-10-30T17:08:32.048Z",
+        "finishedAt": "2026-10-30T17:10:16.309Z",
+        "ms": 104261,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "code",
+        "round": 3,
+        "name": null,
+        "startedAt": "2026-10-30T17:08:32.069Z",
+        "finishedAt": "2026-10-30T17:10:09.560Z",
+        "ms": 97491,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "contract",
+        "round": 3,
+        "name": null,
+        "startedAt": "2026-10-30T17:08:32.089Z",
+        "finishedAt": "2026-10-30T17:10:22.542Z",
+        "ms": 110453,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "ui",
+        "round": 3,
+        "name": null,
+        "startedAt": "2026-10-30T17:08:32.112Z",
+        "finishedAt": "2026-10-30T17:08:58.454Z",
+        "ms": 26342,
+        "verdict": "PASS"
+      },
+      {
+        "role": "approver",
+        "key": null,
+        "round": null,
+        "name": null,
+        "startedAt": "2026-10-30T17:10:22.585Z",
+        "finishedAt": "2026-10-30T17:12:01.189Z",
+        "ms": 98604,
+        "verdict": "APPROVE"
+      }
+    ]
+  }
+}
