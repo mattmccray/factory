@@ -693,3 +693,43 @@ kbd { display: inline-block; min-width: 18px; padding: 0 5px; text-align: center
 .bhits button:hover, .bhits button:focus-visible { background: var(--ctl); }
 .bhits .bt { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bhits .bp { grid-column: 2; font-size: 10.5px; color: var(--label3); }
+
+/* ── the desk widget (092; design A2, docs/design/desk-widget/chosen/desk-widget.html) ──
+   A glass panel in a transparent, frameless window the Mac app fits to it. Each job is a pill of four
+   segments in Andon's stage palette (spec teal, build indigo, review purple, approve blue); needs-you
+   red with a red glow; just merged green. Colors, enter, exit, and reflow animate (off under reduced motion). */
+.dw { --dw-spec: var(--teal); --dw-build: var(--indigo); --dw-review: var(--purple); --dw-approve: var(--blue); --dw-human: var(--red); --dw-merged: var(--green);
+  position: absolute; top: 0; left: 0; width: 332px; min-height: 158px; margin: 0; padding: 14px 14px 34px; border-radius: 22px; overflow: hidden;
+  background: color-mix(in srgb, var(--win) 80%, transparent); -webkit-backdrop-filter: blur(30px) saturate(1.6); backdrop-filter: blur(30px) saturate(1.6);
+  box-shadow: inset 0 0 0 .5px var(--sep2); color: var(--label); cursor: default; transition: min-height .5s ease; }
+.dw.empty { min-height: 64px; }
+.dw-rows, .dw-foot { transition: opacity .4s; }
+.dw.empty .dw-rows, .dw.empty .dw-foot { opacity: 0; pointer-events: none; }
+.dw-empty { position: absolute; inset: 0; margin: 0; display: flex; align-items: center; justify-content: center; font-size: 10.5px; color: var(--label3); opacity: 0; transition: opacity .4s; pointer-events: none; }
+.dw.empty .dw-empty { opacity: 1; }
+.dw-rows { display: flex; flex-direction: column; gap: 10px; }
+.dw-row { display: flex; align-items: center; gap: 8px; min-height: 16px; }
+.dw-label { width: 84px; flex: none; font-size: 10.5px; font-weight: 600; color: var(--label2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dw-pills { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
+.dw-item { display: inline-flex; }
+.dw-epic { display: inline-flex; gap: 3px; padding: 3px; border-radius: 7px; box-shadow: inset 0 0 0 1px var(--sep2); }
+.dw-pill { display: inline-flex; gap: 2px; padding: 0; margin: 0; border: 0; border-radius: 4px; background: none; transition: box-shadow .5s ease; }
+.dw-pill:focus-visible { outline-offset: 2px; }
+.dw-pill i { display: block; width: 9px; height: 12px; border-radius: 2px; background: var(--label4); transition: background-color .5s ease; }
+.dw-epic .dw-pill i { width: 6px; height: 9px; }
+.dw-pill i:first-child { border-radius: 4px 2px 2px 4px; }
+.dw-pill i:last-child { border-radius: 2px 4px 4px 2px; }
+.dw-pill i.f-done { background: var(--label3); }
+.dw-pill.t-spec i.f-cur { background: var(--dw-spec); }
+.dw-pill.t-build i.f-cur { background: var(--dw-build); }
+.dw-pill.t-review i.f-cur { background: var(--dw-review); }
+.dw-pill.t-approve i.f-cur { background: var(--dw-approve); }
+.dw-pill.t-human i.f-cur { background: var(--dw-human); }
+.dw-pill.t-human { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--dw-human) 55%, transparent), 0 0 10px color-mix(in srgb, var(--dw-human) 50%, transparent); }
+.dw-pill.t-merged i { background: var(--dw-merged); }
+.dw-pill.t-merged { box-shadow: 0 0 10px color-mix(in srgb, var(--dw-merged) 60%, transparent); }
+.dw-foot { position: absolute; left: 14px; right: 14px; bottom: 11px; display: flex; justify-content: space-between; font-size: 10px; color: var(--label3); }
+.dw-foot b { color: var(--red-ink); font-weight: 600; }
+.dw-foot b.zero { color: inherit; font-weight: 400; }
+.dw-tip { position: absolute; z-index: 2; max-width: 300px; padding: 6px 8px; border-radius: 7px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; line-height: 1.35;
+  background: var(--raised); color: var(--label); box-shadow: var(--shadow-raised); pointer-events: none; }

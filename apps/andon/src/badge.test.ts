@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { needsHumanCount, TRAY_MENU, trayNotice, traySpec } from './badge';
+import { needsHumanCount, TRAY_MENU, trayMenu, trayNotice, traySpec, withDeskWidget } from './badge';
 import type { TrayMenuItem } from './badge';
 import { dockLook } from './lantern';
 import type { AppJob, AppState } from './state';
@@ -29,13 +29,13 @@ test('AC1: the tray spec has an empty title at 0 and the count otherwise, with t
   expect(traySpec(3)).toEqual({ title: '3', tooltip: 'Andon: 3 need a human', menu: TRAY_MENU, primaryAction: true });
 });
 
-test('the tray menu has "Show Andon" and "Quit"', () => {
+test('the tray menu has "Show Andon", "Desk Widget" (092), and "Quit"', () => {
   const labels = TRAY_MENU.flatMap((m) => ('label' in m ? [m.label] : []));
-  expect(labels).toEqual(['Show Andon', 'Quit']);
+  expect(labels).toEqual(['Show Andon', 'Desk Widget', 'Quit']);
 });
 
 test('AC3: every tray spec is a toggle (primaryAction) and keeps the unchanged menu', () => {
-  const menu: TrayMenuItem[] = [{ id: 'show', label: 'Show Andon' }, { separator: true }, { id: 'quit', label: 'Quit' }];
+  const menu: TrayMenuItem[] = [{ id: 'show', label: 'Show Andon' }, { id: 'deskwidget', label: 'Desk Widget', checked: false }, { separator: true }, { id: 'quit', label: 'Quit' }];
   for (const spec of [traySpec(0), traySpec(1), traySpec(7), trayNotice('starting the service'), trayNotice('the service exited before answering')]) {
     expect(spec.primaryAction).toBe(true);
     expect(spec.menu).toEqual(menu);
@@ -79,4 +79,13 @@ test("081 AC2: the count covers every machine, and a down machine's last board s
   const down: AppState = { ...up, boards: { ...up.boards, '1a2b3c4d5e6f@studio': { jobs: [job('081-x', 'needs-human')], epics: [epic('auth', 'you')], error: 'studio: unreachable', rev: 2 } } };
   expect(needsHumanCount(down)).toBe(3);
   expect(traySpec(needsHumanCount(down))).toEqual({ title: '3', tooltip: 'Andon: 3 need a human', menu: TRAY_MENU, primaryAction: true });
+});
+
+test('092 AC1: the tray menu\'s Desk Widget item is checked exactly while the desk widget is on', () => {
+  expect(trayMenu(true)).toEqual([{ id: 'show', label: 'Show Andon' }, { id: 'deskwidget', label: 'Desk Widget', checked: true }, { separator: true }, { id: 'quit', label: 'Quit' }]);
+  expect(trayMenu(false)).toEqual(TRAY_MENU);
+  for (const spec of [traySpec(0), traySpec(4), trayNotice('connecting')]) {
+    expect(withDeskWidget(spec, true)).toEqual({ ...spec, menu: trayMenu(true) });
+    expect(withDeskWidget(spec, false)).toEqual(spec);
+  }
 });

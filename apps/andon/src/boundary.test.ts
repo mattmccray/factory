@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { BACKEND_OUT, appVersion, bundleBackend } from '../build';
 import { CLOSE_ABOUT_METHOD, GET_ABOUT_METHOD } from './about';
-import { BACKLOG_EVENT, INSPECTOR_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, START_WORK_EVENT, STATUS_BAR_EVENT, WHATS_NEW_EVENT } from './appmenu';
+import { BACKLOG_EVENT, DESK_WIDGET_EVENT, INSPECTOR_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, OPEN_JOB_EVENT, SETTLED_EVENT, SIDEBAR_EVENT, START_WORK_EVENT, STATUS_BAR_EVENT, WHATS_NEW_EVENT, WIDGET_QUERY, widgetUrl } from './appmenu';
 import { DEFAULT_PORT, pageUrl } from './autostart';
 import { PROJECT_MENU_METHOD } from './projectmenu';
 import { GET_SETTINGS_METHOD, SET_SETTING_METHOD, VIEW_STATE_METHOD } from './settings';
@@ -19,6 +19,7 @@ import { HAND_OFF_METHOD } from './handoff';
 import { EPIC_MENU_METHOD } from './epicmenu';
 import { JOB_MENU_METHOD } from './jobmenu';
 import { START_WORK_METHOD } from './startwork';
+import { FIT_WIDGET_METHOD, OPEN_JOB_METHOD, SHOW_ANDON_METHOD } from './widget';
 import { isRecord } from './state';
 
 const appDir = join(import.meta.dir, '..');
@@ -45,7 +46,7 @@ const readJson = (path: string): Record<string, unknown> => {
 describe('AC5: the Mac app runs no contract, service, or UI code', () => {
   test('the scan sees the logic modules and the adapter', () => {
     expect(sources).toContain(ADAPTER);
-    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts', 'appmenu.ts', 'projectmenu.ts', 'settings.ts', 'handoff.ts', 'jobmenu.ts', 'about.ts', 'startwork.ts', 'noservice.ts']) expect(sources).toContain(f);
+    for (const f of ['sse.ts', 'follow.ts', 'badge.ts', 'lantern.ts', 'notify.ts', 'autostart.ts', 'trayclick.ts', 'appmenu.ts', 'projectmenu.ts', 'settings.ts', 'handoff.ts', 'jobmenu.ts', 'about.ts', 'startwork.ts', 'noservice.ts', 'widget.ts']) expect(sources).toContain(f);
   });
 
   test('the import matcher flags @factory/*, the UI, and the service, not the Mac app itself', () => {
@@ -329,6 +330,8 @@ describe('AC6: tinyjs.json', () => {
           'event.sidebar',
           'event.inspector',
           'event.startwork',
+          'event.deskwidget',
+          'event.openjob',
           'projectMenu',
           'getSettings',
           'setSetting',
@@ -339,6 +342,9 @@ describe('AC6: tinyjs.json', () => {
           'startWork',
           'closeAbout',
           'epicMenu',
+          'openJob',
+          'showAndon',
+          'fitWidget',
         ],
       },
       about: 'menu',
@@ -426,7 +432,18 @@ describe('AC6: tinyjs.json', () => {
     // path. No event is added.
     expect(EPIC_MENU_METHOD).toBe('epicMenu');
     const after076 = [...after075, EPIC_MENU_METHOD];
-    expect(cfg.api).toEqual({ disable: ['*'], enable: after076 });
+    // The desk widget (092) adds two pushed events, right after `startwork`: `deskwidget` (the
+    // setting, so the Settings window's checkbox follows the menus) and `openjob` (a pill's click: a
+    // request the main window's page checks, then selects the job). And three page-callable methods,
+    // each answered only for the widget window: `openJob` (a project id and a job id), `showAndon` (no
+    // params), and `fitWidget` (the glass's height). No `win.*` entry is added: the widget's glass
+    // drags through the existing `win.startDrag`.
+    expect([DESK_WIDGET_EVENT, OPEN_JOB_EVENT]).toEqual(['deskwidget', 'openjob']);
+    expect([OPEN_JOB_METHOD, SHOW_ANDON_METHOD, FIT_WIDGET_METHOD]).toEqual(['openJob', 'showAndon', 'fitWidget']);
+    const atWork = after076.indexOf(`event.${START_WORK_EVENT}`) + 1;
+    const after092 = [...after076.slice(0, atWork), `event.${DESK_WIDGET_EVENT}`, `event.${OPEN_JOB_EVENT}`, ...after076.slice(atWork), OPEN_JOB_METHOD, SHOW_ANDON_METHOD, FIT_WIDGET_METHOD];
+    expect(after092.filter((e) => !after076.includes(String(e)))).toEqual(['event.deskwidget', 'event.openjob', 'openJob', 'showAndon', 'fitWidget']);
+    expect(cfg.api).toEqual({ disable: ['*'], enable: after092 });
     const enable = isRecord(cfg.api) && Array.isArray(cfg.api.enable) ? cfg.api.enable : [];
     const events = (list: readonly unknown[]): unknown[] => list.filter((e) => typeof e === 'string' && e.startsWith('event.'));
     const methods = (list: readonly unknown[]): unknown[] => list.filter((e) => typeof e === 'string' && !e.startsWith('event.') && !e.startsWith('win.'));
@@ -441,23 +458,45 @@ describe('AC6: tinyjs.json', () => {
     // 075: the 073 list plus exactly one event, startwork
     expect(after075.filter((e) => !after073.includes(String(e)))).toEqual([`event.${START_WORK_EVENT}`]);
     // 076: the 075 list plus exactly one method, epicMenu, and no event
-    expect(enable.filter((e) => !after075.includes(String(e)))).toEqual([EPIC_MENU_METHOD]);
-    expect(after075.every((e) => enable.includes(e))).toBe(true);
-    expect(enable).toHaveLength(after075.length + 1);
-    expect(events(enable)).toEqual(events(after075));
+    expect(after076.filter((e) => !after075.includes(String(e)))).toEqual([EPIC_MENU_METHOD]);
+    // 092: the 076 list plus the two events and the three methods above
+    expect(after076.every((e) => enable.includes(e))).toBe(true);
+    expect(enable).toHaveLength(after076.length + 5);
     expect(enable).not.toContain('win.close');
     expect(enable.filter((e) => typeof e === 'string' && e.startsWith('win.'))).toEqual(['win.startDrag', 'win.zoom']);
-    expect(methods(enable)).toEqual([...methods(after059), 'setViewState', 'getAbout', 'startWork', 'closeAbout', 'epicMenu']);
-    expect(events(enable)).toEqual(['event.statusbar', 'event.whatsnew', ...viewEvents, 'event.startwork']);
+    expect(methods(enable)).toEqual([...methods(after059), 'setViewState', 'getAbout', 'startWork', 'closeAbout', 'epicMenu', 'openJob', 'showAndon', 'fitWidget']);
+    expect(events(enable)).toEqual(['event.statusbar', 'event.whatsnew', ...viewEvents, 'event.startwork', 'event.deskwidget', 'event.openjob']);
     expect(cfg.inject).toBeUndefined();
   });
 
-  test('the backend exports exactly those ten api methods: one more than after 073, epicMenu', () => {
+  test('the backend exports exactly those thirteen api methods: three more than after 076, the desk widget\'s', () => {
     const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
     const block = /^export const api = \{\n([\s\S]*?)^\};$/m.exec(adapter)?.[1] ?? '';
-    const before = [PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD, VIEW_STATE_METHOD, GET_ABOUT_METHOD, START_WORK_METHOD, CLOSE_ABOUT_METHOD];
-    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([...before, EPIC_MENU_METHOD]);
-    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout', 'startWork', 'closeAbout', 'epicMenu']);
+    const before = [PROJECT_MENU_METHOD, GET_SETTINGS_METHOD, SET_SETTING_METHOD, HAND_OFF_METHOD, JOB_MENU_METHOD, VIEW_STATE_METHOD, GET_ABOUT_METHOD, START_WORK_METHOD, CLOSE_ABOUT_METHOD, EPIC_MENU_METHOD];
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual([...before, OPEN_JOB_METHOD, SHOW_ANDON_METHOD, FIT_WIDGET_METHOD]);
+    expect([...block.matchAll(/^  (\w+):/gm)].map((m) => m[1])).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout', 'startWork', 'closeAbout', 'epicMenu', 'openJob', 'showAndon', 'fitWidget']);
+  });
+
+  test('092 AC7: each desk widget method checks the widget window first, and the widget page calls them by the same names', () => {
+    const adapter = readFileSync(join(import.meta.dir, ADAPTER), 'utf8');
+    for (const fn of ['openJob', 'showAndon', 'fitWidget']) {
+      const body = new RegExp(`export async function ${fn}\\([^)]*\\)[^{]*\\{\\n([^\\n]*)`).exec(adapter)?.[1]?.trim();
+      expect({ fn, first: body }).toEqual({ fn, first: 'if (!fromWidgetWindow(meta)) return false;' });
+      expect(adapter).toContain(`  ${fn}: (params: unknown, app: MacApp, meta: unknown): Promise<boolean> => ${fn}(params, app, meta),`);
+    }
+    const ui = readFileSync(join(repoDir, 'apps', 'andon-ui', 'src', 'widget.ts'), 'utf8');
+    expect(ui).toContain(`export const OPEN_JOB_METHOD = '${OPEN_JOB_METHOD}';`);
+    expect(ui).toContain(`export const SHOW_ANDON_METHOD = '${SHOW_ANDON_METHOD}';`);
+    expect(ui).toContain(`export const FIT_WIDGET_METHOD = '${FIT_WIDGET_METHOD}';`);
+  });
+
+  test('092 AC8: the widget window loads the UI\'s widget view from the service, the page the UI mounts for it', () => {
+    expect(widgetUrl(DEFAULT_PORT)).toBe(`http://127.0.0.1:${DEFAULT_PORT}/?shell=mac&view=widget`);
+    expect(WIDGET_QUERY).toBe('?shell=mac&view=widget');
+    const ui = readFileSync(join(repoDir, 'apps', 'andon-ui', 'src', 'sidebar.ts'), 'utf8');
+    expect(ui.includes("view === 'widget'")).toBe(true);
+    const main = readFileSync(join(repoDir, 'apps', 'andon-ui', 'main.ts'), 'utf8');
+    expect(main.includes('DeskWidget')).toBe(true);
   });
 
   test('076 AC3: epicMenu checks the main window first, and the page asks by the same method name', () => {
@@ -578,4 +617,12 @@ test('the bundle is one self-contained ESM file with the repo fixed in, and no s
   expect(js).toMatch(/export\s*\{[^}]*\bonNavigate\b/);
   expect(js).toMatch(/export\s*\{[^}]*\bonContextMenu\b/);
   expect(js).toMatch(/export\s*\{[^}]*\bapi\b/);
+});
+
+test("092 AC8: decision 10 carries the approved line naming the desk widget", () => {
+  const decisions = readFileSync(join(repoDir, 'docs', 'decisions.md'), 'utf8');
+  const ten = decisions.slice(decisions.indexOf('10. **Andon architecture:**'), decisions.indexOf('\n11. '));
+  expect(ten.length).toBeGreaterThan(0);
+  expect(ten).toContain("brief `factory/briefs/andon-desk-widget.md`");
+  expect(ten.replace(/\s+/g, ' ')).toContain('desk widget is part of the Mac app: an optional, remembered, desktop-level window showing the board in compact form, its view a page of the Andon UI.');
 });

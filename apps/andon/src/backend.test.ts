@@ -3,14 +3,14 @@
 import { afterEach, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { closeAbout, getAbout, api, startWork, assetPath, checkApps, checkFound, dockIcon, findAppBundle, findT3, lookupIcon, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runEpicItem, runJobItem, showEpicMenu, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, setViewState, showProjectMenu, trayIcon } from './backend';
+import { closeAbout, fitWidget, getAbout, api, openJob, showAndon, startWork, assetPath, checkApps, checkFound, dockIcon, findAppBundle, findT3, lookupIcon, getSettings, handOff, hostHandoff, hostJobMenu, init, onContextMenu, runEpicItem, runJobItem, showEpicMenu, showJobMenu, onMenu, onNavigate, onTray, reloadScript, runProjectItem, setDock, setSetting, setTray, setViewState, showProjectMenu, trayIcon } from './backend';
 import type { HandoffHost, JobMenuHost, StartWorkHost, MacApp, MacNavEvent, MacTraySpec, MacWinState, RunResult } from './backend';
 import { itemId, projectMenuItems } from './projectmenu';
 import { epicItemId, epicMenuItems } from './epicmenu';
 import { jobItemId, jobMenuItems, threadLink } from './jobmenu';
 import type { Availability, MenuProject } from './projectmenu';
 import type { HandoffMode, Settings } from './settings';
-import { ABOUT_ID, ABOUT_SIZE, CLOSE_WINDOW_ID, NEW_EXPLORATION_ID, GITHUB_URL, aboutWindow, DEFAULT_VIEW, GITHUB_ID, INSPECTOR_ID, MERGED_ID, MINIMIZE_ID, NEEDS_ME_ID, SETTINGS_ID, SETTINGS_SIZE, SETTLED_ID, SHOW_MAIN_ID, SIDEBAR_ID, STATUS_BAR_ID, WHATS_NEW_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
+import { ABOUT_ID, ABOUT_SIZE, CLOSE_WINDOW_ID, DESK_WIDGET_ID, widgetWindow, NEW_EXPLORATION_ID, GITHUB_URL, aboutWindow, DEFAULT_VIEW, GITHUB_ID, INSPECTOR_ID, MERGED_ID, MINIMIZE_ID, NEEDS_ME_ID, SETTINGS_ID, SETTINGS_SIZE, SETTLED_ID, SHOW_MAIN_ID, SIDEBAR_ID, STATUS_BAR_ID, WHATS_NEW_ID, ZOOM_ID, appMenu, settingsWindow } from './appmenu';
 import type { MenuState } from './appmenu';
 import { QUIT_ID, trayNotice, traySpec } from './badge';
 import { INSTALL_NOTICE, PROBE_MS } from './autostart';
@@ -57,7 +57,14 @@ function fakeApp(state: MacWinState | null, fail: Failures = {}): { app: MacApp;
       setSize: (w, h) => calls.push(`${id}.setSize(${w}x${h})`),
       close: () => calls.push(`${id}.close`),
       hide: (opts) => calls.push(`${id}.hide(${JSON.stringify(opts)})`),
+      setLevel: (level) => calls.push(`${id}.level(${level})`),
+      setClickThrough: (on) => calls.push(`${id}.clickThrough(${on})`),
+      push: (event) => calls.push(`${id}.push(${event})`),
     }),
+    screens: async () => {
+      calls.push('screens');
+      return [];
+    },
     windows: async () => ['main'],
     win: { open: (id) => calls.push(`win.open(${id})`) },
     setHideOnClose: () => calls.push('setHideOnClose'),
@@ -96,7 +103,7 @@ function fakeApp(state: MacWinState | null, fail: Failures = {}): { app: MacApp;
 // bring-back step also reads `visible` (037). Close Window reads `focused` (073), set per window by menuApp's `focus`.
 const st = (minimized: boolean, fullscreen = false, visible = true): MacWinState => ({ minimized, fullscreen, allSpaces: false, visible, focused: false, ...FRAME });
 /** The main window's frame in every `st` state (077): a 1280x820 window at (200, 100) on a 1728x1117 screen at the origin. */
-const FRAME = { x: 200, y: 100, width: 1280, height: 820, outer: { width: 1280, height: 820 }, screen: { width: 1728, height: 1117, scale: 2 }, local: { x: 200, y: 100 } };
+const FRAME = { x: 200, y: 100, width: 1280, height: 820, outer: { width: 1280, height: 820 }, screen: { width: 1728, height: 1117, scale: 2 }, local: { x: 200, y: 100 }, screenId: 1 };
 /** Where Settings (480x360) and About (440x400) open, centered on FRAME (077 AC3). */
 const SETTINGS_AT = { x: 200 + 400, y: 100 + 230 };
 const ABOUT_AT = { x: 200 + 420, y: 100 + 210 };
@@ -510,6 +517,9 @@ function menuApp(stored: unknown): { app: MacApp; log: unknown[][]; store: Map<s
       log.push([`${id}.close`]);
     },
     hide: (opts) => log.push([`${id}.hide`, opts]),
+    setLevel: (level) => log.push([`${id}.level`, level]),
+    setClickThrough: (on) => log.push([`${id}.clickThrough`, on]),
+    push: (event, data) => log.push([`${id}.push`, event, data]),
   });
   const open = new Set<string>(['main']);
   app.windows = async () => [...open];
@@ -534,7 +544,7 @@ async function initMenu(stored: unknown): Promise<ReturnType<typeof menuApp>> {
 
 const menuSet = (log: unknown[][]): unknown[][] => log.filter((e) => e[0] === 'menu.set');
 /** The menu bar for a status bar and Merged column state, with the page's default view. */
-const bar = (statusBarHidden: boolean, mergedHidden = false): ReturnType<typeof appMenu> => appMenu({ statusBarHidden, mergedHidden, view: { ...DEFAULT_VIEW } } satisfies MenuState);
+const bar = (statusBarHidden: boolean, mergedHidden = false): ReturnType<typeof appMenu> => appMenu({ statusBarHidden, mergedHidden, deskWidget: false, view: { ...DEFAULT_VIEW } } satisfies MenuState);
 
 test('AC3: init sets the menu bar with the label for the stored state', async () => {
   const shown = await initMenu(null);
@@ -1084,7 +1094,7 @@ test('077 AC5: with the main window state null or failing, the child opens with 
 
 const SETTINGS_META = { window: 'settings', origin: 'http://127.0.0.1:8766' };
 /** The settings with the status bar choice, the default T3 Code choice, and no `t3` (the fake `tjs` has no files). */
-const snap = (hidden: boolean, t3Handoff: HandoffMode = 'draft', t3Found = false, mergedHidden = false): Settings => ({ statusBarHidden: hidden, t3Handoff, mergedHidden, t3Found });
+const snap = (hidden: boolean, t3Handoff: HandoffMode = 'draft', t3Found = false, mergedHidden = false, deskWidget = false): Settings => ({ statusBarHidden: hidden, t3Handoff, mergedHidden, deskWidget, t3Found });
 
 test('035 AC2: from any window but Settings, getSettings and setSetting answer null and change nothing', async () => {
   const m = await initMenu(true);
@@ -1482,7 +1492,7 @@ test("AC2: a newer request wins over an older one's slower app check", async () 
 });
 
 test('AC2: the api names its methods, and with the app not following the service it lists no project', async () => {
-  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout', 'startWork', 'closeAbout', 'epicMenu']);
+  expect(Object.keys(api)).toEqual(['projectMenu', 'getSettings', 'setSetting', 'handOff', 'jobMenu', 'setViewState', 'getAbout', 'startWork', 'closeAbout', 'epicMenu', 'openJob', 'showAndon', 'fitWidget']);
   fakeMachine([], []);
   const { app, log } = contextApp();
   await api.projectMenu({ project: PID }, app);
@@ -3283,4 +3293,216 @@ test('088 AC5: a failed open (false or a throw) shows one notification naming th
     console.log = realLog;
   }
   expect(logged).toEqual(["andon: Couldn't open factory on GitHub: the page did not open", "andon: Couldn't open factory on GitHub: no browser"]);
+});
+
+// ---- 092: the desk widget ----
+
+const WIDGET_META = { window: 'widget', origin: 'http://127.0.0.1:8766' };
+/** The main display, as Tiny lists it: a 25-point menu bar. */
+const MAIN_SCREEN = { id: 1, uid: 'MAIN-UUID', primary: true, x: 0, y: 0, width: 1728, height: 1117, visible: { x: 0, y: 25, width: 1728, height: 1092 } };
+/** Where the widget opens the first time: the main display's top-right corner, 20 points in, below the menu bar. */
+const TOP_RIGHT = { x: 1728 - 332 - 20, y: 25 + 20 };
+
+/** The menu fake, with `stored` in its store, the trays it is set to, and one display. */
+function widgetApp(stored: Record<string, unknown> = {}): ReturnType<typeof menuApp> & { trays: MacTraySpec[] } {
+  const m = menuApp(null);
+  for (const [k, v] of Object.entries(stored)) m.store.set(k, v);
+  const trays: MacTraySpec[] = [];
+  m.app.tray = { set: (spec) => void trays.push(spec) };
+  m.app.screens = async () => [MAIN_SCREEN];
+  return { ...m, trays };
+}
+
+/** init with `stored`, the service answering (or never, with `up` false), until the menu bar is set and the app settles. */
+async function initWidget(stored: Record<string, unknown> = {}, up = true): Promise<ReturnType<typeof widgetApp>> {
+  if (up) serviceCurl({ on: true }, []);
+  else fakeGlobals(() => ({ stdout: new ReadableStream<Uint8Array>(), kill: () => undefined, wait: never }));
+  const w = widgetApp(stored);
+  await logging(async () => {
+    init(w.app);
+    await until(() => w.log.some((e) => e[0] === 'menu.set') && (!up || w.trays.length > 1));
+    await settle();
+  });
+  return w;
+}
+
+/** The Desk Widget item of a tray spec's menu. */
+const trayItem = (spec: MacTraySpec | undefined): unknown => spec?.menu?.find((i) => i.id === DESK_WIDGET_ID);
+/** The Window menu's Desk Widget item in a logged menu.set. */
+const windowItem = (log: unknown[][]): unknown => {
+  const set = log.find((e) => e[0] === 'menu.set')?.[1];
+  const menus: ReturnType<typeof appMenu> = Array.isArray(set) ? set.filter((x): x is ReturnType<typeof appMenu>[number] => typeof x === 'object' && x !== null) : [];
+  return menus.find((x) => x.title === 'Window')?.items?.find((i) => i.id === DESK_WIDGET_ID);
+};
+const widgetOpens = (log: unknown[][]): unknown[][] => log.filter((e) => e[0] === 'win.open' && e[1] === 'widget');
+
+test('092 AC1: with no stored choice, Andon launches with no widget window, and all three show it off', async () => {
+  const w = await initWidget();
+  expect(widgetOpens(w.log)).toEqual([]);
+  expect(w.open.has('widget')).toBe(false);
+  expect(windowItem(w.log)).toEqual({ id: DESK_WIDGET_ID, label: 'Desk Widget', checked: false });
+  expect(trayItem(w.trays.at(-1))).toEqual({ id: DESK_WIDGET_ID, label: 'Desk Widget', checked: false });
+  expect((await getSettings(w.app, SETTINGS_META))?.deskWidget).toBe(false);
+  await onTray(QUIT_ID, w.app);
+});
+
+test('092 AC1: choosing Desk Widget in the Window menu, the tray menu, or Settings opens it and checks all three; choosing it again closes it and unchecks all three', async () => {
+  const places: Array<{ name: string; choose: (app: MacApp) => Promise<unknown>; again: (app: MacApp) => Promise<unknown> }> = [
+    { name: 'Window menu', choose: (app) => onMenu(DESK_WIDGET_ID, app), again: (app) => onMenu(DESK_WIDGET_ID, app) },
+    { name: 'tray menu', choose: (app) => onTray(DESK_WIDGET_ID, app), again: (app) => onTray(DESK_WIDGET_ID, app) },
+    { name: 'Settings', choose: (app) => setSetting({ key: 'deskWidget', value: true }, app, SETTINGS_META), again: (app) => setSetting({ key: 'deskWidget', value: false }, app, SETTINGS_META) },
+  ];
+  for (const p of places) {
+    const w = await initWidget();
+    w.log.length = 0;
+    await p.choose(w.app);
+    await settle();
+    expect({ place: p.name, opened: widgetOpens(w.log).length, open: w.open.has('widget') }).toEqual({ place: p.name, opened: 1, open: true });
+    expect(w.log).toContainEqual(['store.set', 'deskWidget', true]);
+    expect(w.store.get('deskWidget')).toBe(true);
+    expect(w.log).toContainEqual(['menu.update', DESK_WIDGET_ID, { checked: true }]); // the Window menu
+    expect(trayItem(w.trays.at(-1))).toEqual({ id: DESK_WIDGET_ID, label: 'Desk Widget', checked: true }); // the tray menu
+    expect(w.log).toContainEqual(['push', 'deskwidget', { on: true }]); // the Settings window's checkbox
+    expect((await getSettings(w.app, SETTINGS_META))?.deskWidget).toBe(true);
+    w.log.length = 0;
+    await p.again(w.app);
+    await settle();
+    expect({ place: p.name, closed: w.log.filter((e) => e[0] === 'widget.close').length, open: w.open.has('widget') }).toEqual({ place: p.name, closed: 1, open: false });
+    expect(widgetOpens(w.log)).toEqual([]);
+    expect(w.store.get('deskWidget')).toBe(false);
+    expect(w.log).toContainEqual(['menu.update', DESK_WIDGET_ID, { checked: false }]);
+    expect(trayItem(w.trays.at(-1))).toEqual({ id: DESK_WIDGET_ID, label: 'Desk Widget', checked: false });
+    expect(w.log).toContainEqual(['push', 'deskwidget', { on: false }]);
+    expect((await getSettings(w.app, SETTINGS_META))?.deskWidget).toBe(false);
+    await onTray(QUIT_ID, w.app);
+  }
+});
+
+test('092 AC1: a quick on, off, on opens exactly one window', async () => {
+  const w = await initWidget();
+  w.log.length = 0;
+  await Promise.all([onMenu(DESK_WIDGET_ID, w.app), onTray(DESK_WIDGET_ID, w.app), onMenu(DESK_WIDGET_ID, w.app)]);
+  await settle();
+  expect(w.open.has('widget')).toBe(true);
+  expect(widgetOpens(w.log).length - w.log.filter((e) => e[0] === 'widget.close').length).toBe(1);
+  await onTray(QUIT_ID, w.app);
+});
+
+test('092 AC1: the stored value is read back on the next launch: exactly true opens the widget (once the service answers), anything else is off', async () => {
+  const on = await initWidget({ deskWidget: true });
+  expect(widgetOpens(on.log)).toHaveLength(1);
+  expect(windowItem(on.log)).toEqual({ id: DESK_WIDGET_ID, label: 'Desk Widget', checked: true });
+  expect(trayItem(on.trays.at(-1))).toEqual({ id: DESK_WIDGET_ID, label: 'Desk Widget', checked: true });
+  await onTray(QUIT_ID, on.app);
+  for (const v of ['true', 1, { on: true }, false, null]) {
+    const off = await initWidget({ deskWidget: v });
+    expect({ v, opened: widgetOpens(off.log).length }).toEqual({ v, opened: 0 });
+    expect({ v, item: windowItem(off.log) }).toEqual({ v, item: { id: DESK_WIDGET_ID, label: 'Desk Widget', checked: false } });
+    await onTray(QUIT_ID, off.app);
+  }
+  // on, but the service never answers: its page can't load, so no window yet
+  const waiting = await initWidget({ deskWidget: true }, false);
+  expect(widgetOpens(waiting.log)).toEqual([]);
+  expect(windowItem(waiting.log)).toEqual({ id: DESK_WIDGET_ID, label: 'Desk Widget', checked: true });
+  await onTray(QUIT_ID, waiting.app);
+});
+
+test('092 AC1: a malformed desk widget change from Settings changes nothing', async () => {
+  const w = await initWidget();
+  w.log.length = 0;
+  for (const bad of [{ key: 'deskWidget', value: 'yes' }, { key: 'deskWidget', value: 1 }, { key: 'deskWidget' }, { key: 'deskWidget', value: true, extra: 1 }]) {
+    expect(await setSetting(bad, w.app, SETTINGS_META)).toBeNull();
+  }
+  expect(await setSetting({ key: 'deskWidget', value: true }, w.app, { window: 'main' })).toBeNull();
+  await settle();
+  expect(w.log).toEqual([]);
+  await onTray(QUIT_ID, w.app);
+});
+
+test('092 AC2: the widget opens with its options at the main display\'s top-right corner, then goes to the desktop level, on every Space, not click-through', async () => {
+  const w = await initWidget();
+  w.log.length = 0;
+  await onMenu(DESK_WIDGET_ID, w.app);
+  await settle();
+  const at = w.log.findIndex((e) => e[0] === 'win.open');
+  expect(w.log[at]).toEqual(['win.open', 'widget', widgetWindow(8766, TOP_RIGHT)]);
+  expect(w.log.slice(at + 1, at + 4)).toEqual([
+    ['widget.level', 'desktop'],
+    ['widget.allSpaces', true],
+    ['widget.clickThrough', false],
+  ]);
+  await onTray(QUIT_ID, w.app);
+});
+
+test('092 AC2: a remembered position for a display is where it opens again, clamped on screen; closing it remembers where it was', async () => {
+  const w = await initWidget({ deskWidget: true, deskWidgetPlaces: { last: 'MAIN-UUID', spots: { 'MAIN-UUID': { x: 5000, y: 300 } } } });
+  expect(widgetOpens(w.log)[0]).toEqual(['win.open', 'widget', widgetWindow(8766, { x: 1728 - 332, y: 300 })]);
+  // the widget sits at (400, 500) on the main display when it is turned off
+  w.main.current = { ...st(false), x: 400, y: 500, local: { x: 400, y: 500 }, screenId: 1 };
+  w.log.length = 0;
+  await onMenu(DESK_WIDGET_ID, w.app);
+  await settle();
+  expect(w.store.get('deskWidgetPlaces')).toEqual({ last: 'MAIN-UUID', spots: { 'MAIN-UUID': { x: 400, y: 500 } } });
+  const saved = w.log.findIndex((e) => e[0] === 'store.set' && e[1] === 'deskWidgetPlaces');
+  expect(saved).toBeGreaterThanOrEqual(0);
+  expect(saved).toBeLessThan(w.log.findIndex((e) => e[0] === 'widget.close')); // remembered before it closes
+  // and it comes back there
+  w.log.length = 0;
+  await onMenu(DESK_WIDGET_ID, w.app);
+  await settle();
+  expect(widgetOpens(w.log)[0]).toEqual(['win.open', 'widget', widgetWindow(8766, { x: 400, y: 500 })]);
+  await onTray(QUIT_ID, w.app);
+});
+
+test('092 AC7: a pill click from the widget shows the main window in front, then asks its page to select that job', async () => {
+  const w = await initWidget({ deskWidget: true });
+  w.log.length = 0;
+  expect(await api.openJob({ project: 'aaaaaaaaaaaa', job: '092-andon-desk-widget' }, w.app, WIDGET_META)).toBe(true);
+  expect(w.log).toEqual([['main.allSpaces', true], ['main.show'], ['main.allSpaces', false], ['main.push', 'openjob', { project: 'aaaaaaaaaaaa', id: '092-andon-desk-widget' }]]);
+  w.log.length = 0;
+  expect(await openJob({ project: '1a2b3c4d5e6f@studio', job: '081-x' }, w.app, WIDGET_META)).toBe(true);
+  expect(w.log.at(-1)).toEqual(['main.push', 'openjob', { project: '1a2b3c4d5e6f@studio', id: '081-x' }]);
+  await onTray(QUIT_ID, w.app);
+});
+
+test('092 AC7: a click elsewhere on the widget brings the main window forward', async () => {
+  const w = await initWidget({ deskWidget: true });
+  w.log.length = 0;
+  expect(await api.showAndon(null, w.app, WIDGET_META)).toBe(true);
+  expect(w.log).toEqual([['main.allSpaces', true], ['main.show'], ['main.allSpaces', false]]);
+  await onTray(QUIT_ID, w.app);
+});
+
+test('092 AC7: from any other window, or with malformed params, the widget methods do nothing', async () => {
+  const w = await initWidget({ deskWidget: true });
+  w.log.length = 0;
+  const job = { project: 'aaaaaaaaaaaa', job: '092-andon-desk-widget' };
+  for (const meta of [{ window: 'main' }, { window: 'settings' }, { window: 'about' }, {}, null, undefined, 'widget']) {
+    expect(await openJob(job, w.app, meta)).toBe(false);
+    expect(await showAndon(null, w.app, meta)).toBe(false);
+    expect(await fitWidget({ height: 120 }, w.app, meta)).toBe(false);
+  }
+  for (const bad of [null, {}, { project: 'aaaaaaaaaaaa' }, { project: 'aaaaaaaaaaaa', job: 'nope' }, { project: 'factory', job: '092-x' }, { project: 'aaaaaaaaaaaa@', job: '092-x' }, { ...job, extra: 1 }, { project: 'aaaaaaaaaaaa', job: '092-x/../y' }, [job]]) {
+    expect({ bad, ok: await openJob(bad, w.app, WIDGET_META) }).toEqual({ bad, ok: false });
+  }
+  for (const bad of [{}, [], 'x', { anything: 1 }]) expect({ bad, ok: await showAndon(bad, w.app, WIDGET_META) }).toEqual({ bad, ok: false });
+  for (const bad of [null, {}, { height: 10 }, { height: 10000 }, { height: 120.5 }, { height: '120' }, { height: 120, width: 900 }]) {
+    expect({ bad, ok: await fitWidget(bad, w.app, WIDGET_META) }).toEqual({ bad, ok: false });
+  }
+  expect(w.log).toEqual([]);
+  await onTray(QUIT_ID, w.app);
+});
+
+test('092: the widget page fits the window to its glass, and the window\'s spot is remembered', async () => {
+  const w = await initWidget({ deskWidget: true });
+  w.main.current = { ...st(false), local: { x: 1300, y: 60 }, screenId: 1 };
+  w.log.length = 0;
+  expect(await api.fitWidget({ height: 158 }, w.app, WIDGET_META)).toBe(true);
+  expect(w.log[0]).toEqual(['widget.setSize', 332, 158]);
+  expect(w.store.get('deskWidgetPlaces')).toEqual({ last: 'MAIN-UUID', spots: { 'MAIN-UUID': { x: 1300, y: 60 } } });
+  // the same spot again: nothing more is written
+  w.log.length = 0;
+  await fitWidget({ height: 160 }, w.app, WIDGET_META);
+  expect(w.log.filter((e) => e[0] === 'store.set')).toEqual([]);
+  await onTray(QUIT_ID, w.app);
 });

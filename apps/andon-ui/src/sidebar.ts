@@ -283,15 +283,18 @@ export function shellMode(search: string): ShellMode {
   return new URLSearchParams(search).get('shell') === 'mac' ? 'mac' : 'browser';
 }
 
-/** What the page shows: the board, or (in the Mac app's Settings or About window) the settings or about view. */
-export type AppView = 'board' | 'settings' | 'about';
+/** What the page shows: the board, or (in the Mac app's Settings, About, or desk widget window) the
+ *  settings, about, or widget view. */
+export type AppView = 'board' | 'settings' | 'about' | 'widget';
 
-/** `?shell=mac&view=settings` is the settings view and `?shell=mac&view=about` the about view; every
- *  other URL (a plain browser with `view=settings` or `view=about` too) is the board. */
+/** `?shell=mac&view=settings` is the settings view, `?shell=mac&view=about` the about view, and
+ *  `?shell=mac&view=widget` the desk widget (092); every other URL (a plain browser with any `view`
+ *  too) is the board. */
 export function appView(search: string): AppView {
   if (shellMode(search) !== 'mac') return 'board';
   const view = new URLSearchParams(search).get('view');
-  return view === 'settings' ? 'settings' : view === 'about' ? 'about' : 'board';
+  if (view === 'settings' || view === 'about' || view === 'widget') return view;
+  return 'board';
 }
 
 // ---- the Mac app's pushed events ----
@@ -315,8 +318,13 @@ export const INSPECTOR_EVENT = 'inspector';
 /** The event the Mac app pushes for File → New Exploration… and a project's right-click New
  *  Exploration… and Run Next: `{ action, project }`, a request the page checks (startwork.ts `startWorkPush`). */
 export const START_WORK_EVENT = 'startwork';
-/** Every event the page subscribes to: tinyjs.json's api gate names each as `event.<name>`, in this order. */
-export const PUSHED_EVENTS: readonly string[] = [STATUS_BAR_EVENT, WHATS_NEW_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, BACKLOG_EVENT, SIDEBAR_EVENT, INSPECTOR_EVENT, START_WORK_EVENT];
+/** The event the Mac app pushes with the Desk Widget setting (092): `{ on: boolean }`. The Settings view hears it. */
+export const DESK_WIDGET_EVENT = 'deskwidget';
+/** The event the Mac app pushes to the main window when a desk widget pill is clicked (092):
+ *  `{ project, id }`, a request the page checks (widget.ts `openJobPush`), then selects that job. */
+export const OPEN_JOB_EVENT = 'openjob';
+/** Every event the pages subscribe to: tinyjs.json's api gate names each as `event.<name>`, in this order. */
+export const PUSHED_EVENTS: readonly string[] = [STATUS_BAR_EVENT, WHATS_NEW_EVENT, MERGED_EVENT, NEEDS_ME_EVENT, SETTLED_EVENT, BACKLOG_EVENT, SIDEBAR_EVENT, INSPECTOR_EVENT, START_WORK_EVENT, DESK_WIDGET_EVENT, OPEN_JOB_EVENT];
 
 /** What the page does for a View menu event. */
 export type MenuEventAction = 'toggle-needs' | 'open-settled' | 'open-backlog' | 'toggle-sidebar' | 'toggle-inspector';

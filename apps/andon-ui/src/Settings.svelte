@@ -1,6 +1,7 @@
 <script lang="ts">
-  // The Mac app's Settings window: a General section with "Show status bar" and "Show Merged column"
-  // (063), and a T3 Code section
+  // The Mac app's Settings window: a General section with "Show status bar", "Show Merged column"
+  // (063), and "Show desk widget" (092, in step with the Window menu's and the tray menu's Desk Widget
+  // items through the pushed desk widget event), and a T3 Code section
   // (036) with what the needs-human box's Approve and the sheets' Copy do besides copying: "Open a
   // draft in T3 Code", "Send in T3 Code right away", or "Copy only". Without `t3` the choices are
   // grayed out and a line says T3 Code wasn't found. The settings are the Mac app's: the view reads
@@ -11,7 +12,8 @@
   import { onMount } from 'svelte';
   import { HANDOFF_CHOICES, settingsCaller, showsMerged, showsStatusBar } from './settings';
   import type { HandoffMode, Settings } from './settings';
-  import { MERGED_EVENT, STATUS_BAR_EVENT, mergedHidden, pushSubscriber, shellMode, statusBarHidden } from './sidebar';
+  import { DESK_WIDGET_EVENT, MERGED_EVENT, STATUS_BAR_EVENT, mergedHidden, pushSubscriber, shellMode, statusBarHidden } from './sidebar';
+  import { deskWidgetOn } from './widget';
 
   const mode = shellMode(window.location.search);
   const host: unknown = Reflect.get(window, 'tiny');
@@ -30,12 +32,17 @@
       const hidden = mergedHidden(data);
       if (hidden !== null && settings !== null) settings = { ...settings, mergedHidden: hidden };
     });
+    const offWidget = subscribe?.(DESK_WIDGET_EVENT, (data) => {
+      const on = deskWidgetOn(data);
+      if (on !== null && settings !== null) settings = { ...settings, deskWidget: on };
+    });
     void api?.get().then((s) => {
       if (s !== null) settings = s;
     });
     return () => {
       off?.();
       offMerged?.();
+      offWidget?.();
     };
   });
 
@@ -50,6 +57,13 @@
     const show = e.currentTarget.checked;
     if (settings !== null) settings = { ...settings, mergedHidden: !show };
     const after = await api?.setMergedHidden(!show);
+    if (after !== undefined && after !== null) settings = after;
+  }
+
+  async function onwidget(e: Event & { currentTarget: HTMLInputElement }): Promise<void> {
+    const on = e.currentTarget.checked;
+    if (settings !== null) settings = { ...settings, deskWidget: on };
+    const after = await api?.setDeskWidget(on);
     if (after !== undefined && after !== null) settings = after;
   }
 
@@ -76,6 +90,10 @@
       <label class="set-row">
         <input type="checkbox" checked={settings !== null && showsMerged(settings)} disabled={settings === null} onchange={onmerged} />
         <span>Show Merged column</span>
+      </label>
+      <label class="set-row">
+        <input type="checkbox" checked={settings !== null && settings.deskWidget} disabled={settings === null} onchange={onwidget} />
+        <span>Show desk widget</span>
       </label>
     </div>
   </section>

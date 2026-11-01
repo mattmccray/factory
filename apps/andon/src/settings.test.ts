@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { SETTINGS_WINDOW_ID, STATUS_BAR_KEY } from './appmenu';
+import { DESK_WIDGET_KEY, SETTINGS_WINDOW_ID, STATUS_BAR_KEY } from './appmenu';
 import { DEFAULT_HANDOFF_MODE, GET_SETTINGS_METHOD, HANDOFF_MODES, SETTING_KEYS, SET_SETTING_METHOD, T3_HANDOFF_KEY, VIEW_STATE_METHOD, fromSettingsWindow, settingChange, settingsSnapshot, storedMode, viewStateParams } from './settings';
 
 describe('035 AC3: the settings keys and the snapshot', () => {
-  test('three keys: statusBarHidden, the same name as the status bar store key, t3Handoff (036), and mergedHidden (063)', () => {
-    expect(SETTING_KEYS).toEqual(['statusBarHidden', 't3Handoff', 'mergedHidden']);
+  test('four keys: statusBarHidden, the same name as the status bar store key, t3Handoff (036), mergedHidden (063), and deskWidget (092)', () => {
+    expect(SETTING_KEYS).toEqual(['statusBarHidden', 't3Handoff', 'mergedHidden', 'deskWidget']);
     expect(T3_HANDOFF_KEY).toBe('t3Handoff');
     expect(STATUS_BAR_KEY).toBe('statusBarHidden');
     expect(GET_SETTINGS_METHOD).toBe('getSettings');
@@ -12,9 +12,9 @@ describe('035 AC3: the settings keys and the snapshot', () => {
   });
 
   test('the snapshot: exactly true is hidden; missing or anything else is shown', () => {
-    expect(settingsSnapshot({ statusBarHidden: true }, false)).toEqual({ statusBarHidden: true, t3Handoff: 'draft', mergedHidden: false, t3Found: false });
+    expect(settingsSnapshot({ statusBarHidden: true }, false)).toEqual({ statusBarHidden: true, t3Handoff: 'draft', mergedHidden: false, deskWidget: false, t3Found: false });
     for (const v of [false, null, undefined, 'true', 1, {}, []]) expect({ v, s: settingsSnapshot({ statusBarHidden: v }, false).statusBarHidden }).toEqual({ v, s: false });
-    expect(settingsSnapshot({}, false)).toEqual({ statusBarHidden: false, t3Handoff: 'draft', mergedHidden: false, t3Found: false });
+    expect(settingsSnapshot({}, false)).toEqual({ statusBarHidden: false, t3Handoff: 'draft', mergedHidden: false, deskWidget: false, t3Found: false });
   });
 });
 
@@ -22,9 +22,9 @@ describe('036 AC5: the T3 Code setting in the snapshot', () => {
   test('a stored draft, send, or copy is kept; anything else (or nothing) is draft; t3Found is passed through', () => {
     expect(HANDOFF_MODES).toEqual(['draft', 'send', 'copy']);
     expect(DEFAULT_HANDOFF_MODE).toBe('draft');
-    for (const m of HANDOFF_MODES) expect(settingsSnapshot({ t3Handoff: m }, true)).toEqual({ statusBarHidden: false, t3Handoff: m, mergedHidden: false, t3Found: true });
+    for (const m of HANDOFF_MODES) expect(settingsSnapshot({ t3Handoff: m }, true)).toEqual({ statusBarHidden: false, t3Handoff: m, mergedHidden: false, deskWidget: false, t3Found: true });
     for (const v of [null, undefined, '', 'Draft', 'SEND', 'auto', 1, true, {}, ['send']]) expect({ v, m: storedMode(v) }).toEqual({ v, m: 'draft' });
-    expect(settingsSnapshot({ statusBarHidden: true, t3Handoff: 'nope' }, true)).toEqual({ statusBarHidden: true, t3Handoff: 'draft', mergedHidden: false, t3Found: true });
+    expect(settingsSnapshot({ statusBarHidden: true, t3Handoff: 'nope' }, true)).toEqual({ statusBarHidden: true, t3Handoff: 'draft', mergedHidden: false, deskWidget: false, t3Found: true });
   });
 
   test('a t3Handoff change is accepted only for draft, send, or copy', () => {
@@ -79,7 +79,7 @@ describe('035 AC2: only the Settings window is answered', () => {
 
 describe('063 AC2: the Merged column setting', () => {
   test('the snapshot: exactly true is hidden; missing or anything else is shown', () => {
-    expect(settingsSnapshot({ mergedHidden: true }, false)).toEqual({ statusBarHidden: false, t3Handoff: 'draft', mergedHidden: true, t3Found: false });
+    expect(settingsSnapshot({ mergedHidden: true }, false)).toEqual({ statusBarHidden: false, t3Handoff: 'draft', mergedHidden: true, deskWidget: false, t3Found: false });
     for (const v of [false, null, undefined, 'true', 1, 0, {}, [], { hidden: true }]) expect({ v, m: settingsSnapshot({ mergedHidden: v }, false).mergedHidden }).toEqual({ v, m: false });
     expect(settingsSnapshot({}, true).mergedHidden).toBe(false);
   });
@@ -136,5 +136,23 @@ describe('063 AC6: the view-state params', () => {
       { needs: true, sidebarShown: false, inspectorOpen: true },
     ];
     for (const p of bad) expect({ p, v: viewStateParams(p) }).toEqual({ p, v: null });
+  });
+});
+
+describe('092 AC1: the Desk Widget setting', () => {
+  test('stored like statusBarHidden: its own key, off by default, on only for exactly true', () => {
+    expect(DESK_WIDGET_KEY).toBe('deskWidget');
+    expect(SETTING_KEYS).toContain(DESK_WIDGET_KEY);
+    expect(settingsSnapshot({}, false).deskWidget).toBe(false);
+    expect(settingsSnapshot({ deskWidget: true }, false)).toEqual({ statusBarHidden: false, t3Handoff: 'draft', mergedHidden: false, deskWidget: true, t3Found: false });
+    for (const v of [false, null, undefined, 'true', 1, {}, []]) expect({ v, on: settingsSnapshot({ deskWidget: v }, false).deskWidget }).toEqual({ v, on: false });
+  });
+
+  test('a change is accepted only as exactly { key: deskWidget, value: <boolean> }', () => {
+    expect(settingChange({ key: 'deskWidget', value: true })).toEqual({ key: 'deskWidget', value: true });
+    expect(settingChange({ key: 'deskWidget', value: false })).toEqual({ key: 'deskWidget', value: false });
+    for (const p of [{ key: 'deskWidget' }, { key: 'deskWidget', value: 'true' }, { key: 'deskWidget', value: 1 }, { key: 'deskWidget', value: null }, { key: 'DeskWidget', value: true }, { key: 'deskWidget', value: true, extra: 1 }]) {
+      expect({ p, change: settingChange(p) }).toEqual({ p, change: null });
+    }
   });
 });

@@ -56,11 +56,30 @@ import {
   mainFrames,
   parseSize,
   placeOnMain,
+  DESK_WIDGET_EVENT,
+  DESK_WIDGET_ID,
+  DESK_WIDGET_KEY,
+  DESK_WIDGET_LABEL,
+  MAX_PLACES,
+  NO_PLACES,
+  OPEN_JOB_EVENT,
+  WIDGET_BEHAVIOR,
+  WIDGET_MARGIN,
+  WIDGET_SIZE,
+  WIDGET_WINDOW_ID,
+  deskWidgetPayload,
+  rememberPlace,
+  storedOn,
+  storedPlaces,
+  widgetPlacement,
+  widgetUrl,
+  widgetWindow,
+  windowMenu,
 } from './appmenu';
-import type { Menu, MenuItem, MenuState, StartWorkPush, ViewState } from './appmenu';
+import type { Menu, MenuItem, MenuState, StartWorkPush, ViewState, WidgetScreen } from './appmenu';
 
 /** A menu state: the defaults (everything shown, Needs Me off, no inspector), with `over` on top. */
-const ms = (over: Partial<Omit<MenuState, 'view'>> = {}, view: Partial<ViewState> = {}): MenuState => ({ statusBarHidden: false, mergedHidden: false, ...over, view: { ...DEFAULT_VIEW, ...view } });
+const ms = (over: Partial<Omit<MenuState, 'view'>> = {}, view: Partial<ViewState> = {}): MenuState => ({ statusBarHidden: false, mergedHidden: false, deskWidget: false, ...over, view: { ...DEFAULT_VIEW, ...view } });
 
 /** The View menu's items, for its labels. */
 const viewItems = (needs: string, sidebar: string, inspector: string, bar: string, merged: string): MenuItem[] => [
@@ -88,7 +107,14 @@ const expected = (toggle: string): Menu[] => [
   { title: 'View', items: viewItems('Show Only Needs Me', 'Hide Sidebar', 'Show Inspector', toggle, 'Hide Merged Column') },
   {
     title: 'Window',
-    items: [{ id: MINIMIZE_ID, label: 'Minimize', key: 'm' }, { id: ZOOM_ID, label: 'Zoom' }, { separator: true }, { id: SHOW_MAIN_ID, label: 'Andon', key: '0' }],
+    items: [
+      { id: MINIMIZE_ID, label: 'Minimize', key: 'm' },
+      { id: ZOOM_ID, label: 'Zoom' },
+      { separator: true },
+      { id: SHOW_MAIN_ID, label: 'Andon', key: '0' },
+      { separator: true },
+      { id: DESK_WIDGET_ID, label: 'Desk Widget', checked: false }, // 092 AC1
+    ],
   },
   { title: 'Help', role: 'help', items: [{ id: WHATS_NEW_ID, label: "What's New" }, { id: GITHUB_ID, label: 'Factory on GitHub' }] },
 ];
@@ -109,7 +135,7 @@ describe('AC1: the menu spec', () => {
     const ids = items.map((i) => i.id);
     expect(ids.every((id) => typeof id === 'string' && id.length > 0)).toBe(true);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).toHaveLength(15); // 067: Show Backlog…; 073: Close Window; 075: New Exploration…
+    expect(ids).toHaveLength(16); // 067: Show Backlog…; 073: Close Window; 075: New Exploration…; 092: Desk Widget
   });
 });
 
@@ -476,5 +502,135 @@ describe('077: the main window\'s state, as frames for the placement', () => {
     expect(settingsWindow(8766, null)).toEqual(settingsWindow(8766));
     expect(settingsWindow(8766, { x: 10, y: 20 })).toEqual({ ...settingsWindow(8766), x: 10, y: 20 });
     expect(aboutWindow(8766, { x: -5, y: 7 })).toEqual({ ...aboutWindow(8766), x: -5, y: 7 });
+  });
+});
+
+describe('092 AC1: the Window menu\'s Desk Widget checkmark item', () => {
+  test('Window ends with Desk Widget, checked exactly while the desk widget is on', () => {
+    expect(DESK_WIDGET_ID).toBe('deskwidget');
+    expect(DESK_WIDGET_LABEL).toBe('Desk Widget');
+    for (const on of [false, true]) {
+      const win = appMenu(ms({ deskWidget: on })).find((m) => m.title === 'Window');
+      expect(win?.items).toEqual(windowMenu(on));
+      expect(win?.items?.at(-1)).toEqual({ id: DESK_WIDGET_ID, label: 'Desk Widget', checked: on });
+      expect(win?.items?.at(-2)).toEqual({ separator: true });
+    }
+  });
+
+  test('its click toggles the desk widget; nothing else in the bar changes with it', () => {
+    expect(menuAction(DESK_WIDGET_ID)).toEqual({ kind: 'toggle-desk-widget' });
+    const off = appMenu(ms());
+    const on = appMenu(ms({ deskWidget: true }));
+    expect(on.filter((m) => m.title !== 'Window')).toEqual(off.filter((m) => m.title !== 'Window'));
+  });
+
+  test('only a stored true means on; missing or malformed means off', () => {
+    expect(DESK_WIDGET_KEY).toBe('deskWidget');
+    expect(storedOn(true)).toBe(true);
+    for (const v of [false, null, undefined, 'true', 1, 0, {}, [], { on: true }]) expect({ v, on: storedOn(v) }).toEqual({ v, on: false });
+  });
+
+  test('the pushed events: deskwidget carrying { on }, and openjob for the main window', () => {
+    expect(DESK_WIDGET_EVENT).toBe('deskwidget');
+    expect(OPEN_JOB_EVENT).toBe('openjob');
+    expect(deskWidgetPayload(true)).toEqual({ on: true });
+    expect(deskWidgetPayload(false)).toEqual({ on: false });
+  });
+
+  test("Close Window never targets the desk widget", () => {
+    expect(closeWindowStep([WIDGET_WINDOW_ID])).toBeNull();
+    expect(closeWindowStep(['main', WIDGET_WINDOW_ID])).toEqual({ id: 'main', step: 'hide' });
+  });
+});
+
+describe('092 AC2: the desk widget window', () => {
+  test('its options: the widget page, transparent, frameless, no window controls, a panel, first click through', () => {
+    expect(WIDGET_WINDOW_ID).toBe('widget');
+    expect(widgetUrl(8766)).toBe('http://127.0.0.1:8766/?shell=mac&view=widget');
+    expect(widgetWindow(8766)).toEqual({
+      page: 'http://127.0.0.1:8766/?shell=mac&view=widget',
+      title: 'Andon Desk Widget',
+      size: WIDGET_SIZE,
+      chrome: { frame: false, windowControls: [], transparent: true, vibrancy: false, panel: true, acceptsFirstMouse: true },
+    });
+    expect('parent' in widgetWindow(8766)).toBe(false); // it stays when the board hides
+    expect(widgetWindow(8766, { x: 10, y: 20 })).toEqual({ ...widgetWindow(8766), x: 10, y: 20 });
+  });
+
+  test('its behavior once open: the desktop level, every Space, not click-through', () => {
+    expect(WIDGET_BEHAVIOR).toEqual({ level: 'desktop', allSpaces: true, clickThrough: false });
+  });
+
+  const SIZE = { width: 332, height: 64 };
+  /** A display: its frame, with a 25-point menu bar on the main one. */
+  const screen = (uid: string, x: number, y: number, width: number, height: number, primary = false): WidgetScreen => ({
+    uid,
+    primary,
+    x,
+    y,
+    width,
+    height,
+    visible: { x, y: primary ? y + 25 : y, width, height: primary ? height - 25 : height },
+  });
+  const MAIN = screen('MAIN-UUID', 0, 0, 1728, 1117, true);
+  const SIDE = screen('SIDE-UUID', 1728, -200, 2560, 1440);
+
+  test('the first time: the top-right corner of the main display, below the menu bar', () => {
+    expect(WIDGET_MARGIN).toBe(20);
+    expect(widgetPlacement([SIDE, MAIN], NO_PLACES, SIZE)).toEqual({ x: 1728 - 332 - 20, y: 25 + 20 });
+  });
+
+  test('a remembered spot on a display: placed there, on the display it was left on', () => {
+    const places = rememberPlace(NO_PLACES, 'SIDE-UUID', { x: 100, y: 300 });
+    expect(places).toEqual({ last: 'SIDE-UUID', spots: { 'SIDE-UUID': { x: 100, y: 300 } } });
+    expect(widgetPlacement([MAIN, SIDE], places, SIZE)).toEqual({ x: 1728 + 100, y: -200 + 300 });
+    // per display: the main display keeps its own spot
+    const both = rememberPlace(rememberPlace(NO_PLACES, 'MAIN-UUID', { x: 40, y: 60 }), 'SIDE-UUID', { x: 100, y: 300 });
+    expect(both.spots['MAIN-UUID']).toEqual({ x: 40, y: 60 });
+    expect(widgetPlacement([MAIN, SIDE], { ...both, last: 'MAIN-UUID' }, SIZE)).toEqual({ x: 40, y: 60 });
+  });
+
+  test('the display it was left on is gone: the main display, at its own spot or the top-right corner', () => {
+    const places = rememberPlace(NO_PLACES, 'SIDE-UUID', { x: 100, y: 300 });
+    expect(widgetPlacement([MAIN], places, SIZE)).toEqual({ x: 1728 - 332 - 20, y: 45 });
+    const withMain = { last: 'SIDE-UUID', spots: { 'MAIN-UUID': { x: 500, y: 500 }, 'SIDE-UUID': { x: 100, y: 300 } } };
+    expect(widgetPlacement([MAIN], withMain, SIZE)).toEqual({ x: 500, y: 500 });
+  });
+
+  test('a remembered spot is clamped inside the display\'s visible frame', () => {
+    const off = (x: number, y: number) => widgetPlacement([MAIN], rememberPlace(NO_PLACES, 'MAIN-UUID', { x, y }), SIZE);
+    expect(off(5000, 5000)).toEqual({ x: 1728 - 332, y: 1117 - 64 });
+    expect(off(-300, -40)).toEqual({ x: 0, y: 25 }); // never under the menu bar
+    expect(off(10.6, 99.4)).toEqual({ x: 11, y: 99 });
+  });
+
+  test('no usable display: no position (the window opens where Tiny puts it)', () => {
+    expect(widgetPlacement([], NO_PLACES, SIZE)).toBeNull();
+    expect(widgetPlacement([{ ...MAIN, width: 0 }], NO_PLACES, SIZE)).toBeNull();
+    expect(widgetPlacement([{ ...MAIN, primary: false }], NO_PLACES, SIZE)).toEqual({ x: 1728 - 332 - 20, y: 45 }); // no main display flag: the first
+  });
+
+  test('the stored places are narrowed: malformed is none, a bad entry is dropped, at most MAX_PLACES kept', () => {
+    for (const v of [null, undefined, 'x', 1, [], { spots: [] }]) expect({ v, p: storedPlaces(v) }).toEqual({ v, p: { last: null, spots: {} } });
+    expect(storedPlaces({ last: 'A', spots: { A: { x: 1, y: 2 }, B: { x: 'no', y: 2 }, C: { x: Number.NaN, y: 0 }, '': { x: 0, y: 0 } } })).toEqual({ last: 'A', spots: { A: { x: 1, y: 2 } } });
+    expect(storedPlaces({ last: '', spots: {} }).last).toBeNull();
+    let many = { ...NO_PLACES };
+    for (let i = 0; i < MAX_PLACES + 4; i++) many = rememberPlace(many, `D${i}`, { x: i, y: i });
+    expect(Object.keys(many.spots)).toHaveLength(MAX_PLACES);
+    expect(many.spots[`D${MAX_PLACES + 3}`]).toEqual({ x: MAX_PLACES + 3, y: MAX_PLACES + 3 });
+    expect(Object.hasOwn(many.spots, 'D0')).toBe(false); // the oldest gave way
+    expect(Object.keys(storedPlaces(many).spots)).toHaveLength(MAX_PLACES);
+    expect(rememberPlace(many, '', { x: 1, y: 1 })).toBe(many);
+    expect(rememberPlace(many, 'Z', { x: Number.NaN, y: 1 })).toBe(many);
+  });
+
+  test("a display uid like __proto__ is an ordinary key", () => {
+    const p = storedPlaces(JSON.parse('{"last":"__proto__","spots":{"__proto__":{"x":5,"y":6}}}'));
+    expect(Object.hasOwn(p.spots, '__proto__')).toBe(true);
+    expect(Object.getPrototypeOf(p.spots)).toBe(Object.prototype);
+    expect(widgetPlacement([{ ...MAIN, uid: '__proto__' }], p, SIZE)).toEqual({ x: 5, y: 25 }); // y clamped below the menu bar
+    const again = rememberPlace(p, '__proto__', { x: 9, y: 90 });
+    expect(Object.getPrototypeOf(again.spots)).toBe(Object.prototype);
+    expect(again.spots).toEqual(Object.fromEntries([['__proto__', { x: 9, y: 90 }]]));
   });
 });
