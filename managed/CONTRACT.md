@@ -1,4 +1,4 @@
-<!-- factory 0.3.0 · managed file, do not edit: it is replaced on upgrade. This is the installed copy of the factory/v1 contract -->
+<!-- factory 0.4.0 · managed file, do not edit: it is replaced on upgrade. This is the installed copy of the factory/v1 contract -->
 # Factory state contract — `factory/v1`
 
 The fixed interface between a factory run and anything that observes it (the dashboard today,
@@ -336,7 +336,7 @@ Plus the type's own fields:
 | `agent.finished` | same identity fields as its start, `verdict?` | closes the span; a reviewer's `verdict` (`PASS`\|`CHANGES`) sets its chip only when its `round` is the current round and its `key` is one that round listed (any other finish closes its span and changes no chip); the approver's (`APPROVE`\|`ESCALATE`) sets `decision` |
 | `job.noted` | `note` | one-line card note |
 | `job.escalated` | `reason` | stage `needs-human`; `note = reason`; `stoppedBy = "escalated"`, `stoppedFrom` = the stage it left; closes every still-open agent span at this `ts` with `verdict: null` |
-| `job.reworked` | `k`, `maxRound`, `session?` | stage `build`; clears `decision`; `reworks = k`; `note = ""`; `stoppedBy` and `stoppedFrom` = `null`; with `session`, sets `session` (without, keeps it) |
+| `job.reworked` | `k`, `maxRound`, `session?` | stage `spec` when `stoppedFrom` (as it was before this event) is `spec` or `claimed` (the job stopped before anything was built), else stage `build`; clears `decision`; `reworks = k`; `note = ""`; `stoppedBy` and `stoppedFrom` = `null`; with `session`, sets `session` (without, keeps it) |
 | `job.human-approved` | `session?` | `decision = "APPROVE (human)"`; with `session`, sets `session` (without, keeps it) (idempotent: a repeat while `needs-human` is accepted; it changes nothing but `session`, when it carries one) |
 | `merge.failed` | `reason` | stage `needs-human`; `note = reason`; `stoppedBy = "merge-failed"`; from `approve`, `stoppedFrom = "approve"` (from `needs-human`, after `job.human-approved`, `stoppedFrom` is unchanged) |
 | `merge.conflicted` | `reason` (non-empty; no other field) | stage `build`; `maxRound = round + 2` (the current `round`); `conflicts` + 1; `note = reason`; clears `decision`; clears any human approval (a later merge from `needs-human` needs a new `job.human-approved`); `stoppedBy`, `stoppedFrom`, `reworks`, and `session` unchanged; closes no agent span. *(Added within v1, additively.)* |
@@ -391,12 +391,16 @@ pair with the same `name`; spans never overlap for one identity.
 | `build` | `round.started` (round = previous + 1), `job.escalated`, `job.abandoned` (force only) |
 | `review` | `stage.entered build` (only if round < maxRound and the round is complete), `stage.entered approve` (round complete), `job.escalated`, `job.abandoned` (force only) |
 | `approve` | `job.escalated`, `job.merged`, `merge.failed`, `merge.conflicted` (at most 2 per job), `job.abandoned` (force only) |
-| `needs-human` | `job.reworked`, `job.abandoned`, `job.human-approved` → then `job.merged` \| `merge.failed` \| `merge.conflicted` (at most 2 per job) (a failed or conflicted merge resets the approval, so `job.human-approved` is needed again before the next `job.merged`) |
+| `needs-human` | `job.reworked` (enters `spec` when `stoppedFrom` is `spec` or `claimed`, else `build`), `job.abandoned`, `job.human-approved` → then `job.merged` \| `merge.failed` \| `merge.conflicted` (at most 2 per job) (a failed or conflicted merge resets the approval, so `job.human-approved` is needed again before the next `job.merged`) |
 | `merged` | nothing (terminal) |
 | `abandoned` | nothing (terminal) |
 
 `job.escalated` is allowed from every working stage (`claimed`, `spec`, `build`, `review`, `approve`),
-not from `needs-human`. A job whose log has no `job.claimed`, or whose dir holds a `job.json` but no
+not from `needs-human`. `job.reworked` takes the job back to the stage the rework redoes: to
+`spec` when the job stopped from `spec` or `claimed` (its `stoppedFrom`, before the rework resets
+it; nothing was built), so `job.titled` and `stage.entered build` follow and `round.started` is
+refused; otherwise to `build`. A `merge.failed` always stops from `approve`, so it reworks into
+`build`. A job whose log has no `job.claimed`, or whose dir holds a `job.json` but no
 `events.jsonl` (legacy), rejects every event — including `job.claimed`; only `claim` creates a
 job dir (it logs `job.claimed` on a new id), and a rejected event leaves nothing behind. A merge from `needs-human`
 needs a `job.human-approved` logged after any `merge.failed` (and after any `job.escalated`).
@@ -485,7 +489,8 @@ see a partial file). Field-compatible with the pre-contract `job.json`, plus tim
   `needs-human`); `null` when it never was, or since its last `job.reworked`.
 - `stoppedFrom` — the working stage (`claimed`, `spec`, `build`, `review`, or `approve`) the job
   was in when it entered `needs-human`, or `null`. A `merge.failed` from `needs-human` leaves it
-  unchanged. `job.reworked` resets both fields to `null`; `job.human-approved`,
+  unchanged. `job.reworked` reads `stoppedFrom` first (`spec` or `claimed` sends the job back to
+  stage `spec`, any other value to `build`), then resets both fields to `null`; `job.human-approved`,
   `merge.conflicted`, `job.merged`, and `job.abandoned` keep them. Snapshots written by the CLI always carry both keys; readers treat a
   missing key as `null` (a snapshot written before them, until a `rebuild` derives them from the
   log). *(Added within v1, additively.)*
@@ -660,7 +665,7 @@ bun factory/cli.ts epic next <slug>                    # what the epic should do
 bun factory/cli.ts epic show <slug>                    # the epic's state, its members, and why it waits
 bun factory/cli.ts epic abandon <slug> "<reason>" [--force] [--delete-branch]  # close an epic for good
 factory init [--force]                                 # (source or release bundle) install the managed core
-factory upgrade [--force]                              # (source or release bundle) replace the managed core
+factory upgrade [--force] [--commit]                   # (source or release bundle) replace the managed core (and commit exactly that)
 factory projects                                       # (source or release bundle) list the Andon registry's roots and their state
 factory projects prune [--dry-run]                     # (source or release bundle) unregister the dead roots
 factory projects remove <path>                         # (source or release bundle) unregister one root
@@ -946,7 +951,7 @@ finds its factory root from its own location (its directory), and keeps the same
 the source. The top-level usage line (printed for a missing or unknown command) differs: the
 installed CLI prints
 `usage: claim <slug> [k=v …] | event <id> <type> [k=v …] | rebuild <id>|--all | show <id>`, and the source CLI (and the
-release bundle's) prints that line followed by ` | doctor | init [--force] | upgrade [--force] | --version`. Neither line lists
+release bundle's) prints that line followed by ` | doctor | init [--force] | upgrade [--force] [--commit] | --version`. Neither line lists
 `abandon`, `archive`, `prune`, or `epic`; each prints its own usage line for its usage errors. An
 installed copy that predates `abandon`, `archive`, `prune`, `claim`, or `epic` gains it when the
 CLI is promoted.
@@ -1206,7 +1211,7 @@ write `managed.json` last.
 bytes already sits at a managed path (a file with the same bytes is fine), or when the existing
 `config.json` is invalid.
 
-`upgrade [--force]` needs `factory/managed.json` and a valid `config.json`. It re-renders for
+`upgrade [--force] [--commit]` needs `factory/managed.json` and a valid `config.json`. It re-renders for
 the current config, writes the managed files whose bytes changed, deletes the files the old
 manifest lists that the new render does not (such as a reviewer removed from `reviewers`), and
 rewrites `managed.json`. It refuses when there is no manifest (use `init`), when `managed.json`
@@ -1227,11 +1232,46 @@ is refused.
 files at managed paths (this is how an unstamped install is adopted), and `upgrade --force`
 replaces edited or missing managed files and unmanaged files at new paths. It never overrides an
 existing manifest on `init`, a missing manifest on `upgrade`, an invalid config, or a path
-refusal. Any other argument is a usage error.
+refusal.
+
+`upgrade --commit` also commits the upgrade, as one git commit in the project's repo holding
+exactly the paths upgrade wrote (new, untracked managed files included), the paths it deleted (a
+path git never tracked is left out), and `factory/managed.json` when it was rewritten. The
+message is `chore(factory): upgrade factory <old> -> <new>` (`<old>` from the previous
+`managed.json`, `<new>` the CLI's version), with no trailer. It commits only those paths
+(`git commit --only`), so every other staged and unstaged change keeps its state, and the overlay
+and other state are never in it. Hooks run (they are never bypassed). Before anything is planned
+or written, `--commit` refuses, writing nothing, when the project root is not inside a git work
+tree, when HEAD is detached, or when a merge, rebase, cherry-pick, or revert is in progress; it
+requires no particular branch and no clean tree. On success it prints the summary line, then
+`committed <short sha>`, or `nothing to commit` when nothing changed (no commit is made). When the
+commit fails after the writes (a hook rejects it, signing fails, no identity), the written files
+stay as they are (no rollback; the install is consistent and has passed `doctor`), no commit is made,
+and it exits 1 with one line naming the summary, git's first error line, and
+`commit the upgraded files by hand`. Without `--commit`, upgrade runs no git command. `init`
+takes no `--commit`.
+
+After every upgrade that completes its writes (also one that wrote and removed nothing), `upgrade`
+runs the installed doctor: `bun factory/cli.ts doctor` as a subprocess from the project root,
+with the Bun running `factory`, so the freshly written `factory/cli.ts` itself is checked. It
+prints its summary line, then doctor's lines as they print. Doctor fails on any `FAIL` line, a
+non-zero exit, or a doctor that doesn't start; `note` lines never fail it. A failing doctor makes
+`upgrade` exit 1 with no rollback (the written files and `managed.json` stay as they are), and
+the last line (on stderr) names the summary and says doctor failed. With `--commit`, doctor runs
+after the writes and before the commit; when doctor fails no commit is made, and the last line
+adds `commit the upgraded files by hand once doctor passes`. A refused upgrade or a usage error
+runs no doctor. `init` runs no doctor. *(Added within v1, additively: an upgrade that used to exit
+0 next to a failing doctor now exits 1.)*
+
+`init` takes only `--force`, and `upgrade` takes `--force` and `--commit`, in either order, each at
+most once. Any other argument, or a repeated flag, is a usage error (`usage: init [--force]`,
+`usage: upgrade [--force] [--commit]`).
 
 Both exit 0 on success and print one summary line (plus, for `init`, the registration `note:`
-line when registering fails); on a refusal or usage error they exit 1 with
-a one-line reason that names the offending paths.
+line when registering fails; for `upgrade`, doctor's lines after the summary; and for
+`upgrade --commit`, its commit line after those); on a refusal or usage error they exit 1 with
+a one-line reason that names the offending paths. An `upgrade` whose doctor fails also exits 1:
+the summary and doctor's lines on stdout, then the one doctor-failed line on stderr.
 
 Concurrency: a job's log has exactly one writer at a time — the session driving that job (or,
 in `needs-human`, whoever runs approve/rework). The CLI enforces it with a per-job lock,
@@ -1346,7 +1386,27 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
   `peers.json` order (see "Peers"). `GET /projects?scope=local` returns only this machine's
   projects; only the exact value `local` opts in, and any other `scope` value, or none, is the
   merged list. With no peers the two are the same. *(Added within v1, additively: `machine`, the
-  peers' projects, and `scope=local`.)*
+  peers' projects, and `scope=local`.)* Each entry also carries `repositories: [{ remote, host,
+  owner, name }]`, the project's git fetch remotes as the service on the project's own machine
+  reads them (`git -C <root> remote -v`, the lines ending `(fetch)`; a remote listed twice keeps
+  one entry), sorted by `remote`, the remote's name. Each remote's URL is parsed in one of three
+  forms: `https://[user[:token]@]host[:port]/owner/name[.git]`,
+  `ssh://[user@]host[:port]/owner/name[.git]`, or scp-like `[user@]host:owner/name[.git]` (the
+  scheme matched without case; the host a DNS name or an IPv4 address, so a bracketed IPv6 host is
+  skipped). `host` is lowercased and keeps a port (`localhost:222`), except the scheme's default
+  one (443 for https, 22 for ssh), which is dropped; the path is never percent-decoded; `owner` and `name` are exactly the two path
+  parts, each `[A-Za-z0-9._-]+` and neither `.` nor `..`, with a trailing `.git` stripped from
+  `name`. A user, password, or token in the URL is never kept, and the URL itself is never sent. A
+  remote in any other form (a local path, a `file:` URL, a path with more or fewer than two parts,
+  another scheme) is skipped. `repositories` is `[]` when no remote parses, when the root is not a
+  git repo, or when git fails. It is resolved on every request, on every `/events` connect, and
+  when the service announces its projects (on start, on a registry change, and on a `config.json`
+  or `managed.json` change; never on a change under `jobs/`);
+  nothing watches git config, so a remote added later shows at the next of those. The service
+  only reads git here. A peer's projects carry that peer's own values, passed through by the hub
+  unchanged; a peer on an older release sends no `repositories`, and its projects are listed
+  without the field. `id`, `name`, `root`, `release`, and `machine` are unchanged. *(Added within
+  v1, additively: `repositories`.)*
 - `GET /machines` returns `{ machines: [{ name, url, state, since, reason, release }] }`: this
   machine first, then each listed peer in `peers.json` order. `name` is the machine name (for a
   peer not yet reached, its URL's first host label); `url` is this service's tailnet URL,
@@ -1488,8 +1548,15 @@ carries `cache-control: no-store`. Every endpoint is `GET` (anything else is a 4
     `release.installed` or `release.state` changes (its `factory/managed.json` is written, as by
     `upgrade`, or removed), alongside that change's `board` or `error` event. A `config.json` or
     `managed.json` write that leaves every resolved name and release unchanged (a manifest whose
-    `files` alone differ, say) sends no `projects` event. *(Added within v1, additively: the
-    re-send on a name change; later, `release` and the re-send on its change.)*
+    `files` alone differ, say) sends no `projects` event. Each entry also carries `repositories`,
+    resolved as in `GET /projects`: this machine's entries by this service, and the peers'
+    entries passed through by the hub as each peer sent them. A `projects` event is also re-sent
+    whenever a project's resolved `repositories` change (seen whenever they are resolved: a
+    `GET /projects`, a connect, a registry change, or a `config.json` or `managed.json` change),
+    and a hub re-sends the merged event when a
+    live peer's `repositories` change, as for any change in its projects. *(Added within v1,
+    additively: the re-send on a name change; later, `release` and the re-send on its change;
+    later, `repositories` and the re-send on its change.)*
   - `release`: the `GET /release` body, `{ running, onDisk, changelog }`. Sent once on connect,
     right after the first `projects` event, and again whenever the clone's `CHANGELOG.md` or
     `packages/templates/package.json` changes (created, edited, replaced, or removed), debounced
@@ -1862,5 +1929,14 @@ These rules record how the code behaves today; they change no behavior.
   `tailnet:` line, and the usage line `usage: service install [--tailnet]|uninstall|…`. The
   service still binds `127.0.0.1` only, is `GET` only, and writes nothing; with no tailnet host
   recorded, the guard, the unit, and every command's output are unchanged.
+- **2026-10-31: `job.reworked` re-enters `spec` after a pre-build stop.** The brief
+  `spec-question-escalation`'s contract call, approved by Matt on 2026-10-31: `job.reworked`
+  enters stage `spec`, not `build`, when the job's `stoppedFrom` is `spec` or `claimed` (it
+  stopped before anything was built, such as on a spec's open questions), in both the snapshot
+  and the transitions the CLI enforces; from any other stop it still enters `build`. No event
+  field, snapshot field, or config key changes, and no transition is tightened for a job that
+  stopped from `build`, `review`, or `approve`. Every existing `events.jsonl` rebuilds to the same
+  `job.json` (no recorded job was reworked from `spec` or `claimed`). The brief's fallback, should
+  this be judged not additive, is an optional `stage=spec` field on `job.reworked`.
 - **`config.json` is strict, so upgrade first.** A config that uses a newer v1 key needs a CLI that
   knows that key. Upgrade the managed files before adding the key to the overlay.

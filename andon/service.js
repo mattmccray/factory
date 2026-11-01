@@ -11,6 +11,7 @@ import { join as join5 } from "path";
 // packages/contract/src/contract.ts
 var WORKING_STAGES = ["claimed", "spec", "build", "review", "approve"];
 var workingStage = (stage) => WORKING_STAGES.find((w) => w === stage) ?? null;
+var reworkStage = (stoppedFrom) => stoppedFrom === "spec" || stoppedFrom === "claimed" ? "spec" : "build";
 var JOB_KINDS = ["member", "sync", "fix"];
 var CURRENT_TARGET = "current";
 var BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
@@ -601,7 +602,8 @@ function apply(s, e) {
       s.decision = null;
       enterStage(s, "build", e.ts);
       return;
-    case "job.reworked":
+    case "job.reworked": {
+      const next = reworkStage(s.stoppedFrom);
       s.reworks = e.k;
       s.stoppedBy = null;
       s.stoppedFrom = null;
@@ -609,8 +611,9 @@ function apply(s, e) {
       s.decision = null;
       s.note = "";
       s.session = storedSession(e.session) ?? s.session;
-      enterStage(s, "build", e.ts);
+      enterStage(s, next, e.ts);
       return;
+    }
     case "job.human-approved":
       s.decision = "APPROVE (human)";
       s.session = storedSession(e.session) ?? s.session;
@@ -912,8 +915,9 @@ function gitEnv() {
   return { ...env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" };
 }
 var READ_ONLY = new Set(["rev-parse", "ls-tree", "cat-file"]);
+var readOnly = (args) => READ_ONLY.has(args[0] ?? "") || args.length === 2 && args[0] === "remote" && args[1] === "-v";
 var spawnGit = async (args, { cwd, input }) => {
-  if (!READ_ONLY.has(args[0] ?? ""))
+  if (!readOnly(args))
     throw new Error(`git ${args[0] ?? ""}: not a read-only command`);
   const proc = Bun.spawn(["git", ...args], {
     cwd,
@@ -1246,6 +1250,92 @@ async function readChangelog(cloneRoot) {
 async function readRelease(cloneRoot, running, versionFile = SOURCE_VERSION_FILE) {
   const [onDisk, changelog] = await Promise.all([readTemplatesVersion(cloneRoot, versionFile), readChangelog(cloneRoot)]);
   return { running, onDisk, changelog };
+}
+
+// packages/andon-service/src/repositories.ts
+var PART = /^[A-Za-z0-9._-]+$/;
+var HOST = /^[A-Za-z0-9.-]+(:[0-9]+)?$/;
+var SCP = /^(?:[^@/:]+@)?([^@/:]+):(?!\/)(.+)$/;
+var part = (s) => PART.test(s) && s !== "." && s !== "..";
+function fromPath(host, path) {
+  const h = host.toLowerCase();
+  if (!HOST.test(h) || h.startsWith(".") || h.startsWith("-"))
+    return null;
+  const trimmed = path.replace(/^\/+/, "").replace(/\/+$/, "");
+  const parts = trimmed.split("/");
+  if (parts.length !== 2)
+    return null;
+  const owner = parts[0] ?? "";
+  const raw = parts[1] ?? "";
+  const name = raw.endsWith(".git") ? raw.slice(0, -".git".length) : raw;
+  if (!part(owner) || !part(name))
+    return null;
+  return { host: h, owner, name };
+}
+function parseRemoteUrl(url) {
+  try {
+    return parse(url);
+  } catch {
+    return null;
+  }
+}
+function parse(url) {
+  const s = url.trim();
+  if (s === "" || /\s/.test(s))
+    return null;
+  const scheme = s.match(/^([A-Za-z][A-Za-z0-9+.-]*):\/\//);
+  if (scheme !== null) {
+    const kind = (scheme[1] ?? "").toLowerCase();
+    if (kind !== "https" && kind !== "ssh")
+      return null;
+    let u;
+    try {
+      u = new URL(s);
+    } catch {
+      return null;
+    }
+    if (u.search !== "" || u.hash !== "" || u.hostname === "")
+      return null;
+    const port = kind === "ssh" && u.port === "22" ? "" : u.port;
+    return fromPath(port === "" ? u.hostname : `${u.hostname}:${port}`, u.pathname);
+  }
+  const scp = s.match(SCP);
+  if (scp === null)
+    return null;
+  return fromPath(scp[1] ?? "", scp[2] ?? "");
+}
+var decoder2 = new TextDecoder;
+var FETCH_LINE = /^(\S+)\t(\S+) \(fetch\)$/;
+async function readRepositories(git, root) {
+  let out;
+  try {
+    const r = await git(["remote", "-v"], { cwd: root });
+    if (r.code !== 0)
+      return [];
+    out = decoder2.decode(r.stdout);
+  } catch {
+    return [];
+  }
+  const byRemote = new Map;
+  for (const line of out.split(`
+`)) {
+    const m = line.trimEnd().match(FETCH_LINE);
+    if (m === null)
+      continue;
+    const remote = m[1] ?? "";
+    if (byRemote.has(remote))
+      continue;
+    const parsed = parseRemoteUrl(m[2] ?? "");
+    if (parsed !== null)
+      byRemote.set(remote, { remote, ...parsed });
+  }
+  return [...byRemote.values()].sort((a, b) => a.remote < b.remote ? -1 : a.remote > b.remote ? 1 : 0);
+}
+function sameRepositories(a, b) {
+  return a.length === b.length && a.every((r, i) => {
+    const o = b[i];
+    return o !== undefined && o.remote === r.remote && o.host === r.host && o.owner === r.owner && o.name === r.name;
+  });
 }
 
 // packages/andon-service/src/backlog.ts
@@ -2110,10 +2200,16 @@ async function startService(opts) {
     return { installed, state: releaseState(installed, running) };
   };
   let announcing = Promise.resolve();
-  function announce(force, peers = false) {
+  function announce(force, peers = false, remotes = "due") {
     const run = announcing.then(async () => {
       const open = [...projects.values()];
-      const [names, releases] = await Promise.all([Promise.all(open.map(resolveName)), Promise.all(open.map(resolveRelease))]);
+      const resolveRepositories = (p) => {
+        if (remotes !== "all" && !p.remotesDue)
+          return Promise.resolve(null);
+        p.remotesDue = false;
+        return readRepositories(git, p.info.root);
+      };
+      const [names, releases, repos] = await Promise.all([Promise.all(open.map(resolveName)), Promise.all(open.map(resolveRelease)), Promise.all(open.map(resolveRepositories))]);
       let changed = force;
       const current = open.filter((p, i) => {
         const name = names[i] ?? basename3(p.info.root);
@@ -2126,9 +2222,14 @@ async function startService(opts) {
           p.info.release = release;
           changed = true;
         }
+        const repositories = repos[i] ?? null;
+        if (repositories !== null && !sameRepositories(repositories, p.info.repositories)) {
+          p.info.repositories = repositories;
+          changed = true;
+        }
         return !p.closed;
       });
-      const list = current.map((p) => ({ ...p.info, release: { ...p.info.release } }));
+      const list = current.map((p) => ({ ...p.info, release: { ...p.info.release }, repositories: p.info.repositories.map((r) => ({ ...r })) }));
       if (changed)
         broadcast("projects", { projects: list }, undefined, "local");
       if (changed || peers)
@@ -2359,8 +2460,9 @@ async function startService(opts) {
   }
   function openProject(root) {
     const p = {
-      info: { id: projectId(root), name: basename3(root), root, release: { installed: null, state: "unknown" }, machine },
+      info: { id: projectId(root), name: basename3(root), root, release: { installed: null, state: "unknown" }, machine, repositories: [] },
       factory: join4(root, "factory"),
+      remotesDue: true,
       lastGood: new Map,
       lastGoodEpic: new Map,
       factoryWatcher: null,
@@ -2385,6 +2487,8 @@ async function startService(opts) {
       const w = watch(p.factory, (_event, filename) => {
         if (filename !== null && filename.startsWith("."))
           return;
+        if (filename === "config.json" || filename === "managed.json")
+          p.remotesDue = true;
         if (filename === null || filename === "jobs")
           watchJobs(p);
         if (filename === null || filename === "epics")
@@ -2462,7 +2566,7 @@ async function startService(opts) {
       for (const p of opened)
         armFromBuild(p);
     if ([...projects.keys()].join(",") !== before)
-      await announce(true);
+      await announce(true, false, "all");
   }
   let reloading = Promise.resolve();
   let registryTimer = null;
@@ -2665,7 +2769,7 @@ async function startService(opts) {
     }
   }
   async function events(req, form, local) {
-    const own = await announce(false);
+    const own = await announce(false, false, "all");
     const list = local ? own : merged(own);
     const release = await releaseBody();
     const machinesNow = local ? { machines: [ownEntry()] } : machinesBody();
@@ -2719,7 +2823,7 @@ async function startService(opts) {
     const summary = url.searchParams.get("settled") === "summary";
     const local = url.searchParams.get("scope") === "local";
     if (pathname === "/projects") {
-      const own = await announce(false);
+      const own = await announce(false, false, "all");
       return json({ projects: local ? own : merged(own) });
     }
     if (pathname === "/events")

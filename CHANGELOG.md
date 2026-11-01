@@ -1,3 +1,18 @@
+## v0.4.0 (2026-10-31)
+
+### Added
+
+- CLI: add upgrade --commit to commit exactly the upgraded files (084-upgrade-commit-flag)
+- Andon: widen the landed epic row's name and right-align its text (085-landed-row-layout)
+- Factory: escalate a spec's open questions before the build (087-spec-question-escalation)
+- Andon: hand off to T3 Code on another machine by repositories (086-andon-remote-handoff)
+- Andon: open a project's repository page from its menu (088-andon-open-repository)
+- CLI: run the installed doctor after every factory upgrade (089-upgrade-runs-doctor)
+
+### Fixed
+
+- Release: run the gate in the checkout and build the bundle after the writes (090-release-gate-in-checkout)
+
 ## v0.3.0 (2026-10-31)
 
 ### Added
