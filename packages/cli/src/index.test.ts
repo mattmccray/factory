@@ -452,7 +452,8 @@ describe('session (claim, job.reworked, job.human-approved)', () => {
   test('AC3: job.reworked with session B wins; without one it stays; job.abandoned leaves it', async () => {
     await cli('claim', SLUG, SESSION_A);
     await toNeedsHuman();
-    expect(await cli('event', ID, 'job.reworked', 'k=1', 'maxRound=3', SESSION_B)).toEqual({ code: 0, out: ['build'], err: [] });
+    // Escalated from claimed, so the rework re-enters spec (job 087).
+    expect(await cli('event', ID, 'job.reworked', 'k=1', 'maxRound=3', SESSION_B)).toEqual({ code: 0, out: ['spec'], err: [] });
     expect(await sessionOf()).toEqual(B);
     await toNeedsHuman();
     expect((await cli('event', ID, 'job.reworked', 'k=2', 'maxRound=4')).code).toBe(0);
