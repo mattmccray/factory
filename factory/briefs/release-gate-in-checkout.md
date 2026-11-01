@@ -1,6 +1,7 @@
 # Release runs its gate in the checkout
 
-- Status: ready
+- Status: done
+- Job: 090-release-gate-in-checkout (merged a34d569, 2026-10-31)
 - Sources: scripts/release.ts (`stageTree`, `mirrorModules`, `release`), scripts/release.test.ts, docs/decisions.md (decision 14 and its 2026-10-30 amendment), docs/upgrade.md ("Later releases"), factory/briefs/factory-release.md; the failed release of 2026-10-31 (`packages/andon-service/src/archive.test.ts:89`, `git remote -v` exiting 128 in the `git archive` export)
 - Date: 2026-10-31
 
