@@ -1,6 +1,7 @@
 # Andon desk widget
 
-- Status: ready
+- Status: done
+- Job: 092-andon-desk-widget (merged 27d134a, 2026-11-01)
 - Sources: `docs/design/desk-widget/` (the mock-ups; the chosen one is `chosen/desk-widget.html`)
 - Date: 2026-11-01
 
