@@ -123,6 +123,13 @@ contract is `docs/contract/v1.md`.
       release passes through, and a peer from before peers is `error`. The hub's own listener
       stays on loopback. This replaces "adding more service URLs" to the UI as the way to see
       several machines.
+    - Amended 2026-11-01 (approved by Matt; brief `factory/briefs/andon-desk-widget.md`): the
+      desk widget is part of the Mac app: an optional, remembered, desktop-level window showing the
+      board in compact form, its view a page of the Andon UI. It is off by default, turned on and
+      off by one remembered Andon setting (the "Desk Widget" checkmark in the Window menu, the tray
+      menu, and Settings), and fed by the same `/events?settled=summary` stream as the board, so
+      the Mac app stays thin and runs no contract code. It shows only while Andon runs, and it is
+      not a WidgetKit widget.
 11. **The factory builds itself.**
     - This repo was seeded by hand once (2026-10-22) with a vendored v0 copy of Minerva's
       factory. Everything since goes through `/factory`.
