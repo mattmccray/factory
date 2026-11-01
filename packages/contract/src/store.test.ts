@@ -385,3 +385,18 @@ describe('parseLog', () => {
     expect(() => parseLog('{"a":1}\n')).toThrow('events.jsonl line 1 is not a factory event');
   });
 });
+
+// Copies of this repo's own jobs (a merge conflict, escalations, a rework from approve): the
+// reducer must rebuild each stored job.json exactly (decision 3, job 087 AC2).
+describe('rebuild over recorded jobs', () => {
+  const fixtures = new URL('./fixtures/jobs/', import.meta.url).pathname;
+  test('project(events.jsonl) equals the stored job.json for every fixture job', async () => {
+    const ids = (await readdir(fixtures)).sort();
+    expect(ids.length).toBeGreaterThan(0);
+    for (const id of ids) {
+      const log = parseLog(await readFile(join(fixtures, id, 'events.jsonl'), 'utf8'));
+      const stored: unknown = JSON.parse(await readFile(join(fixtures, id, 'job.json'), 'utf8'));
+      expect({ id, snapshot: JSON.parse(JSON.stringify(project(log))) }).toEqual({ id, snapshot: stored });
+    }
+  });
+});

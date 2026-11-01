@@ -146,8 +146,18 @@ needs-human, Andon falls back to a rule that is exact for the common case:
 `decision === 'APPROVE'` can only mean the approver approved and the merge failed. A job whose
 `decision` is `APPROVE (human)` with no `stoppedBy` is shown with the tag "Approved · not merged".
 
+**A question** (brief `spec-question-escalation`, approved 2026-10-31). A needs-human job whose
+`stoppedFrom` is `spec` or `claimed` stopped before anything was built: the spec writer listed an
+open question (or wrote no spec). It is keyed only on stage `needs-human` plus that
+`stoppedFrom`, whatever `stoppedBy` is; a failed merge always stops from `approve`, so the two
+never overlap. It is a needs-human job in every other way (the Andon column, the red token), but
+it reads as a question waiting on an answer, not built work waiting on a verdict: the tag
+"Question", the ghost "asked here → Andon", and Rework… as the needs-human box's primary action
+(section 8).
+
 **Columns.** A claimed job sits in Spec, as today. A needs-human job sits in **Andon**, and leaves
-a dashed red ghost, "**040** stopped here → Andon" (or "merge broke here → Andon"), in the column
+a dashed red ghost, "**040** stopped here → Andon" (or "merge broke here → Andon", or, for a
+question, "asked here → Andon" in Spec), in the column
 of the stage it was in when it escalated: `stoppedFrom`, or, when that is null, the last working
 stage in `timing.stages` before `needs-human`. Clicking the ghost opens the job. Merged holds merged jobs only; settled jobs are
 not on the board (see Settled).
@@ -204,7 +214,7 @@ bar on its left edge.
 
 | kind | edge, fill, border | line 2 tag | extra |
 |---|---|---|---|
-| needs-human | red bar, red-tinted fill, red border | ⚑ "Escalated", red | line 3: the note, ellipsized, light red |
+| needs-human | red bar, red-tinted fill, red border | ⚑ "Escalated", red ("Question" when it stopped from `spec` or `claimed`, section 5) | line 3: the note, ellipsized, light red |
 | merge failed | as needs-human, with a diagonal red hatch | "Merge failed", red | line 3: the note |
 | review-failed | orange bar, orange-tinted fill, orange border | "Changes", orange | |
 | reviewing | purple bar | none | pending chips pulse |
@@ -258,6 +268,11 @@ It replaces the drawer. From top to bottom:
    **Approve** (accent button) and **Rework…** (plain button), then the command in mono with a
    copy button.
    - Approve shows `/factory approve <id>`.
+   - **A question** (section 5: it stopped from `spec` or `claimed`, nothing built yet):
+     **Rework…** is the accent button, first, and **Approve** is grayed out (disabled) with the
+     tooltip "Nothing built yet"; the approve command line is not shown. The answer goes in the
+     Rework… sheet (`/factory rework <id> "<answer>"`), and the skill re-runs the spec writer with
+     it. Every other needs-human job keeps Approve as the accent button.
    - Rework… opens a **sheet** with a note field; the command line updates as you type
      (`/factory rework <id> "<note>"`), and the sheet has Copy and Cancel.
    - **Abandon…** (a destructive-style plain button, after Rework…) opens a sheet with a required

@@ -65,6 +65,17 @@ export function inEpic(fields: Record<string, unknown>, e: Epic, project = { id:
 export const stopped = (by: string | null, from: string | null): Record<string, unknown> => ({ stoppedBy: by, stoppedFrom: from });
 
 /**
+ * A job that stopped before anything was built (job 087): escalated from `spec` (or, with
+ * `from`, from `claimed`) with the spec writer's open question as its note.
+ */
+export const specQuestion = (from: 'spec' | 'claimed' = 'spec'): Record<string, unknown> => ({
+  stage: 'needs-human',
+  round: 0,
+  note: 'spec has 1 open question(s): should tags migrate? (assumed: yes)',
+  ...stopped('escalated', from),
+});
+
+/**
  * A `timing.stages` list from `[stage, msAgo]` pairs in order: each span exits when the next one
  * enters, and the last stays open. A span's round is the number of review entries so far, as the
  * contract's `round.started` bumps the round as review is entered.

@@ -328,6 +328,35 @@ describe('checkTransition', () => {
       { type: 'job.reworked', k: 1, maxRound: 3 })];
     expect(() => checkTransition(midReview, { ...round1, round: 2 })).not.toThrow();
   });
+  test('rework after a spec or claimed escalation re-enters spec: titled and build next, not a round', () => {
+    const rework: EventInput = { type: 'job.reworked', k: 1, maxRound: 2 };
+    const fromSpec = log(claimed, { type: 'stage.entered', stage: 'spec' }, { type: 'job.escalated', reason: 'spec has 1 open question(s): q' }, rework);
+    const fromClaimed = log(claimed, { type: 'job.escalated', reason: 'r' }, rework);
+    for (const l of [fromSpec, fromClaimed]) {
+      expect(() => checkTransition(l, { type: 'job.titled', title: 'T' })).not.toThrow();
+      expect(() => checkTransition(l, { type: 'stage.entered', stage: 'build' })).not.toThrow();
+      expect(() => checkTransition(l, round1)).toThrow(/stage 'spec'/);
+    }
+    // The spec stop survives a second escalation from the re-entered spec stage.
+    const again = [...fromSpec, ...log({ type: 'job.escalated', reason: 'r' }, { ...rework, k: 2 })];
+    expect(() => checkTransition(again, { type: 'stage.entered', stage: 'build' })).not.toThrow();
+    expect(() => checkTransition(again, round1)).toThrow(/stage 'spec'/);
+  });
+  test('rework after a build, review, or approve escalation still enters build', () => {
+    const rework: EventInput = { type: 'job.reworked', k: 1, maxRound: 3 };
+    const esc: EventInput = { type: 'job.escalated', reason: 'r' };
+    const review = [...toBuild, ...log(round1)];
+    const approve = [...toBuild, ...log(round1, fin('security', 'PASS'), fin('ux', 'PASS'), { type: 'stage.entered', stage: 'approve' })];
+    for (const l of [toBuild, review]) {
+      const r = [...l, ...log(esc, rework)];
+      expect(() => checkTransition(r, { type: 'stage.entered', stage: 'build' })).toThrow(/stage 'build'/);
+    }
+    const fromApprove = [...approve, ...log(esc, rework)];
+    expect(() => checkTransition(fromApprove, { ...round1, round: 2 })).not.toThrow();
+    // A failed merge (from approve, then retried from needs-human) keeps approve as the stop.
+    const failed = [...approve, ...log({ type: 'merge.failed', reason: 'c' }, { type: 'job.human-approved' }, { type: 'merge.failed', reason: 'c' }, rework)];
+    expect(() => checkTransition(failed, { ...round1, round: 2 })).not.toThrow();
+  });
   test('human-approved again after a failed human merge', () => {
     const approve = [...toBuild, ...log(round1, fin('security', 'PASS'), fin('ux', 'PASS'), { type: 'stage.entered', stage: 'approve' })];
     const failed = [...approve, ...log({ type: 'job.escalated', reason: 'r' }, { type: 'job.human-approved' },

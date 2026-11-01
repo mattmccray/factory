@@ -1,6 +1,6 @@
 // Projection: the append-only event log -> the `job.json` snapshot (docs/contract/v1.md).
 // Pure — no clock reads. Viewers compute live elapsed time from the open timestamps.
-import { JOB_KINDS, isSession, workingStage } from './contract';
+import { JOB_KINDS, isSession, reworkStage, workingStage } from './contract';
 import type { FactoryEvent, JobKind, Role, Session, Stage, Verdict, WorkingStage } from './contract';
 
 export type ReviewState = 'PASS' | 'CHANGES' | 'pending';
@@ -172,7 +172,10 @@ function apply(s: JobSnapshot, e: FactoryEvent): void {
       s.decision = null;
       enterStage(s, 'build', e.ts);
       return;
-    case 'job.reworked':
+    case 'job.reworked': {
+      // A stop before anything was built (an open question at the spec step) goes back to the
+      // spec writer; any other stop goes back to the builder. Read before the reset below.
+      const next = reworkStage(s.stoppedFrom);
       s.reworks = e.k;
       s.stoppedBy = null;
       s.stoppedFrom = null;
@@ -180,8 +183,9 @@ function apply(s: JobSnapshot, e: FactoryEvent): void {
       s.decision = null;
       s.note = ''; // the escalation reason no longer describes the job
       s.session = storedSession(e.session) ?? s.session; // latest wins; none keeps the earlier one
-      enterStage(s, 'build', e.ts);
+      enterStage(s, next, e.ts);
       return;
+    }
     case 'job.human-approved':
       s.decision = 'APPROVE (human)';
       s.session = storedSession(e.session) ?? s.session;

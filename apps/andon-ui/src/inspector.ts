@@ -10,7 +10,8 @@ import type { BoardEpic, BoardJob } from './board';
 import { TIMING, groupsOf, pickFile } from './docs';
 import type { FileGroup } from './docs';
 import { epicName } from './job';
-import { age, epicStateLabel, helperOf, kindOf, numOf } from './lanes';
+import type { Job } from './job';
+import { age, epicStateLabel, helperOf, isQuestion, kindOf, numOf } from './lanes';
 import { projectLabel } from './machines';
 import type { Kind } from './lanes';
 import { fmt, time, when } from './time';
@@ -39,6 +40,23 @@ export const abandonCommand = (id: string, reason: string): Command => ({ text: 
 export const epicCommand = (slug: string): string => `/factory epic ${slug}`;
 
 export const abandonEpicCommand = (slug: string, reason: string): Command => ({ text: `/factory epic abandon ${slug} ${quoteArg(reason)}`, copyable: reason.trim() !== '' });
+
+/**
+ * The needs-human box's buttons (design §8): which one is primary, and whether Approve is grayed
+ * out. A job that stopped before anything was built (an open question at the spec step, job 087)
+ * has nothing to approve: Rework… answers it, and Approve is disabled with a tooltip.
+ */
+export interface HumanActions {
+  primary: 'approve' | 'rework';
+  approveDisabled: boolean;
+  approveTitle: string | null; // the disabled Approve's tooltip
+}
+
+export function humanActions(j: Job): HumanActions {
+  return isQuestion(j)
+    ? { primary: 'rework', approveDisabled: true, approveTitle: 'Nothing built yet' }
+    : { primary: 'approve', approveDisabled: false, approveTitle: null };
+}
 
 /** The sheets that build a command from free text: a job's Rework… and Abandon…, and an epic's Abandon…. */
 export type SheetKind = 'rework' | 'abandon' | 'epic-abandon';

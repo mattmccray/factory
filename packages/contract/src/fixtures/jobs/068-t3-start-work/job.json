@@ -1,0 +1,162 @@
+{
+  "schema": "factory/v1",
+  "id": "068-t3-start-work",
+  "title": "Start Work in T3 Code from Andon",
+  "branch": "factory/068-t3-start-work",
+  "target": "factory/epic/andon-backlog",
+  "builder": "builder-068-t3-start-work",
+  "stage": "merged",
+  "round": 1,
+  "maxRound": 2,
+  "reviews": {
+    "security": "PASS",
+    "code": "PASS",
+    "contract": "PASS",
+    "ui": "PASS"
+  },
+  "history": [],
+  "reworks": 0,
+  "conflicts": 0,
+  "decision": "APPROVE (human)",
+  "note": "merged bc0eeea",
+  "stoppedBy": "escalated",
+  "stoppedFrom": "approve",
+  "brief": "factory/briefs/t3-start-work.md",
+  "issue": null,
+  "session": {
+    "app": "t3code",
+    "environment": "31b71739-338f-496d-b747-9971dd11451f",
+    "thread": "a2a9838f-4a67-4e93-bebe-d6d20975c632"
+  },
+  "epic": "andon-backlog",
+  "kind": "member",
+  "startedAt": "2026-10-30T21:16:21.593Z",
+  "stageEnteredAt": "2026-10-30T21:36:08.152Z",
+  "endedAt": "2026-10-30T21:36:08.152Z",
+  "updated": "2026-10-30T21:36:08.152Z",
+  "timing": {
+    "stages": [
+      {
+        "stage": "claimed",
+        "round": 0,
+        "enteredAt": "2026-10-30T21:16:21.593Z",
+        "exitedAt": "2026-10-30T21:16:21.621Z",
+        "ms": 28
+      },
+      {
+        "stage": "spec",
+        "round": 0,
+        "enteredAt": "2026-10-30T21:16:21.621Z",
+        "exitedAt": "2026-10-30T21:18:21.851Z",
+        "ms": 120230
+      },
+      {
+        "stage": "build",
+        "round": 0,
+        "enteredAt": "2026-10-30T21:18:21.851Z",
+        "exitedAt": "2026-10-30T21:27:22.112Z",
+        "ms": 540261
+      },
+      {
+        "stage": "review",
+        "round": 1,
+        "enteredAt": "2026-10-30T21:27:22.112Z",
+        "exitedAt": "2026-10-30T21:29:29.347Z",
+        "ms": 127235
+      },
+      {
+        "stage": "approve",
+        "round": 1,
+        "enteredAt": "2026-10-30T21:29:29.347Z",
+        "exitedAt": "2026-10-30T21:31:39.106Z",
+        "ms": 129759
+      },
+      {
+        "stage": "needs-human",
+        "round": 1,
+        "enteredAt": "2026-10-30T21:31:39.106Z",
+        "exitedAt": "2026-10-30T21:36:08.152Z",
+        "ms": 269046
+      },
+      {
+        "stage": "merged",
+        "round": 1,
+        "enteredAt": "2026-10-30T21:36:08.152Z",
+        "exitedAt": null,
+        "ms": null
+      }
+    ],
+    "agents": [
+      {
+        "role": "spec-writer",
+        "key": null,
+        "round": null,
+        "name": null,
+        "startedAt": "2026-10-30T21:16:21.642Z",
+        "finishedAt": "2026-10-30T21:18:21.679Z",
+        "ms": 120037,
+        "verdict": null
+      },
+      {
+        "role": "builder",
+        "key": null,
+        "round": null,
+        "name": "builder-068-t3-start-work",
+        "startedAt": "2026-10-30T21:18:21.872Z",
+        "finishedAt": "2026-10-30T21:27:22.090Z",
+        "ms": 540218,
+        "verdict": null
+      },
+      {
+        "role": "reviewer",
+        "key": "security",
+        "round": 1,
+        "name": null,
+        "startedAt": "2026-10-30T21:27:22.130Z",
+        "finishedAt": "2026-10-30T21:29:29.317Z",
+        "ms": 127187,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "code",
+        "round": 1,
+        "name": null,
+        "startedAt": "2026-10-30T21:27:22.148Z",
+        "finishedAt": "2026-10-30T21:29:14.052Z",
+        "ms": 111904,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "contract",
+        "round": 1,
+        "name": null,
+        "startedAt": "2026-10-30T21:27:22.167Z",
+        "finishedAt": "2026-10-30T21:29:27.119Z",
+        "ms": 124952,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "ui",
+        "round": 1,
+        "name": null,
+        "startedAt": "2026-10-30T21:27:22.186Z",
+        "finishedAt": "2026-10-30T21:29:22.177Z",
+        "ms": 119991,
+        "verdict": "PASS"
+      },
+      {
+        "role": "approver",
+        "key": null,
+        "round": null,
+        "name": null,
+        "startedAt": "2026-10-30T21:29:29.370Z",
+        "finishedAt": "2026-10-30T21:31:36.047Z",
+        "ms": 126677,
+        "verdict": "ESCALATE"
+      }
+    ]
+  }
+}
