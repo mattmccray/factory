@@ -83,8 +83,13 @@ branch a job merges into) have `target: null`, so the new skill falls back to re
 ```sh
 cd /path/to/project
 factory upgrade
-bun factory/cli.ts doctor
 ```
+
+Upgrade then runs the newly installed doctor (`bun factory/cli.ts doctor`) itself, every time,
+including when nothing changed: it prints its summary line, then doctor's lines. When doctor
+reports a `FAIL`, or the installed CLI doesn't run, upgrade exits 1 and its last line names the
+summary and says doctor failed. The upgraded files stay written (there is no rollback): fix what
+doctor names, then run `bun factory/cli.ts doctor` again. A refused upgrade runs no doctor.
 
 Upgrade refuses if a managed file was edited locally. Move the change into the overlay
 (`factory/config.json` or `factory/roles/<role>.md`), then rerun with `--force` to restore the
@@ -94,8 +99,10 @@ rendered bytes.
 `chore(factory): upgrade factory <old> -> <new>` commit holding exactly the files upgrade wrote or
 deleted and `factory/managed.json`; your other staged and unstaged changes (including your
 `factory/config.json` edit) stay as they were. It refuses, writing nothing, outside a git work
-tree, on a detached HEAD, or mid-merge, rebase, cherry-pick, or revert. If the commit itself fails
-(for example, a hook rejects it), the upgraded files stay written; commit them by hand.
+tree, on a detached HEAD, or mid-merge, rebase, cherry-pick, or revert. Doctor runs after the
+writes and before the commit: when it fails, no commit is made, and the last line says to commit
+the upgraded files by hand once doctor passes. If the commit itself fails (for example, a hook
+rejects it), the upgraded files stay written; commit them by hand.
 
 ## Self-upgrade of this repo
 
@@ -149,15 +156,15 @@ bun run release --dry-run    # optional: runs the gate, prints the next vX.Y.Z a
 bun run release              # runs the gate, builds the bundle, then: the version and CHANGELOG.md,
                              # chore(release): vX.Y.Z, tag vX.Y.Z, the bundle committed onto release,
                              # tag release-vX.Y.Z
-factory upgrade              # installs the release: the stamp and managed.json carry vX.Y.Z's version
-bun factory/cli.ts doctor
+factory upgrade              # installs the release (the stamp and managed.json carry vX.Y.Z's version), then runs doctor
 git add .claude factory && git commit -m "chore(factory): promote vX.Y.Z"
 bun run release:push         # pushes main, release, vX.Y.Z, and release-vX.Y.Z; prints the install line
 factory service restart      # the Andon service runs the new release
 ```
 
-`bun run promote` does the local half in one step: `factory upgrade`, the doctor, the
-`chore(factory): promote vX.Y.Z` commit, and `factory service restart`. It commits only what lies
+`bun run promote` does the local half in one step: `factory upgrade` (which runs doctor), the
+`chore(factory): promote vX.Y.Z` commit, and `factory service restart`. When `factory upgrade`
+exits non-zero, a failing doctor included, it stops there with no commit. It commits only what lies
 under `.claude/` and `factory/`, and refuses, changing nothing, off `main`, with changes outside
 those two paths, or when `factory --version` does not name this checkout as its source. It never
 pushes; run `bun run release:push` after it.

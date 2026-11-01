@@ -22,6 +22,58 @@ export interface InstallOptions {
   registry?: string;
   /** Where the installed CLI and contract come from: this source tree (the default) or the release bundle's baked files. */
   from?: ReleaseFiles;
+  /** How `upgrade` runs the installed doctor once its writes are done. Absent: the real subprocess (`runInstalledDoctor`). */
+  doctor?: DoctorRunner;
+}
+
+/**
+ * Runs the installed doctor in the project at `repo`, passing each line it prints to `line` as it
+ * prints; resolves to its exit code, and throws when it can't start.
+ */
+export type DoctorRunner = (repo: string, line: (text: string) => void) => Promise<number>;
+
+// Passes each line of `stream` to `line` as soon as it is complete; a last line with no newline is passed at the end.
+async function eachLine(stream: ReadableStream<Uint8Array>, line: (text: string) => void): Promise<void> {
+  const decoder = new TextDecoder();
+  let buf = '';
+  for await (const chunk of stream) {
+    buf += decoder.decode(chunk, { stream: true });
+    for (let nl = buf.indexOf('\n'); nl !== -1; nl = buf.indexOf('\n')) {
+      line(buf.slice(0, nl));
+      buf = buf.slice(nl + 1);
+    }
+  }
+  buf += decoder.decode();
+  if (buf !== '') line(buf);
+}
+
+/**
+ * `bun factory/cli.ts doctor` from the project root, with the Bun running this CLI
+ * (`process.execPath`): the freshly written installed CLI, so a bundle that doesn't load fails
+ * here. Its stdout and stderr lines are both passed through.
+ */
+export const runInstalledDoctor: DoctorRunner = async (repo, line) => {
+  const proc = Bun.spawn([process.execPath, 'factory/cli.ts', 'doctor'], { cwd: repo, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
+  const [, , code] = await Promise.all([eachLine(proc.stdout, line), eachLine(proc.stderr, line), proc.exited]);
+  return code;
+};
+
+// Runs the installed doctor, its lines going to `stdout`. Returns null when it passed, or why it
+// failed: any `FAIL` line, a non-zero exit, or a doctor that didn't start. `note` lines never fail.
+async function doctorFailure(repo: string, opts: InstallOptions): Promise<string | null> {
+  let fails = 0;
+  let code: number;
+  try {
+    code = await (opts.doctor ?? runInstalledDoctor)(repo, (text) => {
+      if (/^FAIL\b/.test(text)) fails += 1;
+      opts.stdout(text);
+    });
+  } catch (e) {
+    return `it did not start: ${message(e)}`;
+  }
+  if (fails > 0) return `${fails} FAIL line${fails === 1 ? '' : 's'}, exit ${code}`;
+  if (code !== 0) return `exit ${code}`;
+  return null;
 }
 
 /** The config `init` writes when the project has none. `/factory customize` will own this later. */
@@ -197,7 +249,9 @@ async function register(registry: string, repo: string, stdout: (line: string) =
 /**
  * `factory upgrade [--force] [--commit]`. `root` is the project's `factory/` directory. With
  * `commit`, the repo's git state is checked before anything is planned, and after the writes one
- * commit holds exactly the written and deleted paths and `managed.json` (when rewritten).
+ * commit holds exactly the written and deleted paths and `managed.json` (when rewritten). After
+ * the writes it prints its summary, then runs the installed doctor (`opts.doctor`), whose lines
+ * follow; a failing doctor exits 1 with the files left written and, with `commit`, no commit.
  */
 export async function upgrade(root: string, opts: InstallOptions): Promise<void> {
   const repo = dirname(resolve(root));
@@ -253,12 +307,18 @@ export async function upgrade(root: string, opts: InstallOptions): Promise<void>
   const rewritten = !manifestData.equals(Buffer.from(next, 'utf8'));
   if (rewritten) await writeAtomic(manifestAt, next);
   const summary = `upgraded factory ${old.version} -> ${VERSION}: ${writes.length} written, ${deletes.length} removed`;
-  if (opts.commit !== true) {
-    opts.stdout(summary);
-    return;
-  }
+  opts.stdout(summary);
 
-  // The commit: no rollback on failure. The written install is consistent and passes doctor.
+  // Doctor, after every upgrade that completed its writes (none written included): the installed
+  // CLI that was just written checks the install. A failure exits 1 with no rollback, and no commit.
+  const failed = await doctorFailure(repo, opts);
+  if (failed !== null) {
+    const byHand = opts.commit === true ? '; commit the upgraded files by hand once doctor passes' : '';
+    throw new Error(`upgrade: ${summary}, but doctor failed (${failed})${byHand}`);
+  }
+  if (opts.commit !== true) return;
+
+  // The commit: no rollback on failure. The written install is consistent and passed doctor.
   const written = writes.map((w) => w.rel);
   const changed = rewritten ? [...written, MANIFEST] : written;
   let sha: string | null;
@@ -267,6 +327,5 @@ export async function upgrade(root: string, opts: InstallOptions): Promise<void>
   } catch (e) {
     throw new Error(`upgrade: ${summary}, but the commit failed: ${message(e)}; commit the upgraded files by hand`);
   }
-  opts.stdout(summary);
   opts.stdout(sha === null ? 'nothing to commit' : `committed ${sha}`);
 }
