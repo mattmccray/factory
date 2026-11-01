@@ -1,4 +1,4 @@
-// factory 0.3.0 · managed file, do not edit: it is replaced on upgrade. Project settings go in the overlay: factory/config.json
+// factory 0.4.0 · managed file, do not edit: it is replaced on upgrade. Project settings go in the overlay: factory/config.json
 // packages/cli/src/core.ts
 import { readFile as readFile5 } from "fs/promises";
 import { dirname as dirname7, join as join9, resolve as resolve6 } from "path";
@@ -6,6 +6,7 @@ import { dirname as dirname7, join as join9, resolve as resolve6 } from "path";
 // packages/contract/src/contract.ts
 var WORKING_STAGES = ["claimed", "spec", "build", "review", "approve"];
 var workingStage = (stage) => WORKING_STAGES.find((w) => w === stage) ?? null;
+var reworkStage = (stoppedFrom) => stoppedFrom === "spec" || stoppedFrom === "claimed" ? "spec" : "build";
 var JOB_KINDS = ["member", "sync", "fix"];
 var DEFAULT_MAX_PARALLEL = 3;
 function epicMaxParallel(config) {
@@ -363,7 +364,7 @@ function parseEventInput(type, fields, ctx) {
 }
 var CONFLICT_LIMIT = 2;
 function derive(prior) {
-  const s = { stage: null, round: 0, maxRound: 0, reviewers: [], finished: new Set, humanApproved: false, conflicts: 0 };
+  const s = { stage: null, round: 0, maxRound: 0, reviewers: [], finished: new Set, humanApproved: false, conflicts: 0, stoppedFrom: null };
   for (const e of prior) {
     switch (e.type) {
       case "job.claimed":
@@ -384,11 +385,13 @@ function derive(prior) {
           s.finished.add(e.key);
         break;
       case "job.escalated":
+        s.stoppedFrom = stoppedAt(s.stage);
         s.stage = "needs-human";
         s.humanApproved = false;
         break;
       case "job.reworked":
-        s.stage = "build";
+        s.stage = reworkStage(s.stoppedFrom);
+        s.stoppedFrom = null;
         s.maxRound = e.maxRound;
         s.humanApproved = false;
         break;
@@ -396,6 +399,8 @@ function derive(prior) {
         s.humanApproved = true;
         break;
       case "merge.failed":
+        if (s.stage !== "needs-human")
+          s.stoppedFrom = stoppedAt(s.stage);
         s.stage = "needs-human";
         s.humanApproved = false;
         break;
@@ -417,6 +422,7 @@ function derive(prior) {
   }
   return s;
 }
+var stoppedAt = (stage) => stage === null ? null : workingStage(stage);
 function fail(msg) {
   throw new Error(msg);
 }
@@ -1357,7 +1363,8 @@ function apply(s, e) {
       s.decision = null;
       enterStage(s, "build", e.ts);
       return;
-    case "job.reworked":
+    case "job.reworked": {
+      const next = reworkStage(s.stoppedFrom);
       s.reworks = e.k;
       s.stoppedBy = null;
       s.stoppedFrom = null;
@@ -1365,8 +1372,9 @@ function apply(s, e) {
       s.decision = null;
       s.note = "";
       s.session = storedSession(e.session) ?? s.session;
-      enterStage(s, "build", e.ts);
+      enterStage(s, next, e.ts);
       return;
+    }
     case "job.human-approved":
       s.decision = "APPROVE (human)";
       s.session = storedSession(e.session) ?? s.session;
