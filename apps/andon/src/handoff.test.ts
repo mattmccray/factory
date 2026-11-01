@@ -126,9 +126,9 @@ describe('086 AC4: the repository a draft names', () => {
     }
   });
 
-  test('a self-hosted origin with a github remote on GitHub is not draftable; a GitHub upstream beside it is', () => {
+  test('a self-hosted origin with a github remote on GitHub is not draftable (091: not-primary); a GitHub upstream beside it is', () => {
     const selfHosted = project('aaaaaaaaaaaa', 'rocinante', [repo('github', 'github.com', 'mattmccray', 'infra'), repo('origin', 'localhost:222', 'mattm', 'infra')]);
-    expect(draftTarget(selfHosted, [selfHosted])).toEqual({ kind: 'no-github-remote' });
+    expect(draftTarget(selfHosted, [selfHosted])).toEqual({ kind: 'not-primary', primary: 'origin', github: 'github' });
     const none = project('aaaaaaaaaaaa', 'rocinante', []);
     expect(draftTarget(none, [none])).toEqual({ kind: 'no-github-remote' });
     const withUpstream = project('aaaaaaaaaaaa', 'rocinante', [repo('origin', 'localhost:222', 'mattm', 'infra'), repo('upstream', 'github.com', 'mattmccray', 'infra')]);
@@ -158,6 +158,42 @@ describe('086 AC4: the repository a draft names', () => {
     expect(machineLabel({ machine: null, machineName: 'rocinante' })).toBe('rocinante');
     expect(machineLabel({ machine: 'studio', machineName: null })).toBe('studio');
     expect(machineLabel({ machine: null, machineName: null })).toBe('this Mac');
+  });
+});
+
+describe('091 AC1: a GitHub remote that is not the primary one', () => {
+  const INFRA = [repo('gitea', 'localhost:222', 'mattm', 'infra'), repo('origin', 'localhost:222', 'mattm', 'infra'), repo('github', 'github.com', 'mattmccray', 'infra')];
+
+  test("Infra's remotes (gitea and origin self-hosted, github on GitHub) name origin as primary and github as the fix", () => {
+    const infra = project('aaaaaaaaaaaa', 'moya', INFRA);
+    expect(draftTarget(infra, [infra])).toEqual({ kind: 'not-primary', primary: 'origin', github: 'github' });
+  });
+
+  test('with two linkable non-primary remotes, the first by remote name', () => {
+    const two = project('aaaaaaaaaaaa', 'moya', [repo('zeta', 'github.com', 'a', 'z'), repo('origin', 'localhost:222', 'mattm', 'infra'), repo('hub', 'GitHub.com', 'a', 'h'), repo('bad', 'github.com', 'a&b', 'c')]);
+    expect(draftTarget(two, [two])).toEqual({ kind: 'not-primary', primary: 'origin', github: 'hub' });
+    // no upstream or origin: the primary is the first by name, and the GitHub one is another
+    const named = project('aaaaaaaaaaaa', 'moya', [repo('mirror', 'github.com', 'a', 'm'), repo('gitea', 'localhost:222', 'mattm', 'infra')]);
+    expect(draftTarget(named, [named])).toEqual({ kind: 'not-primary', primary: 'gitea', github: 'mirror' });
+  });
+
+  test('no repositories, or only non-allowlisted hosts, is still no-github-remote', () => {
+    for (const repos of [
+      [],
+      [repo('origin', 'gitlab.com', 'a', 'b')],
+      [repo('origin', 'bitbucket.org', 'a', 'b'), repo('gitea', 'localhost:222', 'a', 'b')],
+      [repo('origin', 'localhost:222', 'mattm', 'infra'), repo('github', 'github.com.evil.com', 'a', 'b')],
+    ]) {
+      const p = project('aaaaaaaaaaaa', 'moya', repos);
+      expect({ repos, t: draftTarget(p, [p]) }).toEqual({ repos, t: { kind: 'no-github-remote' } });
+    }
+  });
+
+  test('upstream or origin on GitHub is still a repo target', () => {
+    const up = project('aaaaaaaaaaaa', 'moya', [...INFRA, repo('upstream', 'github.com', 'mattmccray', 'infra')]);
+    expect(draftTarget(up, [up])).toEqual({ kind: 'repo', repo: 'mattmccray/infra' });
+    const origin = project('aaaaaaaaaaaa', 'moya', [repo('origin', 'github.com', 'mattmccray', 'infra'), repo('gitea', 'localhost:222', 'mattm', 'infra')]);
+    expect(draftTarget(origin, [origin])).toEqual({ kind: 'repo', repo: 'mattmccray/infra' });
   });
 });
 

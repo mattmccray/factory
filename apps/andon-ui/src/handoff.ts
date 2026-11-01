@@ -30,9 +30,19 @@ export interface SeveralMachines {
   machines: string[];
 }
 
+/** The project's GitHub remote isn't T3 Code's primary one: nothing opened, copy only (`primary`:
+ *  the primary remote's name; `github`: the GitHub remote to make `upstream`). */
+export interface GithubNotPrimary {
+  outcome: 'github-not-primary';
+  project: string;
+  primary: string;
+  github: string;
+}
+
 /** What the Mac app did: a draft opened, a thread sent, copy only, no GitHub remote for a draft, a
- *  draft opened in place of a send (a remote project), or a repository on several machines. */
-export type HandoffOutcome = 'drafted' | 'sent' | 'copy-only' | 'no-github-remote' | DraftedNotSent | SeveralMachines;
+ *  draft opened in place of a send (a remote project), a repository on several machines, or a
+ *  GitHub remote that isn't the primary one. */
+export type HandoffOutcome = 'drafted' | 'sent' | 'copy-only' | 'no-github-remote' | DraftedNotSent | SeveralMachines | GithubNotPrimary;
 type PlainOutcome = Extract<HandoffOutcome, string>;
 const OUTCOMES: readonly PlainOutcome[] = ['drafted', 'sent', 'copy-only', 'no-github-remote'];
 
@@ -43,9 +53,9 @@ const sameKeys = (r: Record<string, unknown>, want: readonly string[]): boolean 
 };
 
 /** The outcome in a backend answer, or null for anything else (a refused call's null, or junk): one
- *  of the four strings, `{ outcome: 'drafted-not-sent', machine }`, or `{ outcome:
- *  'several-machines', project, machines }` (a non-empty list), each with exactly those fields of
- *  non-empty strings. */
+ *  of the four strings, `{ outcome: 'drafted-not-sent', machine }`, `{ outcome: 'several-machines',
+ *  project, machines }` (a non-empty list), or `{ outcome: 'github-not-primary', project, primary,
+ *  github }`, each with exactly those fields of non-empty strings. */
 export function narrowOutcome(data: unknown): HandoffOutcome | null {
   const plain = OUTCOMES.find((o) => o === data);
   if (plain !== undefined) return plain;
@@ -60,6 +70,11 @@ export function narrowOutcome(data: unknown): HandoffOutcome | null {
       names.push(m);
     }
     return { outcome: 'several-machines', project: data.project, machines: names };
+  }
+  if (data.outcome === 'github-not-primary' && sameKeys(data, ['github', 'outcome', 'primary', 'project'])) {
+    const { project, primary, github } = data;
+    if (!nonEmpty(project) || !nonEmpty(primary) || !nonEmpty(github)) return null;
+    return { outcome: 'github-not-primary', project, primary, github };
   }
   return null;
 }
@@ -110,7 +125,9 @@ export function joinNames(names: readonly string[]): string {
  * Mac app did that; "Opened a draft in T3 Code (sending can't reach <machine>)" when send mode opened
  * a remote project's draft instead; "No GitHub remote; copied …" when a draft had no GitHub
  * primary remote; "<project> is on <m1> and <m2>; copied …" when its repository is on several
- * machines (so no draft could pick the right one); otherwise (copy
+ * machines (so no draft could pick the right one); "T3 Code knows <project> by its <primary> remote,
+ * not GitHub; make <github> its upstream remote to draft. Copied …" when its GitHub remote isn't
+ * T3 Code's primary one; otherwise (copy
  * only, no `t3`, a refused call, a browser's null) "Copied …" as before, or, for a remote project
  * (`machine`, the machine it is on; brief andon-machines-ui), "Copied. Run it on <machine>". A
  * failed copy says so, unless T3 Code got the command anyway.
@@ -121,6 +138,8 @@ export function handoffToast(copied: boolean, outcome: HandoffOutcome | null, co
   if (typeof outcome === 'object' && outcome?.outcome === 'drafted-not-sent') return { text: `Opened a draft in T3 Code (sending can't reach ${outcome.machine})`, ok: true };
   if (!copied) return { text: COPY_FAILED, ok: false };
   if (outcome === 'no-github-remote') return { text: `No GitHub remote; copied ${command}`, ok: true };
+  if (typeof outcome === 'object' && outcome?.outcome === 'github-not-primary')
+    return { text: `T3 Code knows ${outcome.project} by its ${outcome.primary} remote, not GitHub; make ${outcome.github} its upstream remote to draft. Copied ${command}`, ok: true };
   if (typeof outcome === 'object' && outcome?.outcome === 'several-machines') return { text: `${outcome.project} is on ${joinNames(outcome.machines)}; copied ${command}`, ok: true };
   if (machine !== null) return { text: remoteCopiedText(machine), ok: true };
   return { text: copiedText(command), ok: true };
