@@ -1,19 +1,20 @@
 import { describe, expect, test } from 'bun:test';
-import { HAND_OFF_METHOD, JOB_ID, MAIN_WINDOW_ID, MAX_COMMAND, draftFailureText, draftLink, factoryCommand, fromMainWindow, githubRepo, handoffRequest, originArgv, sendArgv, sendFailureText } from './handoff';
+import { HAND_OFF_METHOD, JOB_ID, MAIN_WINDOW_ID, MAX_COMMAND, T3_HOSTS, draftFailureText, draftLink, draftTarget, factoryCommand, fromMainWindow, handoffRequest, linkable, machineLabel, primaryRepository, sameRepository, sendArgv, sendFailureText } from './handoff';
+import type { AppRepository } from './state';
 import type { MenuProject } from './projectmenu';
 
 const PID = 'aaaaaaaaaaaa';
 const ROOT = '/Users/me/code/factory';
 const PROJECTS: MenuProject[] = [
-  { id: PID, name: 'factory', root: ROOT, machine: null },
-  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null, machine: null },
-  { id: 'cccccccccccc', name: 'relative', root: 'code/relative', machine: null },
+  { id: PID, name: 'factory', root: ROOT, machine: null, machineName: null, repositories: [] },
+  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null, machine: null, machineName: null, repositories: [] },
+  { id: 'cccccccccccc', name: 'relative', root: 'code/relative', machine: null, machineName: null, repositories: [] },
 ];
 const JOB = '036-t3-handoff';
 
 describe('036 AC1: the hand-off request', () => {
   test('a valid approve, rework, or abandon gets the project, the job, the action, and the built command', () => {
-    expect(handoffRequest({ project: PID, job: JOB, action: 'approve' }, PROJECTS)).toEqual({ project: { id: PID, name: 'factory', root: ROOT, machine: null }, job: JOB, action: 'approve', command: '/factory approve 036-t3-handoff' });
+    expect(handoffRequest({ project: PID, job: JOB, action: 'approve' }, PROJECTS)).toEqual({ project: { id: PID, name: 'factory', root: ROOT, machine: null, machineName: null, repositories: [] }, job: JOB, action: 'approve', command: '/factory approve 036-t3-handoff' });
     expect(handoffRequest({ project: PID, job: JOB, action: 'rework', note: 'add the test' }, PROJECTS)?.command).toBe('/factory rework 036-t3-handoff "add the test"');
     expect(handoffRequest({ project: PID, job: JOB, action: 'abandon', note: ' superseded\n' }, PROJECTS)?.command).toBe('/factory abandon 036-t3-handoff "superseded"');
   });
@@ -85,53 +86,82 @@ describe('036 AC1: the hand-off request', () => {
   });
 });
 
-describe('036 AC3: the origin remote as a GitHub repo', () => {
-  test('https, scp-style ssh, and ssh:// github.com URLs, with or without .git, give owner/name', () => {
-    const good: [string, string][] = [
-      ['https://github.com/mattmccray/factory', 'mattmccray/factory'],
-      ['https://github.com/mattmccray/factory.git', 'mattmccray/factory'],
-      ['https://github.com/mattmccray/factory.git\n', 'mattmccray/factory'],
-      ['git@github.com:mattmccray/factory', 'mattmccray/factory'],
-      ['git@github.com:mattmccray/factory.git\n', 'mattmccray/factory'],
-      ['ssh://git@github.com/mattmccray/factory', 'mattmccray/factory'],
-      ['ssh://git@github.com/mattmccray/factory.git', 'mattmccray/factory'],
-      ['https://github.com/My-Org_1/some.repo.git', 'My-Org_1/some.repo'],
-    ];
-    for (const [url, repo] of good) expect({ url, repo: githubRepo(url) }).toEqual({ url, repo });
+const repo = (remote: string, host: string, owner: string, name: string): AppRepository => ({ remote, host, owner, name });
+const project = (id: string, machineName: string | null, repositories: AppRepository[]): MenuProject => ({
+  id,
+  name: 'factory',
+  root: '/r',
+  machine: id.includes('@') ? (id.split('@')[1] ?? null) : null,
+  machineName,
+  repositories,
+});
+
+describe('086 AC4: the repository a draft names', () => {
+  test("T3 Code's primary remote: upstream, else origin, else the first by remote name; none with none", () => {
+    const up = repo('upstream', 'github.com', 'a', 'up');
+    const origin = repo('origin', 'github.com', 'a', 'origin');
+    const zeta = repo('zeta', 'github.com', 'a', 'zeta');
+    const beta = repo('beta', 'github.com', 'a', 'beta');
+    expect(primaryRepository([origin, up, zeta])).toEqual(up);
+    expect(primaryRepository([zeta, origin, beta])).toEqual(origin);
+    expect(primaryRepository([zeta, beta])).toEqual(beta);
+    expect(primaryRepository([])).toBeNull();
   });
 
-  test('another host, a local path, empty output, or a failed git gives null', () => {
-    const bad: (string | null)[] = [
-      null,
-      '',
-      '\n',
-      'https://gitlab.com/mattmccray/factory.git',
-      'https://github.com.evil.com/mattmccray/factory',
-      'https://evil.com/github.com/mattmccray/factory',
-      'git@gitlab.com:mattmccray/factory.git',
-      'ssh://git@gitlab.com/mattmccray/factory.git',
-      '/Users/me/code/factory',
-      '../factory',
-      'file:///Users/me/factory.git',
-      'http://github.com/mattmccray/factory',
-      'https://github.com/mattmccray',
-      'https://github.com/mattmccray/factory/tree/main',
-      'https://github.com/matt mccray/factory',
-      'https://github.com/mattmccray/fac&tory',
-      'https://github.com/mattmccray/factory?x=1',
-      'https://user@github.com/mattmccray/factory',
-      'https://github.com/mattmccray/.git',
-      'https://github.com/../factory',
-      ' https://github.com/mattmccray/factory',
-      'https://github.com/mattmccray/factory\nhttps://github.com/a/b',
-    ];
-    for (const url of bad) expect({ url, repo: githubRepo(url) }).toEqual({ url, repo: null });
+  test('the allowlist is github.com only; a link needs plain owner and name parts', () => {
+    expect(T3_HOSTS).toEqual(['github.com']);
+    expect(linkable(repo('origin', 'github.com', 'mattmccray', 'factory'))).toBe(true);
+    expect(linkable(repo('origin', 'GitHub.com', 'My-Org_1', 'some.repo'))).toBe(true);
+    for (const r of [
+      repo('origin', 'bitbucket.org', 'a', 'b'),
+      repo('origin', 'localhost:222', 'mattm', 'infra'),
+      repo('origin', 'git.cafe', 'a', 'b'),
+      repo('origin', 'github.com.evil.com', 'a', 'b'),
+      repo('origin', 'github.com', 'a&b', 'c'),
+      repo('origin', 'github.com', 'a', 'b#c'),
+      repo('origin', 'github.com', '..', 'b'),
+      repo('origin', 'github.com', 'a', 'b/c'),
+    ]) {
+      expect({ r, ok: linkable(r) }).toEqual({ r, ok: false });
+    }
   });
 
-  test('git is asked for the origin of the root, as an argv', () => {
-    expect(originArgv(ROOT)).toEqual(['git', '-C', ROOT, 'remote', 'get-url', 'origin']);
+  test('a self-hosted origin with a github remote on GitHub is not draftable; a GitHub upstream beside it is', () => {
+    const selfHosted = project('aaaaaaaaaaaa', 'rocinante', [repo('github', 'github.com', 'mattmccray', 'infra'), repo('origin', 'localhost:222', 'mattm', 'infra')]);
+    expect(draftTarget(selfHosted, [selfHosted])).toEqual({ kind: 'no-github-remote' });
+    const none = project('aaaaaaaaaaaa', 'rocinante', []);
+    expect(draftTarget(none, [none])).toEqual({ kind: 'no-github-remote' });
+    const withUpstream = project('aaaaaaaaaaaa', 'rocinante', [repo('origin', 'localhost:222', 'mattm', 'infra'), repo('upstream', 'github.com', 'mattmccray', 'infra')]);
+    expect(draftTarget(withUpstream, [withUpstream])).toEqual({ kind: 'repo', repo: 'mattmccray/infra' });
   });
 
+  test('a primary repository matched by another listed project, local or remote, without case, is on several machines', () => {
+    const here = project('aaaaaaaaaaaa', 'rocinante', [repo('origin', 'github.com', 'mattmccray', 'factory')]);
+    const there = project('bbbbbbbbbbbb@studio', 'studio', [repo('upstream', 'GITHUB.COM', 'MattMcCray', 'Factory')]);
+    const moya = project('cccccccccccc@moya', 'moya', [repo('origin', 'github.com', 'mattmccray', 'factory')]);
+    const other = project('dddddddddddd@moya', 'moya', [repo('origin', 'github.com', 'mattmccray', 'notes')]);
+    // only as a non-primary remote: not a match
+    const secondary = project('eeeeeeeeeeee@studio', 'studio', [repo('origin', 'github.com', 'mattmccray', 'other'), repo('upstream', 'github.com', 'x', 'y'), repo('zfork', 'github.com', 'mattmccray', 'factory')]);
+    expect(sameRepository(repo('a', 'github.com', 'mattmccray', 'factory'), repo('b', 'GitHub.com', 'MATTMCCRAY', 'FACTORY'))).toBe(true);
+    expect(sameRepository(repo('a', 'github.com', 'o', 'n'), repo('a', 'gitlab.com', 'o', 'n'))).toBe(false);
+    expect(draftTarget(here, [here, other, secondary])).toEqual({ kind: 'repo', repo: 'mattmccray/factory' });
+    expect(draftTarget(here, [here, there])).toEqual({ kind: 'several-machines', machines: ['rocinante', 'studio'] });
+    expect(draftTarget(there, [here, there])).toEqual({ kind: 'several-machines', machines: ['rocinante', 'studio'] });
+    expect(draftTarget(moya, [here, other, there, moya])).toEqual({ kind: 'several-machines', machines: ['rocinante', 'studio', 'moya'] });
+    // two checkouts on one machine name it once
+    const twin = project('ffffffffffff', 'rocinante', [repo('origin', 'github.com', 'mattmccray', 'factory')]);
+    expect(draftTarget(here, [here, twin, there])).toEqual({ kind: 'several-machines', machines: ['rocinante', 'studio'] });
+  });
+
+  test("a toast's machine name: the entry's, else the id's, else this Mac", () => {
+    expect(machineLabel({ machine: 'studio', machineName: 'studio' })).toBe('studio');
+    expect(machineLabel({ machine: null, machineName: 'rocinante' })).toBe('rocinante');
+    expect(machineLabel({ machine: 'studio', machineName: null })).toBe('studio');
+    expect(machineLabel({ machine: null, machineName: null })).toBe('this Mac');
+  });
+});
+
+describe('036 AC3: the prompt link', () => {
   test('the prompt link carries the url-encoded command and the repo', () => {
     expect(draftLink('/factory approve 036-t3-handoff', 'mattmccray/factory')).toBe('t3code://new?prompt=%2Ffactory%20approve%20036-t3-handoff&repo=mattmccray/factory');
     const cmd = factoryCommand('rework', JOB, 'a & b = "c"?#d');

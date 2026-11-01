@@ -79,7 +79,7 @@ import { aboutAnswer, fromAboutWindow, noParams } from './about';
 import type { About } from './about';
 import { DEFAULT_HANDOFF_MODE, T3_HANDOFF_KEY, fromSettingsWindow, settingChange, settingsSnapshot, storedMode, viewStateParams } from './settings';
 import type { HandoffMode, Settings } from './settings';
-import { draftFailureText, draftLink, fromMainWindow, githubRepo, handoffRequest, originArgv, sendArgv, sendFailureText } from './handoff';
+import { draftFailureText, draftLink, draftTarget, fromMainWindow, handoffRequest, machineLabel, sendArgv, sendFailureText } from './handoff';
 import type { HandoffOutcome } from './handoff';
 import { backlogPath, needsBacklog, startArgv, startShape, startWorkFrom } from './startwork';
 import { APP_NAMES, BUNDLE_IDS, GHOSTTY_APP, OPEN_IN_APPS, VSCODE_APP, appFallbacks, exitReason, failureText, mdfindHit, mdfindQuery, menuProject, menuRequest, projectMenuItems, resolveAction, t3Candidates } from './projectmenu';
@@ -911,26 +911,25 @@ export async function setSetting(params: unknown, app: MacApp, meta: unknown): P
 // ---- handing a needs-human command to T3 Code (036) ----
 // Answered only when Tiny's api meta names the main window (handoff.ts `fromMainWindow`). The page
 // has already copied its own command; this builds the command again from the checked request, and,
-// as the T3 Code setting says, opens it as a draft (by the project's GitHub origin) or sends it to a
-// new thread (in the project folder), each as an argv with no shell. A request that fails a check
-// does nothing and answers null. A remote project's (another machine's) request that passes its
-// checks answers "copy-only" in every mode: its root isn't on this Mac, so nothing reads its
-// `origin` or runs anything with it (starting threads elsewhere is a later member's).
+// as the T3 Code setting says, opens it as a draft or sends it to a new thread (in the project
+// folder), each as an argv with no shell. A request that fails a check does nothing and answers
+// null. A draft names the project's repository from its listed `repositories` (handoff.ts
+// `draftTarget`: T3 Code's primary remote, on the allowlist, and no other listed project's), for a
+// local or a remote project alike; no `git` runs here. A remote project's root isn't on this Mac,
+// so send mode opens its draft instead (`t3 thread start` reaches only this Mac's T3 Code), and
+// nothing ever runs with its root.
 
 /** What the hand-off needs from the host; tests pass fakes. */
 export interface HandoffHost {
   projects(): readonly MenuProject[];
   findT3(): Promise<string | null>;
-  /** A project root's `origin` URL (git's output), or null when git fails. */
-  origin(root: string): Promise<string | null>;
   run(argv: string[]): Promise<RunResult>;
 }
 
-/** The real host: the listed projects, the `t3` lookup, git, and the runner. */
+/** The real host: the listed projects, the `t3` lookup, and the runner. */
 export const hostHandoff: HandoffHost = {
   projects: () => listedProjects(),
   findT3: () => findT3(),
-  origin: (root) => output(originArgv(root)),
   run: (argv) => run(argv),
 };
 
@@ -944,36 +943,49 @@ async function notifyFailure(app: MacApp, text: string): Promise<void> {
 let handing = false;
 
 /**
+ * Hands `command` to T3 Code for a checked project, by the mode, once `t3` is found: send mode for
+ * a local project runs `send` (its `t3 thread start` argv); draft mode, and send mode for a remote
+ * project, open the draft by `draftTarget` (answering "no-github-remote" or "several-machines", with
+ * nothing run, when it can't). A failed open or send notifies, and answers "copy-only" (the page copied).
+ */
+async function deliver(app: MacApp, host: HandoffHost, mode: 'draft' | 'send', project: MenuProject, command: string, send: string[]): Promise<HandoffOutcome> {
+  if (mode === 'send' && !isRemote(project)) {
+    const r = await host.run(send);
+    if (r.ok) return 'sent';
+    await notifyFailure(app, sendFailureText(r.reason));
+    return 'copy-only';
+  }
+  const target = draftTarget(project, host.projects());
+  if (target.kind === 'no-github-remote') return 'no-github-remote';
+  if (target.kind === 'several-machines') return { outcome: 'several-machines', project: project.name, machines: target.machines };
+  const r = await host.run(['open', draftLink(command, target.repo)]);
+  if (!r.ok) {
+    await notifyFailure(app, draftFailureText(r.reason));
+    return 'copy-only';
+  }
+  return mode === 'send' ? { outcome: 'drafted-not-sent', machine: machineLabel(project) } : 'drafted';
+}
+
+/**
  * The main window's hand-off: the request checked (handoff.ts `handoffRequest`), then, by the T3 Code
- * setting, a draft opened (`open <prompt link>`, only with a GitHub `repo`) or the command sent
- * (`<t3> thread start --title "<action> <job>" <root> <command>`). Copy mode, no `t3`, or a remote
- * project: nothing runs, "copy-only". A failed open or send notifies, and answers "copy-only" (the
- * page copied). Null, with nothing run, opened, or notified, for any other window, a request that
- * fails a check, or a hand-off already running.
+ * setting, a draft opened (`open <prompt link>`, only with a unique GitHub `repo`; `deliver`) or,
+ * for a local project, the command sent (`<t3> thread start --title "<action> <job>" <root>
+ * <command>`); a remote project in send mode gets the draft instead. Copy mode, or no `t3`: nothing
+ * runs, "copy-only". A failed open or send notifies, and answers "copy-only" (the page copied).
+ * Null, with nothing run, opened, or notified, for any other window, a request that fails a check,
+ * or a hand-off already running.
  */
 export async function handOff(params: unknown, app: MacApp, meta: unknown, host: HandoffHost = hostHandoff): Promise<HandoffOutcome | null> {
   if (!fromMainWindow(meta)) return null;
   const h = handoffRequest(params, host.projects());
   if (h === null || handing) return null;
-  if (isRemote(h.project)) return 'copy-only'; // its root is on another machine
   handing = true;
   try {
     const mode = await readHandoffMode(app);
     if (mode === 'copy') return 'copy-only';
     const t3 = await host.findT3();
     if (t3 === null) return 'copy-only';
-    if (mode === 'draft') {
-      const repo = githubRepo(await host.origin(h.project.root));
-      if (repo === null) return 'no-github-remote';
-      const r = await host.run(['open', draftLink(h.command, repo)]);
-      if (r.ok) return 'drafted';
-      await notifyFailure(app, draftFailureText(r.reason));
-      return 'copy-only';
-    }
-    const r = await host.run(sendArgv(t3, h));
-    if (r.ok) return 'sent';
-    await notifyFailure(app, sendFailureText(r.reason));
-    return 'copy-only';
+    return await deliver(app, host, mode, h.project, h.command, sendArgv(t3, h));
   } finally {
     handing = false;
   }
@@ -984,7 +996,7 @@ export async function handOff(params: unknown, app: MacApp, meta: unknown, host:
 // copied its own command; this checks the request (startwork.ts), reads the service's live
 // `GET /projects/<pid>/backlog` over HTTP when the action names an item, builds the command again
 // from the service's copy, and then drafts, sends, or only copies exactly as `handOff` does (a remote
-// project's start, once checked, only copies: the backlog is read through the hub, as any read is).
+// project's backlog is read through the hub, as any read is; its start drafts, never sends).
 
 /** What starting work needs from the host: the hand-off's, plus the project's live backlog. */
 export interface StartWorkHost extends HandoffHost {
@@ -1008,8 +1020,9 @@ let starting = false;
  * The main window's start: the request's shape checked (startwork.ts `startShape`), the backlog
  * fetched when its action names an item, the item checked in its group and the command built
  * (`startWorkFrom`), then, by the T3 Code setting, a draft opened (`open <prompt link>`, only with a
- * GitHub `repo`) or the command sent (`<t3> thread start --title <title> <root> <command>`). Copy mode,
- * no `t3`, or a remote project: nothing runs, "copy-only". A failed open or send notifies, and answers "copy-only".
+ * unique GitHub `repo`) or, for a local project, the command sent (`<t3> thread start --title <title>
+ * <root> <command>`), exactly as `handOff` (`deliver`). Copy mode, or no `t3`: nothing runs,
+ * "copy-only". A failed open or send notifies, and answers "copy-only".
  * Null, with nothing run, opened, or notified, for any other window, a request that fails a check, a
  * backlog fetch that fails, or a start already running.
  */
@@ -1030,23 +1043,11 @@ export async function startWork(params: unknown, app: MacApp, meta: unknown, hos
     }
     const w = startWorkFrom(shape, backlog);
     if (w === null) return null;
-    if (isRemote(w.project)) return 'copy-only'; // its root is on another machine
     const mode = await readHandoffMode(app);
     if (mode === 'copy') return 'copy-only';
     const t3 = await host.findT3();
     if (t3 === null) return 'copy-only';
-    if (mode === 'draft') {
-      const repo = githubRepo(await host.origin(w.project.root));
-      if (repo === null) return 'no-github-remote';
-      const r = await host.run(['open', draftLink(w.command, repo)]);
-      if (r.ok) return 'drafted';
-      await notifyFailure(app, draftFailureText(r.reason));
-      return 'copy-only';
-    }
-    const r = await host.run(startArgv(t3, w));
-    if (r.ok) return 'sent';
-    await notifyFailure(app, sendFailureText(r.reason));
-    return 'copy-only';
+    return await deliver(app, host, mode, w.project, w.command, startArgv(t3, w));
   } finally {
     starting = false;
   }

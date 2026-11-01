@@ -32,9 +32,11 @@ function gitEnv(): Record<string, string> {
 }
 
 const READ_ONLY = new Set(['rev-parse', 'ls-tree', 'cat-file']);
+// `remote` lists only: exactly `git remote -v` (repositories.ts), never a subcommand that writes.
+const readOnly = (args: readonly string[]): boolean => READ_ONLY.has(args[0] ?? '') || (args.length === 2 && args[0] === 'remote' && args[1] === '-v');
 
 export const spawnGit: GitRunner = async (args, { cwd, input }) => {
-  if (!READ_ONLY.has(args[0] ?? '')) throw new Error(`git ${args[0] ?? ''}: not a read-only command`);
+  if (!readOnly(args)) throw new Error(`git ${args[0] ?? ''}: not a read-only command`);
   const proc = Bun.spawn(['git', ...args], {
     cwd,
     stdin: input === undefined ? 'ignore' : new Blob([input]),

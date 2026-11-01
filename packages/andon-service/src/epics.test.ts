@@ -290,7 +290,8 @@ describe('archived epics (AC2)', () => {
     // The archive was read once: one ls-tree and one cat-file --batch for jobs and epics together.
     expect(calls.filter((c) => c[0] === 'ls-tree')).toHaveLength(1);
     expect(calls.filter((c) => c[0] === 'cat-file')).toHaveLength(1);
-    for (const c of calls) expect(['rev-parse', 'ls-tree', 'cat-file']).toContain(c[0] ?? '');
+    // Every call is read-only: the archive's three commands, or `remote -v` for the project's repositories.
+    for (const c of calls) expect(['rev-parse', 'ls-tree', 'cat-file', 'remote -v']).toContain(c[0] === 'remote' ? c.join(' ') : c[0] ?? '');
   });
 });
 

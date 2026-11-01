@@ -7,7 +7,7 @@ import { COPY_FAILED, HAND_OFF_METHOD, handOffCaller, handoffToast, narrowOutcom
 import type { HandoffOutcome, HandoffRequest } from './handoff';
 import { abandonCommand, approveCommand, reworkCommand } from './inspector';
 import { shellMode } from './sidebar';
-import { remoteCopiedText } from './handoff';
+import { joinNames, remoteCopiedText } from './handoff';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -153,5 +153,60 @@ describe('a remote project\'s hand-off (brief andon-machines-ui, AC7)', () => {
     const app = readFileSync(join(import.meta.dir, 'App.svelte'), 'utf8');
     expect(app).toContain('handoffToast(copied, outcome, command, remoteOfId(ui, req.project))');
     expect(app).toContain('copyThenStart(write, startWork, item.req, item.command, remoteOfId(ui, item.req.project))');
+  });
+});
+
+describe('086 AC7: the remote hand-off outcomes', () => {
+  const cmd = '/factory approve 007-x';
+  const unsent: HandoffOutcome = { outcome: 'drafted-not-sent', machine: 'moya' };
+  const several: HandoffOutcome = { outcome: 'several-machines', project: 'factory', machines: ['rocinante', 'studio'] };
+
+  test('the two new outcomes narrow from exactly their shape; junk still narrows to null', () => {
+    expect(narrowOutcome(unsent)).toEqual({ outcome: 'drafted-not-sent', machine: 'moya' });
+    expect(narrowOutcome(several)).toEqual({ outcome: 'several-machines', project: 'factory', machines: ['rocinante', 'studio'] });
+    const junk: unknown[] = [
+      { outcome: 'drafted-not-sent' },
+      { outcome: 'drafted-not-sent', machine: '' },
+      { outcome: 'drafted-not-sent', machine: 7 },
+      { outcome: 'drafted-not-sent', machine: 'moya', extra: 1 },
+      { outcome: 'several-machines', project: 'factory' },
+      { outcome: 'several-machines', project: 'factory', machines: [] },
+      { outcome: 'several-machines', project: 'factory', machines: 'rocinante' },
+      { outcome: 'several-machines', project: 'factory', machines: ['rocinante', ''] },
+      { outcome: 'several-machines', project: 'factory', machines: ['rocinante', 3] },
+      { outcome: 'several-machines', project: '', machines: ['a', 'b'] },
+      { outcome: 'several-machines', project: 'factory', machines: ['a', 'b'], more: true },
+      { outcome: 'drafted' },
+      { outcome: 'other', machine: 'moya' },
+      ['drafted-not-sent', 'moya'],
+      'drafted-not-sent',
+      'several-machines',
+    ];
+    for (const o of junk) expect({ o, n: narrowOutcome(o) }).toEqual({ o, n: null });
+  });
+
+  test('the caller narrows the new answers too', async () => {
+    const approve: HandoffRequest = { project: '6bb1e650df35@moya', job: '007-x', action: 'approve' };
+    expect(await handOffCaller('mac', { api: { call: async () => unsent } })?.(approve)).toEqual(unsent);
+    expect(await handOffCaller('mac', { api: { call: async () => several } })?.(approve)).toEqual(several);
+    expect(await handOffCaller('mac', { api: { call: async () => ({ outcome: 'several-machines' }) } })?.(approve)).toBeNull();
+  });
+
+  test('drafted-not-sent names the machine; several-machines names the project and every machine; a remote no-github-remote reads as before', () => {
+    const u = narrowOutcome(unsent);
+    const v = narrowOutcome(several);
+    expect(handoffToast(true, u, cmd, 'moya')).toEqual({ text: "Opened a draft in T3 Code (sending can't reach moya)", ok: true });
+    expect(handoffToast(false, u, cmd, 'moya')).toEqual({ text: "Opened a draft in T3 Code (sending can't reach moya)", ok: true }); // T3 Code got the command
+    expect(handoffToast(true, v, cmd, 'studio')).toEqual({ text: `factory is on rocinante and studio; copied ${cmd}`, ok: true });
+    expect(handoffToast(true, v, cmd)).toEqual({ text: `factory is on rocinante and studio; copied ${cmd}`, ok: true });
+    expect(handoffToast(false, v, cmd)).toEqual({ text: COPY_FAILED, ok: false });
+    expect(handoffToast(true, narrowOutcome({ ...several, machines: ['rocinante', 'studio', 'moya'] }), cmd)).toEqual({ text: `factory is on rocinante, studio, and moya; copied ${cmd}`, ok: true });
+    expect(handoffToast(true, 'no-github-remote', cmd, 'moya')).toEqual({ text: `No GitHub remote; copied ${cmd}`, ok: true });
+  });
+
+  test('joinNames joins one, two, or more names for a sentence', () => {
+    expect(joinNames(['a'])).toBe('a');
+    expect(joinNames(['a', 'b'])).toBe('a and b');
+    expect(joinNames(['a', 'b', 'c'])).toBe('a, b, and c');
   });
 });

@@ -66,9 +66,9 @@ interface Sse {
 }
 
 // An event-stream client that collects frames and waits for one that matches.
-async function connect(url: string): Promise<{ next: (match: (e: Sse) => boolean, ms?: number) => Promise<Sse>; seen: Sse[]; close: () => void; contentType: string | null }> {
+async function connect(url: string, query = ''): Promise<{ next: (match: (e: Sse) => boolean, ms?: number) => Promise<Sse>; seen: Sse[]; close: () => void; contentType: string | null }> {
   const ctl = new AbortController();
-  const res = await fetch(`${url}/events`, { signal: ctl.signal });
+  const res = await fetch(`${url}/events${query}`, { signal: ctl.signal });
   const body = res.body;
   if (body === null) throw new Error('no body');
   const reader = body.getReader();
@@ -147,8 +147,8 @@ describe('HTTP endpoints (AC3)', () => {
     expect(projects.cache).toBe('no-store');
     expect(projects.body).toEqual({
       projects: [
-        { id: projectId(a), name: 'alpha', root: a, release: UNKNOWN, machine: MACHINE },
-        { id: projectId(b), name: 'beta', root: b, release: UNKNOWN, machine: MACHINE },
+        { id: projectId(a), name: 'alpha', root: a, release: UNKNOWN, machine: MACHINE, repositories: [] },
+        { id: projectId(b), name: 'beta', root: b, release: UNKNOWN, machine: MACHINE, repositories: [] },
       ],
     });
     expect(projectId(a)).toMatch(/^[0-9a-f]{12}$/);
@@ -252,7 +252,7 @@ describe('HTTP endpoints (AC3)', () => {
     await mkdir(bare);
     await addRoot(registry, bare);
     const { url } = await start();
-    expect((await getJson(`${url}/projects`)).body).toEqual({ projects: [{ id: projectId(bare), name: basename(bare), root: bare, release: UNKNOWN, machine: MACHINE }] });
+    expect((await getJson(`${url}/projects`)).body).toEqual({ projects: [{ id: projectId(bare), name: basename(bare), root: bare, release: UNKNOWN, machine: MACHINE, repositories: [] }] });
   });
 });
 
@@ -275,10 +275,10 @@ describe('project names from config.json (AC3, AC4)', () => {
     const { url } = await start();
     const want = {
       projects: [
-        { id: projectId(named), name: 'Café — Ops (v2)!', root: named, release: UNKNOWN, machine: MACHINE },
-        { id: projectId(plain), name: 'plain', root: plain, release: UNKNOWN, machine: MACHINE },
-        { id: projectId(invalid), name: 'invalid', root: invalid, release: UNKNOWN, machine: MACHINE },
-        { id: projectId(bare), name: 'bare', root: bare, release: UNKNOWN, machine: MACHINE },
+        { id: projectId(named), name: 'Café — Ops (v2)!', root: named, release: UNKNOWN, machine: MACHINE, repositories: [] },
+        { id: projectId(plain), name: 'plain', root: plain, release: UNKNOWN, machine: MACHINE, repositories: [] },
+        { id: projectId(invalid), name: 'invalid', root: invalid, release: UNKNOWN, machine: MACHINE, repositories: [] },
+        { id: projectId(bare), name: 'bare', root: bare, release: UNKNOWN, machine: MACHINE, repositories: [] },
       ],
     };
     expect((await getJson(`${url}/projects`)).body).toEqual(want);
@@ -486,7 +486,7 @@ describe('the event stream (AC4, AC5)', () => {
     expect(client.contentType).toStartWith('text/event-stream');
     const first = await client.next((e) => e.event === 'projects');
     expect(client.seen[0]?.event).toBe('projects');
-    expect(first.data).toEqual({ projects: [{ id: projectId(a), name: 'alpha', root: a, release: UNKNOWN, machine: MACHINE }] });
+    expect(first.data).toEqual({ projects: [{ id: projectId(a), name: 'alpha', root: a, release: UNKNOWN, machine: MACHINE, repositories: [] }] });
     await settle(150);
 
     await appendEvent(join(a, 'factory'), '001-first-job', parseEventInput('stage.entered', { stage: 'spec' }));
@@ -546,9 +546,9 @@ describe('the event stream (AC4, AC5)', () => {
     await addRoot(registry, c);
     const listed = await client.next((e) => e.event === 'projects' && JSON.stringify(e.data).includes(c));
     expect(field(listed.data, 'projects')).toEqual([
-      { id: projectId(a), name: 'alpha', root: a, release: UNKNOWN, machine: MACHINE },
-      { id: projectId(b), name: 'beta', root: b, release: UNKNOWN, machine: MACHINE },
-      { id: projectId(c), name: 'gamma', root: c, release: UNKNOWN, machine: MACHINE },
+      { id: projectId(a), name: 'alpha', root: a, release: UNKNOWN, machine: MACHINE, repositories: [] },
+      { id: projectId(b), name: 'beta', root: b, release: UNKNOWN, machine: MACHINE, repositories: [] },
+      { id: projectId(c), name: 'gamma', root: c, release: UNKNOWN, machine: MACHINE, repositories: [] },
     ]);
     await settle(150);
 
@@ -582,7 +582,7 @@ describe('the event stream (AC4, AC5)', () => {
     const deadline = Date.now() + 2000;
     while (!logs.some((l) => l.includes('schema')) && Date.now() < deadline) await settle(20);
     expect(logs.some((l) => l.includes('schema'))).toBe(true);
-    expect(field((await getJson(`${url}/projects`)).body, 'projects')).toEqual([{ id: projectId(a), name: 'alpha', root: a, release: UNKNOWN, machine: MACHINE }]);
+    expect(field((await getJson(`${url}/projects`)).body, 'projects')).toEqual([{ id: projectId(a), name: 'alpha', root: a, release: UNKNOWN, machine: MACHINE, repositories: [] }]);
   });
 });
 
@@ -666,7 +666,7 @@ describe('the built UI (AC5)', () => {
       expect(root.status).toBe(404);
       expect(root.headers.get('cache-control')).toBe('no-store');
       expect((await fetch(`${url}/index.html`)).status).toBe(404);
-      expect(field((await getJson(`${url}/projects`)).body, 'projects')).toEqual([{ id: projectId(a), name: 'alpha', root: a, release: UNKNOWN, machine: MACHINE }]);
+      expect(field((await getJson(`${url}/projects`)).body, 'projects')).toEqual([{ id: projectId(a), name: 'alpha', root: a, release: UNKNOWN, machine: MACHINE, repositories: [] }]);
       expect((await getJson(`${url}/projects/${projectId(a)}/board`)).status).toBe(200);
       expect((await getJson(`${url}/projects/nope/board`)).status).toBe(404);
       await service?.stop();
@@ -1018,7 +1018,8 @@ describe('archived jobs (job 047)', () => {
     // Startup: the common dir and the tip once each, then one ls-tree and one cat-file for every file.
     expect(count('ls-tree')).toBe(1);
     expect(count('cat-file')).toBe(1);
-    expect(calls.slice(0, 2).map((c) => c.args)).toEqual([
+    // (`remote -v`, the projects' repositories, runs beside these on every announce that reads them.)
+    expect(calls.filter((c) => c.args[0] !== 'remote').slice(0, 2).map((c) => c.args)).toEqual([
       ['rev-parse', '--path-format=absolute', '--git-common-dir'],
       ['rev-parse', '--verify', '--quiet', 'refs/heads/factory/archive^{commit}'],
     ]);
@@ -1063,6 +1064,7 @@ describe('archived jobs (job 047)', () => {
         ['rev-parse', '--path-format=absolute', '--git-common-dir'],
         ['rev-parse', '--verify', '--quiet', 'refs/heads/factory/archive^{commit}'],
         ['cat-file', '--batch'],
+        ['remote', '-v'],
       ];
       const ok = fixed.some((f) => JSON.stringify(f) === JSON.stringify(c.args)) || (c.args.length === 5 && JSON.stringify(c.args.slice(0, 4)) === JSON.stringify(['ls-tree', '-r', '-z', '--full-tree']) && /^[0-9a-f]{40}$/.test(c.args[4] ?? ''));
       expect({ args: c.args, ok }).toEqual({ args: c.args, ok: true });
@@ -1094,7 +1096,9 @@ describe('archived jobs (job 047)', () => {
     const ev = await client.next((e) => client.seen.indexOf(e) >= from && e.event === 'board' && field(e.data, 'project') === projectId(plain));
     expect(stagesOf(ev.data)).toEqual(['spec']);
     expect(logs).toEqual([]);
-    expect(calls.filter((c) => c.cwd === plain).map((c) => c.args)).toEqual([['rev-parse', '--path-format=absolute', '--git-common-dir']]);
+    // The archive's one probe, and otherwise only `remote -v` (its repositories, [] here).
+    expect(calls.filter((c) => c.cwd === plain && c.args[0] !== 'remote').map((c) => c.args)).toEqual([['rev-parse', '--path-format=absolute', '--git-common-dir']]);
+    expect(calls.filter((c) => c.cwd === plain && c.args[0] === 'remote').every((c) => JSON.stringify(c.args) === '["remote","-v"]')).toBe(true);
     expect(calls.some((c) => c.args[0] === 'ls-tree' || c.args[0] === 'cat-file')).toBe(false);
     client.close();
   });
@@ -1146,5 +1150,89 @@ describe('pruned jobs (job 048)', () => {
 
     // The next claim's number is above the pruned id.
     expect(await factoryCli(root, ['claim', 'after-prune'])).toEqual({ code: 0, out: '003-after-prune\n', err: '' });
+  });
+});
+
+// --- Each project's repositories (job 086) ---
+
+const entries = (data: unknown): unknown[] => {
+  const ps = field(data, 'projects');
+  return Array.isArray(ps) ? ps : [];
+};
+
+describe('repositories on GET /projects and the projects event (job 086, AC2)', () => {
+  test('a repo\'s fetch remotes, sorted, credential-free; a non-repo gets []; every other field unchanged', async () => {
+    const repo = await makeRepoProject('infra', ['001-first-job']);
+    gitFx(repo, ['remote', 'add', 'upstream', 'https://github.com/mattmccray/infra.git']);
+    gitFx(repo, ['remote', 'add', 'origin', 'ssh://git@localhost:222/mattm/infra.git']);
+    gitFx(repo, ['remote', 'add', 'bitbucket', 'https://x-token-auth:sekrit_token@bitbucket.org/team/infra.git']);
+    gitFx(repo, ['remote', 'add', 'disk', '/srv/infra.git']);
+    gitFx(repo, ['remote', 'set-url', '--push', 'origin', 'https://github.com/pushonly/elsewhere.git']);
+    const plain = await makeProject('plain', ['001-first-job']);
+    await addRoot(registry, repo);
+    await addRoot(registry, plain);
+    const { url } = await start();
+    const want = {
+      projects: [
+        {
+          id: projectId(repo),
+          name: 'infra',
+          root: repo,
+          release: UNKNOWN,
+          machine: MACHINE,
+          repositories: [
+            { remote: 'bitbucket', host: 'bitbucket.org', owner: 'team', name: 'infra' },
+            { remote: 'origin', host: 'localhost:222', owner: 'mattm', name: 'infra' },
+            { remote: 'upstream', host: 'github.com', owner: 'mattmccray', name: 'infra' },
+          ],
+        },
+        { id: projectId(plain), name: 'plain', root: plain, release: UNKNOWN, machine: MACHINE, repositories: [] },
+      ],
+    };
+    for (const q of ['', '?scope=local']) {
+      const res = await fetch(`${url}/projects${q}`);
+      const body = await res.text();
+      expect(JSON.parse(body)).toEqual(want);
+      for (const secret of ['sekrit_token', 'x-token-auth', 'pushonly', '/srv/infra']) expect(body).not.toContain(secret);
+    }
+    for (const q of ['', '?scope=local', '?settled=summary']) {
+      const client = await connect(url, q);
+      expect((await client.next((e) => e.event === 'projects')).data).toEqual(want);
+      client.close();
+    }
+  });
+
+  test('a remote added later shows on the next config.json change, re-sending projects; a jobs/ change reads no remotes', async () => {
+    const repo = await makeRepoProject('infra', ['001-first-job']);
+    gitFx(repo, ['remote', 'add', 'origin', 'ssh://git@localhost:222/mattm/infra.git']);
+    await addRoot(registry, repo);
+    const calls: GitCall[] = [];
+    const { url } = await startWith(recording(calls));
+    const client = await connect(url);
+    const first = await client.next((e) => e.event === 'projects');
+    expect(field(entries(first.data)[0], 'repositories')).toEqual([{ remote: 'origin', host: 'localhost:222', owner: 'mattm', name: 'infra' }]);
+    await quiet(client, calls);
+
+    // A jobs/ change: a board event, no `remote -v`, and no projects re-sent.
+    let mark = calls.length;
+    let from = client.seen.length;
+    await appendEvent(join(repo, 'factory'), '001-first-job', parseEventInput('stage.entered', { stage: 'spec' }));
+    await client.next((e) => client.seen.indexOf(e) >= from && e.event === 'board');
+    await quiet(client, calls);
+    expect(calls.slice(mark).filter((c) => c.args[0] === 'remote')).toEqual([]);
+    expect(client.seen.slice(from).filter((e) => e.event === 'projects')).toEqual([]);
+
+    // Infra gains a GitHub upstream; nothing watches git config, so the next config.json change shows it.
+    gitFx(repo, ['remote', 'add', 'upstream', 'https://github.com/mattmccray/infra.git']);
+    mark = calls.length;
+    from = client.seen.length;
+    await writeFile(join(repo, 'factory', 'config.json'), JSON.stringify({ ...CONFIG, maxRound: 3 }));
+    const next = await client.next((e) => client.seen.indexOf(e) >= from && e.event === 'projects');
+    expect(field(entries(next.data)[0], 'repositories')).toEqual([
+      { remote: 'origin', host: 'localhost:222', owner: 'mattm', name: 'infra' },
+      { remote: 'upstream', host: 'github.com', owner: 'mattmccray', name: 'infra' },
+    ]);
+    expect(calls.slice(mark).filter((c) => c.args[0] === 'remote').map((c) => [c.args, c.cwd])).toContainEqual([['remote', '-v'], repo]);
+    client.close();
   });
 });

@@ -1,7 +1,7 @@
 // The Andon service (docs/contract/v1.md "Andon service"): one Bun daemon per machine that reads every
 // project listed in the Andon registry through `@factory/contract` and serves it, read-only, on
 // loopback:
-//   GET /projects                        → { projects: [{ id, name, root, release, machine }] } (name: config.json's `name`, else basename(root))
+//   GET /projects                        → { projects: [{ id, name, root, release, machine, repositories }] } (name: config.json's `name`, else basename(root))
 //   GET /projects/<pid>/board            → { jobs, config, epics } (a bad config is a 500 carrying the reason);
 //                                          epics: the on-board (unsettled) epics' epic.json, in slug order
 //   GET /projects/<pid>/board?settled=summary → { jobs, config, settled, epics, backlog }: unsettled jobs only, plus
@@ -46,6 +46,10 @@
 // Releases (release.ts): each project's `release: { installed, state }` is resolved the same way,
 // from its `factory/managed.json` against the release the service runs (the clone's templates
 // `package.json` version, read once at startup), and a change to either field re-sends `projects`.
+// Repositories (repositories.ts): each project's `repositories`, its fetch remotes from
+// `git remote -v` that parse as `{ remote, host, owner, name }`, are read on every GET /projects,
+// on connect, on a registry change, at startup, and on a burst that touched its `config.json` or
+// `managed.json` (never on a jobs/ change); a change in them re-sends `projects`.
 //   GET /release                         → { running, onDisk, changelog } (the clone's templates
 //                                          version at startup and now, and its parsed CHANGELOG.md)
 // The `release` event carries the same body: on connect (after `projects`), and whenever the
@@ -75,6 +79,8 @@ import { EMPTY_ARCHIVE, archiveTip, gitCommonDir, projectArchivedEpic, readArchi
 import type { ArchiveCache, GitRunner } from './archive';
 import { SOURCE_VERSION_FILE, readInstalled, readRelease, readTemplatesVersion, releaseState } from './release';
 import type { ProjectRelease, ReleaseInfo } from './release';
+import { readRepositories, sameRepositories } from './repositories';
+import type { Repository } from './repositories';
 import { buildBacklog, isBacklogSlug } from './backlog';
 import type { Backlog } from './backlog';
 import { MAX_DELAY_MS, nextSettle, partition, summarize } from './settled';
@@ -84,6 +90,7 @@ import type { SettledSummary } from './settled';
 
 export type { GitRunner } from './archive';
 export type { MachineEntry, MachineState, ReconnectTimers, Transport } from './peers';
+export type { ParsedRemote, Repository } from './repositories';
 export type { ChangelogEntry, ChangelogRelease, ProjectRelease, ReleaseInfo, ReleaseState } from './release';
 
 export interface ServiceOptions {
@@ -120,6 +127,7 @@ export interface ProjectInfo {
   root: string; // absolute repo root
   release: ProjectRelease; // its managed.json `version`, and its state against the running release
   machine: string; // the machine name of the service it is on
+  repositories: Repository[]; // its fetch remotes that parse, sorted by remote name ([] when none, or not a git repo)
 }
 
 type Job = Record<string, unknown>;
@@ -127,6 +135,7 @@ type Job = Record<string, unknown>;
 interface Project {
   info: ProjectInfo;
   factory: string; // <root>/factory
+  remotesDue: boolean; // its repositories are read at the next announce (startup, or a config.json or managed.json change)
   lastGood: Map<string, Job>; // per job id: the last job.json that parsed
   lastGoodEpic: Map<string, Job>; // per epic slug: the last epic.json that parsed
   factoryWatcher: FSWatcher | null;
@@ -463,12 +472,18 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
   // registry change), the list is sent to every connected client as a `projects` event: the local
   // list to `scope=local` clients, the merged list (this machine's, then each peer's) to the rest.
   // `peers` (a peer's projects changed) sends the merged list to the rest even when the local list
-  // is unchanged. Runs one at a time, so clients always end on the latest list.
+  // is unchanged. `remotes: 'all'` re-reads every project's repositories; `'due'` only those marked
+  // due. Runs one at a time, so clients always end on the latest list.
   let announcing: Promise<unknown> = Promise.resolve();
-  function announce(force: boolean, peers = false): Promise<ProjectInfo[]> {
+  function announce(force: boolean, peers = false, remotes: 'all' | 'due' = 'due'): Promise<ProjectInfo[]> {
     const run = announcing.then(async () => {
       const open = [...projects.values()];
-      const [names, releases] = await Promise.all([Promise.all(open.map(resolveName)), Promise.all(open.map(resolveRelease))]);
+      const resolveRepositories = (p: Project): Promise<Repository[] | null> => {
+        if (remotes !== 'all' && !p.remotesDue) return Promise.resolve(null);
+        p.remotesDue = false;
+        return readRepositories(git, p.info.root);
+      };
+      const [names, releases, repos] = await Promise.all([Promise.all(open.map(resolveName)), Promise.all(open.map(resolveRelease)), Promise.all(open.map(resolveRepositories))]);
       let changed = force;
       const current = open.filter((p, i) => {
         const name = names[i] ?? basename(p.info.root);
@@ -481,9 +496,14 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
           p.info.release = release;
           changed = true;
         }
+        const repositories = repos[i] ?? null;
+        if (repositories !== null && !sameRepositories(repositories, p.info.repositories)) {
+          p.info.repositories = repositories;
+          changed = true;
+        }
         return !p.closed;
       });
-      const list = current.map((p) => ({ ...p.info, release: { ...p.info.release } }));
+      const list = current.map((p) => ({ ...p.info, release: { ...p.info.release }, repositories: p.info.repositories.map((r) => ({ ...r })) }));
       if (changed) broadcast('projects', { projects: list }, undefined, 'local');
       if (changed || peers) broadcast('projects', { projects: merged(list) }, undefined, 'merged');
       return list;
@@ -722,8 +742,9 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
 
   function openProject(root: string): Project {
     const p: Project = {
-      info: { id: projectId(root), name: basename(root), root, release: { installed: null, state: 'unknown' }, machine },
+      info: { id: projectId(root), name: basename(root), root, release: { installed: null, state: 'unknown' }, machine, repositories: [] },
       factory: join(root, 'factory'),
+      remotesDue: true,
       lastGood: new Map(),
       lastGoodEpic: new Map(),
       factoryWatcher: null,
@@ -750,6 +771,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
       // temp files) are ignored.
       const w = watch(p.factory, (_event, filename) => {
         if (filename !== null && filename.startsWith('.')) return;
+        if (filename === 'config.json' || filename === 'managed.json') p.remotesDue = true;
         if (filename === null || filename === 'jobs') watchJobs(p);
         if (filename === null || filename === 'epics') watchEpics(p);
         if (filename === null || filename === 'briefs') watchBriefs(p);
@@ -816,7 +838,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     projects = next;
     // A project opened while a narrow client is connected gets its settle timer now.
     if (hasForm('narrow')) for (const p of opened) void armFromBuild(p);
-    if ([...projects.keys()].join(',') !== before) await announce(true);
+    if ([...projects.keys()].join(',') !== before) await announce(true, false, 'all');
   }
 
   let reloading: Promise<void> = Promise.resolve();
@@ -1035,7 +1057,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
   // merged with the peers' unless it asked for `scope=local`. Then it gets the `release` event, and
   // the `machines` event (a `scope=local` client's lists only this machine).
   async function events(req: Request, form: Form, local: boolean): Promise<Response> {
-    const own = await announce(false);
+    const own = await announce(false, false, 'all');
     const list = local ? own : merged(own);
     const release = await releaseBody();
     const machinesNow = local ? { machines: [ownEntry()] } : machinesBody();
@@ -1092,7 +1114,7 @@ export async function startService(opts: ServiceOptions): Promise<Service> {
     // Likewise only the exact value `local` narrows `/projects` and `/events` to this machine.
     const local = url.searchParams.get('scope') === 'local';
     if (pathname === '/projects') {
-      const own = await announce(false);
+      const own = await announce(false, false, 'all');
       return json({ projects: local ? own : merged(own) });
     }
     if (pathname === '/events') return events(req, summary ? 'narrow' : 'plain', local);
