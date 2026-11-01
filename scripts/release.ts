@@ -5,23 +5,26 @@
 // every `package.json`, prepends a section to `CHANGELOG.md`, commits `chore(release): vX.Y.Z`,
 // and tags `vX.Y.Z` (annotated). It then commits the release bundle (scripts/bundle.ts) onto the
 // `release` branch with git plumbing, never moving the checkout, and tags that commit
-// `release-vX.Y.Z` (annotated). Before any write, it stages the tree the release is about to commit
-// (`HEAD` plus the new versions and changelog, in a temp dir) and runs the gate from
-// `factory/config.json` there, in order, stopping at the first failing command: a red gate refuses
-// with `gate is red: <command>` and writes nothing, and `--dry-run` runs the gate too. Then the
-// bundle is built from that same staged tree, so a failed build writes nothing at all either.
-// `--dry-run` stops after the gate: it builds no bundle and writes nothing. With no `gate` in
+// `release-vX.Y.Z` (annotated). After the refusals and before any write, it runs the gate from
+// `factory/config.json` in the checkout itself (each command from the checkout's root, where every
+// job gate runs; the tree is clean, so it is `HEAD`), in order, stopping at the first failing
+// command: a red gate refuses with `gate is red: <command>` and writes nothing. `--dry-run` runs
+// the gate too, then prints the version and section: it builds no bundle and writes nothing. A real
+// run then writes the new versions and `CHANGELOG.md` into the checkout and builds the bundle from
+// the checkout into a temp dir, so the bundle carries them. A failed build restores exactly the
+// files the release wrote (`git checkout -- <paths>`, and removes a `CHANGELOG.md` it created) and
+// exits 1 with a one-line reason: no commit, no tag, no `release` change. With no `gate` in
 // `factory/config.json`, it says so and goes on; an unreadable or invalid config refuses. It never
 // pushes (`bun run release:push` does) and never runs `factory upgrade`.
 //
 // Right after the off-`main` and dirty-tree refusals, before anything else (dry run or not, gate or
-// no gate), it checks the workspace links in the checkout whose `node_modules` it borrows: every
-// `workspace:*` dependency of the root and each workspace `package.json` must be a symlink, in the
-// depending package's own `node_modules` or else the root's, that resolves to that workspace
-// package. A missing or misdirected link refuses with `workspace links are stale: run `bun
-// install`, then retry` and writes nothing. It never runs an install itself: run `bun install`
-// first.
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+// no gate), it checks the workspace links in the checkout, whose `node_modules` the gate and the
+// bundle build use: every `workspace:*` dependency of the root and each workspace `package.json`
+// must be a symlink, in the depending package's own `node_modules` or else the root's, that
+// resolves to that workspace package. A missing or misdirected link refuses with `workspace links
+// are stale: run `bun install`, then retry` and writes nothing. It never runs an install itself:
+// run `bun install` first.
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { parseConfig } from '../packages/contract/src/contract';
@@ -273,12 +276,12 @@ const lexists = (path: string): boolean => {
 };
 
 /**
- * The stale `workspace:*` links of `repo`'s root and workspace packages, as installed in
- * `modules` (the checkout whose `node_modules` the release borrows). A dependency is linked when
+ * The stale `workspace:*` links of the checkout `repo`'s root and workspace packages, as installed
+ * in its `node_modules`. A dependency is linked when
  * `<its package>/node_modules/<name>`, or failing that the root's `node_modules/<name>`, is a
  * symlink whose real path is the directory of the workspace package named `<name>`. Reads only.
  */
-export function staleLinks(repo: string, modules: string): StaleLink[] {
+export function staleLinks(repo: string): StaleLink[] {
   const files = packageFiles(repo);
   const dirOf = new Map<string, string>(); // workspace package name -> repo-relative directory
   const parsed = files.map((path): [string, unknown] => [path, readJson(join(repo, path))]);
@@ -298,12 +301,12 @@ export function staleLinks(repo: string, modules: string): StaleLink[] {
         out.push({ pkg, dep, why: 'no workspace package has that name' });
         continue;
       }
-      const link = [join(modules, own, 'node_modules', dep), join(modules, 'node_modules', dep)].find(lexists);
+      const link = [join(repo, own, 'node_modules', dep), join(repo, 'node_modules', dep)].find(lexists);
       if (link === undefined) {
         out.push({ pkg, dep, why: 'missing' });
         continue;
       }
-      const want = realOrNull(join(modules, target));
+      const want = realOrNull(join(repo, target));
       const got = lstatSync(link).isSymbolicLink() ? realOrNull(link) : null;
       if (want === null || got !== want) out.push({ pkg, dep, why: 'points elsewhere' });
     }
@@ -324,18 +327,17 @@ function localDate(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** Builds the release bundle of the source tree at `tree` into the empty directory `out`; throws a one-line reason. */
+/** Builds the release bundle of the checkout at `tree` into the empty directory `out`; throws a one-line reason. */
 export type BuildBundle = (tree: string, out: string) => void;
 
-/** Runs one gate command from the staged tree's root and returns its exit code. */
+/** Runs one gate command from the checkout's root and returns its exit code. */
 export type RunGate = (tree: string, command: string) => number;
 
 export interface ReleaseOptions {
   dryRun: boolean;
   today?: string; // YYYY-MM-DD; defaults to the local date
-  build?: BuildBundle; // defaults to the staged tree's own `scripts/bundle.ts`
+  build?: BuildBundle; // defaults to the checkout's own `scripts/bundle.ts`
   gate?: RunGate; // defaults to running each command through `sh -c`
-  modules?: string; // the checkout whose installed `node_modules` the staged tree borrows; defaults to `repo`
 }
 
 /** The release branch and its tags (brief decision 4): outside the `factory/` namespace, no `/` in a tag. */
@@ -347,7 +349,7 @@ const BUNDLE_BIN = 'bin/factory.js';
 
 const firstLine = (text: string): string => text.trim().split('\n')[0] ?? '';
 
-/** The default build: the staged tree's own builder, `bun scripts/bundle.ts <out>`. */
+/** The default build: the checkout's own builder, `bun scripts/bundle.ts <out>`. */
 export const buildWithScript: BuildBundle = (tree, out) => {
   const script = join(tree, 'scripts', 'bundle.ts');
   if (!existsSync(script)) throw new Error('scripts/bundle.ts is missing from the tree');
@@ -384,51 +386,6 @@ export function readGate(repo: string): string[] | null {
 function redCommand(tree: string, commands: readonly string[], run: RunGate): string | null {
   for (const command of commands) if (run(tree, command) !== 0) return command;
   return null;
-}
-
-/**
- * Mirrors an installed `node_modules` into the staged tree, so the staged sources resolve their
- * dependencies without an install: a symlink is copied as it is (a workspace link, being relative,
- * then points into the staged tree, at the staged, version-bumped package), a scope or `.bin`
- * directory is mirrored, and anything else is linked to the checkout's copy.
- */
-function mirrorModules(src: string, dst: string): void {
-  mkdirSync(dst, { recursive: true });
-  for (const e of readdirSync(src, { withFileTypes: true })) {
-    const from = join(src, e.name);
-    const to = join(dst, e.name);
-    if (e.isSymbolicLink()) symlinkSync(readlinkSync(from), to);
-    else if (e.isDirectory() && (e.name.startsWith('@') || e.name === '.bin')) mirrorModules(from, to);
-    else symlinkSync(from, to);
-  }
-}
-
-/** Every `node_modules` of a checkout: the root's and each workspace package's, repo-relative. */
-function moduleDirs(checkout: string): string[] {
-  const out = existsSync(join(checkout, 'node_modules')) ? ['node_modules'] : [];
-  for (const dir of ['packages', 'apps']) {
-    if (!existsSync(join(checkout, dir))) continue;
-    for (const name of readdirSync(join(checkout, dir)).sort()) if (existsSync(join(checkout, dir, name, 'node_modules'))) out.push(`${dir}/${name}/node_modules`);
-  }
-  return out;
-}
-
-/**
- * Stages the tree the release is about to commit in `stage`: `HEAD`'s tree (the working tree is
- * clean), with `writes` applied, and the checkout's `node_modules` mirrored in. Writes nothing to
- * the repo.
- */
-function stageTree(repo: string, stage: string, writes: readonly [string, string][], modules: string): void {
-  const tar = `${stage}.tar`;
-  git(repo, 'archive', '--format=tar', '-o', tar, 'HEAD');
-  mkdirSync(stage, { recursive: true });
-  const x = Bun.spawnSync(['tar', '-xf', tar, '-C', stage], { stdout: 'pipe', stderr: 'pipe' });
-  if (x.exitCode !== 0) throw new Error(`tar: ${firstLine(x.stderr.toString())}`);
-  for (const [path, text] of writes) {
-    mkdirSync(dirname(join(stage, path)), { recursive: true });
-    writeFileSync(join(stage, path), text);
-  }
-  for (const dir of moduleDirs(modules)) if (existsSync(dirname(join(stage, dir)))) mirrorModules(join(modules, dir), join(stage, dir));
 }
 
 /** Checks the built bundle is a package `bun add -g` can link: its `package.json` has `bin.factory`. */
@@ -476,6 +433,17 @@ function commitBundle(repo: string, out: string, index: string, message: string)
   return commit;
 }
 
+/**
+ * Undoes the release's own writes to the clean checkout: each of `paths` that `HEAD` tracks is
+ * restored with `git checkout --`, and any other (a `CHANGELOG.md` the first release created) is
+ * removed. Touches nothing else.
+ */
+function restoreWrites(repo: string, paths: readonly string[], tracked: ReadonlySet<string>): void {
+  const known = paths.filter((p) => tracked.has(p));
+  if (known.length > 0) git(repo, 'checkout', '--', ...known);
+  for (const path of paths) if (!tracked.has(path)) rmSync(join(repo, path), { force: true });
+}
+
 /** Runs a release in `repo`. `out` is what to print; a non-zero `code` means nothing was written. */
 export function release(repo: string, opts: ReleaseOptions): { code: number; out: string } {
   const refuse = (reason: string): { code: number; out: string } => ({ code: 1, out: `release refused: ${reason}\n` });
@@ -484,7 +452,7 @@ export function release(repo: string, opts: ReleaseOptions): { code: number; out
     const on = branch.exitCode === 0 ? branch.stdout.toString().trim() : 'detached HEAD';
     if (on !== 'main') return refuse(`not on main (on ${on})`);
     if (git(repo, 'status', '--porcelain').trim() !== '') return refuse('working tree is dirty (git status --porcelain is not empty)');
-    const stale = staleLinks(repo, opts.modules ?? repo);
+    const stale = staleLinks(repo);
     if (stale.length > 0) return { code: 1, out: `release refused: workspace links are stale: run \`bun install\`, then retry\n${stale.map((l) => `  ${l.pkg} -> ${l.dep}: ${l.why}\n`).join('')}` };
 
     const base = baseTag(repo);
@@ -519,34 +487,36 @@ export function release(repo: string, opts: ReleaseOptions): { code: number; out
     const changelog = join(repo, 'CHANGELOG.md');
     writes.push(['CHANGELOG.md', prependChangelog(existsSync(changelog) ? readFileSync(changelog, 'utf8') : null, section)]);
 
-    // The gate runs on, and the bundle is built from, the tree about to be committed, before the
-    // first write to the repo. A dry run stops after the gate.
-    if (opts.dryRun && gate === null) return { code: 0, out: `${head}${notes}${gateLine}dry run: nothing written\n\n${section}` };
+    // The gate runs in the checkout, from its root, before the first write. A dry run stops after it.
+    if (gate !== null) {
+      const red = redCommand(repo, gate, opts.gate ?? runWithShell);
+      if (red !== null) return { code: 1, out: `${notes}release refused: gate is red: ${red}\n` };
+    }
+    if (opts.dryRun) return { code: 0, out: `${head}${notes}${gateLine}dry run: nothing written\n\n${section}` };
+
+    // The versions and CHANGELOG.md are written into the checkout, then the bundle is built from it
+    // into a temp dir, so it carries them. A failed build restores exactly those writes.
+    const paths = writes.map(([path]) => path);
+    const tracked = new Set(git(repo, 'ls-files', '-z', '--', ...paths).split('\0').filter(Boolean));
     const work = mkdtempSync(join(tmpdir(), 'factory-release-'));
     try {
-      const tree = join(work, 'tree');
-      try {
-        stageTree(repo, tree, writes, opts.modules ?? repo);
-      } catch (e) {
-        return { code: 1, out: `release failed: staging the release tree: ${firstLine(e instanceof Error ? e.message : String(e))}\n` };
-      }
-      if (gate !== null) {
-        const red = redCommand(tree, gate, opts.gate ?? runWithShell);
-        if (red !== null) return { code: 1, out: `${notes}release refused: gate is red: ${red}\n` };
-      }
-      if (opts.dryRun) return { code: 0, out: `${head}${notes}${gateLine}dry run: nothing written\n\n${section}` };
-
       const out = join(work, 'bundle');
       try {
+        for (const [path, text] of writes) writeFileSync(join(repo, path), text);
         mkdirSync(out);
-        (opts.build ?? buildWithScript)(tree, out);
+        (opts.build ?? buildWithScript)(repo, out);
         checkBundle(out);
       } catch (e) {
-        return { code: 1, out: `release failed: bundle build: ${firstLine(e instanceof Error ? e.message : String(e))}\n` };
+        const reason = `release failed: bundle build: ${firstLine(e instanceof Error ? e.message : String(e))}`;
+        try {
+          restoreWrites(repo, paths, tracked);
+        } catch (r) {
+          return { code: 1, out: `${reason}; restoring the version and CHANGELOG.md writes failed: ${firstLine(r instanceof Error ? r.message : String(r))}\n` };
+        }
+        return { code: 1, out: `${reason}\n` };
       }
 
-      for (const [path, text] of writes) writeFileSync(join(repo, path), text);
-      git(repo, 'add', '--', ...writes.map(([path]) => path));
+      git(repo, 'add', '--', ...paths);
       git(repo, 'commit', '--quiet', '-m', `chore(release): ${tag}`);
       git(repo, 'tag', '-a', tag, '-m', `factory ${tag}`);
       const main = git(repo, 'rev-parse', 'HEAD').trim();

@@ -151,11 +151,11 @@ Then cut the release, upgrade, and push:
 
 ```sh
 cd /path/to/factory          # this repo's root, on main, clean, with no job running
-bun install                  # refreshes the workspace links the release borrows
+bun install                  # refreshes the workspace links the gate and the bundle build use
 bun run release --dry-run    # optional: runs the gate, prints the next vX.Y.Z and its CHANGELOG.md section
-bun run release              # runs the gate, builds the bundle, then: the version and CHANGELOG.md,
-                             # chore(release): vX.Y.Z, tag vX.Y.Z, the bundle committed onto release,
-                             # tag release-vX.Y.Z
+bun run release              # runs the gate here, writes the version and CHANGELOG.md, builds the bundle,
+                             # then: chore(release): vX.Y.Z, tag vX.Y.Z, the bundle committed onto
+                             # release, tag release-vX.Y.Z
 factory upgrade              # installs the release (the stamp and managed.json carry vX.Y.Z's version), then runs doctor
 git add .claude factory && git commit -m "chore(factory): promote vX.Y.Z"
 bun run release:push         # pushes main, release, vX.Y.Z, and release-vX.Y.Z; prints the install line
@@ -190,18 +190,20 @@ declares refuses with ``workspace links are stale: run `bun install`, then retry
 stale link on the lines after, and writes nothing. The script never runs an install itself: run
 `bun install`, then retry.
 
-After those checks, and before it writes anything, it stages the tree it is about to commit:
-`HEAD` plus the new versions and changelog, in a temp directory that borrows this checkout's
-installed `node_modules`. It runs the gate from `factory/config.json` there, each command through
-a shell from the staged tree's root, in order, stopping at the first one that exits non-zero. A
-red gate exits 1 with `gate is red: <command>` and writes nothing: no commit, no tag, no `release`
-change. With no `gate` in `factory/config.json`, it says no gate is configured and goes on; an
+After those checks, and before it writes anything, it runs the gate from `factory/config.json`
+in this checkout, where every job gate runs: each command through a shell from the checkout's
+root, in order, stopping at the first one that exits non-zero. The tree is clean, so the gate sees
+`HEAD` (the old versions and changelog), `.git` included. A red gate exits 1 with
+`gate is red: <command>` and writes nothing: no commit, no tag, no `release` change. With no `gate` in `factory/config.json`, it says no gate is configured and goes on; an
 unreadable or invalid `factory/config.json` refuses, writing nothing. `--dry-run` runs the gate
 too, the same way, then prints the version and section; it builds no bundle and writes nothing.
 
-Once the gate is green, it builds the release bundle (`scripts/bundle.ts`) from the same staged
-tree. If the build fails, it exits non-zero with a one-line reason and writes nothing: no commit,
-no tag, no `release` change. On success, after the
+Once the gate is green, it writes the new versions and `CHANGELOG.md` into the checkout, then
+builds the release bundle (`scripts/bundle.ts`) from the checkout into a temp directory, so the
+bundle carries them. No export or copy of the source tree is made. If the build fails, it
+restores exactly the files it wrote (`git checkout -- <paths>`, and removes a `CHANGELOG.md` it
+created), so `git status --porcelain` is empty again, and exits 1 with a one-line
+`release failed: bundle build: …` reason: no commit, no tag, no `release` change. On success, after the
 `chore(release): vX.Y.Z` commit and the `vX.Y.Z` tag, it commits the bundle onto the `release`
 branch with git plumbing (the checkout, `HEAD`, and the working tree never move): each `release`
 commit's tree is exactly the bundle, its parent is the previous `release` commit (the first is a

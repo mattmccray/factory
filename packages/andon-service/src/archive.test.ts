@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ARCHIVE_REF, parseBatch, parseEpicTree, parseTree, spawnGit, wanted } from './archive';
 
@@ -86,7 +87,19 @@ describe('the git runner (AC6)', () => {
     for (const args of [['remote'], ['remote', 'add', 'x', 'y'], ['remote', '-v', 'x'], ['remote', 'set-url', 'origin', 'y']]) {
       await expect(spawnGit(args, { cwd: import.meta.dir })).rejects.toThrow('not a read-only command');
     }
-    expect((await spawnGit(['remote', '-v'], { cwd: import.meta.dir })).code).toBe(0);
+    // `remote -v` runs in a repo this test makes, so it passes wherever this file sits (a tarball,
+    // an export with no `.git`, a sandbox).
+    const repo = await realpath(await mkdtemp(join(tmpdir(), 'factory-archive-git-')));
+    try {
+      for (const args of [['init', '--quiet'], ['remote', 'add', 'origin', 'https://example.invalid/factory.git']]) {
+        expect(Bun.spawnSync(['git', '-C', repo, ...args], { stdout: 'pipe', stderr: 'pipe' }).exitCode).toBe(0);
+      }
+      const r = await spawnGit(['remote', '-v'], { cwd: repo });
+      expect(r.code).toBe(0);
+      expect(new TextDecoder().decode(r.stdout)).toContain('origin\thttps://example.invalid/factory.git (fetch)');
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
   });
 
   test('spawns git directly, without a shell, and names only the fixed archive ref', async () => {
