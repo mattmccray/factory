@@ -125,6 +125,12 @@ export const isRemote = (p: { machine: string | null }): boolean => p.machine !=
 
 const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v !== '';
 
+const PART = /^[A-Za-z0-9._-]+$/;
+/** A repository's owner or name that is a plain path part (letters, digits, `.`, `_`, `-`; not `.`
+ *  or `..`), so a link or URL can carry it with no escaping. The one rule for T3 Code's `repo=`
+ *  (handoff.ts) and the Open on … page (projectmenu.ts). */
+export const isPart = (s: string): boolean => PART.test(s) && s !== '.' && s !== '..';
+
 /** The repositories of an entry's `repositories` field: a missing or non-array field is none; an
  *  entry without four non-empty strings `remote`, `host`, `owner`, and `name` is dropped. */
 export function toRepositories(v: unknown): AppRepository[] {

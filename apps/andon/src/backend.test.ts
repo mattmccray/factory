@@ -2824,6 +2824,7 @@ test("081 AC5: a remote project's menu is armed with today's items, Reveal in Fi
     { separator: true },
     { id: itemId('copy', RPID), label: 'Copy Project Path' },
     { id: itemId('reveal', RPID), label: 'Reveal in Finder', enabled: false },
+    { id: itemId('repo', RPID), label: 'Open Repository', enabled: false },
     { separator: true },
     {
       id: 'project-menu:open-in',
@@ -3150,4 +3151,77 @@ test('081 AC8: no native path ever spawns, opens, or reveals with a remote root 
   const control = await driveEveryPath(PID, local);
   expect(has(control.seen).length).toBeGreaterThan(0);
   expect(has(control.seen).map((a) => a[0])).toEqual(expect.arrayContaining(['shell.reveal', 'open', T3]));
+});
+
+// ---- the project's repository page (088) ----
+
+const GH: AppRepository[] = [
+  { remote: 'origin', host: 'localhost:222', owner: 'infra', name: 'factory' },
+  { remote: 'github', host: 'github.com', owner: 'mattmccray', name: 'factory' },
+];
+
+test("088 AC1: a project's menu is armed with its Open on item from its listed repositories, local or remote", async () => {
+  fakeMachine(['Visual Studio Code', 'Ghostty'], ['/opt/homebrew/bin/t3']);
+  const projects = hubProjects(RROOT, { local: GH, remote: GH });
+  const { app, log } = contextApp();
+  for (const pid of [PID, RPID]) {
+    log.length = 0;
+    await showProjectMenu({ project: pid }, app, projects);
+    const menu = contexts(log).at(-1);
+    const machine = pid === RPID ? 'studio' : null;
+    expect(menu).toEqual(projectMenuItems(pid, ALL_APPS, {}, machine, GH));
+    expect(Array.isArray(menu) ? menu[5] : null).toEqual({ id: itemId('repo', pid), label: 'Open on GitHub' });
+  }
+});
+
+test('088 AC5: Open on opens the https:// page once, from the listed project, local or remote; a success shows nothing', async () => {
+  const projects = hubProjects(RROOT, { local: GH, remote: GH });
+  for (const pid of [PID, RPID]) {
+    const { app, log } = contextApp();
+    const ran: string[][] = [];
+    await runProjectItem(itemId('repo', pid), app, projects, '/x/t3', async (argv) => {
+      ran.push(argv);
+      return ok();
+    });
+    expect(log).toEqual([['shell.open', 'https://github.com/mattmccray/factory']]);
+    expect(ran).toEqual([]);
+  }
+});
+
+test('088 AC5: a stale or forged id, or a project whose listed repositories give no usable remote, opens nothing', async () => {
+  const { app, log } = contextApp();
+  const usable = hubProjects(RROOT, { local: GH, remote: GH });
+  const unusable = hubProjects(RROOT, { local: [{ remote: 'origin', host: 'localhost:222', owner: 'infra', name: 'factory' }], remote: [{ remote: 'origin', host: 'github.com', owner: 'o', name: 'a b' }] });
+  for (const id of [itemId('repo', 'zzzzzzzzzzzz'), itemId('repo', 'bbbbbbbbbbbb'), 'project-menu:repo:https://evil.example/x', `project-menu:repo:${PID}@nowhere`]) await runProjectItem(id, app, usable, '/x/t3');
+  for (const pid of [PID, RPID]) await runProjectItem(itemId('repo', pid), app, unusable, '/x/t3');
+  await runProjectItem(itemId('repo', PID), app, PROJECTS, '/x/t3'); // listed, with no repositories
+  expect(log).toEqual([]);
+});
+
+test('088 AC5: a failed open (false or a throw) shows one notification naming the project and provider, and logs it', async () => {
+  const projects = hubProjects(RROOT, { local: GH });
+  const logged: string[] = [];
+  const realLog = console.log;
+  console.log = (line: string) => void logged.push(line);
+  try {
+    const refused = contextApp();
+    let calls = 0;
+    // Tiny's type says `open` resolves true; a false answer is still handled, so set it untyped
+    Reflect.set(refused.app.shell, 'open', async () => {
+      calls++;
+      return false;
+    });
+    await runProjectItem(itemId('repo', PID), refused.app, projects, '/x/t3');
+    expect(calls).toBe(1);
+    expect(refused.log).toEqual([['notify', 'Andon', "Couldn't open factory on GitHub: the page did not open"]]);
+    const threw = contextApp();
+    threw.app.shell.open = async () => {
+      throw new Error('no browser');
+    };
+    await runProjectItem(itemId('repo', PID), threw.app, projects, '/x/t3');
+    expect(threw.log).toEqual([['notify', 'Andon', "Couldn't open factory on GitHub: no browser"]]);
+  } finally {
+    console.log = realLog;
+  }
+  expect(logged).toEqual(["andon: Couldn't open factory on GitHub: the page did not open", "andon: Couldn't open factory on GitHub: no browser"]);
 });
