@@ -1,0 +1,160 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+:root{
+  --spec:#40cbe0; --build:#6e6cf0; --review:#bf5af2; --approve:#0a84ff; --human:#ff453a; --merged:#30d158; --queued:rgba(255,255,255,.22);
+  --sys:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:var(--sys)}
+.desk{border-radius:var(--radius,12px);padding:28px 24px 24px;
+  background:radial-gradient(120% 90% at 15% 10%,#3b4f7a 0,#22304f 40%,#141a2b 100%),#141a2b;
+  position:relative;overflow:visible}
+.desk::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:radial-gradient(60% 50% at 85% 85%,rgba(191,90,242,.25),transparent 70%),radial-gradient(40% 40% at 70% 20%,rgba(64,203,224,.18),transparent 70%)}
+.grid{position:relative;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:26px 22px}
+.cell{display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.cap{font-size:11px;font-weight:600;letter-spacing:.02em;color:rgba(255,255,255,.85);text-shadow:0 1px 2px rgba(0,0,0,.5)}
+.cap span{font-weight:400;color:rgba(255,255,255,.6)}
+.w{position:relative;border-radius:22px;padding:14px;
+  background:rgba(28,28,32,.52);backdrop-filter:blur(30px) saturate(1.6);-webkit-backdrop-filter:blur(30px) saturate(1.6);
+  box-shadow:0 0 0 .5px rgba(255,255,255,.14) inset,0 12px 32px -8px rgba(0,0,0,.55);color:rgba(255,255,255,.88)}
+.sm{width:158px;height:158px}.md{width:332px;height:158px}
+/* chips */
+.chip{position:relative;display:inline-block;border-radius:5px;background:var(--c);cursor:default}
+.chip.live{animation:breathe 2.4s ease-in-out infinite}
+.chip.alert{box-shadow:0 0 0 2px rgba(255,69,58,.35),0 0 10px rgba(255,69,58,.6)}
+.chip.ghost{background:transparent;box-shadow:inset 0 0 0 1.5px var(--queued)}
+@keyframes breathe{50%{filter:brightness(1.35)}}
+/* tooltip */
+[data-tip]:hover::after{content:attr(data-tip);position:absolute;z-index:9;left:50%;bottom:calc(100% + 7px);transform:translateX(-50%);
+  white-space:pre;font-size:11px;line-height:1.35;padding:6px 8px;border-radius:7px;color:#fff;
+  background:rgba(40,40,44,.96);box-shadow:0 0 0 .5px rgba(255,255,255,.18),0 6px 18px rgba(0,0,0,.5);pointer-events:none}
+.sp{--c:var(--spec)}.bu{--c:var(--build)}.rv{--c:var(--review)}.ap{--c:var(--approve)}.nh{--c:var(--human)}.mg{--c:var(--merged)}
+/* A: rows */
+.rows{display:flex;flex-direction:column;gap:11px}
+.row{display:flex;align-items:center;gap:8px}
+.pl{width:62px;font-size:10.5px;font-weight:600;color:rgba(255,255,255,.62);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chips{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+.chips .chip{width:22px;height:14px}
+.epic{display:inline-flex;gap:3px;padding:3px;border-radius:7px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.18)}
+.epic .chip{width:14px;height:10px;border-radius:3px}
+.foot{position:absolute;left:14px;right:14px;bottom:11px;display:flex;justify-content:space-between;font-size:10px;color:rgba(255,255,255,.45)}
+.foot b{color:var(--human);font-weight:600}
+/* B: dots */
+.dots{display:grid;grid-template-columns:repeat(5,18px);gap:9px;margin-top:4px}
+.dots .chip{width:18px;height:18px;border-radius:50%}
+.big{position:absolute;right:14px;bottom:10px;font-size:30px;font-weight:600;line-height:1;color:var(--human)}
+.big small{display:block;font-size:9.5px;font-weight:500;color:rgba(255,255,255,.5);text-align:right;margin-top:2px}
+/* C: lanes */
+.lanes{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;height:100%}
+.lane{display:flex;flex-direction:column;gap:5px;align-items:center}
+.lane h6{margin:0 0 3px;font-size:9px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:rgba(255,255,255,.45)}
+.lane .chip{width:100%;height:13px}
+.lane.hot{background:rgba(255,69,58,.10);border-radius:10px;padding:0 4px}
+/* D: ring */
+.ringwrap{display:flex;align-items:center;justify-content:center;height:100%;position:relative}
+.ringc{position:absolute;text-align:center}
+.ringc b{display:block;font-size:26px;font-weight:600;color:var(--human);line-height:1}
+.ringc span{font-size:9.5px;color:rgba(255,255,255,.55)}
+.legend{display:flex;flex-direction:column;gap:5px;font-size:10px;color:rgba(255,255,255,.6)}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--c);margin-right:6px;vertical-align:-1px}
+.empty{display:flex;align-items:center;justify-content:center;height:100%;font-size:10.5px;color:rgba(255,255,255,.32)}
+.legendbar{position:relative;margin-top:22px;display:flex;flex-wrap:wrap;gap:6px 14px;font-size:11px;color:rgba(255,255,255,.75)}
+.legendbar i{display:inline-block;width:12px;height:8px;border-radius:2px;background:var(--c);margin-right:5px;vertical-align:0}
+.legendbar i.ghost{background:transparent;box-shadow:inset 0 0 0 1.5px var(--queued)}
+</style></head><body>
+<div class="desk">
+<div class="grid">
+
+<!-- A -->
+<div class="cell">
+<div class="cap">A · Project rows <span>— medium</span></div>
+<div class="w md">
+  <div class="rows">
+    <div class="row"><div class="pl">factory</div><div class="chips">
+      <span class="chip nh alert" data-tip="094 · needs you&#10;spec has 1 open question"></span>
+      <span class="chip rv live" data-tip="093 · review round 1&#10;2/4 reviewers in"></span>
+      <span class="chip bu live" data-tip="092 · build&#10;builder · 6m"></span>
+      <span class="chip sp live" data-tip="095 · spec&#10;spec-writer · 1m"></span>
+    </div></div>
+    <div class="row"><div class="pl">aegis</div><div class="chips">
+      <span class="chip ap live" data-tip="041 · approve&#10;approver · 2m"></span>
+      <span class="chip bu live" data-tip="042 · build round 1&#10;addressing reviews"></span>
+    </div></div>
+    <div class="row"><div class="pl">brain-cli</div><div class="chips">
+      <span class="epic" data-tip="epic checkout-flow&#10;1 of 4 merged · 1 running"><span class="chip mg"></span><span class="chip rv live"></span><span class="chip ghost"></span><span class="chip ghost"></span></span>
+    </div></div>
+  </div>
+  <div class="foot"><span><b>1</b> needs you</span><span>7 live · 3 merged today</span></div>
+</div>
+<div class="w md" style="height:64px;padding:0"><div class="empty">Nothing running</div></div>
+</div>
+
+<!-- B -->
+<div class="cell">
+<div class="cap">B · Dot field <span>— small, no text</span></div>
+<div class="w sm">
+  <div class="dots">
+    <span class="chip nh alert" data-tip="factory · 094&#10;needs you"></span>
+    <span class="chip rv live" data-tip="factory · 093&#10;review round 1"></span>
+    <span class="chip bu live" data-tip="factory · 092&#10;build"></span>
+    <span class="chip sp live" data-tip="factory · 095&#10;spec"></span>
+    <span class="chip ap live" data-tip="aegis · 041&#10;approve"></span>
+    <span class="chip bu live" data-tip="aegis · 042&#10;build round 1"></span>
+    <span class="chip mg" data-tip="brain-cli · checkout-flow&#10;member merged"></span>
+    <span class="chip rv live" data-tip="brain-cli · checkout-flow&#10;review round 2"></span>
+    <span class="chip ghost" data-tip="checkout-flow&#10;waiting on a member"></span>
+    <span class="chip ghost" data-tip="checkout-flow&#10;waiting on a member"></span>
+  </div>
+  <div class="big">1<small>needs you</small></div>
+</div>
+<div class="w sm" style="height:64px;width:158px;padding:0"><div class="empty">·</div></div>
+</div>
+
+<!-- C -->
+<div class="cell">
+<div class="cap">C · Mini lanes <span>— the board, shrunk</span></div>
+<div class="w md">
+  <div class="lanes">
+    <div class="lane hot"><h6 style="color:var(--human)">You</h6><span class="chip nh alert" data-tip="factory · 094&#10;spec has 1 open question"></span></div>
+    <div class="lane"><h6>Spec</h6><span class="chip sp live" data-tip="factory · 095"></span></div>
+    <div class="lane"><h6>Build</h6><span class="chip bu live" data-tip="factory · 092"></span><span class="chip bu live" data-tip="aegis · 042 · round 1"></span></div>
+    <div class="lane"><h6>Review</h6><span class="chip rv live" data-tip="factory · 093 · 2/4 in"></span><span class="chip rv live" data-tip="brain-cli · checkout-flow member"></span></div>
+    <div class="lane"><h6>Approve</h6><span class="chip ap live" data-tip="aegis · 041"></span></div>
+  </div>
+</div>
+<div class="w md" style="height:64px;padding:0"><div class="empty">Nothing running</div></div>
+</div>
+
+<!-- D -->
+<div class="cell">
+<div class="cap">D · Ring <span>— small, mix at a glance</span></div>
+<div style="display:flex;gap:14px;align-items:center">
+<div class="w sm">
+  <div class="ringwrap">
+    <svg width="124" height="124" viewBox="0 0 42 42" style="transform:rotate(-90deg)">
+      <circle cx="21" cy="21" r="15.9" fill="none" stroke="rgba(255,255,255,.08)" stroke-width="4"/>
+      <!-- 7 live: nh1 sp1 bu2 rv2 ap1; each ~14.28 of 100, 1.5 gap -->
+      <circle cx="21" cy="21" r="15.9" fill="none" stroke="#ff453a" stroke-width="4" stroke-dasharray="12.8 87.2" stroke-dashoffset="0"/>
+      <circle cx="21" cy="21" r="15.9" fill="none" stroke="#40cbe0" stroke-width="4" stroke-dasharray="12.8 87.2" stroke-dashoffset="-14.28"/>
+      <circle cx="21" cy="21" r="15.9" fill="none" stroke="#6e6cf0" stroke-width="4" stroke-dasharray="27.1 72.9" stroke-dashoffset="-28.56"/>
+      <circle cx="21" cy="21" r="15.9" fill="none" stroke="#bf5af2" stroke-width="4" stroke-dasharray="27.1 72.9" stroke-dashoffset="-57.12"/>
+      <circle cx="21" cy="21" r="15.9" fill="none" stroke="#0a84ff" stroke-width="4" stroke-dasharray="12.8 87.2" stroke-dashoffset="-85.68"/>
+    </svg>
+    <div class="ringc" data-tip="1 needs you · 1 spec · 2 build&#10;2 review · 1 approve"><b>1</b><span>needs you</span></div>
+  </div>
+</div>
+<div class="legend">
+  <div class="sp"><i></i>1 spec</div><div class="bu"><i></i>2 build</div><div class="rv"><i></i>2 review</div><div class="ap"><i></i>1 approve</div><div class="nh"><i></i>1 needs you</div>
+</div>
+</div>
+</div>
+
+</div>
+<div class="legendbar">
+  <span class="sp"><i></i>spec</span><span class="bu"><i></i>build</span><span class="rv"><i></i>review</span><span class="ap"><i></i>approve</span><span class="nh"><i></i>needs you</span><span class="mg"><i></i>merged</span><span><i class="ghost"></i>epic member not started</span>
+  <span style="color:rgba(255,255,255,.5)">· hover any chip for its tooltip · live chips breathe</span>
+</div>
+</div>
+</body></html>

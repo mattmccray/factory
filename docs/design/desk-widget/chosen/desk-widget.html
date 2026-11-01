@@ -1,0 +1,180 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+:root{--spec:#40cbe0;--build:#6e6cf0;--review:#bf5af2;--approve:#0a84ff;--human:#ff453a;--merged:#30d158;
+  --sys:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif}
+*{box-sizing:border-box}
+body{margin:0;font-family:var(--sys)}
+.desk{border-radius:var(--radius,12px);padding:20px 22px 22px;position:relative;
+  background:radial-gradient(120% 90% at 15% 10%,#3b4f7a 0,#22304f 40%,#141a2b 100%),#141a2b}
+.desk::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:radial-gradient(60% 50% at 85% 85%,rgba(191,90,242,.25),transparent 70%),radial-gradient(40% 40% at 70% 20%,rgba(64,203,224,.18),transparent 70%)}
+.bar{position:relative;display:flex;gap:8px;align-items:center;margin-bottom:18px;font-size:11px;color:rgba(255,255,255,.7)}
+.bar button{font:inherit;font-size:11px;color:#fff;background:rgba(255,255,255,.12);border:0;border-radius:6px;padding:4px 10px;cursor:pointer;box-shadow:inset 0 0 0 .5px rgba(255,255,255,.15)}
+.bar button.on{background:rgba(10,132,255,.55)}
+.bar .clock{margin-left:auto;font-variant-numeric:tabular-nums;color:rgba(255,255,255,.5)}
+.grid{position:relative;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px 22px}
+.grid.one{display:flex;justify-content:center;padding:24px 0 8px}
+.cell{display:flex;flex-direction:column;gap:8px}
+.cap{font-size:11px;font-weight:600;color:rgba(255,255,255,.88);text-shadow:0 1px 2px rgba(0,0,0,.5)}
+.cap span{font-weight:400;color:rgba(255,255,255,.6)}
+.w{position:relative;border-radius:22px;padding:14px;width:332px;height:158px;
+  background:rgba(28,28,32,.52);backdrop-filter:blur(30px) saturate(1.6);-webkit-backdrop-filter:blur(30px) saturate(1.6);
+  box-shadow:0 0 0 .5px rgba(255,255,255,.14) inset,0 12px 32px -8px rgba(0,0,0,.55);color:rgba(255,255,255,.88);transition:height .5s ease}
+.w.isempty{height:64px}
+.empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:10.5px;color:rgba(255,255,255,.32);opacity:0;transition:opacity .4s;pointer-events:none}
+.w.isempty .empty{opacity:1}
+.w.isempty .body,.w.isempty .foot{opacity:0}
+.body,.foot{transition:opacity .4s}
+/* chip basics */
+.chip{position:relative;display:inline-block;flex:none;border-radius:5px;background:var(--c);cursor:default;
+  transition:background-color .5s ease,box-shadow .5s ease,opacity .45s ease,transform .45s ease}
+.chip.enter{opacity:0;transform:scale(.4)}
+.chip.out{opacity:0;transform:scale(.6)}
+.chip.s-spec{--c:var(--spec)}.chip.s-build{--c:var(--build)}.chip.s-review{--c:var(--review)}.chip.s-approve{--c:var(--approve)}
+.chip.s-human{--c:var(--human);box-shadow:0 0 0 2px rgba(255,69,58,.35),0 0 10px rgba(255,69,58,.6);animation:pulse 1.6s ease-in-out infinite}
+.chip.s-merged{--c:var(--merged);box-shadow:0 0 12px rgba(48,209,88,.7)}
+.chip.s-spec,.chip.s-build,.chip.s-review,.chip.s-approve{animation:breathe 2.4s ease-in-out infinite}
+@keyframes breathe{50%{filter:brightness(1.3)}}
+@keyframes pulse{50%{box-shadow:0 0 0 3px rgba(255,69,58,.25),0 0 16px rgba(255,69,58,.85)}}
+[data-tip]:hover::after{content:attr(data-tip);position:absolute;z-index:20;left:50%;bottom:calc(100% + 7px);transform:translateX(-50%);
+  white-space:pre;font-size:11px;line-height:1.35;padding:6px 8px;border-radius:7px;color:#fff;font-weight:400;
+  background:rgba(40,40,44,.96);box-shadow:0 0 0 .5px rgba(255,255,255,.18),0 6px 18px rgba(0,0,0,.5);pointer-events:none;letter-spacing:0;text-transform:none}
+.foot{position:absolute;left:14px;right:14px;bottom:11px;display:flex;justify-content:space-between;font-size:10px;color:rgba(255,255,255,.45)}
+.foot b{color:var(--human);font-weight:600}
+.foot b.zero{color:rgba(255,255,255,.45);font-weight:400}
+/* A rows */
+.rows{display:flex;flex-direction:column;gap:10px}
+.row{display:flex;align-items:center;gap:8px;min-height:16px;transition:opacity .4s}
+.pl{width:60px;flex:none;font-size:10.5px;font-weight:600;color:rgba(255,255,255,.62);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chips{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+.a1 .chip{width:22px;height:14px}
+.epic{display:inline-flex;gap:3px;padding:3px;border-radius:7px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.2);position:relative}
+.epic:empty{display:none}
+.a1 .epic .chip{width:14px;height:10px;border-radius:3px}
+/* A2 progress pills */
+.a2 .chip{--c:transparent;display:inline-flex;gap:2px;padding:0;background:none;border-radius:4px}
+.a2 .chip i{display:block;width:9px;height:12px;border-radius:2px;background:rgba(255,255,255,.12);transition:background-color .5s}
+.a2 .chip i:first-child{border-radius:4px 2px 2px 4px}.a2 .chip i:last-child{border-radius:2px 4px 4px 2px}
+.a2 .chip i.done{background:rgba(255,255,255,.38)}
+.a2 .chip.s-spec i.cur{background:var(--spec)}.a2 .chip.s-build i.cur{background:var(--build)}.a2 .chip.s-review i.cur{background:var(--review)}.a2 .chip.s-approve i.cur{background:var(--approve)}
+.a2 .chip.s-human i.cur{background:var(--human)}
+.a2 .chip.s-human{box-shadow:0 0 0 1.5px rgba(255,69,58,.55),0 0 10px rgba(255,69,58,.5)}
+.a2 .chip.s-merged i{background:var(--merged)}
+.a2 .chip.s-merged{box-shadow:0 0 10px rgba(48,209,88,.6)}
+.a2 .epic .chip i{width:6px;height:9px}
+/* C1 lanes */
+.lanes{display:grid;grid-template-columns:repeat(6,1fr);gap:5px;height:100%}
+.lane{display:flex;flex-direction:column;gap:5px;align-items:stretch;border-radius:9px;padding:0 3px;transition:background-color .4s}
+.lane h6{margin:0 0 3px;text-align:center;font-size:8.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:rgba(255,255,255,.45)}
+.lane.you h6{color:var(--human)}
+.lane.you.hot{background:rgba(255,69,58,.12)}
+.c1 .chip{height:12px;width:100%}
+/* C2 tracks */
+.tracks{display:flex;flex-direction:column;gap:7px}
+.track{display:flex;align-items:center;gap:8px;height:18px}
+.track h6{margin:0;width:50px;flex:none;font-size:9px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:rgba(255,255,255,.45);display:flex;align-items:center;gap:5px}
+.track h6 i{width:6px;height:6px;border-radius:50%;background:var(--c)}
+.track .chips{flex-wrap:nowrap}
+.c2 .chip{width:18px;height:18px;border-radius:6px;font-size:9.5px;font-weight:700;line-height:18px;text-align:center;color:rgba(0,0,0,.55)}
+.c2 .human{position:absolute;right:14px;top:12px;font-size:22px;font-weight:600;color:var(--human);line-height:1;text-align:right;transition:opacity .4s}
+.c2 .human small{display:block;font-size:9px;font-weight:500;color:rgba(255,255,255,.5);margin-top:1px}
+.c2 .human.zero{opacity:0}
+.legendbar{position:relative;margin-top:18px;display:flex;flex-wrap:wrap;gap:6px 14px;font-size:11px;color:rgba(255,255,255,.75)}
+.legendbar i{display:inline-block;width:12px;height:8px;border-radius:2px;background:var(--c);margin-right:5px}
+</style></head><body>
+<div class="desk">
+<div class="bar">
+  <button id="play" class="on">Pause</button>
+  <button id="fast">Speed 1×</button>
+  <button id="drain">Drain the board</button>
+  <button id="burst">Add work</button>
+  <span class="clock" id="clock"></span>
+</div>
+<div class="grid one">
+  <div class="cell"><div class="cap">Desk widget · chosen design (A2) <span>— each job a 4-step progress pill</span></div>
+    <div class="w a2" id="a2"><div class="body rows"></div><div class="foot"></div><div class="empty">Nothing running</div></div></div>
+</div>
+<div class="legendbar">
+  <span style="--c:var(--spec)"><i></i>spec</span><span style="--c:var(--build)"><i></i>build</span><span style="--c:var(--review)"><i></i>review</span><span style="--c:var(--approve)"><i></i>approve</span><span style="--c:var(--human)"><i></i>needs you</span><span style="--c:var(--merged)"><i></i>just merged</span>
+  <span style="color:rgba(255,255,255,.5)">· simulated board · hover a chip for its tooltip</span>
+</div>
+</div>
+<script>
+const PROJECTS=['factory','aegis','brain-cli'];
+const ORDER=['spec','build','review','approve'];
+const rnd=(a,b)=>a+Math.floor(Math.random()*(b-a+1));
+let booted=false,jobs=[],seq=92,merged=0,draining=false,tick=0;
+function mk(p,stage,left,round=0){const id=String(seq++).padStart(3,'0');
+  return{id,p,stage,left,round,epic:p==='brain-cli'?'checkout-flow':null,why:null}}
+jobs.push(mk('factory','human',6,1),mk('factory','review',2,1),mk('factory','build',3),mk('factory','spec',2),
+  mk('aegis','approve',2,1),mk('aegis','build',2,1),mk('brain-cli','review',3,1));
+jobs[0].why='approver escalated';
+function step(){
+  tick++;
+  for(const j of jobs){
+    if(--j.left>0)continue;
+    switch(j.stage){
+      case'spec':j.stage='build';j.left=rnd(3,5);break;
+      case'build':j.stage='review';j.round++;j.left=rnd(2,4);break;
+      case'review':if(Math.random()<.3&&j.round<2){j.stage='build';j.left=rnd(2,3)}else{j.stage='approve';j.left=rnd(1,2)}break;
+      case'approve':if(Math.random()<.15){j.stage='human';j.why=Math.random()<.5?'approver escalated':'budget spent';j.left=rnd(6,9)}else{j.stage='merged';j.left=3;merged++}break;
+      case'human':j.stage='merged';j.left=3;merged++;break;
+      case'merged':j.gone=true;break;
+    }
+  }
+  jobs=jobs.filter(j=>!j.gone);
+  const live=jobs.filter(j=>j.stage!=='merged').length;
+  if(!draining&&live<7&&Math.random()<.4)jobs.push(mk(PROJECTS[rnd(0,2)],'spec',rnd(2,3)));
+  render();
+}
+const label=j=>({spec:'spec',build:j.round?`build · round ${j.round} fixes`:'build',review:`review round ${j.round}`,approve:'approve',human:`needs you · ${j.why}`,merged:'merged'})[j.stage];
+const tip=j=>`${j.p} · ${j.id}${j.epic?' · epic '+j.epic:''}\n${label(j)}`;
+// keyed, FLIP-animated chip syncing
+function Variant(root,make,update){this.root=root;this.map=new Map();this.make=make;this.update=update}
+Variant.prototype.begin=function(){this.rects=new Map();for(const[id,el]of this.map)this.rects.set(id,el.getBoundingClientRect());this.seen=new Set()};
+Variant.prototype.place=function(container,j){
+  let el=this.map.get(j.id),fresh=false;
+  if(!el){el=this.make(j);if(booted)el.classList.add('enter');this.map.set(j.id,el);fresh=true}
+  container.appendChild(el);el.dataset.tip=tip(j);
+  el.className=el.className.replace(/\bs-\w+/g,'').trim()+' s-'+j.stage;this.update&&this.update(el,j);
+  if(fresh)requestAnimationFrame(()=>requestAnimationFrame(()=>el.classList.remove('enter')));
+  this.seen.add(j.id)};
+Variant.prototype.end=function(){
+  for(const[id,el]of[...this.map]){if(this.seen.has(id))continue;this.map.delete(id);
+    const r=el.getBoundingClientRect();el.classList.add('out');setTimeout(()=>el.remove(),450)}
+  for(const[id,el]of this.map){const a=this.rects.get(id);if(!a)continue;const b=el.getBoundingClientRect();
+    const dx=a.left-b.left,dy=a.top-b.top;if(dx||dy)el.animate([{translate:`${dx}px ${dy}px`},{translate:'0 0'}],{duration:550,easing:'cubic-bezier(.2,.8,.2,1)'})}
+  const live=jobs.length>0;this.root.classList.toggle('isempty',!live)};
+const chip=()=>{const e=document.createElement('span');e.className='chip';return e};
+const pill=()=>{const e=chip();for(let i=0;i<4;i++)e.appendChild(document.createElement('i'));return e};
+const pillUpdate=(el,j)=>{const k=j.stage==='human'?3:j.stage==='merged'?4:ORDER.indexOf(j.stage);
+  [...el.children].forEach((s,i)=>{s.className=i<k?'done':i===k?'cur':''})};
+function rowsVariant(id,make,update){
+  const v=new Variant(document.getElementById(id),make,update),body=v.root.querySelector('.body'),rows={};
+  for(const p of PROJECTS){const r=document.createElement('div');r.className='row';
+    r.innerHTML=`<div class="pl">${p}</div><div class="chips"><span class="epic"></span></div>`;body.appendChild(r);rows[p]=r}
+  v.render=()=>{v.begin();
+    for(const p of PROJECTS){const r=rows[p],cs=r.querySelector('.chips'),ep=r.querySelector('.epic');
+      const mine=jobs.filter(j=>j.p===p).sort((a,b)=>rank(a)-rank(b));
+      for(const j of mine)v.place(j.epic?ep:cs,j);cs.appendChild(ep);
+      ep.dataset.tip=`epic checkout-flow\n${mine.filter(j=>j.epic).length} member job(s) live`;
+      r.style.display=mine.length?'':'none'}
+    v.end();
+    const h=jobs.filter(j=>j.stage==='human').length,l=jobs.filter(j=>j.stage!=='merged').length;
+    v.root.querySelector('.foot').innerHTML=`<span><b class="${h?'':'zero'}">${h}</b> needs you</span><span>${l} live · ${merged} merged</span>`};
+  return v}
+const rank=j=>({human:0,approve:1,review:2,build:3,spec:4,merged:5})[j.stage];
+const A2=rowsVariant('a2',pill,pillUpdate);
+function render(){A2.render();
+  document.getElementById('clock').textContent=`tick ${tick} · ${jobs.length} on the board`}
+render();booted=true;
+let speed=1,timer=null,playing=true;
+const arm=()=>{clearInterval(timer);if(playing)timer=setInterval(step,1400/speed)};arm();
+play.onclick=()=>{playing=!playing;play.textContent=playing?'Pause':'Play';play.classList.toggle('on',playing);arm()};
+fast.onclick=()=>{speed=speed===1?3:1;fast.textContent=`Speed ${speed}×`;arm()};
+drain.onclick=()=>{draining=!draining;drain.classList.toggle('on',draining);drain.textContent=draining?'Draining… (click to resume)':'Drain the board'};
+burst.onclick=()=>{draining=false;drain.classList.remove('on');drain.textContent='Drain the board';
+  for(let i=0;i<3;i++)jobs.push(mk(PROJECTS[rnd(0,2)],'spec',rnd(1,3)));render()};
+</script>
+</body></html>
