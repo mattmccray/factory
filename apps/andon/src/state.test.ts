@@ -1,10 +1,10 @@
 import { expect, test } from 'bun:test';
-import { emptyState, isListed, isRemote, machineOf, setBoard, setProjects, toEpics, toJobs, toProjects } from './state';
+import { emptyState, isListed, isRemote, machineOf, setBoard, setProjects, toEpics, toJobs, toProjects, toRepositories } from './state';
 
 test('AC3: each project keeps its root next to its id and name', () => {
   expect(toProjects({ projects: [{ id: 'a', name: 'one', root: '/r/one' }, { id: 'b', name: 'two', root: '/r/two', extra: 1 }] })).toEqual([
-    { id: 'a', name: 'one', root: '/r/one', machine: null },
-    { id: 'b', name: 'two', root: '/r/two', machine: null },
+    { id: 'a', name: 'one', root: '/r/one', machine: null, machineName: null, repositories: [] },
+    { id: 'b', name: 'two', root: '/r/two', machine: null, machineName: null, repositories: [] },
   ]);
 });
 
@@ -13,10 +13,10 @@ test('AC3: a missing, empty, or non-string root makes the project menu-less, nev
     projects: [{ id: 'a', name: 'one' }, { id: 'b', name: 'two', root: '' }, { id: 'c', name: 'three', root: 42 }, { id: 'd', name: 'four', root: null }, { name: 'no id', root: '/r/x' }],
   });
   expect(projects).toEqual([
-    { id: 'a', name: 'one', root: null, machine: null },
-    { id: 'b', name: 'two', root: null, machine: null },
-    { id: 'c', name: 'three', root: null, machine: null },
-    { id: 'd', name: 'four', root: null, machine: null },
+    { id: 'a', name: 'one', root: null, machine: null, machineName: null, repositories: [] },
+    { id: 'b', name: 'two', root: null, machine: null, machineName: null, repositories: [] },
+    { id: 'c', name: 'three', root: null, machine: null, machineName: null, repositories: [] },
+    { id: 'd', name: 'four', root: null, machine: null, machineName: null, repositories: [] },
   ]);
   // still listed, so the tray counts its jobs and notifications name it
   const s = setProjects(emptyState(), projects ?? []);
@@ -46,7 +46,7 @@ test("056 AC8: each job's epic and each board's epics are read tolerantly, witho
     { slug: 'billing', name: 'Billing rewrite', state: 'landed', waitingOn: null, note: '', members: 0 },
   ]);
   for (const v of [undefined, null, {}, 'x']) expect(toEpics(v)).toEqual([]);
-  const s = setBoard(setProjects(emptyState(), [{ id: 'a', name: 'one', root: null, machine: null }]), 'a', [], toEpics([{ slug: 'auth', waitingOn: 'you' }]));
+  const s = setBoard(setProjects(emptyState(), [{ id: 'a', name: 'one', root: null, machine: null, machineName: null, repositories: [] }]), 'a', [], toEpics([{ slug: 'auth', waitingOn: 'you' }]));
   expect(s.boards.a?.epics?.map((e) => e.slug)).toEqual(['auth']);
   expect(setBoard(s, 'a', []).boards.a?.epics).toEqual([]);
 });
@@ -61,8 +61,8 @@ test('081 AC1: a bare id is local and `<pid>@<machine>` is remote on that machin
     ],
   });
   expect(projects).toEqual([
-    { id: 'aaaaaaaaaaaa', name: 'factory', root: '/Users/me/code/factory', machine: null },
-    { id: '1a2b3c4d5e6f@studio', name: 'factory', root: '/Users/me/code/factory', machine: 'studio' },
+    { id: 'aaaaaaaaaaaa', name: 'factory', root: '/Users/me/code/factory', machine: null, machineName: 'rocinante', repositories: [] },
+    { id: '1a2b3c4d5e6f@studio', name: 'factory', root: '/Users/me/code/factory', machine: 'studio', machineName: 'studio', repositories: [] },
   ]);
   expect((projects ?? []).map(isRemote)).toEqual([false, true]);
 });
@@ -92,4 +92,45 @@ test('081 AC1: machineOf splits at the first @; an id with an empty pid or machi
   expect(machineOf('1a2b3c4d5e6f@mac-mini-2')).toEqual({ machine: 'mac-mini-2' });
   for (const id of ['@studio', 'aaaaaaaaaaaa@', '@']) expect({ id, at: machineOf(id) }).toEqual({ id, at: null });
   expect(toProjects({ projects: [{ id: '@studio', name: 'x' }, { id: 'aaaaaaaaaaaa@', name: 'y' }, { id: 'bbbbbbbbbbbb', name: 'z' }] })?.map((p) => p.id)).toEqual(['bbbbbbbbbbbb']);
+});
+
+// ---- repositories (086) ----
+
+test("086 AC3: each project's repositories are read from its entry; a missing or malformed field is none, a malformed entry dropped", () => {
+  const good = { remote: 'upstream', host: 'github.com', owner: 'mattmccray', name: 'infra' };
+  const projects = toProjects({
+    projects: [
+      { id: 'aaaaaaaaaaaa', name: 'a', root: '/r/a', machine: 'rocinante', repositories: [good, { remote: 'origin', host: 'localhost:222', owner: 'mattm', name: 'infra', extra: 1 }] },
+      { id: 'bbbbbbbbbbbb@moya', name: 'b', root: '/r/b', machine: 'moya' }, // an older peer: no field
+      { id: 'cccccccccccc@moya', name: 'c', repositories: 'junk' },
+      { id: 'dddddddddddd', name: 'd', repositories: [null, 'x', 7, [], {}, { ...good, host: '' }, { ...good, owner: 3 }, { remote: 'origin', host: 'github.com', owner: 'o' }, good] },
+      { id: 'eeeeeeeeeeee', name: 'e', repositories: { 0: good } },
+    ],
+  });
+  expect((projects ?? []).map((p) => [p.id, p.repositories])).toEqual([
+    ['aaaaaaaaaaaa', [good, { remote: 'origin', host: 'localhost:222', owner: 'mattm', name: 'infra' }]],
+    ['bbbbbbbbbbbb@moya', []],
+    ['cccccccccccc@moya', []],
+    ['dddddddddddd', [good]],
+    ['eeeeeeeeeeee', []],
+  ]);
+  for (const v of [undefined, null, 'x', 1, {}]) expect(toRepositories(v)).toEqual([]);
+});
+
+test("086: the machine name for toasts is the entry's machine, else the id's; it never makes a project remote", () => {
+  const projects = toProjects({
+    projects: [
+      { id: 'aaaaaaaaaaaa', name: 'a', machine: 'rocinante' },
+      { id: 'bbbbbbbbbbbb', name: 'b' },
+      { id: 'cccccccccccc@studio', name: 'c', machine: 'studio' },
+      { id: 'dddddddddddd@studio', name: 'd', machine: 42 },
+    ],
+  });
+  expect((projects ?? []).map((p) => [p.id, p.machine, p.machineName])).toEqual([
+    ['aaaaaaaaaaaa', null, 'rocinante'],
+    ['bbbbbbbbbbbb', null, null],
+    ['cccccccccccc@studio', 'studio', 'studio'],
+    ['dddddddddddd@studio', 'studio', 'studio'],
+  ]);
+  expect((projects ?? []).map(isRemote)).toEqual([false, false, true, true]);
 });

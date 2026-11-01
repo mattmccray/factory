@@ -3,16 +3,19 @@
 // (HAND_OFF_METHOD), and nothing else: never a command or a prompt. Everything else lives here: the
 // request's checks (the project from the backend's own `/projects` list, the factory job id form,
 // the three actions, a non-blank note, the 8,000-character limit), the `/factory …` command (built
-// exactly as the Andon UI's inspector.ts builds it), the `origin` remote read as a GitHub
-// `owner/name`, the T3 Code prompt link (draft) and the `t3 thread start` argv (send), the answers
-// the page's toast reads, and the failure text. backend.ts reads `origin`, opens the link or runs
-// the argv (with no shell), and notifies. Andon still writes no job state: the factory CLI does,
-// when the person (or a sent thread) runs the command.
+// exactly as the Andon UI's inspector.ts builds it), the repository a draft names (brief
+// andon-remote-handoff: T3 Code's primary remote among the project's listed `repositories`, the
+// host allowlist, and the one-project-per-repository check over the whole merged list), the T3 Code
+// prompt link (draft) and the `t3 thread start` argv (send), the answers the page's toast reads, and
+// the failure text. backend.ts opens the link or runs the argv (with no shell), and notifies; it runs
+// no `git`: each project's repositories come from its own machine's service. Andon still writes no
+// job state: the factory CLI does, when the person (or a sent thread) runs the command.
 // The job id check and the command building are reimplemented here, on purpose: contract code
 // must not run in the Mac app (boundary.test.ts), and a test pins the command to the UI's.
 import { menuProject } from './projectmenu';
 import type { MenuProject } from './projectmenu';
-import { isRecord } from './state';
+import { isPart, isRecord } from './state';
+import type { AppRepository } from './state';
 
 /** The one hand-off method the main window's page calls (tinyjs.json's `api` gate names it). */
 export const HAND_OFF_METHOD = 'handOff';
@@ -80,35 +83,62 @@ export function handoffRequest(params: unknown, projects: readonly MenuProject[]
   return { project: p, job, action, command };
 }
 
-/** The argv that reads a project root's `origin` remote. */
-export const originArgv = (root: string): string[] => ['git', '-C', root, 'remote', 'get-url', 'origin'];
+/** The hosts a T3 Code link's `repo=` can name: the one allowlist (brief andon-remote-handoff, Decision 3). */
+export const T3_HOSTS: readonly string[] = ['github.com'];
 
-const PART = '[A-Za-z0-9._-]+';
-const GITHUB_ORIGINS: readonly RegExp[] = [
-  new RegExp(`^https://github\\.com/(${PART})/(${PART})$`),
-  new RegExp(`^git@github\\.com:(${PART})/(${PART})$`),
-  new RegExp(`^ssh://git@github\\.com/(${PART})/(${PART})$`),
-];
+/** The remotes T3 Code prefers, in order; with neither, the first by remote name. */
+const PREFERRED_REMOTES: readonly string[] = ['upstream', 'origin'];
 
 /**
- * The GitHub `owner/name` of an `origin` URL (git's output, so one trailing newline is fine):
- * `https://github.com/<owner>/<name>`, `git@github.com:<owner>/<name>`, or
- * `ssh://git@github.com/<owner>/<name>`, each with or without `.git`. Null for anything else
- * (another host, a local path, empty output, or no output: a failed `git`).
+ * T3 Code's primary remote among a project's repositories: `upstream`, else `origin`, else the first
+ * by remote name. Null with none.
  */
-export function githubRepo(origin: string | null): string | null {
-  if (origin === null) return null;
-  const url = origin.replace(/\r?\n$/, '');
-  for (const re of GITHUB_ORIGINS) {
-    const m = re.exec(url);
-    const owner = m?.[1];
-    const raw = m?.[2];
-    if (owner === undefined || raw === undefined) continue;
-    const name = raw.endsWith('.git') ? raw.slice(0, -'.git'.length) : raw;
-    if (name === '' || owner === '.' || owner === '..' || name === '.' || name === '..') return null;
-    return `${owner}/${name}`;
+export function primaryRepository(repos: readonly AppRepository[]): AppRepository | null {
+  for (const name of PREFERRED_REMOTES) {
+    const r = repos.find((x) => x.remote === name);
+    if (r !== undefined) return r;
   }
-  return null;
+  const sorted = [...repos].sort((a, b) => (a.remote < b.remote ? -1 : a.remote > b.remote ? 1 : 0));
+  return sorted[0] ?? null;
+}
+
+/** Whether a link can name the repository: its host is on the allowlist, and its owner and name are
+ *  plain path parts (so `repo=<owner>/<name>` needs no escaping). */
+export const linkable = (r: AppRepository): boolean => T3_HOSTS.includes(r.host.toLowerCase()) && isPart(r.owner) && isPart(r.name);
+
+/** The same repository: host, owner, and name equal, compared without case. */
+export const sameRepository = (a: AppRepository, b: AppRepository): boolean =>
+  a.host.toLowerCase() === b.host.toLowerCase() && a.owner.toLowerCase() === b.owner.toLowerCase() && a.name.toLowerCase() === b.name.toLowerCase();
+
+/** The name a toast gives a project's machine: its entry's, else its id's, else "this Mac". */
+export const machineLabel = (p: Pick<MenuProject, 'machine' | 'machineName'>): string => p.machineName ?? p.machine ?? 'this Mac';
+
+/** Where a draft for a project can go: a link's `repo` (`<owner>/<name>`), no linkable primary
+ *  remote, or a primary repository that is also another listed project's (with every such project's
+ *  machine, in feed order, each named once). */
+export type DraftTarget = { kind: 'repo'; repo: string } | { kind: 'no-github-remote' } | { kind: 'several-machines'; machines: string[] };
+
+/**
+ * The draft target for `project` among `projects` (the backend's merged `/projects` list, local and
+ * remote): its primary repository, when linkable, and exactly one listed project has it as its own
+ * primary repository (brief andon-remote-handoff, Decision 5).
+ */
+export function draftTarget(project: MenuProject, projects: readonly MenuProject[]): DraftTarget {
+  const primary = primaryRepository(project.repositories);
+  if (primary === null || !linkable(primary)) return { kind: 'no-github-remote' };
+  const holders = projects.filter((p) => {
+    const other = primaryRepository(p.repositories);
+    return other !== null && sameRepository(other, primary);
+  });
+  if (holders.length > 1) {
+    const machines: string[] = [];
+    for (const p of holders) {
+      const m = machineLabel(p);
+      if (!machines.includes(m)) machines.push(m);
+    }
+    return { kind: 'several-machines', machines };
+  }
+  return { kind: 'repo', repo: `${primary.owner}/${primary.name}` };
 }
 
 /** T3 Code's prompt link: a new thread in the GitHub repo's project, with the command as an unsent
@@ -118,9 +148,24 @@ export const draftLink = (command: string, repo: string): string => `t3code://ne
 /** The argv that starts a T3 Code thread titled "<action> <job>" in the project folder, with the command sent. */
 export const sendArgv = (t3: string, h: Handoff): string[] => [t3, 'thread', 'start', '--title', `${h.action} ${h.job}`, h.project.root, h.command];
 
+/** Send mode for a remote project: a draft opened instead, since `t3 thread start` reaches only
+ *  this Mac's T3 Code (`machine`: the machine the project is on). */
+export interface DraftedNotSent {
+  outcome: 'drafted-not-sent';
+  machine: string;
+}
+
+/** The project's repository is several listed projects' primary: nothing opened, copy only. */
+export interface SeveralMachines {
+  outcome: 'several-machines';
+  project: string; // the project's name
+  machines: string[]; // the machines of every project with that repository, in feed order
+}
+
 /** What the hand-off did, for the page's toast: a draft opened, a thread sent, copy only (the copy
- *  mode, no `t3`, or a failure, which a notification explains), or no GitHub remote for a draft. */
-export type HandoffOutcome = 'drafted' | 'sent' | 'copy-only' | 'no-github-remote';
+ *  mode, no `t3`, or a failure, which a notification explains), no GitHub remote for a draft, a
+ *  draft opened in place of a send (a remote project), or a repository on several machines. */
+export type HandoffOutcome = 'drafted' | 'sent' | 'copy-only' | 'no-github-remote' | DraftedNotSent | SeveralMachines;
 
 /** The notification text when sending failed. */
 export const sendFailureText = (reason: string): string => `Couldn't send to T3 Code: ${reason}`;

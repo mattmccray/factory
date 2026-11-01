@@ -3,8 +3,8 @@ import { boardPath, startFollow } from './follow';
 import type { Http, HttpResponse } from './http';
 import type { AppState } from './state';
 
-const P1 = { id: 'aaaaaaaaaaaa', name: 'one', root: '/r/one', machine: null };
-const P2 = { id: 'bbbbbbbbbbbb', name: 'two', root: '/r/two', machine: null };
+const P1 = { id: 'aaaaaaaaaaaa', name: 'one', root: '/r/one', machine: null, machineName: null, repositories: [] };
+const P2 = { id: 'bbbbbbbbbbbb', name: 'two', root: '/r/two', machine: null, machineName: null, repositories: [] };
 const enc = new TextEncoder();
 const wait = (ms = 5) => new Promise((r) => setTimeout(r, ms));
 

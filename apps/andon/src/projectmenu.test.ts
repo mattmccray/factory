@@ -1,25 +1,27 @@
 import { describe, expect, test } from 'bun:test';
-import { BUNDLE_IDS, OPEN_IN_APPS, OPEN_IN_ID, PROJECT_MENU_METHOD, appFallbacks, exitReason, failureText, itemId, mdfindHit, mdfindQuery, menuRequest, parseItemId, pickAppPath, pickT3, projectMenuItems, resolveAction, t3Candidates } from './projectmenu';
+import { BUNDLE_IDS, OPEN_IN_APPS, OPEN_IN_ID, PROJECT_MENU_METHOD, REPOSITORY_HOSTS, appFallbacks, exitReason, failureText, itemId, mdfindHit, mdfindQuery, menuRequest, openInLabel, parseItemId, pickAppPath, pickT3, projectMenuItems, repositoryLink, resolveAction, t3Candidates } from './projectmenu';
+import type { AppRepository } from './state';
 import type { AppIcons, Availability, ContextItem, MenuProject, ProjectAction, ProjectItem } from './projectmenu';
 
 const PID = 'aaaaaaaaaaaa';
 const ROOT = '/Users/me/code/factory';
 const PROJECTS: MenuProject[] = [
-  { id: PID, name: 'factory', root: ROOT, machine: null },
-  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null, machine: null },
-  { id: 'cccccccccccc', name: '', root: '/r/unnamed', machine: null },
+  { id: PID, name: 'factory', root: ROOT, machine: null, machineName: null, repositories: [] },
+  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null, machine: null, machineName: null, repositories: [] },
+  { id: 'cccccccccccc', name: '', root: '/r/unnamed', machine: null, machineName: null, repositories: [] },
 ];
 const KINDS: ProjectItem[] = ['copy', 'reveal', 'vscode', 't3', 'ghostty'];
 const ALL_THERE: Availability = { vscode: true, ghostty: true, t3: '/home/me/.t3/bin/t3' };
 
 describe('AC1: the menu', () => {
-  test('New Exploration…, Run Next, a separator, Copy Project Path, Reveal in Finder, a separator, then Open in ▸ VS Code, T3 Code, Ghostty', () => {
+  test('New Exploration…, Run Next, a separator, Copy Project Path, Reveal in Finder, Open Repository (grayed out with no repository), a separator, then Open in ▸ VS Code, T3 Code, Ghostty', () => {
     expect(projectMenuItems(PID, ALL_THERE)).toEqual([
       { id: `project-menu:explore:${PID}`, label: 'New Exploration…' },
       { id: `project-menu:next:${PID}`, label: 'Run Next' },
       { separator: true },
       { id: `project-menu:copy:${PID}`, label: 'Copy Project Path' },
       { id: `project-menu:reveal:${PID}`, label: 'Reveal in Finder' },
+      { id: `project-menu:repo:${PID}`, label: 'Open Repository', enabled: false },
       { separator: true },
       {
         id: OPEN_IN_ID,
@@ -34,7 +36,7 @@ describe('AC1: the menu', () => {
   });
 
   test('a missing app or t3 grays its item out, and only its item', () => {
-    const open = (a: Availability): (boolean | undefined)[] => projectMenuItems(PID, a)[6]?.submenu?.map((i) => i.enabled) ?? [];
+    const open = (a: Availability): (boolean | undefined)[] => projectMenuItems(PID, a)[7]?.submenu?.map((i) => i.enabled) ?? [];
     expect(open({ vscode: false, ghostty: true, t3: '/x/t3' })).toEqual([false, true, true]);
     expect(open({ vscode: true, ghostty: false, t3: '/x/t3' })).toEqual([true, true, false]);
     expect(open({ vscode: true, ghostty: true, t3: null })).toEqual([true, false, true]);
@@ -105,7 +107,7 @@ describe('AC2: an action uses only the looked-up root', () => {
     }
     for (const item of KINDS) {
       const a = resolveAction(itemId(item, PID), PROJECTS, t3);
-      const strings = a === null ? [] : a.kind === 'spawn' ? a.argv : a.kind === 'push' ? [] : [a.root];
+      const strings = a === null ? [] : a.kind === 'spawn' ? a.argv : a.kind === 'push' ? [] : a.kind === 'open-url' ? [a.url] : [a.root];
       for (const s of strings) expect([ROOT, t3, 'open', '-a', 'Visual Studio Code', 'Ghostty', 'app']).toContain(s);
     }
   });
@@ -143,7 +145,7 @@ describe('AC6: the failure text', () => {
 
 describe('043 AC1: an Open in item carries its app icon whenever one was found', () => {
   const ICONS: AppIcons = { vscode: '/tmp/vscode.png', t3: '/tmp/t3.png', ghostty: '/tmp/ghostty.png' };
-  const openIn = (items: ContextItem[]): ContextItem[] => items[6]?.submenu ?? [];
+  const openIn = (items: ContextItem[]): ContextItem[] => items[7]?.submenu ?? [];
 
   test('every item with an icon carries it; ids, labels, and enabled are as without icons', () => {
     for (const apps of [ALL_THERE, { vscode: false, ghostty: true, t3: null }, { vscode: false, ghostty: false, t3: null }]) {
@@ -166,9 +168,9 @@ describe('043 AC1: an Open in item carries its app icon whenever one was found',
     expect(openIn(projectMenuItems(PID, ALL_THERE, {})).some((i) => 'icon' in i)).toBe(false);
   });
 
-  test('New Exploration…, Run Next, Copy Project Path, Reveal in Finder, the separators, and the Open in parent never carry an icon', () => {
+  test('New Exploration…, Run Next, Copy Project Path, Reveal in Finder, Open Repository, the separators, and the Open in parent never carry an icon', () => {
     const items = projectMenuItems(PID, ALL_THERE, ICONS);
-    expect(items.slice(0, 7).map((i) => 'icon' in i)).toEqual([false, false, false, false, false, false, false]);
+    expect(items.slice(0, 8).map((i) => 'icon' in i)).toEqual([false, false, false, false, false, false, false, false]);
   });
 });
 
@@ -207,7 +209,7 @@ describe('075 AC2/AC3: New Exploration… and Run Next', () => {
   test('today\'s items are unchanged after the two new items and their separator', () => {
     const items = projectMenuItems(PID, ALL_THERE);
     expect(items.slice(0, 3)).toEqual([{ id: itemId('explore', PID), label: 'New Exploration…' }, { id: itemId('next', PID), label: 'Run Next' }, { separator: true }]);
-    expect(items.slice(3).map((i) => i.label ?? '—')).toEqual(['Copy Project Path', 'Reveal in Finder', '—', 'Open in']);
+    expect(items.slice(3).map((i) => i.label ?? '—')).toEqual(['Copy Project Path', 'Reveal in Finder', 'Open Repository', '—', 'Open in']);
   });
 
   test('every clickable id round-trips through parseItemId', () => {
@@ -215,7 +217,7 @@ describe('075 AC2/AC3: New Exploration… and Run Next', () => {
       .flatMap((i) => [i, ...(i.submenu ?? [])])
       .map((i) => i.id)
       .filter((id): id is string => id !== undefined && id !== OPEN_IN_ID);
-    expect(ids.map((id) => parseItemId(id))).toEqual((['explore', 'next', 'copy', 'reveal', 'vscode', 't3', 'ghostty'] satisfies ProjectItem[]).map((item) => ({ item, pid: PID })));
+    expect(ids.map((id) => parseItemId(id))).toEqual((['explore', 'next', 'copy', 'reveal', 'repo', 'vscode', 't3', 'ghostty'] satisfies ProjectItem[]).map((item) => ({ item, pid: PID })));
     expect(itemId('explore', PID)).toBe(`project-menu:explore:${PID}`);
     expect(itemId('next', PID)).toBe(`project-menu:next:${PID}`);
   });
@@ -243,7 +245,7 @@ describe('075 AC2/AC3: New Exploration… and Run Next', () => {
 describe("081 AC5: a remote project's menu", () => {
   const RID = '1a2b3c4d5e6f@studio';
   const RROOT = '/Users/studio-me/code/factory';
-  const REMOTE: MenuProject[] = [...PROJECTS, { id: RID, name: 'factory', root: RROOT, machine: 'studio' }];
+  const REMOTE: MenuProject[] = [...PROJECTS, { id: RID, name: 'factory', root: RROOT, machine: 'studio', machineName: 'studio', repositories: [] }];
   const t3 = '/Users/me/.t3/bin/t3';
   const ICONS: AppIcons = { vscode: '/tmp/vscode.png', t3: '/tmp/t3.png', ghostty: '/tmp/ghostty.png' };
 
@@ -254,6 +256,7 @@ describe("081 AC5: a remote project's menu", () => {
       { separator: true },
       { id: `project-menu:copy:${RID}`, label: 'Copy Project Path' },
       { id: `project-menu:reveal:${RID}`, label: 'Reveal in Finder', enabled: false },
+      { id: `project-menu:repo:${RID}`, label: 'Open Repository', enabled: false },
       { separator: true },
       {
         id: OPEN_IN_ID,
@@ -271,7 +274,7 @@ describe("081 AC5: a remote project's menu", () => {
     for (const apps of [ALL_THERE, { vscode: false, ghostty: true, t3: null }, { vscode: false, ghostty: false, t3: null }]) {
       const items = projectMenuItems(RID, apps, ICONS, 'studio');
       expect(items[4]?.enabled).toBe(false);
-      expect(items[6]?.submenu?.map((i) => [i.enabled, i.icon])).toEqual([
+      expect(items[7]?.submenu?.map((i) => [i.enabled, i.icon])).toEqual([
         [false, '/tmp/vscode.png'],
         [false, '/tmp/t3.png'],
         [false, '/tmp/ghostty.png'],
@@ -281,7 +284,7 @@ describe("081 AC5: a remote project's menu", () => {
 
   test('a local project, with no machine, is as today', () => {
     expect(projectMenuItems(PID, ALL_THERE, {}, null)).toEqual(projectMenuItems(PID, ALL_THERE));
-    expect(projectMenuItems(PID, ALL_THERE)[6]?.label).toBe('Open in');
+    expect(projectMenuItems(PID, ALL_THERE)[7]?.label).toBe('Open in');
     expect(projectMenuItems(PID, ALL_THERE)[4]).toEqual({ id: itemId('reveal', PID), label: 'Reveal in Finder' });
   });
 
@@ -303,6 +306,104 @@ describe("081 AC5: a remote project's menu", () => {
   });
 
   test('its item ids round-trip with the @-suffixed project id', () => {
-    for (const item of ['explore', 'next', 'copy', 'reveal', 'vscode', 't3', 'ghostty'] satisfies ProjectItem[]) expect(parseItemId(itemId(item, RID))).toEqual({ item, pid: RID });
+    for (const item of ['explore', 'next', 'copy', 'reveal', 'repo', 'vscode', 't3', 'ghostty'] satisfies ProjectItem[]) expect(parseItemId(itemId(item, RID))).toEqual({ item, pid: RID });
+  });
+});
+
+// ---- the project's repository page (088) ----
+
+describe('088: Open on … the project\'s repository page', () => {
+  const RID = '1a2b3c4d5e6f@studio';
+  const t3 = '/Users/me/.t3/bin/t3';
+  const repo = (remote: string, host: string, owner = 'mattmccray', name = 'factory'): AppRepository => ({ remote, host, owner, name });
+  const local = (repositories: AppRepository[]): MenuProject => ({ id: PID, name: 'factory', root: ROOT, machine: null, machineName: null, repositories });
+  const remote = (repositories: AppRepository[]): MenuProject => ({ id: RID, name: 'factory', root: '/Users/studio-me/code/factory', machine: 'studio', machineName: 'studio', repositories });
+  /** The menu item and the clicked action, for one project. */
+  const both = (p: MenuProject): { item: ContextItem | undefined; action: ProjectAction | null } => ({
+    item: projectMenuItems(p.id, ALL_THERE, {}, p.machine, p.repositories).find((i) => i.id === itemId('repo', p.id)),
+    action: resolveAction(itemId('repo', p.id), [p], t3),
+  });
+
+  test('AC1: a local and a remote project with a github.com remote list Open on GitHub right after Reveal in Finder, enabled, outside Open in', () => {
+    for (const p of [local([repo('origin', 'github.com')]), remote([repo('origin', 'github.com')])]) {
+      const items = projectMenuItems(p.id, ALL_THERE, {}, p.machine, p.repositories);
+      expect(items.map((i) => i.label ?? '—')).toEqual(['New Exploration…', 'Run Next', '—', 'Copy Project Path', 'Reveal in Finder', 'Open on GitHub', '—', openInLabel(p.machine)]);
+      expect(items[5]).toEqual({ id: `project-menu:repo:${p.id}`, label: 'Open on GitHub' });
+      expect(items[5]?.enabled).not.toBe(false);
+      expect(items[5]?.submenu).toBeUndefined();
+      expect(items[7]?.submenu?.map((i) => i.id)).toEqual([itemId('vscode', p.id), itemId('t3', p.id), itemId('ghostty', p.id)]);
+    }
+  });
+
+  test('AC2: each known host opens exactly https://<host>/<owner>/<name>, labeled Open on <provider>, local or remote', () => {
+    const cases: [string, string][] = [
+      ['github.com', 'GitHub'],
+      ['bitbucket.org', 'Bitbucket'],
+      ['gitlab.com', 'GitLab'],
+      ['git.cafe', 'git.cafe'],
+    ];
+    for (const [host, provider] of cases) {
+      for (const make of [local, remote]) {
+        const p = make([repo('origin', host, 'some-owner', 'the.repo_1')]);
+        const { item, action } = both(p);
+        expect(item).toEqual({ id: itemId('repo', p.id), label: `Open on ${provider}` });
+        expect(action).toEqual({ kind: 'open-url', url: `https://${host}/some-owner/the.repo_1`, provider, project: 'factory' });
+      }
+    }
+    expect(Object.fromEntries(REPOSITORY_HOSTS.map((h) => [h.host, h.label]))).toEqual(Object.fromEntries(cases));
+  });
+
+  test('AC3: a github.com remote beats a self-hosted origin; with no GitHub, the first known by remote name; with several GitHub, the first GitHub by remote name', () => {
+    expect(repositoryLink([repo('origin', 'localhost:222'), repo('zz-github', 'github.com', 'a', 'b')])).toEqual({ url: 'https://github.com/a/b', provider: 'GitHub' });
+    expect(repositoryLink([repo('origin', 'gitlab.com', 'o', 'gl'), repo('backup', 'bitbucket.org', 'o', 'bb'), repo('a-self', 'git.example.com', 'o', 'x')])).toEqual({ url: 'https://bitbucket.org/o/bb', provider: 'Bitbucket' });
+    expect(repositoryLink([repo('origin', 'github.com', 'o', 'second'), repo('fork', 'github.com', 'o', 'first'), repo('aaa', 'gitlab.com', 'o', 'gl')])).toEqual({ url: 'https://github.com/o/first', provider: 'GitHub' });
+    // an unusable GitHub remote is passed over, not picked
+    expect(repositoryLink([repo('a', 'github.com', 'o', 'a/b'), repo('b', 'gitlab.com', 'o', 'ok')])).toEqual({ url: 'https://gitlab.com/o/ok', provider: 'GitLab' });
+    // the host compare is against the lowercased host
+    expect(repositoryLink([repo('origin', 'GitHub.com', 'o', 'n')])).toEqual({ url: 'https://github.com/o/n', provider: 'GitHub' });
+    const p = local([repo('origin', 'localhost:222'), repo('github', 'github.com', 'mattmccray', 'factory')]);
+    expect(both(p).action).toEqual({ kind: 'open-url', url: 'https://github.com/mattmccray/factory', provider: 'GitHub', project: 'factory' });
+  });
+
+  test('AC4: with no usable remote, a grayed-out Open Repository in the same place, and its id resolves to nothing', () => {
+    const unusable: AppRepository[][] = [
+      [],
+      [repo('origin', 'localhost:222')],
+      [repo('origin', 'github.com:2222')],
+      [repo('origin', 'git.example.com')],
+      [repo('origin', 'github.com', 'a/b')],
+      [repo('origin', 'github.com', 'o', 'a/b')],
+      [repo('origin', 'github.com', '..')],
+      [repo('origin', 'github.com', 'o', '.')],
+      [repo('origin', 'github.com', 'o', 'with space')],
+      [repo('origin', 'github.com', 'o', 'q?x')],
+      [repo('origin', 'gitlab.com', 'o', 'h#x')],
+      [repo('origin', 'bitbucket.org', 'o%2e', 'n')],
+    ];
+    for (const repos of unusable) {
+      for (const make of [local, remote]) {
+        const p = make(repos);
+        const items = projectMenuItems(p.id, ALL_THERE, {}, p.machine, p.repositories);
+        expect({ repos, item: items[5] }).toEqual({ repos, item: { id: itemId('repo', p.id), label: 'Open Repository', enabled: false } });
+        expect(items.map((i) => i.label ?? '—').slice(3, 7)).toEqual(['Copy Project Path', 'Reveal in Finder', 'Open Repository', '—']);
+        expect({ repos, action: resolveAction(itemId('repo', p.id), [p], t3) }).toEqual({ repos, action: null });
+        expect(repositoryLink(repos)).toBeNull();
+      }
+    }
+  });
+
+  test('AC5: an id for an unlisted project, a rootless one, or one whose listed repositories no longer give a usable remote resolves to nothing', () => {
+    const p = local([repo('origin', 'github.com')]);
+    expect(resolveAction(itemId('repo', 'zzzzzzzzzzzz'), [p], t3)).toBeNull();
+    expect(resolveAction(itemId('repo', PID), [], t3)).toBeNull();
+    expect(resolveAction(itemId('repo', PID), [{ ...p, root: null }], t3)).toBeNull();
+    expect(resolveAction(itemId('repo', PID), [local([repo('origin', 'localhost:222')])], t3)).toBeNull();
+    // the URL comes from the listed project, never from the id
+    expect(resolveAction(`project-menu:repo:${PID}`, [p], t3)).toEqual({ kind: 'open-url', url: 'https://github.com/mattmccray/factory', provider: 'GitHub', project: 'factory' });
+    expect(resolveAction('project-menu:repo:https://evil.example/x', [p], t3)).toBeNull();
+  });
+
+  test('the failure text names the project and the provider', () => {
+    expect(failureText({ kind: 'open-url', url: 'https://github.com/o/n', provider: 'GitHub', project: 'factory' }, 'the page did not open')).toBe("Couldn't open factory on GitHub: the page did not open");
   });
 });

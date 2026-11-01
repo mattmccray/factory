@@ -17,6 +17,7 @@ import { INSTALL_NOTICE, PROBE_MS } from './autostart';
 import { noServicePage } from './noservice';
 import { boardPath } from './follow';
 import { toProjects } from './state';
+import type { AppRepository } from './state';
 
 /** Which window ops fail. Mutable, so a test can heal the window between clicks. Each failing op is
  *  still recorded, then `getState` rejects and `restore`/`show` throw. */
@@ -1369,8 +1370,8 @@ test('063 AC6: setViewState from any window but main, or with any params but the
 const PID = 'aaaaaaaaaaaa';
 const ROOT = '/Users/me/code/factory';
 const PROJECTS: MenuProject[] = [
-  { id: PID, name: 'factory', root: ROOT, machine: null },
-  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null, machine: null },
+  { id: PID, name: 'factory', root: ROOT, machine: null, machineName: null, repositories: [] },
+  { id: 'bbbbbbbbbbbb', name: 'rootless', root: null, machine: null, machineName: null, repositories: [] },
 ];
 
 /** A process that exits with `code`, having written `stderr`. */
@@ -1608,24 +1609,38 @@ const MAIN_META = { window: 'main', origin: 'http://127.0.0.1:8766' };
 const JOB = '036-t3-handoff';
 const T3 = '/Users/me/.t3/bin/t3';
 
-/** A fake host: the listed projects, the `t3` found, the `origin` git gives, and a runner that records every argv. */
-function fakeHost(opts: { t3?: string | null; origin?: string | null; run?: RunResult } = {}): { host: HandoffHost; ran: string[][]; origins: string[] } {
+/** The local project's repositories by default: its `origin` on GitHub. */
+const GITHUB: AppRepository[] = [{ remote: 'origin', host: 'github.com', owner: 'mattmccray', name: 'factory' }];
+/** The listed projects, with the local project's repositories set. */
+const withRepos = (repositories: AppRepository[]): MenuProject[] => PROJECTS.map((p) => (p.id === PID ? { ...p, repositories } : p));
+
+/** A fake host: the listed projects (the local one with `repositories`, GITHUB by default), the
+ *  `t3` found, and a runner that records every argv. */
+function fakeHost(opts: { t3?: string | null; repositories?: AppRepository[]; run?: RunResult } = {}): { host: HandoffHost; ran: string[][] } {
   const ran: string[][] = [];
-  const origins: string[] = [];
+  const projects = withRepos(opts.repositories ?? GITHUB);
   const host: HandoffHost = {
-    projects: () => PROJECTS,
+    projects: () => projects,
     findT3: async () => (opts.t3 === undefined ? T3 : opts.t3),
-    origin: async (root) => {
-      origins.push(root);
-      return opts.origin === undefined ? 'git@github.com:mattmccray/factory.git\n' : opts.origin;
-    },
     run: async (argv) => {
       ran.push(argv);
       return opts.run ?? { ok: true, reason: '' };
     },
   };
-  return { host, ran, origins };
+  return { host, ran };
 }
+
+/** Repositories with no draftable primary remote: none, other hosts, and a
+ *  GitHub remote that isn't the primary one (a self-hosted `origin` beside a `github` remote). */
+const UNDRAFTABLE: AppRepository[][] = [
+  [],
+  [{ remote: 'origin', host: 'gitlab.com', owner: 'a', name: 'b' }],
+  [{ remote: 'origin', host: 'bitbucket.org', owner: 'team', name: 'factory' }],
+  [
+    { remote: 'github', host: 'github.com', owner: 'mattmccray', name: 'factory' },
+    { remote: 'origin', host: 'localhost:222', owner: 'mattm', name: 'factory' },
+  ],
+];
 
 /** A context app with the T3 Code choice stored. */
 function handoffApp(mode: unknown): ReturnType<typeof contextApp> {
@@ -1639,26 +1654,31 @@ function handoffApp(mode: unknown): ReturnType<typeof contextApp> {
 
 const APPROVE = { project: PID, job: JOB, action: 'approve' };
 
-test('036 AC3: draft mode with a GitHub origin opens exactly the prompt link, and answers drafted', async () => {
+test('036 AC3: draft mode with a GitHub primary remote opens exactly the prompt link, and answers drafted, with no git run', async () => {
   for (const mode of ['draft', null, 'nonsense']) {
     const { app, log } = handoffApp(mode);
     const h = fakeHost();
     expect(await handOff(APPROVE, app, MAIN_META, h.host)).toBe('drafted');
-    expect(h.origins).toEqual([ROOT]);
     expect(h.ran).toEqual([['open', 't3code://new?prompt=%2Ffactory%20approve%20036-t3-handoff&repo=mattmccray/factory']]);
     expect(log).toEqual([]);
   }
   const { app } = handoffApp('draft');
-  const h = fakeHost({ origin: 'https://github.com/mattmccray/factory' });
+  // `upstream` is T3 Code's primary remote, ahead of a self-hosted `origin`
+  const h = fakeHost({
+    repositories: [
+      { remote: 'origin', host: 'localhost:222', owner: 'mattm', name: 'infra' },
+      { remote: 'upstream', host: 'github.com', owner: 'mattmccray', name: 'factory' },
+    ],
+  });
   expect(await handOff({ project: PID, job: JOB, action: 'rework', note: 'add "the" test' }, app, MAIN_META, h.host)).toBe('drafted');
   expect(h.ran).toEqual([['open', `t3code://new?prompt=${encodeURIComponent('/factory rework 036-t3-handoff "add \\"the\\" test"')}&repo=mattmccray/factory`]]);
 });
 
-test('036 AC3: draft mode with no GitHub origin opens nothing and answers no-github-remote', async () => {
-  for (const origin of [null, '', 'https://gitlab.com/a/b.git\n', '/Users/me/code/factory\n']) {
+test('036 AC3: draft mode with no draftable GitHub remote opens nothing and answers no-github-remote', async () => {
+  for (const repositories of UNDRAFTABLE) {
     const { app, log } = handoffApp('draft');
-    const h = fakeHost({ origin });
-    expect({ origin, r: await handOff(APPROVE, app, MAIN_META, h.host) }).toEqual({ origin, r: 'no-github-remote' });
+    const h = fakeHost({ repositories });
+    expect({ repositories, r: await handOff(APPROVE, app, MAIN_META, h.host) }).toEqual({ repositories, r: 'no-github-remote' });
     expect(h.ran).toEqual([]);
     expect(log).toEqual([]);
   }
@@ -1686,7 +1706,6 @@ test('036 AC4: send mode runs exactly the t3 thread start argv with the listed r
     [T3, 'thread', 'start', '--title', 'approve 036-t3-handoff', ROOT, '/factory approve 036-t3-handoff'],
     [T3, 'thread', 'start', '--title', 'abandon 036-t3-handoff', ROOT, '/factory abandon 036-t3-handoff "superseded by 040"'],
   ]);
-  expect(h.origins).toEqual([]);
   expect(log).toEqual([]);
 });
 
@@ -1741,23 +1760,19 @@ test('036 AC4: with the host runner, a non-zero exit gives its last stderr line,
   }
 });
 
-test('036 AC3: with the host runner, git is asked for the origin as an argv, and its stdout read', async () => {
+test('086 AC5: with the host runner, a draft spawns only `open` with the link: no git, the repository comes from the listed repositories', async () => {
   const spawned: string[][] = [];
   Reflect.set(globalThis, 'tjs', {
     env: { HOME: '/Users/me' },
     spawn: (argv: string[]) => {
       spawned.push(argv);
-      const git = argv[0] === 'git';
-      return { stdout: git ? { text: async () => 'https://github.com/mattmccray/factory.git\n' } : null, stderr: null, kill: () => undefined, wait: async () => ({ exit_status: 0, term_signal: null }) };
+      return { stdout: null, stderr: null, kill: () => undefined, wait: async () => ({ exit_status: 0, term_signal: null }) };
     },
     stat: async () => ({ isFile: true, mode: 0o100755 }),
   });
   const { app, log } = handoffApp('draft');
-  expect(await handOff(APPROVE, app, MAIN_META, { ...hostHandoff, projects: () => PROJECTS })).toBe('drafted');
-  expect(spawned).toEqual([
-    ['git', '-C', ROOT, 'remote', 'get-url', 'origin'],
-    ['open', 't3code://new?prompt=%2Ffactory%20approve%20036-t3-handoff&repo=mattmccray/factory'],
-  ]);
+  expect(await handOff(APPROVE, app, MAIN_META, { ...hostHandoff, projects: () => withRepos(GITHUB) })).toBe('drafted');
+  expect(spawned).toEqual([['open', 't3code://new?prompt=%2Ffactory%20approve%20036-t3-handoff&repo=mattmccray/factory']]);
   expect(log).toEqual([]);
 });
 
@@ -1767,7 +1782,6 @@ test('036 AC5: copy mode, or no t3, runs and opens nothing and answers copy-only
     const h = fakeHost({ t3 });
     expect({ mode, t3, r: await handOff(APPROVE, app, MAIN_META, h.host) }).toEqual({ mode, t3, r: 'copy-only' });
     expect(h.ran).toEqual([]);
-    expect(h.origins).toEqual([]);
     expect(log).toEqual([]);
   }
 });
@@ -1789,7 +1803,6 @@ test('036 AC1: a refused request, or a call from any window but main, runs, open
       const h = fakeHost();
       expect({ mode, params, r: await handOff(params, app, MAIN_META, h.host) }).toEqual({ mode, params, r: null });
       expect(h.ran).toEqual([]);
-      expect(h.origins).toEqual([]);
       expect(log).toEqual([]);
     }
     for (const meta of [{ window: 'settings' }, { window: 'other' }, {}, null, undefined, 'main']) {
@@ -1842,7 +1855,7 @@ const START_BACKLOG = {
 };
 
 /** A fake start host: the hand-off's fake, plus a backlog fetch that records each pid (or rejects). */
-function fakeStartHost(opts: { t3?: string | null; origin?: string | null; run?: RunResult; backlog?: unknown; fail?: boolean } = {}): { host: StartWorkHost; ran: string[][]; origins: string[]; fetched: string[] } {
+function fakeStartHost(opts: { t3?: string | null; repositories?: AppRepository[]; run?: RunResult; backlog?: unknown; fail?: boolean } = {}): { host: StartWorkHost; ran: string[][]; fetched: string[] } {
   const h = fakeHost(opts);
   const fetched: string[] = [];
   const host: StartWorkHost = {
@@ -1853,7 +1866,7 @@ function fakeStartHost(opts: { t3?: string | null; origin?: string | null; run?:
       return opts.backlog === undefined ? START_BACKLOG : opts.backlog;
     },
   };
-  return { host, ran: h.ran, origins: h.origins, fetched };
+  return { host, ran: h.ran, fetched };
 }
 
 const START_CASES: Array<{ req: Record<string, unknown>; command: string; title: string }> = [
@@ -1865,12 +1878,11 @@ const START_CASES: Array<{ req: Record<string, unknown>; command: string; title:
   { req: { project: PID, action: 'new-exploration', idea: 'a "tag" cloud' }, command: '/factory explore "a \\"tag\\" cloud"', title: 'explore' },
 ];
 
-test('068 AC3: draft mode with a GitHub origin opens exactly the prompt link for each action, and answers drafted', async () => {
+test('068 AC3: draft mode with a GitHub primary remote opens exactly the prompt link for each action, and answers drafted', async () => {
   for (const c of START_CASES) {
     const { app, log } = handoffApp('draft');
     const h = fakeStartHost();
     expect(await startWork(c.req, app, MAIN_META, h.host)).toBe('drafted');
-    expect(h.origins).toEqual([ROOT]);
     expect(h.ran).toEqual([['open', `t3code://new?prompt=${encodeURIComponent(c.command)}&repo=mattmccray/factory`]]);
     expect(log).toEqual([]);
   }
@@ -1886,10 +1898,10 @@ test('068 AC3: only the item actions read the backlog, from the named project', 
   }
 });
 
-test('068 AC3: draft mode with no GitHub origin opens nothing and answers no-github-remote', async () => {
-  for (const origin of [null, '', 'https://gitlab.com/a/b.git\n']) {
+test('068 AC3: draft mode with no draftable GitHub remote opens nothing and answers no-github-remote', async () => {
+  for (const repositories of UNDRAFTABLE) {
     const { app, log } = handoffApp('draft');
-    const h = fakeStartHost({ origin });
+    const h = fakeStartHost({ repositories });
     expect(await startWork({ project: PID, action: 'next' }, app, MAIN_META, h.host)).toBe('no-github-remote');
     expect(h.ran).toEqual([]);
     expect(log).toEqual([]);
@@ -1901,7 +1913,6 @@ test('068 AC3: send mode runs exactly `<t3> thread start --title <title> <root> 
   const h = fakeStartHost();
   for (const c of START_CASES) expect(await startWork(c.req, app, MAIN_META, h.host)).toBe('sent');
   expect(h.ran).toEqual(START_CASES.map((c) => [T3, 'thread', 'start', '--title', c.title, ROOT, c.command]));
-  expect(h.origins).toEqual([]);
   expect(log).toEqual([]);
 });
 
@@ -1911,7 +1922,6 @@ test('068 AC3: copy mode, or no t3, runs and opens nothing and answers copy-only
     const h = fakeStartHost({ t3 });
     expect(await startWork({ project: PID, action: 'epic', slug: 'auth' }, app, MAIN_META, h.host)).toBe('copy-only');
     expect(h.ran).toEqual([]);
-    expect(h.origins).toEqual([]);
     expect(log).toEqual([]);
   }
 });
@@ -1952,7 +1962,6 @@ test('068 AC3: another window, a refused request, or a failed backlog fetch runs
         const h = fakeStartHost();
         expect({ mode, params, r: await startWork(params, app, MAIN_META, h.host) }).toEqual({ mode, params, r: null });
         expect(h.ran).toEqual([]);
-        expect(h.origins).toEqual([]);
         expect(log).toEqual([]);
       }
       for (const [fail, backlog] of [[true, undefined], [false, 'junk'], [false, { queued: [] }]] as const) {
@@ -2764,12 +2773,13 @@ test('043 AC5: a re-lookup that replaces an icon deletes the old png; a failed d
 
 const RPID = '1a2b3c4d5e6f@studio';
 const RROOT = '/Users/studio-me/code/factory';
-/** The projects as the backend's feed holds them: read by state.ts, so remoteness comes from the id. */
-const hubProjects = (remoteRoot: string): MenuProject[] =>
+/** The projects as the backend's feed holds them: read by state.ts, so remoteness comes from the id
+ *  (and each entry's `repositories`, none by default, are the ones its own service listed). */
+const hubProjects = (remoteRoot: string, repos: { local?: AppRepository[]; remote?: AppRepository[] } = {}): MenuProject[] =>
   toProjects({
     projects: [
-      { id: PID, name: 'factory', root: ROOT, machine: 'rocinante' },
-      { id: RPID, name: 'factory', root: remoteRoot, machine: 'studio' },
+      { id: PID, name: 'factory', root: ROOT, machine: 'rocinante', repositories: repos.local ?? [] },
+      { id: RPID, name: 'factory', root: remoteRoot, machine: 'studio', repositories: repos.remote ?? [] },
     ],
   }) ?? [];
 const REMOTE_PROJECTS = hubProjects(RROOT);
@@ -2782,18 +2792,13 @@ const HANDOFFS: Record<string, unknown>[] = [
 ];
 const REMOTE_STARTS: Record<string, unknown>[] = START_CASES.map((c) => ({ ...c.req, project: RPID }));
 
-/** A fake hand-off and start host over the hub's projects: records every runner argv, `origin` call, and backlog fetch. */
-function hubHost(projects: readonly MenuProject[], opts: { t3?: string | null; backlog?: unknown; fail?: boolean } = {}): { host: StartWorkHost; ran: string[][]; origins: string[]; fetched: string[] } {
+/** A fake hand-off and start host over the hub's projects: records every runner argv and backlog fetch. */
+function hubHost(projects: readonly MenuProject[], opts: { t3?: string | null; backlog?: unknown; fail?: boolean } = {}): { host: StartWorkHost; ran: string[][]; fetched: string[] } {
   const ran: string[][] = [];
-  const origins: string[] = [];
   const fetched: string[] = [];
   const host: StartWorkHost = {
     projects: () => projects,
     findT3: async () => (opts.t3 === undefined ? T3 : opts.t3),
-    origin: async (root) => {
-      origins.push(root);
-      return 'git@github.com:mattmccray/factory.git\n';
-    },
     run: async (argv) => {
       ran.push(argv);
       return { ok: true, reason: '' };
@@ -2804,7 +2809,7 @@ function hubHost(projects: readonly MenuProject[], opts: { t3?: string | null; b
       return opts.backlog === undefined ? START_BACKLOG : opts.backlog;
     },
   };
-  return { host, ran, origins, fetched };
+  return { host, ran, fetched };
 }
 
 test("081 AC5: a remote project's menu is armed with today's items, Reveal in Finder and Open in (on studio) grayed out even with every app there", async () => {
@@ -2819,6 +2824,7 @@ test("081 AC5: a remote project's menu is armed with today's items, Reveal in Fi
     { separator: true },
     { id: itemId('copy', RPID), label: 'Copy Project Path' },
     { id: itemId('reveal', RPID), label: 'Reveal in Finder', enabled: false },
+    { id: itemId('repo', RPID), label: 'Open Repository', enabled: false },
     { separator: true },
     {
       id: 'project-menu:open-in',
@@ -2858,14 +2864,17 @@ test('081 AC5: on a remote project, New Exploration… and Run Next push startwo
   expect(ran).toEqual([]);
 });
 
-test('081 AC6: a remote hand-off (approve, rework, abandon) answers copy-only in every mode, with t3 found or not, and never reads origin or runs anything', async () => {
+test('081 AC6 / 086: a remote project with no repositories (an older peer) answers no-github-remote in draft and send mode, copy-only in copy mode or with no t3, and runs nothing', async () => {
   for (const mode of MODES) {
     for (const t3 of [T3, null]) {
-      for (const params of HANDOFFS) {
+      for (const params of [...HANDOFFS, ...REMOTE_STARTS]) {
         const { app, log } = handoffApp(mode);
         const h = hubHost(REMOTE_PROJECTS, { t3 });
-        expect({ mode, t3, params, r: await handOff(params, app, MAIN_META, h.host) }).toEqual({ mode, t3, params, r: 'copy-only' });
-        expect({ mode, t3, params, ran: h.ran, origins: h.origins, log }).toEqual({ mode, t3, params, ran: [], origins: [], log: [] });
+        const r = 'job' in params ? await handOff(params, app, MAIN_META, h.host) : await startWork(params, app, MAIN_META, h.host);
+        const want = mode === 'copy' || t3 === null ? 'copy-only' : 'no-github-remote';
+        expect({ mode, t3, params, r }).toEqual({ mode, t3, params, r: want });
+        const item = params.action === 'run' || params.action === 'epic' || params.action === 'explore';
+        expect({ params, ran: h.ran, fetched: h.fetched, log }).toEqual({ params, ran: [], fetched: item ? [RPID] : [], log: [] });
       }
     }
   }
@@ -2876,16 +2885,103 @@ test('081 AC6: a remote hand-off (approve, rework, abandon) answers copy-only in
   expect(h.ran).toEqual([[T3, 'thread', 'start', '--title', `approve ${JOB}`, ROOT, `/factory approve ${JOB}`]]);
 });
 
-test('081 AC6: a remote start answers copy-only for each action in every mode, with t3 found or not; the backlog is read through the hub for item actions only', async () => {
-  for (const mode of MODES) {
-    for (const t3 of [T3, null]) {
-      for (const params of REMOTE_STARTS) {
-        const { app, log } = handoffApp(mode);
-        const h = hubHost(REMOTE_PROJECTS, { t3 });
-        expect({ mode, t3, params, r: await startWork(params, app, MAIN_META, h.host) }).toEqual({ mode, t3, params, r: 'copy-only' });
-        const item = params.action === 'run' || params.action === 'epic' || params.action === 'explore';
-        expect({ params, ran: h.ran, origins: h.origins, fetched: h.fetched, log }).toEqual({ params, ran: [], origins: [], fetched: item ? [RPID] : [], log: [] });
-      }
+// ---- drafts for remote projects (086) ----
+
+const INFRA_UPSTREAM: AppRepository[] = [
+  { remote: 'origin', host: 'localhost:222', owner: 'mattm', name: 'infra' },
+  { remote: 'upstream', host: 'github.com', owner: 'mattmccray', name: 'infra' },
+];
+/** Every remote action with the command it carries. */
+const REMOTE_COMMANDS: Array<{ params: Record<string, unknown>; command: string }> = [
+  { params: { project: RPID, job: JOB, action: 'approve' }, command: `/factory approve ${JOB}` },
+  { params: { project: RPID, job: JOB, action: 'rework', note: 'add the test' }, command: `/factory rework ${JOB} "add the test"` },
+  { params: { project: RPID, job: JOB, action: 'abandon', note: 'not needed' }, command: `/factory abandon ${JOB} "not needed"` },
+  ...START_CASES.map((c) => ({ params: { ...c.req, project: RPID }, command: c.command })),
+];
+const ask = (params: Record<string, unknown>, app: MacApp, host: StartWorkHost) => ('job' in params ? handOff(params, app, MAIN_META, host) : startWork(params, app, MAIN_META, host));
+
+test('086 AC5: draft mode for a remote project with a unique GitHub primary remote opens exactly the link with its repo, for every action, and runs no git', async () => {
+  const projects = hubProjects(RROOT, { local: GITHUB, remote: INFRA_UPSTREAM });
+  for (const c of REMOTE_COMMANDS) {
+    const { app, log } = handoffApp('draft');
+    const h = hubHost(projects);
+    expect({ params: c.params, r: await ask(c.params, app, h.host) }).toEqual({ params: c.params, r: 'drafted' });
+    expect({ params: c.params, ran: h.ran }).toEqual({ params: c.params, ran: [['open', `t3code://new?prompt=${encodeURIComponent(c.command)}&repo=mattmccray/infra`]] });
+    expect(log).toEqual([]);
+  }
+  // the local project beside it drafts by its own repository
+  const { app } = handoffApp('draft');
+  const h = hubHost(projects);
+  expect(await handOff(APPROVE, app, MAIN_META, h.host)).toBe('drafted');
+  expect(h.ran).toEqual([['open', 't3code://new?prompt=%2Ffactory%20approve%20036-t3-handoff&repo=mattmccray/factory']]);
+});
+
+test('086 AC5: a repository that is several listed projects\' primary answers several-machines with their machines, local or remote, and runs nothing', async () => {
+  // the same repository, cased differently, on rocinante and studio
+  const projects = hubProjects(RROOT, { local: GITHUB, remote: [{ remote: 'upstream', host: 'GitHub.com', owner: 'MattMcCray', name: 'Factory' }] });
+  for (const mode of ['draft', 'send'] satisfies HandoffMode[]) {
+    for (const c of REMOTE_COMMANDS) {
+      const { app, log } = handoffApp(mode);
+      const h = hubHost(projects);
+      expect({ mode, params: c.params, r: await ask(c.params, app, h.host) }).toEqual({ mode, params: c.params, r: { outcome: 'several-machines', project: 'factory', machines: ['rocinante', 'studio'] } });
+      expect([h.ran, log]).toEqual([[], []]);
+    }
+  }
+  const { app } = handoffApp('draft');
+  const h = hubHost(projects);
+  expect(await handOff(APPROVE, app, MAIN_META, h.host)).toEqual({ outcome: 'several-machines', project: 'factory', machines: ['rocinante', 'studio'] });
+  expect(await startWork({ project: PID, action: 'next' }, app, MAIN_META, h.host)).toEqual({ outcome: 'several-machines', project: 'factory', machines: ['rocinante', 'studio'] });
+  expect(h.ran).toEqual([]);
+});
+
+test('086 AC5: a remote project whose primary remote is not on GitHub answers no-github-remote, even with a GitHub remote that is not primary', async () => {
+  for (const remote of UNDRAFTABLE) {
+    const projects = hubProjects(RROOT, { local: GITHUB, remote });
+    for (const mode of ['draft', 'send'] satisfies HandoffMode[]) {
+      const { app, log } = handoffApp(mode);
+      const h = hubHost(projects);
+      expect({ remote, mode, r: await handOff(HANDOFFS[0], app, MAIN_META, h.host) }).toEqual({ remote, mode, r: 'no-github-remote' });
+      expect([h.ran, log]).toEqual([[], []]);
+    }
+  }
+});
+
+test('086 AC6: send mode for a remote project opens the draft instead and answers drafted-not-sent naming its machine; never t3 thread start', async () => {
+  const projects = hubProjects(RROOT, { local: GITHUB, remote: INFRA_UPSTREAM });
+  for (const c of REMOTE_COMMANDS) {
+    const { app, log } = handoffApp('send');
+    const h = hubHost(projects);
+    expect({ params: c.params, r: await ask(c.params, app, h.host) }).toEqual({ params: c.params, r: { outcome: 'drafted-not-sent', machine: 'studio' } });
+    expect({ params: c.params, ran: h.ran }).toEqual({ params: c.params, ran: [['open', `t3code://new?prompt=${encodeURIComponent(c.command)}&repo=mattmccray/infra`]] });
+    expect(log).toEqual([]);
+  }
+  // a failed open notifies with the draft failure text and answers copy-only
+  await quietly(async () => {
+    const { app, log } = handoffApp('send');
+    const h = hubHost(projects);
+    const host: StartWorkHost = { ...h.host, run: async () => ({ ok: false, reason: 'no application knows t3code:' }) };
+    expect(await handOff(HANDOFFS[0], app, MAIN_META, host)).toBe('copy-only');
+    expect(log).toEqual([['notify', 'Andon', "Couldn't open a draft in T3 Code: no application knows t3code:"]]);
+  });
+  // a local project in send mode still sends
+  const { app } = handoffApp('send');
+  const h = hubHost(projects);
+  expect(await handOff(APPROVE, app, MAIN_META, h.host)).toBe('sent');
+  expect(await startWork({ project: PID, action: 'next' }, app, MAIN_META, h.host)).toBe('sent');
+  expect(h.ran).toEqual([
+    [T3, 'thread', 'start', '--title', `approve ${JOB}`, ROOT, `/factory approve ${JOB}`],
+    [T3, 'thread', 'start', '--title', 'next', ROOT, '/factory next'],
+  ]);
+});
+
+test('086 AC5/AC6: copy mode, or no t3, still answers copy-only for a draftable remote project, running nothing', async () => {
+  const projects = hubProjects(RROOT, { local: GITHUB, remote: INFRA_UPSTREAM });
+  for (const [mode, t3] of [['copy', T3], ['draft', null], ['send', null]] as const) {
+    for (const c of REMOTE_COMMANDS) {
+      const { app, log } = handoffApp(mode);
+      const h = hubHost(projects, { t3 });
+      expect({ mode, t3, params: c.params, r: await ask(c.params, app, h.host) }).toEqual({ mode, t3, params: c.params, r: 'copy-only' });
+      expect([h.ran, log]).toEqual([[], []]);
     }
   }
 });
@@ -2911,27 +3007,27 @@ test('081 AC6: an invalid remote request (bad shape, item not in the backlog, fa
         const { app, log } = handoffApp(mode);
         const h = hubHost(REMOTE_PROJECTS);
         expect({ mode, params, r: await handOff(params, app, MAIN_META, h.host) }).toEqual({ mode, params, r: null });
-        expect([h.ran, h.origins, log]).toEqual([[], [], []]);
+        expect([h.ran, log]).toEqual([[], []]);
       }
       for (const params of badStarts) {
         const { app, log } = handoffApp(mode);
         const h = hubHost(REMOTE_PROJECTS);
         expect({ mode, params, r: await startWork(params, app, MAIN_META, h.host) }).toEqual({ mode, params, r: null });
-        expect([h.ran, h.origins, log]).toEqual([[], [], []]);
+        expect([h.ran, log]).toEqual([[], []]);
       }
       // studio down: the backlog fetch through the hub fails
       for (const params of REMOTE_STARTS.filter((p) => p.action === 'run' || p.action === 'epic' || p.action === 'explore')) {
         const { app, log } = handoffApp(mode);
         const h = hubHost(REMOTE_PROJECTS, { fail: true });
         expect({ mode, params, r: await startWork(params, app, MAIN_META, h.host) }).toEqual({ mode, params, r: null });
-        expect([h.fetched, h.ran, h.origins, log]).toEqual([[RPID], [], [], []]);
+        expect([h.fetched, h.ran, log]).toEqual([[RPID], [], []]);
       }
       for (const meta of [{ window: 'settings' }, { window: 'about' }, {}, null]) {
         const { app, log } = handoffApp(mode);
         const h = hubHost(REMOTE_PROJECTS);
         expect(await handOff(HANDOFFS[0], app, meta, h.host)).toBeNull();
         expect(await startWork({ project: RPID, action: 'next' }, app, meta, h.host)).toBeNull();
-        expect([h.ran, h.origins, h.fetched, log]).toEqual([[], [], [], []]);
+        expect([h.ran, h.fetched, log]).toEqual([[], [], []]);
       }
     }
   });
@@ -2999,7 +3095,7 @@ test('081 AC7: with no recorded session, or no t3, a remote job or epic grays ou
 });
 
 /** Drives every native path that takes a project, for `pid` among `projects`, and returns every
- *  runner argv, `origin` call, `shell.reveal`, and `shell.open` it saw (and what it copied). */
+ *  runner argv, `shell.reveal`, and `shell.open` it saw (and what it copied). */
 async function driveEveryPath(pid: string, projects: readonly MenuProject[]): Promise<{ seen: string[][]; copied: unknown[] }> {
   const spawned = fakeMachine(['Visual Studio Code', 'Ghostty'], [T3]);
   const seen: string[][] = [];
@@ -3024,7 +3120,7 @@ async function driveEveryPath(pid: string, projects: readonly MenuProject[]): Pr
           const h = hubHost(projects, { t3 });
           if ('job' in params) await handOff(params, app, MAIN_META, h.host);
           else await startWork(params, app, MAIN_META, h.host);
-          seen.push(...h.ran, ...h.origins.map((o) => ['origin', o]));
+          seen.push(...h.ran);
           watch(log);
         }
       }
@@ -3042,16 +3138,90 @@ async function driveEveryPath(pid: string, projects: readonly MenuProject[]): Pr
   return { seen, copied };
 }
 
-test('081 AC8: no native path ever spawns, opens, reveals, or reads origin with a remote root', async () => {
+test('081 AC8: no native path ever spawns, opens, or reveals with a remote root (its drafts name only its repository)', async () => {
   const MARKER = '/Users/nobody-here/MARKER-081-remote-root-7f3a';
   const has = (seen: string[][]): string[][] => seen.filter((argv) => argv.some((a) => a.includes(MARKER)));
-  const remote = await driveEveryPath(RPID, hubProjects(MARKER));
+  const remote = await driveEveryPath(RPID, hubProjects(MARKER, { remote: INFRA_UPSTREAM }));
+  expect(remote.seen.some((argv) => argv[0] === 'open' && (argv[1] ?? '').endsWith('&repo=mattmccray/infra'))).toBe(true); // its drafts were opened
   expect(has(remote.seen)).toEqual([]);
   expect(remote.seen.length).toBeGreaterThan(0); // the menus' app checks and the thread links were seen
   expect(remote.copied).toContainEqual({ text: MARKER }); // Copy Project Path is the one place the remote root goes
   // the control: the same paths for a local project at the marker do reach it, so the recorders see what they guard
-  const local = toProjects({ projects: [{ id: PID, name: 'factory', root: MARKER, machine: 'rocinante' }] }) ?? [];
+  const local = toProjects({ projects: [{ id: PID, name: 'factory', root: MARKER, machine: 'rocinante', repositories: GITHUB }] }) ?? [];
   const control = await driveEveryPath(PID, local);
   expect(has(control.seen).length).toBeGreaterThan(0);
-  expect(has(control.seen).map((a) => a[0])).toEqual(expect.arrayContaining(['shell.reveal', 'open', T3, 'origin']));
+  expect(has(control.seen).map((a) => a[0])).toEqual(expect.arrayContaining(['shell.reveal', 'open', T3]));
+});
+
+// ---- the project's repository page (088) ----
+
+const GH: AppRepository[] = [
+  { remote: 'origin', host: 'localhost:222', owner: 'infra', name: 'factory' },
+  { remote: 'github', host: 'github.com', owner: 'mattmccray', name: 'factory' },
+];
+
+test("088 AC1: a project's menu is armed with its Open on item from its listed repositories, local or remote", async () => {
+  fakeMachine(['Visual Studio Code', 'Ghostty'], ['/opt/homebrew/bin/t3']);
+  const projects = hubProjects(RROOT, { local: GH, remote: GH });
+  const { app, log } = contextApp();
+  for (const pid of [PID, RPID]) {
+    log.length = 0;
+    await showProjectMenu({ project: pid }, app, projects);
+    const menu = contexts(log).at(-1);
+    const machine = pid === RPID ? 'studio' : null;
+    expect(menu).toEqual(projectMenuItems(pid, ALL_APPS, {}, machine, GH));
+    expect(Array.isArray(menu) ? menu[5] : null).toEqual({ id: itemId('repo', pid), label: 'Open on GitHub' });
+  }
+});
+
+test('088 AC5: Open on opens the https:// page once, from the listed project, local or remote; a success shows nothing', async () => {
+  const projects = hubProjects(RROOT, { local: GH, remote: GH });
+  for (const pid of [PID, RPID]) {
+    const { app, log } = contextApp();
+    const ran: string[][] = [];
+    await runProjectItem(itemId('repo', pid), app, projects, '/x/t3', async (argv) => {
+      ran.push(argv);
+      return ok();
+    });
+    expect(log).toEqual([['shell.open', 'https://github.com/mattmccray/factory']]);
+    expect(ran).toEqual([]);
+  }
+});
+
+test('088 AC5: a stale or forged id, or a project whose listed repositories give no usable remote, opens nothing', async () => {
+  const { app, log } = contextApp();
+  const usable = hubProjects(RROOT, { local: GH, remote: GH });
+  const unusable = hubProjects(RROOT, { local: [{ remote: 'origin', host: 'localhost:222', owner: 'infra', name: 'factory' }], remote: [{ remote: 'origin', host: 'github.com', owner: 'o', name: 'a b' }] });
+  for (const id of [itemId('repo', 'zzzzzzzzzzzz'), itemId('repo', 'bbbbbbbbbbbb'), 'project-menu:repo:https://evil.example/x', `project-menu:repo:${PID}@nowhere`]) await runProjectItem(id, app, usable, '/x/t3');
+  for (const pid of [PID, RPID]) await runProjectItem(itemId('repo', pid), app, unusable, '/x/t3');
+  await runProjectItem(itemId('repo', PID), app, PROJECTS, '/x/t3'); // listed, with no repositories
+  expect(log).toEqual([]);
+});
+
+test('088 AC5: a failed open (false or a throw) shows one notification naming the project and provider, and logs it', async () => {
+  const projects = hubProjects(RROOT, { local: GH });
+  const logged: string[] = [];
+  const realLog = console.log;
+  console.log = (line: string) => void logged.push(line);
+  try {
+    const refused = contextApp();
+    let calls = 0;
+    // Tiny's type says `open` resolves true; a false answer is still handled, so set it untyped
+    Reflect.set(refused.app.shell, 'open', async () => {
+      calls++;
+      return false;
+    });
+    await runProjectItem(itemId('repo', PID), refused.app, projects, '/x/t3');
+    expect(calls).toBe(1);
+    expect(refused.log).toEqual([['notify', 'Andon', "Couldn't open factory on GitHub: the page did not open"]]);
+    const threw = contextApp();
+    threw.app.shell.open = async () => {
+      throw new Error('no browser');
+    };
+    await runProjectItem(itemId('repo', PID), threw.app, projects, '/x/t3');
+    expect(threw.log).toEqual([['notify', 'Andon', "Couldn't open factory on GitHub: no browser"]]);
+  } finally {
+    console.log = realLog;
+  }
+  expect(logged).toEqual(["andon: Couldn't open factory on GitHub: the page did not open", "andon: Couldn't open factory on GitHub: no browser"]);
 });

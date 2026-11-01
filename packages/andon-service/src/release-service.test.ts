@@ -180,14 +180,14 @@ describe('release on projects (AC1)', () => {
     const unknown = { installed: null, state: 'unknown' };
     const want = {
       projects: [
-        { id: projectId(behind), name: 'behind', root: behind, release: { installed: '0.1.0', state: 'behind' }, machine: 'testbox' },
-        { id: projectId(current), name: 'current', root: current, release: { installed: '0.2.0', state: 'current' }, machine: 'testbox' },
-        { id: projectId(ahead), name: 'ahead', root: ahead, release: { installed: '0.3.0', state: 'ahead' }, machine: 'testbox' },
-        { id: projectId(none), name: 'none', root: none, release: unknown, machine: 'testbox' },
-        { id: projectId(badJson), name: 'bad-json', root: badJson, release: unknown, machine: 'testbox' },
-        { id: projectId(rejected), name: 'rejected', root: rejected, release: unknown, machine: 'testbox' },
-        { id: projectId(next), name: 'next', root: next, release: { installed: 'next', state: 'unknown' }, machine: 'testbox' },
-        { id: projectId(bare), name: 'bare', root: bare, release: unknown, machine: 'testbox' },
+        { id: projectId(behind), name: 'behind', root: behind, release: { installed: '0.1.0', state: 'behind' }, machine: 'testbox', repositories: [] },
+        { id: projectId(current), name: 'current', root: current, release: { installed: '0.2.0', state: 'current' }, machine: 'testbox', repositories: [] },
+        { id: projectId(ahead), name: 'ahead', root: ahead, release: { installed: '0.3.0', state: 'ahead' }, machine: 'testbox', repositories: [] },
+        { id: projectId(none), name: 'none', root: none, release: unknown, machine: 'testbox', repositories: [] },
+        { id: projectId(badJson), name: 'bad-json', root: badJson, release: unknown, machine: 'testbox', repositories: [] },
+        { id: projectId(rejected), name: 'rejected', root: rejected, release: unknown, machine: 'testbox', repositories: [] },
+        { id: projectId(next), name: 'next', root: next, release: { installed: 'next', state: 'unknown' }, machine: 'testbox', repositories: [] },
+        { id: projectId(bare), name: 'bare', root: bare, release: unknown, machine: 'testbox', repositories: [] },
       ],
     };
     expect((await get(`${url}/projects`)).body).toEqual(want);

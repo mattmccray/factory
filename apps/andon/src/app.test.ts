@@ -6,7 +6,7 @@ import type { Http } from './http';
 import type { NoticeText } from './notify';
 import { startApp } from './app';
 
-const P = { id: 'aaaaaaaaaaaa', name: 'factory', root: '/r/factory', machine: null };
+const P = { id: 'aaaaaaaaaaaa', name: 'factory', root: '/r/factory', machine: null, machineName: null, repositories: [] };
 const enc = new TextEncoder();
 const wait = (ms = 5) => new Promise((r) => setTimeout(r, ms));
 

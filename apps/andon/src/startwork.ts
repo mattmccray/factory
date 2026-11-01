@@ -6,9 +6,9 @@
 // against the service's live `GET /projects/<pid>/backlog` in the group its action needs, the
 // `/factory next|epic|explore …` command (built from the service's copy of the item, exactly as the
 // Andon UI's startwork.ts builds it), and the sent thread's title. The modes, the draft link, the
-// `origin` read, the outcomes, and the failure text are the hand-off's (handoff.ts); backend.ts
-// fetches the backlog, reads `origin`, opens the link or runs the argv (with no shell), and
-// notifies. Andon still writes no job state and never edits `backlog.md`: the factory CLI and skill
+// repository a draft names (from the project's listed `repositories`), the outcomes, and the
+// failure text are the hand-off's (handoff.ts); backend.ts fetches the backlog, opens the link or
+// runs the argv (with no shell), and notifies. Andon still writes no job state and never edits `backlog.md`: the factory CLI and skill
 // do, when the person (or a sent thread) runs the command.
 // The slug rule is reimplemented here, on purpose: contract code must not run in the Mac app
 // (boundary.test.ts), and a test pins the commands to the UI's.

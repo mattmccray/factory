@@ -7,6 +7,17 @@
 // on another machine the local service follows as a peer, exactly when its id is `<pid>@<machine>`
 // (docs/contract/v1.md "Andon service", "Peers", *Ids*); a bare id is always local. Remoteness is
 // decided here, once, from the id alone: never from `root`, nor from an entry's `machine` field.
+// Repositories: each entry's `repositories` (the service's parsed fetch remotes, `{ remote, host,
+// owner, name }`), read tolerantly: a missing or malformed field is none, a malformed entry is
+// dropped. The entry's `machine` is kept only as the name a toast shows (`machineName`).
+
+/** One of a project's repositories: a git fetch remote on the project's own machine, parsed by its service. */
+export interface AppRepository {
+  remote: string; // the git remote's name
+  host: string; // lowercased, with any port
+  owner: string;
+  name: string;
+}
 
 export interface AppJob {
   id: string;
@@ -35,6 +46,11 @@ export interface AppProject {
   root: string | null;
   /** The machine of a remote project (the part of its id after `@`); null for a local one. */
   machine: string | null;
+  /** The name of the machine the project is on, for toasts: the entry's non-empty `machine`, else
+   *  the id's machine, else null. Never decides remoteness. */
+  machineName: string | null;
+  /** Its repositories, as its service listed them; none when the feed gives none. */
+  repositories: AppRepository[];
 }
 
 export interface AppBoard {
@@ -107,6 +123,26 @@ export function machineOf(id: string): { machine: string | null } | null {
 /** A project on another machine: one whose id carried `@<machine>`. */
 export const isRemote = (p: { machine: string | null }): boolean => p.machine !== null;
 
+const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v !== '';
+
+const PART = /^[A-Za-z0-9._-]+$/;
+/** A repository's owner or name that is a plain path part (letters, digits, `.`, `_`, `-`; not `.`
+ *  or `..`), so a link or URL can carry it with no escaping. The one rule for T3 Code's `repo=`
+ *  (handoff.ts) and the Open on … page (projectmenu.ts). */
+export const isPart = (s: string): boolean => PART.test(s) && s !== '.' && s !== '..';
+
+/** The repositories of an entry's `repositories` field: a missing or non-array field is none; an
+ *  entry without four non-empty strings `remote`, `host`, `owner`, and `name` is dropped. */
+export function toRepositories(v: unknown): AppRepository[] {
+  const out: AppRepository[] = [];
+  if (!Array.isArray(v)) return out;
+  for (const r of v) {
+    if (!isRecord(r) || !nonEmpty(r.remote) || !nonEmpty(r.host) || !nonEmpty(r.owner) || !nonEmpty(r.name)) continue;
+    out.push({ remote: r.remote, host: r.host, owner: r.owner, name: r.name });
+  }
+  return out;
+}
+
 /** The project list of a `projects` payload, or null when it isn't one. A project without a
  *  non-empty string `root` is kept, with `root: null` (it gets no right-click menu). Each project's
  *  machine comes from its id (`machineOf`); an id that is neither bare nor `<pid>@<machine>` is
@@ -118,7 +154,14 @@ export function toProjects(v: unknown): AppProject[] | null {
     if (!isRecord(p) || typeof p.id !== 'string') continue;
     const where = machineOf(p.id);
     if (where === null) continue;
-    out.push({ id: p.id, name: str(p.name), root: typeof p.root === 'string' && p.root !== '' ? p.root : null, machine: where.machine });
+    out.push({
+      id: p.id,
+      name: str(p.name),
+      root: typeof p.root === 'string' && p.root !== '' ? p.root : null,
+      machine: where.machine,
+      machineName: nonEmpty(p.machine) ? p.machine : where.machine,
+      repositories: toRepositories(p.repositories),
+    });
   }
   return out;
 }

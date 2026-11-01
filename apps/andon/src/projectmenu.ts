@@ -1,5 +1,5 @@
 // A project's right-click menu in the Mac app: New Exploration…, Run Next, a separator, Copy Project
-// Path, Reveal in Finder, a separator, and Open in ▸ VS Code, T3 Code, Ghostty. New Exploration… and
+// Path, Reveal in Finder, Open on <provider>, a separator, and Open in ▸ VS Code, T3 Code, Ghostty. New Exploration… and
 // Run Next only ask the main window's page to act (the `startwork` event, appmenu.ts): the page opens
 // its New exploration sheet, or runs its Backlog sheet's Run next, which goes through `startWork`. The page asks for a project's menu by its id alone (the one
 // custom backend method, PROJECT_MENU_METHOD); everything else lives here, runtime-neutral: the item
@@ -12,16 +12,23 @@
 // apps are grayed out (the submenu labeled "Open in (on <machine>)"), and `resolveAction` refuses
 // them, so no item id, stale or forged, reveals or spawns anything with that root. New
 // Exploration…, Run Next, and Copy Project Path work as for a local project.
+// Open on <provider> (088) opens the project's repository page in the default browser. It uses no
+// path, so it works the same for a remote project: the URL is built only from the project's listed
+// `repositories` (a fixed list of known hosts, an owner and a name that pass state.ts `isPart`,
+// always `https://`), picking the first github.com remote by remote name, else the first usable one
+// by remote name. With none, the item is a grayed-out "Open Repository". A click looks the project
+// up again and builds the URL again from its listed repositories.
 import { startWorkPayload } from './appmenu';
 import type { StartWorkPush } from './appmenu';
-import { isRecord, isRemote } from './state';
+import { isPart, isRecord, isRemote } from './state';
+import type { AppRepository } from './state';
 
 /** The one custom backend method the page may call (tinyjs.json's `api` gate names it). */
 export const PROJECT_MENU_METHOD = 'projectMenu';
 
 /** What an item does. */
-export type ProjectItem = 'explore' | 'next' | 'copy' | 'reveal' | 'vscode' | 't3' | 'ghostty';
-const ITEMS: readonly ProjectItem[] = ['explore', 'next', 'copy', 'reveal', 'vscode', 't3', 'ghostty'];
+export type ProjectItem = 'explore' | 'next' | 'copy' | 'reveal' | 'repo' | 'vscode' | 't3' | 'ghostty';
+const ITEMS: readonly ProjectItem[] = ['explore', 'next', 'copy', 'reveal', 'repo', 'vscode', 't3', 'ghostty'];
 const isProjectItem = (v: string): v is ProjectItem => ITEMS.some((i) => i === v);
 
 /** The prefix of every project menu item id: `project-menu:<item>:<project id>`. */
@@ -40,6 +47,10 @@ export interface MenuProject {
   root: string | null;
   /** The machine of a remote project; null for a local one (state.ts `AppProject.machine`). */
   machine: string | null;
+  /** The name of the machine it is on, for toasts (state.ts `AppProject.machineName`). */
+  machineName: string | null;
+  /** Its repositories, as its service listed them (state.ts `AppProject.repositories`). */
+  repositories: readonly AppRepository[];
 }
 
 /** Which apps exist, checked when the menu is built: VS Code and Ghostty installed, and the `t3` found (or null). */
@@ -152,13 +163,59 @@ function openInItem(pid: string, app: OpenInApp, enabled: boolean, icons: AppIco
   return item;
 }
 
+// ---- the project's repository page (088) ----
+
+/** The hosts whose repository page the menu opens, each with its label: `https://<host>/<owner>/<name>`.
+ *  Matched exactly against the lowercased host, so a host with a port is none of them. */
+export const REPOSITORY_HOSTS: readonly { host: string; label: string }[] = [
+  { host: 'github.com', label: 'GitHub' },
+  { host: 'bitbucket.org', label: 'Bitbucket' },
+  { host: 'gitlab.com', label: 'GitLab' },
+  { host: 'git.cafe', label: 'git.cafe' },
+];
+
+/** The host preferred when a project has several usable remotes. */
+const PREFERRED_HOST = 'github.com';
+
+/** A repository's web page, and the provider's label. */
+export interface RepositoryLink {
+  url: string;
+  provider: string;
+}
+
+const byRemote = (a: AppRepository, b: AppRepository): number => (a.remote < b.remote ? -1 : a.remote > b.remote ? 1 : 0);
+
+/**
+ * The page the Open on item opens: among the repositories on a known host whose owner and name are
+ * plain path parts, the first github.com one by remote name, else the first one by remote name.
+ * Null with none.
+ */
+export function repositoryLink(repos: readonly AppRepository[]): RepositoryLink | null {
+  const usable = repos
+    .flatMap((r) => {
+      const known = REPOSITORY_HOSTS.find((h) => h.host === r.host.toLowerCase());
+      return known !== undefined && isPart(r.owner) && isPart(r.name) ? [{ repo: r, known }] : [];
+    })
+    .sort((a, b) => byRemote(a.repo, b.repo));
+  const pick = usable.find((u) => u.known.host === PREFERRED_HOST) ?? usable[0];
+  if (pick === undefined) return null;
+  return { url: `https://${pick.known.host}/${pick.repo.owner}/${pick.repo.name}`, provider: pick.known.label };
+}
+
+/** The Open on item: "Open on <provider>", or a grayed-out "Open Repository" with no usable remote. */
+function repoItem(pid: string, repos: readonly AppRepository[]): ContextItem {
+  const link = repositoryLink(repos);
+  return link === null ? { id: itemId('repo', pid), label: 'Open Repository', enabled: false } : { id: itemId('repo', pid), label: `Open on ${link.provider}` };
+}
+
 /** The Open in submenu's label: "Open in", or "Open in (on <machine>)" for a remote project. */
 export const openInLabel = (machine: string | null): string => (machine === null ? 'Open in' : `Open in (on ${machine})`);
 
-/** A project's menu, for the apps that are there, with the Open in icons found so far. For a remote
- *  project (`machine` set) Reveal in Finder and every Open in app are grayed out, whatever the app
- *  check found, and the submenu's label names the machine. */
-export function projectMenuItems(pid: string, apps: Availability, icons: AppIcons = {}, machine: string | null = null): ContextItem[] {
+/** A project's menu, for the apps that are there, with the Open in icons found so far, and its Open
+ *  on item from its listed repositories. For a remote project (`machine` set) Reveal in Finder and
+ *  every Open in app are grayed out, whatever the app check found, and the submenu's label names the
+ *  machine; its Open on item is as for a local one. */
+export function projectMenuItems(pid: string, apps: Availability, icons: AppIcons = {}, machine: string | null = null, repositories: readonly AppRepository[] = []): ContextItem[] {
   const here = machine === null;
   const reveal: ContextItem = { id: itemId('reveal', pid), label: 'Reveal in Finder' };
   if (!here) reveal.enabled = false;
@@ -168,6 +225,7 @@ export function projectMenuItems(pid: string, apps: Availability, icons: AppIcon
     { separator: true },
     { id: itemId('copy', pid), label: 'Copy Project Path' },
     reveal,
+    repoItem(pid, repositories),
     { separator: true },
     {
       id: OPEN_IN_ID,
@@ -196,13 +254,14 @@ export function menuProject(projects: readonly MenuProject[], pid: string): (Men
   return { ...p, root: p.root };
 }
 
-/** What a clicked item does: copy or reveal the root, run an argv, or ask the page to start work
- *  (`show`: show the main window first). */
+/** What a clicked item does: copy or reveal the root, run an argv, open a repository's `https://`
+ *  page, or ask the page to start work (`show`: show the main window first). */
 export type ProjectAction =
   | { kind: 'push'; payload: StartWorkPush; show: boolean; project: string }
   | { kind: 'copy'; root: string; project: string }
   | { kind: 'reveal'; root: string; project: string }
-  | { kind: 'spawn'; argv: string[]; app: string; project: string };
+  | { kind: 'spawn'; argv: string[]; app: string; project: string }
+  | { kind: 'open-url'; url: string; provider: string; project: string };
 
 const display = (p: MenuProject): string => (p.name === '' ? p.id : p.name);
 
@@ -212,7 +271,8 @@ const LOCAL_ONLY: readonly ProjectItem[] = ['reveal', 'vscode', 't3', 'ghostty']
 /**
  * The action for a clicked item id: its project looked up again in the backend's list, its root
  * from there. Null (nothing runs) for an id that isn't ours, a project that isn't listed or has no
- * root, T3 Code with no `t3` found, and Reveal in Finder or an Open in app on a remote project.
+ * root, T3 Code with no `t3` found, Reveal in Finder or an Open in app on a remote project, and Open
+ * on a project whose listed repositories give no usable remote (the URL is built from them again).
  */
 export function resolveAction(id: unknown, projects: readonly MenuProject[], t3: string | null): ProjectAction | null {
   if (typeof id !== 'string') return null;
@@ -237,6 +297,10 @@ export function resolveAction(id: unknown, projects: readonly MenuProject[], t3:
       return t3 === null ? null : { kind: 'spawn', argv: [t3, 'app', p.root], app: 'T3 Code', project };
     case 'ghostty':
       return { kind: 'spawn', argv: ['open', '-a', GHOSTTY_APP, p.root], app: 'Ghostty', project };
+    case 'repo': {
+      const link = repositoryLink(p.repositories);
+      return link === null ? null : { kind: 'open-url', url: link.url, provider: link.provider, project };
+    }
   }
 }
 
@@ -251,6 +315,8 @@ export function failureText(action: ProjectAction, reason: string): string {
       return `Couldn't reveal ${action.project} in Finder: ${reason}`;
     case 'spawn':
       return `Couldn't open ${action.project} in ${action.app}: ${reason}`;
+    case 'open-url':
+      return `Couldn't open ${action.project} on ${action.provider}: ${reason}`;
   }
 }
 
