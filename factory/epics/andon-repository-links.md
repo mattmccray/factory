@@ -1,6 +1,7 @@
 # Repository-aware Andon
 
-- Status: ready
+- Status: done
+- Landed: 37c91ba (2026-10-31)
 - Sources: the explore request of 2026-10-31 (hand-offs to Infra on Moya, then "Open on GitHub"); brief `andon-machines-mac` (which deferred `andon-remote-handoff`); briefs `t3-handoff`, `t3-start-work`, `project-context-menu`
 - Date: 2026-10-31
 

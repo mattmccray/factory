@@ -1,6 +1,7 @@
 # Open a project's repository from its menu
 
-- Status: ready
+- Status: done
+- Job: 088-andon-open-repository (merged 1367c3a via epic andon-repository-links, 2026-10-31)
 - Sources: epic plan `factory/epics/andon-repository-links.md`; the explore request of 2026-10-31 ("add another right-click option … to open on GitHub or whatever provider"); brief `andon-remote-handoff` (the `repositories` field it adds to `GET /projects`); briefs `project-context-menu` (job 033), `andon-machines-mac` (job 081); `apps/andon/src/projectmenu.ts`
 - Date: 2026-10-31
 

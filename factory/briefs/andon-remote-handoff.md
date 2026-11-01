@@ -1,6 +1,7 @@
 # Hand off to T3 Code on another machine
 
-- Status: ready
+- Status: done
+- Job: 086-andon-remote-handoff (merged c29aa6e via epic andon-repository-links, 2026-10-31)
 - Sources: epic plan `factory/epics/andon-repository-links.md`; the explore request of 2026-10-31 (testing hand-offs to Infra on Moya); brief `andon-machines-mac` (job 081, which deferred this as `andon-remote-handoff`); briefs `t3-handoff` (job 036), `t3-start-work` (job 068), `job-session-link`; `apps/andon/src/handoff.ts`, `startwork.ts`; T3 Code (Beta) desktop app and `t3` v0.1.6, read and tested 2026-10-31
 - Date: 2026-10-31
 
