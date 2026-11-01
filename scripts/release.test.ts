@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from 'node:fs';
 import { cp, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -116,7 +116,7 @@ async function snapshot(): Promise<Record<string, string>> {
 }
 
 // A stand-in bundle builder for these synthetic repos (scripts/bundle.test.ts builds the real one):
-// a package.json with bin.factory at the staged tree's templates version, and the bin itself.
+// a package.json with bin.factory at the checkout's templates version, and the bin itself.
 const fakeBuild: BuildBundle = (tree, out) => {
   const pkg: unknown = JSON.parse(readFileSync(join(tree, 'packages', 'templates', 'package.json'), 'utf8'));
   const version = typeof pkg === 'object' && pkg !== null && 'version' in pkg ? pkg.version : undefined;
@@ -250,7 +250,7 @@ describe('entry selection and formatting (AC2)', () => {
     );
 
     // Through the script: the skipped subject is named in the output, the chore is absent. The dry
-    // run stages the tree it would commit, so it needs the package.json files and the config.
+    // run computes the version writes, so it needs the package.json files and the config.
     await put('package.json', PACKAGES['package.json'] ?? '');
     await put('packages/templates/package.json', PACKAGES['packages/templates/package.json'] ?? '');
     await put('packages/contract/package.json', PACKAGES['packages/contract/package.json'] ?? '');
@@ -593,7 +593,7 @@ describe('the release bundle on the release branch (060 AC4)', () => {
   });
 });
 
-describe('a failed bundle build writes nothing (060 AC5)', () => {
+describe('a failed bundle build restores the release\'s writes (060 AC5, 090 AC3)', () => {
   async function releasable(): Promise<void> {
     await seed();
     gitIn(repo, 'tag', '-a', 'v0.1.0', '-m', 'factory v0.1.0');
@@ -615,13 +615,39 @@ describe('a failed bundle build writes nothing (060 AC5)', () => {
       expect(r.out.trimEnd().split('\n')).toHaveLength(1);
       expect(r.out).toStartWith('release failed: bundle build: ');
       expect(await snapshot()).toEqual(before);
+      expect(gitIn(repo, 'status', '--porcelain')).toBe('');
+      expect(existsSync(join(repo, 'CHANGELOG.md'))).toBe(false); // the one it created is removed
       expect(refOf('refs/heads/release')).toBeNull();
       expect(gitIn(repo, 'tag', '--list')).toBe('v0.1.0');
     });
   }
+
+  test('the build sees the new versions and CHANGELOG.md in the checkout; a failure restores the tracked ones', async () => {
+    await releasable();
+    await put('CHANGELOG.md', '## v0.1.0 (2026-10-01)\n\n### Added\n\n- CLI: first (001-first)\n');
+    gitIn(repo, 'add', '-A');
+    gitIn(repo, 'commit', '--quiet', '-m', 'chore: the old changelog');
+    const before = await snapshot();
+    const seen: { tree: string; templates: string; changelog: string }[] = [];
+    const r = run(false, (tree) => {
+      seen.push({ tree, templates: readFileSync(join(tree, 'packages/templates/package.json'), 'utf8'), changelog: readFileSync(join(tree, 'CHANGELOG.md'), 'utf8') });
+      throw new Error('boom');
+    });
+    expect(r.code).toBe(1);
+    expect(r.out).toBe('release failed: bundle build: boom\n');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.tree).toBe(repo);
+    expect(seen[0]?.templates).toContain('"version": "0.2.0"');
+    expect(seen[0]?.changelog).toStartWith('## v0.2.0 (2026-10-29)\n\n### Added\n\n- CLI: add c (060-c)\n\n## v0.1.0 ');
+    expect(await snapshot()).toEqual(before);
+    expect(gitIn(repo, 'status', '--porcelain')).toBe('');
+    expect(await read('CHANGELOG.md')).toStartWith('## v0.1.0 ');
+    expect(refOf('refs/heads/release')).toBeNull();
+    expect(gitIn(repo, 'tag', '--list')).toBe('v0.1.0');
+  });
 });
 
-describe('the gate on the staged release tree (064)', () => {
+describe('the gate in the checkout (064, 090)', () => {
   const sq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
   const logPath = (): string => join(root, 'gate.log');
   const logged = async (): Promise<string[]> => (existsSync(logPath()) ? (await readFile(logPath(), 'utf8')).split('\n').filter(Boolean) : []);
@@ -651,18 +677,20 @@ describe('the gate on the staged release tree (064)', () => {
   });
   const go = (dryRun: boolean, gate?: RunGate) => release(repo, { dryRun, today: TODAY, build: loggingBuild, ...(gate === undefined ? {} : { gate }) });
 
-  test('AC3: a green gate runs in order on the staged tree (new versions and CHANGELOG.md) before the build and any write', async () => {
+  test('090 AC1: a green gate runs in order from the checkout\'s root, before any write and the build; git works there', async () => {
     const seen = join(root, 'seen');
     await mkdir(seen);
     const look = [
       `pwd -P > ${sq(join(seen, 'cwd'))}`,
-      `cp packages/templates/package.json ${sq(join(seen, 'staged-templates.json'))}`,
-      `cp CHANGELOG.md ${sq(join(seen, 'staged-changelog.md'))}`,
-      `cp ${sq(join(repo, 'packages/templates/package.json'))} ${sq(join(seen, 'repo-templates.json'))}`,
-      `git -C ${sq(repo)} rev-parse HEAD > ${sq(join(seen, 'repo-head'))}`,
-      `git -C ${sq(repo)} tag --list > ${sq(join(seen, 'repo-tags'))}`,
+      `cp packages/templates/package.json ${sq(join(seen, 'templates.json'))}`,
+      `cp CHANGELOG.md ${sq(join(seen, 'changelog.md'))}`,
+      `git rev-parse HEAD > ${sq(join(seen, 'head'))}`,
+      `git tag --list > ${sq(join(seen, 'tags'))}`,
+      `git status --porcelain > ${sq(join(seen, 'status'))}`,
+      `(cd packages/templates && git remote -v > ${sq(join(seen, 'remotes'))})`,
     ].join(' && ');
     await releasable({ gate: [say('one'), look, say('two')] });
+    gitIn(repo, 'remote', 'add', 'origin', join(root, 'no-such-remote.git'));
     const head = gitIn(repo, 'rev-parse', 'HEAD');
     const r = go(false);
     expect(r.code).toBe(0);
@@ -670,23 +698,22 @@ describe('the gate on the staged release tree (064)', () => {
     expect(r.out).toContain('gate: green (');
     expect(r.out).toContain('tagged release-v0.2.0');
 
-    const cwd = (await readFile(join(seen, 'cwd'), 'utf8')).trim();
-    expect(cwd).not.toBe(repo);
-    expect(cwd.endsWith('/tree')).toBe(true);
-    expect(await readFile(join(seen, 'staged-templates.json'), 'utf8')).toContain('"version": "0.2.0"');
-    expect(await readFile(join(seen, 'staged-changelog.md'), 'utf8')).toStartWith('## v0.2.0 (2026-10-29)\n\n### Added\n\n- CLI: add c (060-c)\n');
-    // The repo was untouched while the gate ran: the old version, the old HEAD, only v0.1.0.
-    expect(await readFile(join(seen, 'repo-templates.json'), 'utf8')).toContain('"version": "0.1.0"');
-    expect((await readFile(join(seen, 'repo-head'), 'utf8')).trim()).toBe(head);
-    expect((await readFile(join(seen, 'repo-tags'), 'utf8')).trim()).toBe('v0.1.0');
+    expect((await readFile(join(seen, 'cwd'), 'utf8')).trim()).toBe(repo);
+    // The checkout as it is at HEAD while the gate runs: the old version and changelog, a clean tree.
+    expect(await readFile(join(seen, 'templates.json'), 'utf8')).toContain('"version": "0.1.0"');
+    expect(await readFile(join(seen, 'changelog.md'), 'utf8')).toStartWith('## v0.1.0 ');
+    expect((await readFile(join(seen, 'head'), 'utf8')).trim()).toBe(head);
+    expect((await readFile(join(seen, 'tags'), 'utf8')).trim()).toBe('v0.1.0');
+    expect(await readFile(join(seen, 'status'), 'utf8')).toBe('');
+    expect(await readFile(join(seen, 'remotes'), 'utf8')).toContain('origin');
     expect(gitIn(repo, 'log', '-1', '--format=%s')).toBe('chore(release): v0.2.0');
     expect(gitIn(repo, 'rev-parse', 'HEAD~1')).toBe(head);
   });
 
-  test('AC3: the gate runner gets the staged tree and each command in order', async () => {
+  test('090 AC1: the gate runner gets the checkout\'s root and each command in order, before the build', async () => {
     await releasable({ gate: ['first', 'second', 'third'] });
     const calls: string[] = [];
-    let trees = new Set<string>();
+    const trees = new Set<string>();
     const r = go(false, (tree, command) => {
       trees.add(tree);
       calls.push(`${command} ${String(built)}`);
@@ -695,9 +722,7 @@ describe('the gate on the staged release tree (064)', () => {
     expect(r.code).toBe(0);
     expect(calls).toEqual(['first 0', 'second 0', 'third 0']);
     expect(built).toBe(1);
-    expect(trees.size).toBe(1);
-    trees = new Set([...trees].map((t) => (t.startsWith(repo) ? 'inside the repo' : 'outside')));
-    expect([...trees]).toEqual(['outside']);
+    expect([...trees]).toEqual([repo]);
   });
 
   for (const dryRun of [false, true]) {
@@ -748,6 +773,20 @@ describe('the gate on the staged release tree (064)', () => {
     expect(built).toBe(0);
     expect(await snapshot()).toEqual(before);
     expect(refOf('refs/heads/release')).toBeNull();
+  });
+
+  test('090 AC5: a --dry-run runs the gate from the checkout\'s root and builds nothing', async () => {
+    await releasable({ gate: ['first', 'second'] });
+    const before = await snapshot();
+    const calls: string[] = [];
+    const r = go(true, (tree, command) => {
+      calls.push(`${tree} ${command}`);
+      return 0;
+    });
+    expect(r.code).toBe(0);
+    expect(calls).toEqual([`${repo} first`, `${repo} second`]);
+    expect(built).toBe(0);
+    expect(await snapshot()).toEqual(before);
   });
 
   test('AC5: the script from the command line: a red gate on --dry-run exits 1 with gate is red', async () => {
@@ -838,8 +877,7 @@ describe('stale workspace links refuse before anything else (069)', () => {
     gates = 0;
     builds = 0;
   });
-  const go = (dryRun: boolean, modules?: string) =>
-    release(repo, { dryRun, today: TODAY, build: countingBuild, gate: countingGate, ...(modules === undefined ? {} : { modules }) });
+  const go = (dryRun: boolean) => release(repo, { dryRun, today: TODAY, build: countingBuild, gate: countingGate });
 
   /** v0.1.0, then a releasable feat; with `gate`, a committed config that configures it. */
   async function releasable(gate?: string[]): Promise<void> {
@@ -914,15 +952,13 @@ describe('stale workspace links refuse before anything else (069)', () => {
     for (const dryRun of [false, true]) await refusesStale(dryRun, 'no workspace package has that name');
   });
 
-  test('the links are checked in the modules checkout the release borrows', async () => {
+  test('090 AC6: the links are checked in the checkout itself', async () => {
     await releasable();
+    expect(go(true).code).toBe(0);
     await rm(join(repo, LINK));
-    const modules = join(root, 'modules');
-    await mkdir(join(modules, 'packages/contract'), { recursive: true });
-    await mkdir(dirname(join(modules, LINK)), { recursive: true });
-    await symlink(LINK_TARGET, join(modules, LINK));
-    expect(go(true, modules).code).toBe(0);
-    expect(go(true).code).toBe(1);
+    expect(go(true).out).toStartWith(`${STALE}\n`);
+    await symlink(LINK_TARGET, join(repo, LINK));
+    expect(go(true).code).toBe(0);
   });
 
   test('AC5: the refusal installs nothing, and the script spawns no install', async () => {
@@ -938,10 +974,46 @@ describe('stale workspace links refuse before anything else (069)', () => {
   });
 });
 
+describe('no export of the source tree (090 AC6)', () => {
+  test('the script makes no git archive, no staged tree, and has no modules option', async () => {
+    const source = await readFile(join(import.meta.dir, 'release.ts'), 'utf8');
+    expect(source).not.toContain("'archive'");
+    expect(source).not.toMatch(/\bgit archive\b/);
+    expect(source).not.toMatch(/['"`]tar['"`]/);
+    for (const gone of ['stageTree', 'mirrorModules', 'moduleDirs', 'symlinkSync', 'opts.modules']) expect(source).not.toContain(gone);
+    expect(source).not.toMatch(/^\s*modules\?:/m);
+  });
+
+  test('a real run makes no temp copy of the source tree: the build and the gate get the checkout', async () => {
+    await seed();
+    gitIn(repo, 'tag', '-a', 'v0.1.0', '-m', 'factory v0.1.0');
+    await jobMerge('feat(cli): add c', '060-c');
+    await put(CONFIG, configText({ gate: ['true'] }));
+    gitIn(repo, 'add', '-A');
+    gitIn(repo, 'commit', '--quiet', '-m', 'chore(factory): the gate');
+    const dirs: string[] = [];
+    const r = release(repo, {
+      dryRun: false,
+      today: TODAY,
+      gate: (tree) => {
+        dirs.push(tree);
+        return 0;
+      },
+      build: (tree, out) => {
+        dirs.push(tree);
+        // The bundle's temp dir holds only the bundle, never a copy of the tree beside it.
+        expect(readdirSync(dirname(out))).toEqual(['bundle']);
+        fakeBuild(tree, out);
+      },
+    });
+    expect(r.code).toBe(0);
+    expect(dirs).toEqual([repo, repo]);
+  });
+});
+
 /**
- * This source's files: git's tracked and untracked-but-not-ignored files in a checkout, or, in the
- * staged release tree the gate runs in (a `git archive` with no `.git`), every file but the
- * mirrored `node_modules`.
+ * This source's files: git's tracked and untracked-but-not-ignored files in a checkout, or, outside
+ * a git repo (a tarball or an export with no `.git`), every file but `node_modules`.
  */
 function sourceFiles(source: string): string[] {
   const listed = Bun.spawnSync(['git', '-C', source, 'rev-parse', '--show-prefix'], { stdout: 'pipe', stderr: 'pipe' });
@@ -958,7 +1030,24 @@ function sourceFiles(source: string): string[] {
   return walk('');
 }
 
-describe('the real bundle, built from the tree about to be committed (060 AC4)', () => {
+/**
+ * Mirrors an installed `node_modules` into the test repo, so its sources resolve their
+ * dependencies without an install: a symlink is copied as it is (a workspace link, being relative,
+ * then points at the test repo's own package), a scope or `.bin` directory is mirrored, and
+ * anything else is linked to the source checkout's copy.
+ */
+function mirrorInstall(src: string, dst: string): void {
+  mkdirSync(dst, { recursive: true });
+  for (const e of readdirSync(src, { withFileTypes: true })) {
+    const from = join(src, e.name);
+    const to = join(dst, e.name);
+    if (e.isSymbolicLink()) symlinkSync(readlinkSync(from), to);
+    else if (e.isDirectory() && (e.name.startsWith('@') || e.name === '.bin')) mirrorInstall(from, to);
+    else symlinkSync(from, to);
+  }
+}
+
+describe('the real bundle, built from the checkout after the version writes (060 AC4)', () => {
   test('a test repo holding this source: the release tree runs as factory <new version> (release)', async () => {
     const source = join(import.meta.dir, '..');
     initMain();
@@ -973,10 +1062,16 @@ describe('the real bundle, built from the tree about to be committed (060 AC4)',
     const current = typeof pkg === 'object' && pkg !== null && 'version' in pkg && typeof pkg.version === 'string' ? pkg.version : '';
     gitIn(repo, 'tag', '-a', `v${current}`, '-m', `factory v${current}`);
     await commit('feat(cli): something new');
+    // The checkout's install, as `bun install` would leave it (node_modules is gitignored).
+    for (const dir of ['', ...['packages', 'apps'].flatMap((d) => readdirSync(join(source, d)).map((name) => `${d}/${name}`))]) {
+      const from = join(source, dir, 'node_modules');
+      if (existsSync(from) && existsSync(join(repo, dir))) mirrorInstall(from, join(repo, dir, 'node_modules'));
+    }
+    expect(gitIn(repo, 'status', '--porcelain')).toBe('');
 
     // This source's own gate (`bun run test`, ...) would run this suite again: a stand-in passes it.
     const ran: string[] = [];
-    const r = release(repo, { dryRun: false, today: TODAY, modules: source, gate: (_tree, command) => {
+    const r = release(repo, { dryRun: false, today: TODAY, gate: (_tree, command) => {
       ran.push(command);
       return 0;
     } });

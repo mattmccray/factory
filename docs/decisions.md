@@ -194,9 +194,15 @@ contract is `docs/contract/v1.md`.
     - Amended 2026-10-30 (approved by Matt; brief `factory/briefs/cli-global-install.md`):
       `bun run release` also builds the self-contained release bundle (`scripts/bundle.ts`: the
       CLI with the rendered installed CLI and the contract built in, the Andon service, the built
-      Andon UI, `CHANGELOG.md`, and a `package.json` with `bin: factory`), from the tree it is
-      about to commit and before it writes anything, so a failed build writes nothing: no
-      commit, no tag, no `release` change, and a version never exists without its bundle. After
+      Andon UI, `CHANGELOG.md`, and a `package.json` with `bin: factory`). Reworded 2026-10-31
+      (approved by Matt; brief `factory/briefs/release-gate-in-checkout.md`): the gate from
+      `factory/config.json` runs in the checkout, from its root, before anything is written (a
+      red gate refuses and writes nothing; `--dry-run` runs it too, then builds nothing and
+      writes nothing); then the versions and `CHANGELOG.md` are written into the checkout and
+      the bundle is built from the checkout into a temp directory, so it carries them. A failed
+      build restores exactly those writes (and removes a `CHANGELOG.md` it created), leaving
+      the tree clean: no commit, no tag, no `release` change, and a version never exists
+      without its bundle. No export or copy of the source tree is made. After
       the `vX.Y.Z` tag, it commits the bundle onto the `release` branch with git plumbing (never
       moving the checkout), each commit naming the `main` commit it was built from, and tags it
       `release-vX.Y.Z` (annotated). The branch and tags stay out of the `factory/` namespace,
