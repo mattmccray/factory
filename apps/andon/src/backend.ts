@@ -85,6 +85,7 @@ import { backlogPath, needsBacklog, startArgv, startShape, startWorkFrom } from 
 import { APP_NAMES, BUNDLE_IDS, GHOSTTY_APP, OPEN_IN_APPS, VSCODE_APP, appFallbacks, exitReason, failureText, mdfindHit, mdfindQuery, menuProject, menuRequest, projectMenuItems, resolveAction, t3Candidates } from './projectmenu';
 import type { AppIcons, Availability, MenuProject, OpenInApp, ProjectAction } from './projectmenu';
 import { isRemote } from './state';
+import type { AppRepository } from './state';
 
 // ---- the Tiny this adapter uses ----
 // Tiny's and txiki's own declarations (vendored unedited from Tiny's template; `tinyjs
@@ -587,8 +588,8 @@ const listedProjects = (): readonly MenuProject[] => andon?.state().projects ?? 
 
 /** The last app check; null until the first one finishes. */
 let apps: Availability | null = null;
-/** The project menu set now (its project id and the request that set it), or null when another menu (or none) is. */
-let armedProject: { pid: string; machine: string | null; seq: number } | null = null;
+/** The project menu set now (its project id, machine, and listed repositories, and the request that set it), or null when another menu (or none) is. */
+let armedProject: { pid: string; machine: string | null; repositories: readonly AppRepository[]; seq: number } | null = null;
 /** Bumped by every request (project, job, or epic), so a slower app check or board fetch can't set an older menu. */
 let menuSeq = 0;
 /** The job menu set now (its `<pid>/<job id>` and whether Open in T3 Code is enabled), or null when
@@ -789,7 +790,7 @@ function noteFound(app: MacApp, now: Record<OpenInApp, boolean>): void {
 function rearmProjectMenu(app: MacApp): void {
   const armed = armedProject;
   if (armed === null || armed.seq !== menuSeq) return;
-  app.menu.setContext(projectMenuItems(armed.pid, apps ?? NO_APPS, icons, armed.machine));
+  app.menu.setContext(projectMenuItems(armed.pid, apps ?? NO_APPS, icons, armed.machine, armed.repositories));
 }
 
 const sameApps = (a: Availability, b: Availability): boolean => a.vscode === b.vscode && a.ghostty === b.ghostty && a.t3 === b.t3;
@@ -812,12 +813,12 @@ export async function showProjectMenu(params: unknown, app: MacApp, projects: re
     app.menu.setContext(null);
     return;
   }
-  armedProject = { pid: p.id, machine: p.machine, seq };
+  armedProject = { pid: p.id, machine: p.machine, repositories: p.repositories, seq };
   const known = apps;
-  if (known !== null) app.menu.setContext(projectMenuItems(p.id, known, icons, p.machine));
+  if (known !== null) app.menu.setContext(projectMenuItems(p.id, known, icons, p.machine, p.repositories));
   const fresh = await refreshApps(app);
   if (seq !== menuSeq) return;
-  if (known === null || !sameApps(known, fresh)) app.menu.setContext(projectMenuItems(p.id, fresh, icons, p.machine));
+  if (known === null || !sameApps(known, fresh)) app.menu.setContext(projectMenuItems(p.id, fresh, icons, p.machine, p.repositories));
 }
 
 /** The failure reason of an action, or null when it worked. */
@@ -846,6 +847,13 @@ async function perform(app: MacApp, action: ProjectAction, runner: (argv: string
       const r = await runner(action.argv);
       return r.ok ? null : r.reason;
     }
+    case 'open-url':
+      // the `https://` page built from the project's listed repositories, in the default browser
+      try {
+        return (await app.shell.open(action.url)) === true ? null : 'the page did not open';
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
   }
 }
 

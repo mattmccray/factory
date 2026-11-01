@@ -14,7 +14,7 @@
 // must not run in the Mac app (boundary.test.ts), and a test pins the command to the UI's.
 import { menuProject } from './projectmenu';
 import type { MenuProject } from './projectmenu';
-import { isRecord } from './state';
+import { isPart, isRecord } from './state';
 import type { AppRepository } from './state';
 
 /** The one hand-off method the main window's page calls (tinyjs.json's `api` gate names it). */
@@ -101,9 +101,6 @@ export function primaryRepository(repos: readonly AppRepository[]): AppRepositor
   const sorted = [...repos].sort((a, b) => (a.remote < b.remote ? -1 : a.remote > b.remote ? 1 : 0));
   return sorted[0] ?? null;
 }
-
-const PART = /^[A-Za-z0-9._-]+$/;
-const isPart = (s: string): boolean => PART.test(s) && s !== '.' && s !== '..';
 
 /** Whether a link can name the repository: its host is on the allowlist, and its owner and name are
  *  plain path parts (so `repo=<owner>/<name>` needs no escaping). */
