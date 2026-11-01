@@ -1,6 +1,7 @@
 # Escalate a spec's open questions at the spec step
 
-- Status: ready
+- Status: done
+- Job: 087-spec-question-escalation (merged 9603b08, 2026-10-31)
 - Sources: thread "Test Andon to T3 Code Handoffs" (job 086-andon-remote-handoff, 2026-10-31); jobs 062 and 068 (escalated by the approver on a spec's open item, after a full build)
 - Date: 2026-10-31
 

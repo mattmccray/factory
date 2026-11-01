@@ -1,0 +1,23 @@
+{"ts":"2026-10-30T21:16:21.593Z","type":"job.claimed","schema":"factory/v1","id":"068-t3-start-work","maxRound":2,"brief":"factory/briefs/t3-start-work.md","issue":null,"target":"factory/epic/andon-backlog","session":{"app":"t3code","environment":"31b71739-338f-496d-b747-9971dd11451f","thread":"a2a9838f-4a67-4e93-bebe-d6d20975c632"},"epic":"andon-backlog","kind":"member"}
+{"ts":"2026-10-30T21:16:21.621Z","type":"stage.entered","stage":"spec"}
+{"ts":"2026-10-30T21:16:21.642Z","type":"agent.started","role":"spec-writer"}
+{"ts":"2026-10-30T21:18:21.679Z","type":"agent.finished","role":"spec-writer"}
+{"ts":"2026-10-30T21:18:21.701Z","type":"job.titled","title":"Start Work in T3 Code from Andon"}
+{"ts":"2026-10-30T21:18:21.851Z","type":"stage.entered","stage":"build"}
+{"ts":"2026-10-30T21:18:21.872Z","type":"agent.started","role":"builder","name":"builder-068-t3-start-work"}
+{"ts":"2026-10-30T21:27:22.090Z","type":"agent.finished","role":"builder","name":"builder-068-t3-start-work"}
+{"ts":"2026-10-30T21:27:22.112Z","type":"round.started","round":1,"reviewers":["security","code","contract","ui"]}
+{"ts":"2026-10-30T21:27:22.130Z","type":"agent.started","role":"reviewer","key":"security","round":1}
+{"ts":"2026-10-30T21:27:22.148Z","type":"agent.started","role":"reviewer","key":"code","round":1}
+{"ts":"2026-10-30T21:27:22.167Z","type":"agent.started","role":"reviewer","key":"contract","round":1}
+{"ts":"2026-10-30T21:27:22.186Z","type":"agent.started","role":"reviewer","key":"ui","round":1}
+{"ts":"2026-10-30T21:29:14.052Z","type":"agent.finished","role":"reviewer","key":"code","round":1,"verdict":"PASS"}
+{"ts":"2026-10-30T21:29:22.177Z","type":"agent.finished","role":"reviewer","key":"ui","round":1,"verdict":"PASS"}
+{"ts":"2026-10-30T21:29:27.119Z","type":"agent.finished","role":"reviewer","key":"contract","round":1,"verdict":"PASS"}
+{"ts":"2026-10-30T21:29:29.317Z","type":"agent.finished","role":"reviewer","key":"security","round":1,"verdict":"PASS"}
+{"ts":"2026-10-30T21:29:29.347Z","type":"stage.entered","stage":"approve"}
+{"ts":"2026-10-30T21:29:29.370Z","type":"agent.started","role":"approver"}
+{"ts":"2026-10-30T21:31:36.047Z","type":"agent.finished","role":"approver","verdict":"ESCALATE"}
+{"ts":"2026-10-30T21:31:39.106Z","type":"job.escalated","reason":"spec has an open question the brief never approved: the extra title field naming free-text backlog lines"}
+{"ts":"2026-10-30T21:36:08.056Z","type":"job.human-approved","session":{"app":"t3code","environment":"31b71739-338f-496d-b747-9971dd11451f","thread":"a2a9838f-4a67-4e93-bebe-d6d20975c632"}}
+{"ts":"2026-10-30T21:36:08.152Z","type":"job.merged","sha":"bc0eeea"}

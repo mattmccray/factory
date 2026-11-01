@@ -237,8 +237,6 @@ Deliberately unfixed, but real:
 - The stale-lock break has a check-then-act race: two waiters can both see a stale lock, and
   the second can remove the lock the first just took (`packages/contract/src/store.ts`,
   `acquire`).
-- A spec-writer rerun after a spec-stage rework is timed under `build`, because `job.reworked`
-  always enters `build`.
 
 ## Deferred (don't build yet)
 

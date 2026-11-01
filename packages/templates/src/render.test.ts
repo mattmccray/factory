@@ -655,9 +655,11 @@ describe('the customize interview in SKILL.md', () => {
     // Start resumes a plan, the plan format, and the member and plan Finish. Job 064 (release gate
     // check) re-pinned every hash to the stamp-normalized form (pinSha): the stamp header's
     // `factory <X.Y.Z>` hashes as `factory <version>`, so a release no longer breaks the pins.
+    // Job 087 (spec question escalation) updated the spec-writer hash: it reads `rework-*.md` as
+    // binding, and each open item states its question, assumed answer, and alternatives.
     const before: Record<string, string> = {
       [EXPLORE]: 'c62fbd462cc7333e239883a489b2f0fe1d322f460a4dc1f52881c8226fffcde5',
-      [agent('spec-writer')]: '801a6ed850d5e6f887244c8f0e204aff4fd4dfccc25b6ae5866a613c07898436',
+      [agent('spec-writer')]: '4ca6cf38763a8ee24cf0825e61c336c0dd4708cecf0228132e8ce111bac94c10',
       [agent('builder')]: '31bd61d3b6d55b57eb87e367c6cdcd7f357a94f19e9a05e36f49d3513c873120',
       [agent('approver')]: 'e3571bff3055baade18a1490ba3318990e540df2ea53d50a97b88e3afc6f8170',
       [agent('alpha')]: '6805505208865f1423e581be7799e0f812aa2cb598caf200ee373c19dc112b02',
@@ -724,9 +726,10 @@ describe('per-role model from config.roles', () => {
     // Job 051 updated the builder and approver hashes (a conflict note, and `conflict-*.md` reads).
     // Job 053 updated the EXPLORE hash (epics: the size check, plan resume, plan format, Finish).
     // Job 064 re-pinned every hash to the stamp-normalized form (pinSha), independent of VERSION.
+    // Job 087 updated the spec-writer hash (`rework-*.md` is binding; the open-item format).
     const before: Record<string, string> = {
       [EXPLORE]: 'c62fbd462cc7333e239883a489b2f0fe1d322f460a4dc1f52881c8226fffcde5',
-      [agent('spec-writer')]: '801a6ed850d5e6f887244c8f0e204aff4fd4dfccc25b6ae5866a613c07898436',
+      [agent('spec-writer')]: '4ca6cf38763a8ee24cf0825e61c336c0dd4708cecf0228132e8ce111bac94c10',
       [agent('builder')]: '31bd61d3b6d55b57eb87e367c6cdcd7f357a94f19e9a05e36f49d3513c873120',
       [agent('approver')]: 'e3571bff3055baade18a1490ba3318990e540df2ea53d50a97b88e3afc6f8170',
       [agent('alpha')]: '6805505208865f1423e581be7799e0f812aa2cb598caf200ee373c19dc112b02',
@@ -1906,5 +1909,46 @@ describe('the skill runs epics, and explore writes them (job 053)', () => {
     const oldExplore = TEMPLATES.explore.replace(/\n\*\*A member of an epic\*\*[\s\S]*$/, '\n');
     expect(oldExplore).not.toBe(TEMPLATES.explore);
     expect(section(flat(at(files(config(), { ...TEMPLATES, explore: oldExplore }), EXPLORE)), 'Finish')).not.toContain("**The plan's Finish**");
+  });
+});
+
+describe('open questions escalate at the spec step (job 087)', () => {
+  const flat = (s: string): string => s.replace(/\s+/g, ' ');
+  const configs = [config(), config({ reviewers: ['q'] }), config({ merge: { target: 'develop' } })];
+  const files = (c: Config): Record<string, string> => renderClaudeCode({ config: c }).files;
+  const between = (text: string, from: string, to: string): string => {
+    const start = text.indexOf(from);
+    if (start < 0) throw new Error(`no ${from}`);
+    const end = text.indexOf(to, start + from.length);
+    return end < 0 ? text.slice(start) : text.slice(start, end);
+  };
+
+  test('AC5: step 1 escalates on an open question before step 2; ground rule, rework, approve, epic member', () => {
+    for (const c of configs) {
+      const s = flat(at(files(c), SKILL));
+      const step1 = between(s, '**1 · Spec.**', '**2 · Worktree.**');
+      expect(step1).toContain('If it lists any item not marked "approved in brief"');
+      expect(step1).toContain("`job.escalated reason='spec has <n> open question(s): <the first, with its assumed answer>'`");
+      expect(step1).toContain('stop before step 2: no worktree, no build');
+      expect(step1).toContain('`/factory rework <id> "<answer>"`');
+      const rules = between(s, '## Ground rules', '\u0000');
+      expect(rules).toContain('Never wait off the board. Never stop mid-job to wait on the human without logging `job.escalated');
+      const rework = between(s, '**`/factory rework <id> <note>`**', '**`/factory abandon <id> <reason>`**');
+      expect(rework).toContain("`stoppedFrom`, read before `job.reworked`, is `spec` or `claimed`");
+      expect(rework).toContain('spawn `factory-spec-writer` again with the card plus the rework path (span `role=spec-writer`), also when `spec.md` already exists');
+      expect(rework).toContain("Board: `job.titled title='<spec.md's # H1>'`");
+      expect(rework).toContain('continue at step 2 of **The loop**');
+      const approve = between(s, '**`/factory approve <id>`**', '**`/factory rework <id> <note>`**');
+      expect(approve).toContain('"<id>: nothing built; answer with rework"');
+      const member = between(s, '**A member escalates**', '**A member is abandoned.**');
+      expect(member).toContain('or open questions in its spec at step 1');
+    }
+  });
+
+  test('AC6: the spec writer reads rework notes as binding, and each open item has its question, assumed answer, and alternatives', () => {
+    const s = flat(at(files(config()), agent('spec-writer')));
+    expect(s).toContain('Any `<job dir>/rework-*.md`');
+    expect(s).toContain("They are binding human decisions, like the brief's");
+    expect(s).toContain('Each open item is one bullet: the question, its assumed answer, and the alternatives');
   });
 });

@@ -253,6 +253,12 @@ this loop says **Merge**.
 
 **1 · Spec.** Board: `stage.entered stage=spec`. Spawn `factory-spec-writer` → `spec.md`
 (span `role=spec-writer`). Board: `job.titled title='<spec.md's # H1>'`.
+Then read spec.md's "Contract conflicts / open questions". If it lists any item not marked
+"approved in brief", the spec has open questions: board:
+`job.escalated reason='spec has <n> open question(s): <the first, with its assumed answer>'`
+(`<n>` counts those items), and stop before step 2: no worktree, no build. Tell the user the
+question(s) and that they answer with `/factory rework <id> "<answer>"`. Never build on an open
+question, and never ask it in chat instead: the escalation puts it on the board.
 
 **2 · Worktree.** `git worktree add -b factory/<id> factory/.worktrees/<id> '<target>'`
 (if the branch already exists: `git worktree add factory/.worktrees/<id> factory/<id>`).
@@ -498,7 +504,7 @@ or conflict note it must address: everything it needs is in files (the rework pa
 `checkout-flow · 027 review round 1: 3/4 in`).
 
 **A member escalates** (approver `ESCALATE`, budget spent, no file, a merge conflict past its two
-tries): it goes to `needs-human` exactly as a standalone job does. Log it as **The loop** says,
+tries, or open questions in its spec at step 1): it goes to `needs-human` exactly as a standalone job does. Log it as **The loop** says,
 tell the user in one line, and keep driving: independent members keep running, and its dependents
 stay unclaimed (`epic next` won't offer them). Never retry, rework, or approve it on your own;
 that is the user's call, in this session.
@@ -730,6 +736,10 @@ line, release the lock and ask which one.
 **`/factory approve <id>`** — Human override for a `needs-human` job. A job in an epic: see
 **Member commands** under **Epics** first. Refuse any other stage:
 a job in flight belongs to the session running it.
+If the job stopped before anything was built (job.json's `stoppedFrom` is `spec` or `claimed`:
+an open question at the spec step, or a spec writer that wrote no spec.md), refuse, changing
+nothing, with the one line: "<id>: nothing built; answer with rework" (`/factory rework <id>
+"<answer>"`).
 If the approver never ran on this work (no `APPROVE`/`ESCALATE` from it, so job.json's `decision`
 is null: an escalation before or during review, or after a rework before the approver), say so and
 ask before merging work the approver never checked. (A retry after a failed merge already shows
@@ -746,10 +756,16 @@ escalation does.
 **`/factory rework <id> <note>`** — Send a `needs-human` job back with human feedback. A job in
 an epic: see **Member commands** under **Epics** first. Write
 the note verbatim to `rework-<k>.md` (`k` = `reworks` + 1, from job.json), recreate the worktree
-if needed (step 2, from the job's `<target>`), run **the thread lookup**, board:
+if needed (step 2, from the job's `<target>`; not for a job that stopped before anything was
+built, below), run **the thread lookup**, board:
 `job.reworked k=<k> maxRound=<round + 2> [session=…]` (a fresh review budget; it clears
-the decision). If the job escalated before `spec.md` existed, first spawn `factory-spec-writer`
-with the card plus the rework path (span `role=spec-writer`) and set `job.titled`. Resume
+the decision).
+If the job stopped before anything was built (job.json's `stoppedFrom`, read before
+`job.reworked`, is `spec` or `claimed`), `job.reworked` puts it back in stage `spec`: spawn `factory-spec-writer` again with the card plus the rework path (span
+`role=spec-writer`), also when `spec.md` already exists: the note answers its open questions.
+Board: `job.titled title='<spec.md's # H1>'`, then run step 1's open-question check on the new
+spec.md (an item the note didn't settle escalates again) and continue at step 2 of **The loop**
+(a fresh builder; round 1 follows). Otherwise, resume
 `builder-<id>` with SendMessage (span `role=builder name=builder-<id> round=<round>`) —
 *"Human rework note: <R>/factory/jobs/<id>/rework-<k>.md. Address it, update build.md,
 commit."* If that builder isn't alive in this session, spawn a fresh `factory-builder` named
@@ -971,6 +987,10 @@ Finish with what changed, doctor's result, the commit (or why there is none), an
   driving session is stopped). A job in an epic is driven only by the session driving its epic
   (**Member commands**); `/factory epic <slug>` takes an epic over.
   Finding another job in flight is never a reason to stop; it's only a reason for the overlap check.
+- Never wait off the board. Never stop mid-job to wait on the human without logging
+  `job.escalated reason='…'` first: a question for the human is an escalation (the job goes to
+  `needs-human`, and the board shows it), never a question asked only in chat. Any session can then
+  answer it with `/factory rework` or `/factory approve`.
 - Agents write only their own file (a reviewer also its `round-<N>/<key>/` supporting files);
   you write only your job's feature.md, rework notes, and conflict notes (in an epic, every epic
   job's, including the generated sync and fix `feature.md`), backlog edits (each committed at once),

@@ -1,0 +1,162 @@
+{
+  "schema": "factory/v1",
+  "id": "062-andon-service-install",
+  "title": "Factory Service Installs And Runs The Andon Service",
+  "branch": "factory/062-andon-service-install",
+  "target": "factory/epic/factory-distribution",
+  "builder": "builder-062-andon-service-install",
+  "stage": "merged",
+  "round": 1,
+  "maxRound": 2,
+  "reviews": {
+    "security": "PASS",
+    "code": "PASS",
+    "contract": "PASS",
+    "ui": "PASS"
+  },
+  "history": [],
+  "reworks": 0,
+  "conflicts": 0,
+  "decision": "APPROVE (human)",
+  "note": "merged 7ce7dc4",
+  "stoppedBy": "escalated",
+  "stoppedFrom": "approve",
+  "brief": "factory/briefs/andon-service-install.md",
+  "issue": null,
+  "session": {
+    "app": "t3code",
+    "environment": "31b71739-338f-496d-b747-9971dd11451f",
+    "thread": "36dfc7f2-8245-4f0e-a7ab-2e2bd3c315ed"
+  },
+  "epic": "factory-distribution",
+  "kind": "member",
+  "startedAt": "2026-10-30T17:12:09.985Z",
+  "stageEnteredAt": "2026-10-30T17:35:14.611Z",
+  "endedAt": "2026-10-30T17:35:14.611Z",
+  "updated": "2026-10-30T17:35:14.611Z",
+  "timing": {
+    "stages": [
+      {
+        "stage": "claimed",
+        "round": 0,
+        "enteredAt": "2026-10-30T17:12:09.985Z",
+        "exitedAt": "2026-10-30T17:12:10.005Z",
+        "ms": 20
+      },
+      {
+        "stage": "spec",
+        "round": 0,
+        "enteredAt": "2026-10-30T17:12:10.005Z",
+        "exitedAt": "2026-10-30T17:13:41.915Z",
+        "ms": 91910
+      },
+      {
+        "stage": "build",
+        "round": 0,
+        "enteredAt": "2026-10-30T17:13:41.915Z",
+        "exitedAt": "2026-10-30T17:28:26.690Z",
+        "ms": 884775
+      },
+      {
+        "stage": "review",
+        "round": 1,
+        "enteredAt": "2026-10-30T17:28:26.690Z",
+        "exitedAt": "2026-10-30T17:30:32.315Z",
+        "ms": 125625
+      },
+      {
+        "stage": "approve",
+        "round": 1,
+        "enteredAt": "2026-10-30T17:30:32.315Z",
+        "exitedAt": "2026-10-30T17:32:35.658Z",
+        "ms": 123343
+      },
+      {
+        "stage": "needs-human",
+        "round": 1,
+        "enteredAt": "2026-10-30T17:32:35.658Z",
+        "exitedAt": "2026-10-30T17:35:14.611Z",
+        "ms": 158953
+      },
+      {
+        "stage": "merged",
+        "round": 1,
+        "enteredAt": "2026-10-30T17:35:14.611Z",
+        "exitedAt": null,
+        "ms": null
+      }
+    ],
+    "agents": [
+      {
+        "role": "spec-writer",
+        "key": null,
+        "round": null,
+        "name": null,
+        "startedAt": "2026-10-30T17:12:10.026Z",
+        "finishedAt": "2026-10-30T17:13:41.705Z",
+        "ms": 91679,
+        "verdict": null
+      },
+      {
+        "role": "builder",
+        "key": null,
+        "round": null,
+        "name": "builder-062-andon-service-install",
+        "startedAt": "2026-10-30T17:13:41.935Z",
+        "finishedAt": "2026-10-30T17:28:26.665Z",
+        "ms": 884730,
+        "verdict": null
+      },
+      {
+        "role": "reviewer",
+        "key": "security",
+        "round": 1,
+        "name": null,
+        "startedAt": "2026-10-30T17:28:26.710Z",
+        "finishedAt": "2026-10-30T17:30:32.293Z",
+        "ms": 125583,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "code",
+        "round": 1,
+        "name": null,
+        "startedAt": "2026-10-30T17:28:26.731Z",
+        "finishedAt": "2026-10-30T17:30:07.648Z",
+        "ms": 100917,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "contract",
+        "round": 1,
+        "name": null,
+        "startedAt": "2026-10-30T17:28:26.753Z",
+        "finishedAt": "2026-10-30T17:30:20.555Z",
+        "ms": 113802,
+        "verdict": "PASS"
+      },
+      {
+        "role": "reviewer",
+        "key": "ui",
+        "round": 1,
+        "name": null,
+        "startedAt": "2026-10-30T17:28:26.775Z",
+        "finishedAt": "2026-10-30T17:28:55.338Z",
+        "ms": 28563,
+        "verdict": "PASS"
+      },
+      {
+        "role": "approver",
+        "key": null,
+        "round": null,
+        "name": null,
+        "startedAt": "2026-10-30T17:30:32.335Z",
+        "finishedAt": "2026-10-30T17:32:33.715Z",
+        "ms": 121380,
+        "verdict": "ESCALATE"
+      }
+    ]
+  }
+}

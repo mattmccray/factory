@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BoardJob } from './board';
-import { HOUR, MINUTE, NOW, before, epic, fleetJobs, inEpic, job, narrowBoard, reviewerSpan, stageSpans, stopped, tag, tagEpic } from './fixtures';
+import { HOUR, MINUTE, NOW, before, epic, fleetJobs, inEpic, job, narrowBoard, reviewerSpan, specQuestion, stageSpans, stopped, tag, tagEpic } from './fixtures';
 import { COLUMNS, activity, age, boardColumns, buildLanes, columnOf, compareLanes, epicGutter, ghostOf, headerOf, isReviewFailed, kindOf, landedText, orderLanes, popoverOf, tagOf, tokenOf } from './lanes';
 import { MARK_LEGEND } from './sidebar';
 import type { Kind, Lane } from './lanes';
@@ -71,6 +71,22 @@ describe('kinds (AC1)', () => {
     }
   });
 
+  test('a needs-human job stopped from spec or claimed reads "Question"; later stops keep their tags (job 087)', () => {
+    for (const from of ['spec', 'claimed'] as const) {
+      expect(tagText({ id: '001-a', ...specQuestion(from) })).toBe('Question');
+      // Keyed on stoppedFrom only, whatever stoppedBy is.
+      expect(tagText({ id: '001-a', stage: 'needs-human', ...stopped(null, from) })).toBe('Question');
+      expect(kind({ id: '001-a', ...specQuestion(from) })).toBe('needs-human');
+    }
+    for (const from of ['build', 'review', 'approve']) {
+      expect(tagText({ id: '001-a', stage: 'needs-human', ...stopped('escalated', from) })).toBe('Escalated');
+    }
+    expect(tagText({ id: '001-a', stage: 'needs-human', ...stopped('merge-failed', 'approve') })).toBe('Merge failed');
+    expect(tagText({ id: '001-a', stage: 'needs-human', decision: 'APPROVE (human)', ...stopped(null, null) })).toBe('Approved · not merged');
+    // A spec-stage stop's own snapshot: stoppedFrom is gone once the job is reworked.
+    expect(tagText({ id: '001-a', stage: 'spec', ...stopped(null, null) })).toBe('Drafting spec');
+  });
+
   test('abandoned and settled jobs are never placed in a cell', () => {
     expect(columnOf('abandoned')).toBeNull();
     expect(columnOf('settled')).toBeNull();
@@ -120,6 +136,17 @@ describe('columns and ghosts (AC2)', () => {
     expect(g).toEqual({ key: 'p1/040-tag-migration', column: 'approve', num: '040', text: 'stopped here → Andon', label: '040 stopped here → Andon' });
     const m = ghostOf(at({ id: '111-x', stage: 'needs-human', ...stopped('merge-failed', 'approve') }));
     expect(m?.label).toBe('111 merge broke here → Andon');
+  });
+
+  test('a spec or claimed stop leaves "asked here → Andon" in Spec; others keep their text (job 087)', () => {
+    for (const from of ['spec', 'claimed'] as const) {
+      const g = ghostOf(at({ id: '087-q', ...specQuestion(from) }));
+      expect(g).toEqual({ key: 'p1/087-q', column: 'spec', num: '087', text: 'asked here → Andon', label: '087 asked here → Andon' });
+    }
+    for (const from of ['build', 'review', 'approve']) {
+      expect(ghostOf(at({ id: '040-a', stage: 'needs-human', ...stopped('escalated', from) }))?.text).toBe('stopped here → Andon');
+    }
+    expect(ghostOf(at({ id: '111-x', stage: 'needs-human', ...stopped('merge-failed', 'approve') }))?.text).toBe('merge broke here → Andon');
   });
 
   test('each needs-human job leaves exactly one ghost in its lane', () => {

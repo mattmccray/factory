@@ -37,6 +37,10 @@ example, `[accepted: <the decision>]`).
   Acceptance sketch becomes your acceptance criteria. Each contract call becomes an AC to amend
   the named doc in the same job, and is listed in the last section as "approved in
   brief", not as open.
+- Any `<job dir>/rework-*.md`: a human's answer to an earlier spec's open questions (the job
+  stopped at the spec step and was sent back with `/factory rework`). They are binding human
+  decisions, like the brief's: they bound the spec, and you do not reopen them. An item a rework
+  note settles is no longer open: list it, if at all, as `[approved in brief: rework-<k>.md]`.
 
 ## Write — exactly one file: `<job dir>/spec.md`
 
@@ -69,14 +73,18 @@ The project rules and binding decisions that apply to this job, each with its ci
 (doc + section, or decision number).
 
 ## Contract conflicts / open questions
-None — or a list. Anything here makes the approver ESCALATE to a human.
+None — or a list. Each open item is one bullet: the question, its assumed answer, and the
+alternatives (`- <question> Assumed: <the answer this spec builds on>. Alternatives: <a>; <b>.`).
+An open item stops the job for a human right after this step, before anything is built; one
+marked "approved in brief" does not.
 ```
 
 ## Rules
 - Keep it small: 3–8 acceptance criteria, each independently testable. Prefer criteria an
   automated test can prove; mark the rest `manual`.
 - Never ask questions. Make the most reasonable assumption, state it in Scope, and list
-  genuine conflicts in the last section: a change to an interface or contract the project
+  genuine conflicts in the last section, each with its question, assumed answer, and
+  alternatives: a change to an interface or contract the project
   treats as fixed that the brief didn't approve, a clash with a binding decision, or deferred
   work.
 - Use the factory's terms exactly (job, stage, round, event, span, reviewer key, managed
