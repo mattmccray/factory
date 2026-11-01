@@ -128,7 +128,9 @@ copying the command as it does today.
   project's fetch remotes by the service on that project's machine (local remotes skipped, no
   credentials), and passed through by the hub for peers' projects (added within v1,
   additively)", approved by Matt on 2026-10-31 (amended the same day from a single `origin`
-  `repository`). The job
+  `repository`). Extended by Matt on 2026-10-31: the `projects` event's entries carry
+  `repositories` too, resolved as in `GET /projects` (the Mac app and the hub read projects from
+  that event). The job
   updates the contract doc (and its installed copy is promoted later, as usual) to match.
 
 ## Open
