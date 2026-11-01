@@ -50,6 +50,13 @@ export function isReviewFailed(j: Job): boolean {
  */
 const mergeFailed = (j: Job): boolean => (j.stoppedBy !== null ? j.stoppedBy === 'merge-failed' : j.decision === 'APPROVE');
 
+/**
+ * Whether a needs-human job stopped before anything was built (job 087): its `stoppedFrom` is
+ * `spec` or `claimed`, whatever `stoppedBy` is. It waits on an answer (the spec's open question),
+ * not on a review of built work. A failed merge always stops from `approve`, so the two never overlap.
+ */
+export const isQuestion = (j: Job): boolean => j.stage === 'needs-human' && (j.stoppedFrom === 'spec' || j.stoppedFrom === 'claimed');
+
 /** A job's kind at `now` (design §5). Merged settles after its own project's `settleAfterHours`. */
 export function kindOf(b: BoardJob, now: number): Kind {
   const j = b.job;
@@ -79,6 +86,7 @@ export const shaOf = (j: Job): string => (j.note.startsWith('merged ') ? j.note.
 export function tagOf(j: Job, kind: Kind): string | null {
   switch (kind) {
     case 'needs-human':
+      if (isQuestion(j)) return 'Question';
       return j.stoppedBy === null && j.decision === 'APPROVE (human)' ? 'Approved · not merged' : 'Escalated';
     case 'merge-failed':
       return 'Merge failed';
@@ -198,7 +206,7 @@ export interface Ghost {
   key: string; // the job it opens
   column: Column;
   num: string;
-  text: string; // "stopped here → Andon" or "merge broke here → Andon"
+  text: string; // "stopped here → Andon", "asked here → Andon", or "merge broke here → Andon"
   label: string; // "<num> <text>"
 }
 
@@ -208,7 +216,7 @@ export function ghostOf(b: BoardJob): Ghost | null {
   const from = stoppedAt(b.job);
   if (from === null) return null;
   const num = numOf(b.job.id);
-  const text = mergeFailed(b.job) ? 'merge broke here → Andon' : 'stopped here → Andon';
+  const text = mergeFailed(b.job) ? 'merge broke here → Andon' : isQuestion(b.job) ? 'asked here → Andon' : 'stopped here → Andon';
   return { key: b.key, column: stageColumn(from), num, text, label: `${num} ${text}` };
 }
 

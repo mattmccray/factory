@@ -33,7 +33,7 @@
   import type { BoardEpic, BoardJob } from './board';
   import type { HandoffRequest } from './handoff';
   import { TIMING } from './docs';
-  import { INSPECTOR_MAX, INSPECTOR_MIN, approveCommand, clampWidth, epicFileModel, epicLinkOf, epicPage, fileModel, jobHeader, stepFile } from './inspector';
+  import { INSPECTOR_MAX, INSPECTOR_MIN, approveCommand, clampWidth, epicFileModel, epicLinkOf, epicPage, fileModel, humanActions, jobHeader, stepFile } from './inspector';
   import type { SheetKind } from './inspector';
   import { landing } from './job';
   import { FILES_FIT, clampFiles, filesKey, filesShown, paneStep } from './panes';
@@ -170,6 +170,7 @@
   });
   const human = $derived(job !== null && job.stage === 'needs-human');
   const approve = $derived(job === null ? '' : approveCommand(job.id));
+  const acts = $derived(job === null ? null : humanActions(job)); // a pre-build stop: Rework… primary, Approve grayed (job 087)
   const abandonable = $derived(epic !== null && !isEpicTerminal(epic.epic));
 
   async function choose(path: string | null, focus: boolean): Promise<void> {
@@ -432,16 +433,24 @@
             <span>{job.note || 'No note recorded.'}</span>
           </div>
           <div class="acts">
-            <button class="btn primary" type="button" onclick={() => onhandoff({ project: item.project.id, job: job.id, action: 'approve' }, approve)}>Approve</button>
-            <button class="btn" type="button" aria-haspopup="dialog" onclick={() => onsheet('rework')}>Rework…</button>
+            {#if acts?.primary === 'rework'}
+              <button class="btn primary" type="button" aria-haspopup="dialog" onclick={() => onsheet('rework')}>Rework…</button>
+              <!-- a disabled button gets no hover in some engines: the wrapper carries the tooltip too -->
+              <span class="tip" title={acts.approveTitle}><button class="btn" type="button" disabled title={acts.approveTitle}>Approve</button></span>
+            {:else}
+              <button class="btn primary" type="button" onclick={() => onhandoff({ project: item.project.id, job: job.id, action: 'approve' }, approve)}>Approve</button>
+              <button class="btn" type="button" aria-haspopup="dialog" onclick={() => onsheet('rework')}>Rework…</button>
+            {/if}
             <button class="btn destructive" type="button" aria-haspopup="dialog" onclick={() => onsheet('abandon')}>Abandon…</button>
           </div>
-          <div class="cmd">
-            <code>{approve}</code>
-            <button class="copy" type="button" onclick={() => oncopy(approve)} aria-label="Copy {approve}" title="Copy">
-              <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" /><path d="M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" /></svg>
-            </button>
-          </div>
+          {#if !acts?.approveDisabled}
+            <div class="cmd">
+              <code>{approve}</code>
+              <button class="copy" type="button" onclick={() => oncopy(approve)} aria-label="Copy {approve}" title="Copy">
+                <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" /><path d="M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" /></svg>
+              </button>
+            </div>
+          {/if}
         </section>
       {:else if job.stage === 'abandoned'}
         <section class="callout gray" aria-label="Abandoned"><div class="why"><span>Abandoned: {job.note || 'no reason recorded.'}</span></div></section>

@@ -2,9 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TIMING, groupsOf, pickFile } from './docs';
-import { HOUR, NOW, before, epic, inEpic, job, tag, tagEpic } from './fixtures';
+import { HOUR, NOW, before, epic, inEpic, job, specQuestion, stopped, tag, tagEpic } from './fixtures';
 import { HUB, LOCAL_FACTORY, STUDIO_FACTORY, localAt, machineEntry, machinesBody } from './fixtures';
 import { jobHeader } from './inspector';
+import type { HumanActions } from './inspector';
 import { epicPage as epicPageOf, settledRows as settledRowsOf } from './inspector';
 import { nowFor } from './machines';
 import { ALL, boardEpics, boardJobs } from './projects';
@@ -29,6 +30,7 @@ import {
   epicLinkOf,
   epicPage,
   fileModel,
+  humanActions,
   quoteArg,
   reworkCommand,
   settledEpicRows,
@@ -67,6 +69,23 @@ describe('the needs-human commands (AC1)', () => {
 
   test('the toast names the copied command', () => {
     expect(copiedText('/factory approve 040-tag-migration')).toBe('Copied /factory approve 040-tag-migration');
+  });
+});
+
+describe('the needs-human box before anything was built (job 087)', () => {
+  test('a spec or claimed stop: Rework… is primary, Approve is disabled with "Nothing built yet"', () => {
+    for (const from of ['spec', 'claimed'] as const) {
+      expect(humanActions(job({ id: '087-q', ...specQuestion(from) }))).toEqual({ primary: 'rework', approveDisabled: true, approveTitle: 'Nothing built yet' });
+    }
+  });
+
+  test('a build, review, or approve stop (or a failed merge): Approve stays primary and enabled', () => {
+    const later: HumanActions = { primary: 'approve', approveDisabled: false, approveTitle: null };
+    for (const from of ['build', 'review', 'approve']) {
+      expect(humanActions(job({ id: '040-a', stage: 'needs-human', ...stopped('escalated', from) }))).toEqual(later);
+    }
+    expect(humanActions(job({ id: '040-a', stage: 'needs-human', ...stopped('merge-failed', 'approve') }))).toEqual(later);
+    expect(humanActions(job({ id: '040-a', stage: 'needs-human', decision: 'APPROVE (human)', ...stopped(null, null) }))).toEqual(later);
   });
 });
 
