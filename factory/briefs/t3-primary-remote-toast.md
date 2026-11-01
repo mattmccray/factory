@@ -1,6 +1,7 @@
 # Say why a GitHub project can't draft, and space the New exploration title
 
-- Status: ready
+- Status: done
+- Job: 091-t3-primary-remote-toast (merged 9e18b65, 2026-10-31)
 - Sources: the explore request of 2026-10-31 (New exploration for Infra on Moya said "No GitHub remote" although Open on GitHub works; the sheet's title runs into the project name); brief `andon-remote-handoff` (job 086, decisions 3 and 5, and its Facts on T3 Code's `RepositoryIdentityResolver`); brief `andon-open-repository` (job 088); `apps/andon/src/handoff.ts` (`primaryRepository`, `draftTarget`), `apps/andon/src/backend.ts` (`deliver`), `apps/andon-ui/src/handoff.ts` (the toasts), `apps/andon-ui/src/NewExplorationSheet.svelte:45`
 - Date: 2026-10-31
 
