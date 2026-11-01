@@ -1,4 +1,4 @@
-<!-- factory 0.4.0 · managed file, do not edit: it is replaced on upgrade. This is the installed copy of the factory/v1 contract -->
+<!-- factory 0.5.0 · managed file, do not edit: it is replaced on upgrade. This is the installed copy of the factory/v1 contract -->
 # Factory state contract — `factory/v1`
 
 The fixed interface between a factory run and anything that observes it (the dashboard today,
