@@ -1,6 +1,7 @@
 # `factory upgrade` runs doctor
 
-- Status: ready
+- Status: done
+- Job: 089-upgrade-runs-doctor (merged e5ec1e9, 2026-10-31)
 - Sources: packages/cli/src/install.ts (`upgrade`), packages/cli/src/doctor.ts, scripts/promote.ts, docs/upgrade.md, docs/contract/v1.md ("`init` and `upgrade`", `doctor`), factory/briefs/upgrade-commit-flag.md
 - Date: 2026-10-31
 
