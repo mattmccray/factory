@@ -1,6 +1,7 @@
 # Show token spend in Andon
 
-- Status: ready
+- Status: done
+- Job: 094-token-spend-andon (merged b4012a9 via epic token-spend, 2026-11-02)
 - Epic: `factory/epics/token-spend.md` (after `token-spend-record`)
 - Sources: `factory/briefs/token-spend-record.md`; `apps/andon-ui/src/TimingView.svelte` (the Stages and Agents tables); `docs/design/andon-overview/design.md` section 8 (Inspector)
 - Date: 2026-11-02

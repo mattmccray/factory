@@ -1,6 +1,7 @@
 # Token spend per job and phase
 
-- Status: ready
+- Status: done
+- Landed: 78b2f84 (2026-11-02)
 - Sources: `/factory explore` on token visibility (2026-11-02); Claude Code transcripts
 - Date: 2026-11-02
 

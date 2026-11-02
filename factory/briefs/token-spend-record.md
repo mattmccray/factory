@@ -1,6 +1,7 @@
 # Record token spend per job and phase
 
-- Status: ready
+- Status: done
+- Job: 093-token-spend-record (merged 72a4652 via epic token-spend, 2026-11-02)
 - Epic: `factory/epics/token-spend.md`
 - Sources: Claude Code transcripts (`~/.claude/projects/<project>/<session>/subagents/agent-<id>.jsonl` and `.meta.json`); `docs/contract/v1.md` (agent spans); `docs/decisions.md` (decisions 3, 4, 9)
 - Date: 2026-11-02
