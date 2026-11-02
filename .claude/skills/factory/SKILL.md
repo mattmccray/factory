@@ -3,7 +3,7 @@ name: factory
 description: Run the factory — a feature goes spec → build → parallel reviews → approve → merge, driven by subagents that talk only through markdown files; `queue` and `explore` feed its backlog, and `customize` (alias `init`) tailors the project's overlay. Use when the user invokes /factory with a feature, `next [words]`, `queue <text>`, `explore <idea|brief>`, `customize`, `init`, `approve <job-id>`, `rework <job-id> <note>`, `abandon <job-id> <reason>`, `epic <slug>` (start or resume an epic: several briefs run as member jobs into one branch, then land as one merge), or `epic abandon <slug> <reason>`.
 argument-hint: "<feature> | next [words] | queue <text> | explore <idea|brief> | customize | init | approve <job-id> | rework <job-id> <note> | abandon <job-id> <reason> | epic <slug> | epic abandon <slug> <reason>"
 ---
-<!-- factory 0.5.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/config.json and factory/roles/<role>.md -->
+<!-- factory 0.6.0 · managed file, do not edit: it is replaced on upgrade. Project rules go in the overlay: factory/config.json and factory/roles/<role>.md -->
 
 # /factory — the orchestrator
 
@@ -107,7 +107,10 @@ Put free-text values (`title`, `note`, `reason`) in **single quotes** — double
 `role` (`spec-writer` | `builder` | `reviewer` | `approver`), plus `key=<reviewer key>` and
 `round=<N>` for reviewers, `name=builder-<id>` for the builder, and `round=<N>` for a builder
 resumed after round N (omit `round` when N is 0). Never pass a verdict: the CLI reads it from
-the reviewer's or approver's file.
+the reviewer's or approver's file. Every `agent.finished` also passes `agentId=<agent id>`: the
+id the Agent tool returned for that agent (a resumed builder keeps its id). The CLI reads that
+agent's token spend from it; it is data on the span, never its `name`. Never make one up: if the
+tool gave no id, leave `agentId` off (the span's spend then reads as unavailable).
 
 ## The thread lookup (T3 Code)
 
@@ -135,7 +138,8 @@ never run it again per claim.
 It is best effort: never stop the job, wait on the user, or ask them about it. If the CLI
 refuses the `session=` value, run the same command again without it and say that one line.
 Pass `session=` on nothing else (the CLI refuses it on every other event and epic event), and
-never record any other id, such as Claude Code's own session id.
+never record any other id, such as Claude Code's own session id. The one exception is the Agent
+tool's agent id, passed as `agentId=` on `agent.finished` and nowhere else.
 
 ## Running jobs side by side
 
@@ -268,16 +272,16 @@ question, and never ask it in chat instead: the escalation puts it on the board.
 `builder-<id>` if your Agent tool takes a name) → `build.md`, commits on the branch. The span is
 always `role=builder name=builder-<id>`, literally, never the agent id: `agent.started` runs
 before the spawn, so no id exists yet. Keep the agent id the Agent tool returns in your own
-context; it is only the `SendMessage` target when you resume the builder (wherever this skill
-says "`SendMessage` to `builder-<id>`", send to that id when the tool gave you one). Wait for it
-to return.
+context; it is the `agentId=` on each builder `agent.finished` and the `SendMessage` target when
+you resume the builder (wherever this skill says "`SendMessage` to `builder-<id>`", send to that
+id when the tool gave you one). Wait for it to return.
 
 **4 · Review round N** (N = previous round + 1, starting at 1). `mkdir jobs/<id>/round-<N>/`,
 board: `round.started round=<N>` (the CLI fills in the reviewers from `factory/config.json`).
 Then one `agent.started role=reviewer key=<key> round=<N>` per configured reviewer, and spawn
 **all of them in one message**, in the background: `factory-<key>` writing
 `round-<N>/review-<key>.md`. As each one returns and its file exists, board:
-`agent.finished role=reviewer key=<key> round=<N>` (that sets its chip).
+`agent.finished role=reviewer key=<key> round=<N> agentId=<its agent id>` (that sets its chip).
 
 **WAIT FOR ALL.** The round is done only when every reviewer's file exists and has its
 `agent.finished`. Never resume the builder, start the approver, or decide anything mid-round

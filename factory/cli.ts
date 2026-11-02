@@ -1,7 +1,7 @@
-// factory 0.5.0 · managed file, do not edit: it is replaced on upgrade. Project settings go in the overlay: factory/config.json
+// factory 0.6.0 · managed file, do not edit: it is replaced on upgrade. Project settings go in the overlay: factory/config.json
 // packages/cli/src/core.ts
-import { readFile as readFile5 } from "fs/promises";
-import { dirname as dirname7, join as join9, resolve as resolve6 } from "path";
+import { readFile as readFile6 } from "fs/promises";
+import { dirname as dirname8, join as join10, resolve as resolve7 } from "path";
 
 // packages/contract/src/contract.ts
 var WORKING_STAGES = ["claimed", "spec", "build", "review", "approve"];
@@ -321,9 +321,16 @@ function parseEventInput(type, fields, ctx) {
     case "agent.started":
       allow("role", "key", "round", "name");
       return { type, ...agentIdentity(fields) };
-    case "agent.finished":
-      allow("role", "key", "round", "name");
-      return { type, ...agentIdentity(fields) };
+    case "agent.finished": {
+      allow("role", "key", "round", "name", "agentId");
+      const finished = { type, ...agentIdentity(fields) };
+      if (fields.agentId !== undefined) {
+        if (typeof fields.agentId !== "string")
+          throw new Error(`field 'agentId' must be a string`);
+        finished.agentId = fields.agentId;
+      }
+      return finished;
+    }
     case "job.noted":
       allow("note");
       return { type, note: str(fields, "note") };
@@ -508,6 +515,87 @@ function requireComplete(s) {
   if (waiting.length)
     fail(`round ${s.round} is not complete, waiting on: ${waiting.join(", ")}`);
 }
+// packages/contract/src/usage.ts
+var AGENT_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+var isAgentId = (id) => AGENT_ID_PATTERN.test(id);
+var isRecord2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isCount = (v) => typeof v === "number" && Number.isInteger(v) && v >= 0;
+var COUNT_KEYS = ["model", "input", "output", "cacheWrite", "cacheRead"];
+function readUsage(v) {
+  if (!isRecord2(v))
+    return null;
+  const keys = Object.keys(v);
+  if (keys.length === 1 && typeof v.unavailable === "string" && v.unavailable !== "")
+    return { unavailable: v.unavailable };
+  if (keys.length !== COUNT_KEYS.length || !COUNT_KEYS.every((k) => keys.includes(k)))
+    return null;
+  const { model, input, output, cacheWrite, cacheRead } = v;
+  if (model !== null && typeof model !== "string")
+    return null;
+  if (!isCount(input) || !isCount(output) || !isCount(cacheWrite) || !isCount(cacheRead))
+    return null;
+  return { model, input, output, cacheWrite, cacheRead };
+}
+function unavailable(text) {
+  const line = (text.split(`
+`)[0] ?? "").trim();
+  return { unavailable: line === "" ? "unknown reason" : line };
+}
+var JOB_STRETCH_STARTS = ["job.claimed", "job.reworked", "job.human-approved"];
+var JOB_STRETCH_ENDS = ["job.escalated", "merge.failed", "job.merged", "job.abandoned"];
+var EPIC_STRETCH_STARTS = ["epic.started", "epic.resumed"];
+var EPIC_STRETCH_ENDS = ["epic.waiting", "epic.landed", "epic.abandoned"];
+function openStretch(events, starts, ends) {
+  let from = null;
+  for (const e of events) {
+    if (ends.includes(e.type))
+      from = null;
+    else if (from === null && starts.includes(e.type))
+      from = e.ts;
+  }
+  return from;
+}
+function totalOf(usages) {
+  const t = { status: "exact", input: 0, output: 0, cacheWrite: 0, cacheRead: 0, spans: usages.length, unknown: 0 };
+  let counted = 0;
+  let unavailableSpans = 0;
+  for (const u of usages) {
+    if (u === null)
+      t.unknown += 1;
+    else if ("unavailable" in u) {
+      t.unknown += 1;
+      unavailableSpans += 1;
+    } else {
+      counted += 1;
+      t.input += u.input;
+      t.output += u.output;
+      t.cacheWrite += u.cacheWrite;
+      t.cacheRead += u.cacheRead;
+    }
+  }
+  if (t.unknown === 0)
+    t.status = "exact";
+  else if (counted > 0)
+    t.status = "partial";
+  else
+    t.status = unavailableSpans > 0 ? "unavailable" : "not recorded";
+  return t;
+}
+var tokensOf = (t) => t.input + t.output + t.cacheWrite + t.cacheRead;
+function stretchUsages(events, starts, ends) {
+  const out = [];
+  let open = false;
+  for (const e of events) {
+    if (ends.includes(e.type)) {
+      if (open || e.orchestrator !== undefined)
+        out.push(readUsage(e.orchestrator));
+      open = false;
+    } else if (starts.includes(e.type))
+      open = true;
+  }
+  return out;
+}
+
 // packages/contract/src/epic.ts
 var PLAN_STATUSES = ["draft", "ready", "done", "abandoned"];
 var isSlug = (s) => s.length <= SLUG_MAX && SLUG_PATTERN.test(s);
@@ -848,7 +936,8 @@ function projectEpic(log, members, jobs, planError = null) {
     counts: { queued: 0, blocked: 0, running: 0, merged: 0, "needs-human": 0, abandoned: 0 },
     startedAt: first.ts,
     endedAt: null,
-    updated: first.ts
+    updated: first.ts,
+    orchestrator: totalOf(stretchUsages(log, EPIC_STRETCH_STARTS, EPIC_STRETCH_ENDS))
   };
   for (const e of log.slice(1)) {
     snap.updated = e.ts;
@@ -1060,7 +1149,17 @@ function readBrief(root, member) {
 async function epicPlanProblem(root, slug) {
   return planStartProblem(slug, await readPlan(root, slug), (m) => readBrief(root, m));
 }
-var isRecord2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function agentIdsIn(timing) {
+  const ids = [];
+  if (!isRecord3(timing) || !Array.isArray(timing.agents))
+    return ids;
+  for (const a of timing.agents) {
+    if (isRecord3(a) && typeof a.agentId === "string" && isAgentId(a.agentId) && !ids.includes(a.agentId))
+      ids.push(a.agentId);
+  }
+  return ids;
+}
 async function readEpicJobs(root, slug) {
   let names;
   try {
@@ -1078,7 +1177,7 @@ async function readEpicJobs(root, slug) {
     } catch {
       continue;
     }
-    if (!isRecord2(raw) || raw.epic !== slug || typeof raw.stage !== "string")
+    if (!isRecord3(raw) || raw.epic !== slug || typeof raw.stage !== "string")
       continue;
     const kind = JOB_KINDS.find((k) => k === raw.kind) ?? "member";
     out.push({
@@ -1086,7 +1185,8 @@ async function readEpicJobs(root, slug) {
       stage: raw.stage,
       kind,
       brief: typeof raw.brief === "string" ? raw.brief : null,
-      updated: typeof raw.updated === "string" ? raw.updated : null
+      updated: typeof raw.updated === "string" ? raw.updated : null,
+      agentIds: agentIdsIn(raw.timing)
     });
   }
   return out;
@@ -1180,6 +1280,23 @@ async function removeEmpty(dir, made) {
       return;
   }
 }
+async function withEpicUsage(prior, input, ts, jobs, reader) {
+  if (reader === undefined)
+    return input;
+  if (input.type !== "epic.waiting" && input.type !== "epic.landed" && input.type !== "epic.abandoned")
+    return input;
+  const from = openStretch(prior, EPIC_STRETCH_STARTS, EPIC_STRETCH_ENDS);
+  if (from === null)
+    return input;
+  const ids = [...new Set(jobs.flatMap((j) => j.agentIds ?? []))];
+  let orchestrator;
+  try {
+    orchestrator = await reader.orchestrator(ids, { from, to: ts });
+  } catch (e) {
+    orchestrator = unavailable(`usage reader failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return { ...input, orchestrator };
+}
 async function appendEpicEvent(root, slug, input, now = () => new Date, opts = {}) {
   return withEpicLock(root, slug, async () => {
     const prior = await readForAppend(root, slug);
@@ -1188,7 +1305,8 @@ async function appendEpicEvent(root, slug, input, now = () => new Date, opts = {
     const inputs = await loadEpic(root, slug, prior);
     checkEpicTransition(prior, input, inputs.view.landBlock);
     opts.check?.(inputs);
-    const event = { ts: now().toISOString(), ...input };
+    const ts = now().toISOString();
+    const event = { ts, ...await withEpicUsage(prior, input, ts, inputs.jobs, opts.usage) };
     await appendFile(epicLogPath(root, slug), `${JSON.stringify(event)}
 `);
     const snap = project(await loadEpic(root, slug));
@@ -1251,6 +1369,8 @@ async function claimIntoEpic(root, claimed, maxParallel, maxRoundGiven, append) 
   });
 }
 // packages/contract/src/project.ts
+var ROLE_STAGE = { "spec-writer": "spec", builder: "build", reviewer: "review", approver: "approve" };
+var USAGE_STAGES = ["spec", "build", "review", "approve"];
 var ms = (from, to) => Date.parse(to) - Date.parse(from);
 function enterStage(s, stage, ts) {
   if (s.stage === stage && s.timing.stages.length > 0)
@@ -1267,16 +1387,28 @@ function enterStage(s, stage, ts) {
 function sameAgent(a, role, key, round, name) {
   return a.role === role && a.key === key && a.round === round && a.name === name;
 }
-function closeOpenAgents(s, ts) {
+function closeOpenAgents(s, ts, by, ctx) {
   for (const a of s.timing.agents) {
     if (a.finishedAt === null) {
       a.finishedAt = ts;
       a.ms = ms(a.startedAt, ts);
+      ctx.closedBy.set(a, by);
     }
   }
 }
+function openAgentStart(snap, id) {
+  const key = id.key ?? null;
+  const round = id.round ?? null;
+  const name = id.name ?? null;
+  for (let i = snap.timing.agents.length - 1;i >= 0; i--) {
+    const a = snap.timing.agents[i];
+    if (a && a.finishedAt === null && sameAgent(a, id.role, key, round, name))
+      return a.startedAt;
+  }
+  return null;
+}
 var storedSession = (v) => isSession(v) ? { app: v.app, environment: v.environment, thread: v.thread } : null;
-function apply(s, e) {
+function apply(s, e, ctx) {
   s.updated = e.ts;
   switch (e.type) {
     case "job.claimed":
@@ -1299,7 +1431,7 @@ function apply(s, e) {
       const name = e.name ?? null;
       if (e.role === "builder" && name !== null)
         s.builder = name;
-      s.timing.agents.push({
+      const started = {
         role: e.role,
         key: e.key ?? null,
         round: e.round ?? null,
@@ -1307,8 +1439,12 @@ function apply(s, e) {
         startedAt: e.ts,
         finishedAt: null,
         ms: null,
-        verdict: null
-      });
+        verdict: null,
+        agentId: null,
+        usage: null
+      };
+      s.timing.agents.push(started);
+      ctx.rounds.set(started, s.round);
       return;
     }
     case "agent.finished": {
@@ -1325,12 +1461,15 @@ function apply(s, e) {
         }
       }
       if (!span) {
-        span = { role: e.role, key, round, name, startedAt: e.ts, finishedAt: null, ms: null, verdict: null };
+        span = { role: e.role, key, round, name, startedAt: e.ts, finishedAt: null, ms: null, verdict: null, agentId: null, usage: null };
         s.timing.agents.push(span);
+        ctx.rounds.set(span, s.round);
       }
       span.finishedAt = e.ts;
       span.ms = ms(span.startedAt, e.ts);
       span.verdict = verdict;
+      span.agentId = typeof e.agentId === "string" && isAgentId(e.agentId) ? e.agentId : null;
+      span.usage = readUsage(e.usage);
       if (e.role === "reviewer" && key !== null && (verdict === "PASS" || verdict === "CHANGES")) {
         if (round === s.round && Object.hasOwn(s.reviews, key))
           s.reviews[key] = verdict;
@@ -1343,7 +1482,7 @@ function apply(s, e) {
       s.note = e.note;
       return;
     case "job.escalated":
-      closeOpenAgents(s, e.ts);
+      closeOpenAgents(s, e.ts, "escalation", ctx);
       s.note = e.reason;
       s.stoppedBy = "escalated";
       s.stoppedFrom = workingStage(s.stage);
@@ -1385,7 +1524,7 @@ function apply(s, e) {
       enterStage(s, "merged", e.ts);
       return;
     case "job.abandoned":
-      closeOpenAgents(s, e.ts);
+      closeOpenAgents(s, e.ts, "abandon", ctx);
       s.endedAt = e.ts;
       s.note = e.reason;
       enterStage(s, "abandoned", e.ts);
@@ -1423,11 +1562,33 @@ function project2(events) {
     stageEnteredAt: first.ts,
     endedAt: null,
     updated: first.ts,
-    timing: { stages: [{ stage: "claimed", round: 0, enteredAt: first.ts, exitedAt: null, ms: null }], agents: [] }
+    timing: { stages: [{ stage: "claimed", round: 0, enteredAt: first.ts, exitedAt: null, ms: null }], agents: [] },
+    usage: { stages: [], rounds: [], job: totalOf([]), orchestrator: null }
   };
+  const ctx = { rounds: new Map, closedBy: new Map };
   for (const e of events.slice(1))
-    apply(snapshot, e);
+    apply(snapshot, e, ctx);
+  snapshot.usage = rollUp(snapshot, events, ctx);
   return snapshot;
+}
+var recordsUsage = (events) => events.some((e) => e.type === "agent.finished" && e.usage !== undefined || ("orchestrator" in e) && e.orchestrator !== undefined);
+function rollUp(s, events, ctx) {
+  if (recordsUsage(events))
+    for (const [a, by] of ctx.closedBy)
+      a.usage = { unavailable: `closed by ${by}` };
+  const rounds = ctx.rounds;
+  const closed = s.timing.agents.filter((a) => a.finishedAt !== null);
+  const stages = USAGE_STAGES.flatMap((stage) => {
+    const spans = closed.filter((a) => ROLE_STAGE[a.role] === stage);
+    return spans.length === 0 ? [] : [{ stage, total: totalOf(spans.map((a) => a.usage)) }];
+  });
+  const roundOf = (a) => a.round ?? rounds.get(a) ?? 0;
+  const roundNumbers = [...new Set(closed.map(roundOf))].sort((a, b) => a - b);
+  const byRound = roundNumbers.map((round) => ({ round, total: totalOf(closed.filter((a) => roundOf(a) === round).map((a) => a.usage)) }));
+  const stretches = s.epic === null ? stretchUsages(events, JOB_STRETCH_STARTS, JOB_STRETCH_ENDS) : null;
+  const orchestrator = stretches === null ? null : totalOf(stretches);
+  const job = totalOf([...closed.map((a) => a.usage), ...stretches ?? []]);
+  return { stages, rounds: byRound, job, orchestrator };
 }
 // packages/contract/src/store.ts
 import { appendFile as appendFile2, mkdir as mkdir3, readFile as readFile2, readdir as readdir2, rename as rename2, rmdir as rmdir2, stat as stat2, writeFile as writeFile2 } from "fs/promises";
@@ -1539,6 +1700,54 @@ async function writeSnapshot(root, id, snap) {
 `);
   await rename2(tmp, file);
 }
+async function safely(read) {
+  try {
+    return await read();
+  } catch (e) {
+    return unavailable(`usage reader failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+async function withUsage(prior, input, ts, reader) {
+  if (input.type === "agent.finished") {
+    const { agentId, ...rest } = input;
+    if (agentId !== undefined && !isAgentId(agentId)) {
+      return reader === undefined ? rest : { ...rest, usage: { unavailable: "agentId is not a safe id (want ^[A-Za-z0-9_-]+$)" } };
+    }
+    if (reader === undefined)
+      return input;
+    if (agentId === undefined)
+      return { ...input, usage: { unavailable: "no agentId on agent.finished" } };
+    const from = prior.length === 0 ? null : openAgentStart(project2(prior), input);
+    if (from === null)
+      return { ...input, usage: { unavailable: "no open agent.started for this span" } };
+    return { ...input, usage: await safely(() => reader.agent(agentId, { from, to: ts })) };
+  }
+  if (reader === undefined || !JOB_STRETCH_ENDS.includes(input.type))
+    return input;
+  const first = prior[0];
+  if (first === undefined || first.type !== "job.claimed" || first.epic !== undefined)
+    return input;
+  const from = openStretch(prior, JOB_STRETCH_STARTS, JOB_STRETCH_ENDS);
+  if (from === null)
+    return input;
+  const orchestrator = await safely(() => reader.orchestrator(agentIdsOf(prior), { from, to: ts }));
+  switch (input.type) {
+    case "job.escalated":
+    case "merge.failed":
+    case "job.merged":
+    case "job.abandoned":
+      return { ...input, orchestrator };
+    default:
+      return input;
+  }
+}
+function agentIdsOf(events) {
+  const ids = [];
+  for (const e of events)
+    if (e.type === "agent.finished" && typeof e.agentId === "string" && isAgentId(e.agentId) && !ids.includes(e.agentId))
+      ids.push(e.agentId);
+  return ids;
+}
 async function appendEvent(root, id, input, now = () => new Date, opts = {}) {
   const snap = await appendJobEvent(root, id, input, now, opts);
   if (snap.epic !== null)
@@ -1562,7 +1771,8 @@ function appendJobEvent(root, id, input, now, opts) {
       throw new Error(`${id}: events.jsonl does not end with a newline (corrupt tail); refusing to append`);
     const checked = await withVerdict(root, id, input);
     checkTransition(prior, checked, opts);
-    const event = { ts: now().toISOString(), ...checked };
+    const ts = now().toISOString();
+    const event = { ts, ...await withUsage(prior, checked, ts, opts.usage) };
     await appendFile2(logPath(root, id), `${JSON.stringify(event)}
 `);
     const snap = project2(await readLog(root, id));
@@ -1723,12 +1933,70 @@ function formatShow(snap, now) {
     const who = [a.role, a.key, a.round !== null ? `r${a.round}` : null, a.name].filter((x) => x !== null).join(" ");
     out.push(`agent  ${who}  ${span(a.ms, a.startedAt, now)}${a.verdict ? `  ${a.verdict}` : ""}`);
   }
-  return out;
+  return [...out, ...formatUsage(snap)];
+}
+function compactTokens(n) {
+  if (n < 1000)
+    return String(n);
+  if (n < 999950)
+    return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1e6).toFixed(1)}M`;
+}
+var plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+function usageSummary(t, unit = ["span", "spans"]) {
+  const sum = compactTokens(tokensOf(t));
+  switch (t.status) {
+    case "exact":
+      return `= ${sum}`;
+    case "partial":
+      return `\u2265 ${sum}, ${plural(t.unknown, `${unit[0]} unknown`, `${unit[1]} unknown`)}`;
+    case "unavailable":
+      return `unavailable (${plural(t.unknown, unit[0], unit[1])})`;
+    case "not recorded":
+      return "not recorded";
+  }
+}
+var NONE = "-";
+function spanRow(a) {
+  const id = [a.role, a.key ?? NONE, a.round === null ? NONE : String(a.round)];
+  const u = a.usage;
+  if (u === null)
+    return [...id, a.finishedAt === null ? "running" : "not recorded", NONE, NONE, NONE, NONE];
+  if ("unavailable" in u)
+    return [...id, `unavailable: ${u.unavailable}`, NONE, NONE, NONE, NONE];
+  return [...id, u.model ?? NONE, String(u.input), String(u.output), String(u.cacheWrite), String(u.cacheRead)];
+}
+function totalRow(label, t, summary) {
+  const counted = t.status === "exact" || t.status === "partial";
+  const n = (v) => !counted ? NONE : t.status === "partial" ? `\u2265 ${v}` : String(v);
+  return [label, "", "", summary, n(t.input), n(t.output), n(t.cacheWrite), n(t.cacheRead)];
+}
+function formatUsage(snap) {
+  const u = snap.usage;
+  const orchestrator = u.orchestrator;
+  if (snap.timing.agents.length === 0 && (orchestrator === null || orchestrator.spans === 0))
+    return [];
+  const rows = [["role", "key", "round", "model", "input", "output", "cache write", "cache read"]];
+  for (const a of snap.timing.agents)
+    rows.push(spanRow(a));
+  for (const s of u.stages)
+    rows.push(totalRow(`stage ${s.stage}`, s.total, usageSummary(s.total)));
+  for (const r of u.rounds)
+    rows.push(totalRow(`round ${r.round}`, r.total, usageSummary(r.total)));
+  if (orchestrator === null)
+    rows.push(["orchestrator", "", "", `in epic ${snap.epic ?? ""} (epic show)`, "", "", "", ""]);
+  else if (orchestrator.spans === 0)
+    rows.push(["orchestrator", "", "", "no stretch ended yet", "", "", "", ""]);
+  else
+    rows.push(totalRow("orchestrator", orchestrator, usageSummary(orchestrator, ["stretch", "stretches"])));
+  rows.push(totalRow("job", u.job, usageSummary(u.job)));
+  const widths = rows[0]?.map((_, i) => Math.max(...rows.map((r) => (r[i] ?? "").length))) ?? [];
+  return ["usage", ...rows.map((r) => `  ${r.map((c, i) => c.padEnd(widths[i] ?? 0)).join("  ")}`.trimEnd())];
 }
 // packages/contract/src/manifest.ts
 var SCHEMA2 = "factory/v1";
 var SHA256_HEX = /^[0-9a-f]{64}$/;
-var isRecord3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 function checkManifestPath(p) {
   if (p === "")
     return "empty path";
@@ -1743,7 +2011,7 @@ function checkManifestPath(p) {
   return null;
 }
 function parseManifest(raw) {
-  if (!isRecord3(raw))
+  if (!isRecord4(raw))
     throw new Error("must be a JSON object");
   const extra = Object.keys(raw).filter((k) => !["schema", "version", "files"].includes(k));
   if (extra.length)
@@ -1752,7 +2020,7 @@ function parseManifest(raw) {
     throw new Error(`schema must be "${SCHEMA2}"`);
   if (typeof raw.version !== "string" || raw.version === "")
     throw new Error("version must be a non-empty string");
-  if (!isRecord3(raw.files))
+  if (!isRecord4(raw.files))
     throw new Error("files must be an object");
   const files = {};
   for (const [path, hash] of Object.entries(raw.files)) {
@@ -1900,7 +2168,7 @@ async function abandonJob(root, args) {
   if (!isJobId(args.id))
     throw new Error(`job id '${args.id}' must match ^\\d{3}-[a-z0-9-]+$`);
   const input = parseEventInput("job.abandoned", { reason: args.reason });
-  const snap = await appendEvent(root, args.id, input, undefined, { force: args.force });
+  const snap = await appendEvent(root, args.id, input, undefined, args.usage === undefined ? { force: args.force } : { force: args.force, usage: args.usage });
   const repo = dirname3(resolve2(root));
   const branch = `factory/${args.id}`;
   const worktree = relative2(repo, join4(resolve2(root), ".worktrees", args.id));
@@ -2499,7 +2767,191 @@ async function doctor(root) {
 
 // packages/cli/src/epic.ts
 import { lstat as lstat3 } from "fs/promises";
-import { dirname as dirname5, join as join7, relative as relative3, resolve as resolve4 } from "path";
+import { dirname as dirname6, join as join8, relative as relative3, resolve as resolve5 } from "path";
+
+// packages/cli/src/usage-claude.ts
+import { readFile as readFile5, readdir as readdir5, stat as stat4 } from "fs/promises";
+import { homedir } from "os";
+import { basename as basename2, dirname as dirname5, join as join7, resolve as resolve4 } from "path";
+function transcriptRoot(env = process.env) {
+  const config = env.CLAUDE_CONFIG_DIR;
+  const base = config !== undefined && config !== "" ? config : join7(env.HOME !== undefined && env.HOME !== "" ? env.HOME : homedir(), ".claude");
+  return join7(base, "projects");
+}
+var projectFolder = (dir) => resolve4(dir).replace(/[^A-Za-z0-9]/g, "-");
+var isRecord5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var count = (v) => typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+
+class Tally {
+  window;
+  messages = new Map;
+  lines = 0;
+  recognized = 0;
+  constructor(window) {
+    this.window = window;
+  }
+  add(text) {
+    const from = Date.parse(this.window.from);
+    const to = Date.parse(this.window.to);
+    for (const line of text.split(`
+`)) {
+      if (line.trim() === "")
+        continue;
+      this.lines += 1;
+      let raw;
+      try {
+        raw = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!isRecord5(raw) || typeof raw.timestamp !== "string")
+        continue;
+      const at = Date.parse(raw.timestamp);
+      if (Number.isNaN(at))
+        continue;
+      this.recognized += 1;
+      if (at < from || at > to)
+        continue;
+      const message = raw.message;
+      if (!isRecord5(message) || typeof message.id !== "string" || !isRecord5(message.usage))
+        continue;
+      const u = message.usage;
+      const seen = this.messages.get(message.id);
+      const model = typeof message.model === "string" && message.model !== "" ? message.model : null;
+      const next = {
+        model: seen?.model ?? model,
+        input: Math.max(seen?.input ?? 0, count(u.input_tokens)),
+        output: Math.max(seen?.output ?? 0, count(u.output_tokens)),
+        cacheWrite: Math.max(seen?.cacheWrite ?? 0, count(u.cache_creation_input_tokens)),
+        cacheRead: Math.max(seen?.cacheRead ?? 0, count(u.cache_read_input_tokens))
+      };
+      this.messages.set(message.id, next);
+    }
+  }
+  get size() {
+    return this.messages.size;
+  }
+  get unrecognized() {
+    return this.lines > 0 && this.recognized === 0;
+  }
+  usage() {
+    const total = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+    const byModel = new Map;
+    for (const m of this.messages.values()) {
+      total.input += m.input;
+      total.output += m.output;
+      total.cacheWrite += m.cacheWrite;
+      total.cacheRead += m.cacheRead;
+      if (m.model !== null && m.model !== "<synthetic>")
+        byModel.set(m.model, (byModel.get(m.model) ?? 0) + m.output);
+    }
+    let model = null;
+    let most = -1;
+    for (const [name, out] of byModel) {
+      if (out > most) {
+        model = name;
+        most = out;
+      }
+    }
+    return { model, ...total };
+  }
+}
+async function isFile(path) {
+  try {
+    return (await stat4(path)).isFile();
+  } catch (e) {
+    if (isNotFound2(e))
+      return false;
+    throw e;
+  }
+}
+async function dirsIn(path) {
+  try {
+    return (await readdir5(path, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name).sort();
+  } catch (e) {
+    if (isNotFound2(e))
+      return [];
+    throw e;
+  }
+}
+async function findAgentTranscript(root, repo, agentId) {
+  if (!isAgentId(agentId))
+    return null;
+  const preferred = projectFolder(repo);
+  const all = await dirsIn(root);
+  const order = [...all.filter((p) => p === preferred), ...all.filter((p) => p !== preferred)];
+  for (const project of order) {
+    for (const session of await dirsIn(join7(root, project))) {
+      const path = join7(root, project, session, "subagents", `agent-${agentId}.jsonl`);
+      if (await isFile(path))
+        return path;
+    }
+  }
+  return null;
+}
+var sessionTranscript = (agentTranscript) => {
+  const sessionDir = dirname5(dirname5(agentTranscript));
+  return join7(dirname5(sessionDir), `${basename2(sessionDir)}.jsonl`);
+};
+async function readText3(path) {
+  try {
+    return await readFile5(path, "utf8");
+  } catch (e) {
+    if (isNotFound2(e))
+      return null;
+    throw e;
+  }
+}
+function claudeUsageReader(opts) {
+  const root = transcriptRoot(opts.env);
+  return {
+    async agent(agentId, window) {
+      if (!isAgentId(agentId))
+        return unavailable("agentId is not a safe id (want ^[A-Za-z0-9_-]+$)");
+      const path = await findAgentTranscript(root, opts.repo, agentId);
+      if (path === null)
+        return unavailable(`no Claude Code transcript for agent ${agentId}`);
+      const text = await readText3(path);
+      if (text === null)
+        return unavailable(`no Claude Code transcript for agent ${agentId}`);
+      const tally = new Tally(window);
+      tally.add(text);
+      if (tally.unrecognized)
+        return unavailable("Claude Code transcript format not recognized");
+      if (tally.size === 0)
+        return unavailable("no assistant messages inside the span");
+      return tally.usage();
+    },
+    async orchestrator(agentIds, window) {
+      const ids = agentIds.filter(isAgentId);
+      if (ids.length === 0)
+        return unavailable("no agent ids recorded to find the orchestrating session");
+      const sessions = [];
+      for (const id of ids) {
+        const path = await findAgentTranscript(root, opts.repo, id);
+        if (path === null)
+          continue;
+        const session = sessionTranscript(path);
+        if (!sessions.includes(session))
+          sessions.push(session);
+      }
+      if (sessions.length === 0)
+        return unavailable("no Claude Code session found from the agent ids");
+      const tally = new Tally(window);
+      for (const session of sessions) {
+        const text = await readText3(session);
+        if (text === null)
+          return unavailable("an orchestrating session transcript is missing");
+        tally.add(text);
+      }
+      if (tally.unrecognized)
+        return unavailable("Claude Code transcript format not recognized");
+      return tally.usage();
+    }
+  };
+}
+
+// packages/cli/src/epic.ts
 var EPIC_USAGE = {
   epic: "usage: epic start|event|next|show|abandon <slug> \u2026",
   epicStart: "usage: epic start <slug> [session=t3code:<environmentId>/<threadId>]",
@@ -2508,6 +2960,7 @@ var EPIC_USAGE = {
   epicShow: "usage: epic show <slug>",
   epicAbandon: 'usage: epic abandon <slug> "<reason>" [--force] [--delete-branch]'
 };
+var usageReader = (io) => claudeUsageReader({ repo: dirname6(resolve5(io.root)), env: io.env ?? process.env });
 var WORKING2 = ["claimed", "spec", "build", "review", "approve"];
 async function pathExists(path) {
   try {
@@ -2523,7 +2976,7 @@ async function sameCommit(repo, a, b) {
   const [x, y] = await Promise.all([a, b].map((r) => runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${r}^{commit}`], { what: "epic start" })));
   return x !== undefined && y !== undefined && x.code === 0 && y.code === 0 && x.out === y.out;
 }
-var worktreeOf = (repo, root, slug) => relative3(repo, join7(resolve4(root), ".worktrees", `epic-${slug}`));
+var worktreeOf = (repo, root, slug) => relative3(repo, join8(resolve5(root), ".worktrees", `epic-${slug}`));
 async function runEpic(rest, io, config) {
   const [sub, ...args] = rest;
   switch (sub) {
@@ -2550,7 +3003,7 @@ async function start(args, io, config) {
   const problem = await epicPlanProblem(io.root, slug);
   if (problem !== null)
     throw new Error(`epic start ${slug}: ${problem}`);
-  const repo = dirname5(resolve4(io.root));
+  const repo = dirname6(resolve5(io.root));
   const target = await resolveTarget(repo, mergeTarget(config));
   const input = parseEpicEventInput("epic.started", fields, { slug, target });
   const branch = epicBranch(slug);
@@ -2558,11 +3011,11 @@ async function start(args, io, config) {
   const setup = async () => {
     if (await branchExists(repo, branch))
       throw new Error(`epic start ${slug}: branch ${branch} already exists`);
-    if (await pathExists(join7(repo, worktree)))
+    if (await pathExists(join8(repo, worktree)))
       throw new Error(`epic start ${slug}: ${worktree} already exists`);
     const cleanup = async (deleteIt) => {
       const left = [];
-      if (await isDir(join7(repo, worktree))) {
+      if (await isDir(join8(repo, worktree))) {
         const w = await removeWorktree(repo, worktree);
         if (w !== null)
           left.push(`worktree ${worktree} (${w})`);
@@ -2601,7 +3054,7 @@ async function event(args, io) {
   if (type === "epic.abandoned")
     throw new Error(`epic.abandoned is written only by epic abandon: run ${EPIC_USAGE.epicAbandon.replace("usage: ", "")}`);
   const input = parseEpicEventInput(type, parseFields(kv));
-  io.stdout((await appendEpicEvent(io.root, slug, input)).state);
+  io.stdout((await appendEpicEvent(io.root, slug, input, undefined, { usage: usageReader(io) })).state);
   return 0;
 }
 async function next(args, io, config) {
@@ -2637,6 +3090,7 @@ function formatEpicShow(snap) {
     out.push(`note: ${snap.note}`);
   if (snap.planError !== null)
     out.push(`plan: ${snap.planError}`);
+  out.push(epicUsageLine(snap));
   for (const m of snap.members) {
     const parts = [`member ${m.slug}`, m.state];
     if (m.job !== null)
@@ -2650,6 +3104,16 @@ function formatEpicShow(snap) {
   for (const g of snap.generated)
     out.push(`${g.kind} ${g.id}  ${g.stage}`);
   return out;
+}
+function epicUsageLine(snap) {
+  const o = snap.orchestrator;
+  if (o.spans === 0)
+    return "orchestrator usage: no stretch ended yet";
+  const summary = usageSummary(o, ["stretch", "stretches"]);
+  if (o.status !== "exact" && o.status !== "partial")
+    return `orchestrator usage: ${summary}`;
+  const ge = o.status === "partial" ? "\u2265 " : "";
+  return `orchestrator usage: ${summary}  (input ${ge}${o.input}, output ${ge}${o.output}, cache write ${ge}${o.cacheWrite}, cache read ${ge}${o.cacheRead})`;
 }
 function parseAbandon(args) {
   const [slug, reason, ...flags] = args;
@@ -2665,6 +3129,7 @@ async function abandon(args, io) {
   checkEpicSlug(a.slug);
   const input = parseEpicEventInput("epic.abandoned", { reason: a.reason });
   await appendEpicEvent(io.root, a.slug, input, undefined, {
+    usage: usageReader(io),
     check: ({ jobs }) => {
       const working = jobs.filter((j) => WORKING2.includes(j.stage));
       if (working.length > 0 && !a.force) {
@@ -2684,11 +3149,11 @@ async function abandon(args, io) {
 `)[0] ?? ""})`);
     }
   }
-  const repo = dirname5(resolve4(io.root));
+  const repo = dirname6(resolve5(io.root));
   const worktree = worktreeOf(repo, io.root, a.slug);
   const branch = epicBranch(a.slug);
   let worktreeLeft = false;
-  if (await isDir(join7(repo, worktree))) {
+  if (await isDir(join8(repo, worktree))) {
     const why = await removeWorktree(repo, worktree);
     if (why !== null) {
       worktreeLeft = true;
@@ -2712,7 +3177,7 @@ async function abandon(args, io) {
 
 // packages/cli/src/prune.ts
 import { lstat as lstat4, mkdir as mkdir4, rm as rm4 } from "fs/promises";
-import { dirname as dirname6, join as join8, resolve as resolve5 } from "path";
+import { dirname as dirname7, join as join9, resolve as resolve6 } from "path";
 var LOCK = ".events.lock";
 var IN_FLIGHT = `an event is in flight (${LOCK})`;
 var isSystemError = (e) => typeof e === "object" && e !== null && ("code" in e);
@@ -2733,7 +3198,7 @@ function epicFacts(io, repo) {
   const read = async (slug) => {
     if (!isEpicSlug(slug))
       return null;
-    if (await exists3(join8(io.root, "jobs", "epics", slug))) {
+    if (await exists3(join9(io.root, "jobs", "epics", slug))) {
       try {
         const epic = await readLocalEpic(io.root, slug);
         return { state: epic.state, endedAt: epic.endedAt };
@@ -2759,7 +3224,7 @@ function epicFacts(io, repo) {
   };
 }
 async function check(io, id, trees, hours, now, facts) {
-  if (await exists3(join8(io.root, "jobs", id, LOCK)))
+  if (await exists3(join9(io.root, "jobs", id, LOCK)))
     return { kind: "keep", reason: IN_FLIGHT };
   let job;
   try {
@@ -2788,7 +3253,7 @@ async function check(io, id, trees, hours, now, facts) {
   return { kind: "candidate", job, tree };
 }
 async function compareAndRemove(dir, same) {
-  const lock = join8(dir, LOCK);
+  const lock = join9(dir, LOCK);
   try {
     await mkdir4(lock);
   } catch (e) {
@@ -2811,7 +3276,7 @@ async function compareAndRemove(dir, same) {
   return { kind: "prune" };
 }
 async function checkEpic(io, slug, trees, hours, now) {
-  if (await exists3(join8(io.root, "jobs", "epics", slug, LOCK)))
+  if (await exists3(join9(io.root, "jobs", "epics", slug, LOCK)))
     return { kind: "keep", reason: IN_FLIGHT };
   let epic;
   try {
@@ -2832,7 +3297,7 @@ async function checkEpic(io, slug, trees, hours, now) {
   return { kind: "candidate", epic, tree };
 }
 async function pruneAll(io, settleAfterHours) {
-  const repo = dirname6(resolve5(io.root));
+  const repo = dirname7(resolve6(io.root));
   const now = (io.now ?? (() => new Date))();
   const trees = await archivedTrees(repo);
   const epicTrees = await archivedEpicTrees(repo);
@@ -2880,6 +3345,7 @@ async function pruneAll(io, settleAfterHours) {
 }
 
 // packages/cli/src/core.ts
+var usageReader2 = (io) => claudeUsageReader({ repo: dirname8(resolve7(io.root)), env: io.env ?? process.env });
 var USAGE = {
   claim: "usage: claim <slug> [brief=\u2026] [issue=\u2026] [maxRound=\u2026] [session=t3code:<environmentId>/<threadId>] [epic=<slug> [kind=member|sync|fix]]",
   event: "usage: event <id> <type> [field=value \u2026]",
@@ -2899,7 +3365,7 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       io.stdout(f.line);
     return findings.every((f) => f.ok) ? 0 : 1;
   }
-  const config = parseConfig(JSON.parse(await readFile5(join9(io.root, "config.json"), "utf8")));
+  const config = parseConfig(JSON.parse(await readFile6(join10(io.root, "config.json"), "utf8")));
   switch (cmd) {
     case "claim": {
       const [slug, ...kv] = rest;
@@ -2908,7 +3374,7 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       checkSlug(slug);
       const fields = parseFields(kv);
       checkClaim(slug, { fields, config });
-      const repo = dirname7(resolve6(io.root));
+      const repo = dirname8(resolve7(io.root));
       const epic = typeof fields.epic === "string" ? fields.epic : undefined;
       const target = epic === undefined ? await resolveTarget(repo, mergeTarget(config)) : await epicTarget(io.root, repo, epic);
       io.stdout((await claimJob(io.root, slug, { fields, config, target }, undefined, { archived: () => archivedIds(repo) })).id);
@@ -2921,7 +3387,7 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       if (type === "job.claimed")
         throw new Error(`job.claimed is written only by claim: run ${USAGE.claim.replace("usage: ", "")}`);
       const fields = parseFields(kv);
-      io.stdout((await appendEvent(io.root, id, parseEventInput(type, fields, { id, config }))).stage);
+      io.stdout((await appendEvent(io.root, id, parseEventInput(type, fields, { id, config }), undefined, { usage: usageReader2(io) })).stage);
       return 0;
     }
     case "rebuild": {
@@ -2985,7 +3451,7 @@ function parseAbandon2(rest) {
 }
 async function abandon2(rest, io) {
   const args = parseAbandon2(rest);
-  const { snap, left } = await abandonJob(io.root, args);
+  const { snap, left } = await abandonJob(io.root, { ...args, usage: usageReader2(io) });
   if (left.length > 0)
     throw new Error(`${args.id} is abandoned, but cleanup left behind: ${left.join("; ")}`);
   io.stdout(snap.stage);
@@ -3004,17 +3470,17 @@ function parseArchive2(rest) {
 async function archiveOne(io, id, force) {
   if (!isJobId(id) && isEpicSlug(id)) {
     const epic = await readLocalEpic(io.root, id);
-    const outcome = await archiveEpic(dirname7(resolve6(io.root)), epic, force);
+    const outcome = await archiveEpic(dirname8(resolve7(io.root)), epic, force);
     io.stdout(outcome.kind === "archived" ? `archived epic ${id} ${outcome.commit.slice(0, 7)}` : `epic ${id}: already archived (unchanged)`);
     return 0;
   }
   const job = await readLocalJob(io.root, id);
-  const outcome = await archiveJob(dirname7(resolve6(io.root)), job, force);
+  const outcome = await archiveJob(dirname8(resolve7(io.root)), job, force);
   io.stdout(outcome.kind === "archived" ? `archived ${id} ${outcome.commit.slice(0, 7)}` : `${id}: already archived (unchanged)`);
   return 0;
 }
 async function archiveAll(io, force) {
-  const repo = dirname7(resolve6(io.root));
+  const repo = dirname8(resolve7(io.root));
   let archived = 0;
   let unchanged = 0;
   let skipped = 0;
