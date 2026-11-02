@@ -4,6 +4,8 @@
 // rule. Pure: no file or clock reads (the store, `epicstore.ts`, does the IO).
 import { SLUG_MAX, SLUG_PATTERN, checkEpicSlug, epicBranch, isSession, isTargetBranch, noExtraKeys, parseSession, str } from './contract';
 import type { JobKind, Session } from './contract';
+import { EPIC_STRETCH_ENDS, EPIC_STRETCH_STARTS, stretchUsages, totalOf } from './usage';
+import type { Usage, UsageTotal } from './usage';
 
 // ---- the plan file: factory/epics/<slug>.md ----
 
@@ -211,11 +213,13 @@ export async function planStartProblem(slug: string, text: string | null, readBr
 
 export type EpicEventInput =
   | { type: 'epic.started'; schema: 'factory/v1'; slug: string; target: string; session?: Session }
-  | { type: 'epic.waiting'; reason: string }
+  // `orchestrator` on the three stretch-ending events is the epic's orchestrating session(s)' spend
+  // inside the stretch that event ends; written by the CLI, never by the caller.
+  | { type: 'epic.waiting'; reason: string; orchestrator?: Usage }
   | { type: 'epic.resumed'; session?: Session }
   | { type: 'epic.landing' }
-  | { type: 'epic.landed'; sha: string }
-  | { type: 'epic.abandoned'; reason: string };
+  | { type: 'epic.landed'; sha: string; orchestrator?: Usage }
+  | { type: 'epic.abandoned'; reason: string; orchestrator?: Usage };
 
 export type EpicEvent = EpicEventInput & { ts: string };
 export type EpicEventType = EpicEventInput['type'];
@@ -340,6 +344,7 @@ export interface EpicJob {
   kind: JobKind;
   brief: string | null;
   updated: string | null;
+  agentIds?: string[]; // the agent ids its spans recorded (finds the epic's orchestrating sessions)
 }
 
 export type MemberState = 'queued' | 'blocked' | 'running' | 'merged' | 'needs-human' | 'abandoned';
@@ -373,6 +378,7 @@ export interface EpicSnapshot {
   startedAt: string;
   endedAt: string | null;
   updated: string;
+  orchestrator: UsageTotal; // the epic's orchestrator spend over its stretches; readers treat a missing key as not recorded
 }
 
 const WORKING = ['claimed', 'spec', 'build', 'review', 'approve'];
@@ -453,6 +459,7 @@ export function projectEpic(log: readonly EpicEvent[], members: readonly PlanMem
     startedAt: first.ts,
     endedAt: null,
     updated: first.ts,
+    orchestrator: totalOf(stretchUsages(log, EPIC_STRETCH_STARTS, EPIC_STRETCH_ENDS)),
   };
   for (const e of log.slice(1)) {
     snap.updated = e.ts;

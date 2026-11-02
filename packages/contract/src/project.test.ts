@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import type { EventInput, FactoryEvent, Session } from './contract';
 import { project } from './project';
+import { parseLog } from './store';
+import type { UsageTotal } from './usage';
 
 const BASE = Date.parse('2026-10-23T14:00:00.000Z');
 const tsAt = (n: number): string => new Date(BASE + n * 60_000).toISOString();
@@ -245,8 +247,8 @@ describe('project', () => {
       { type: 'agent.finished', role: 'builder', name: 'b' }]);
     const s = project(events);
     expect(s.timing.agents).toEqual([
-      { role: 'builder', key: null, round: null, name: 'a', startedAt: tsAt(1), finishedAt: null, ms: null, verdict: null },
-      { role: 'builder', key: null, round: null, name: 'b', startedAt: tsAt(2), finishedAt: tsAt(2), ms: 0, verdict: null },
+      { role: 'builder', key: null, round: null, name: 'a', startedAt: tsAt(1), finishedAt: null, ms: null, verdict: null, agentId: null, usage: null },
+      { role: 'builder', key: null, round: null, name: 'b', startedAt: tsAt(2), finishedAt: tsAt(2), ms: 0, verdict: null, agentId: null, usage: null },
     ]);
   });
 
@@ -292,7 +294,7 @@ describe('project', () => {
     expect(s.stageEnteredAt).toBe(tsAt(2));
     expect(s.updated).toBe(tsAt(4));
     expect(s.timing.agents).toEqual([
-      { role: 'builder', key: null, round: null, name: 'b', startedAt: tsAt(4), finishedAt: null, ms: null, verdict: null },
+      { role: 'builder', key: null, round: null, name: 'b', startedAt: tsAt(4), finishedAt: null, ms: null, verdict: null, agentId: null, usage: null },
     ]);
   });
 
@@ -406,7 +408,7 @@ describe('job.abandoned', () => {
     const at = tsAt(events.length - 1);
     expect(s).toMatchObject({ stage: 'abandoned', endedAt: at, note: 'dead end', stoppedBy: null, stoppedFrom: null });
     expect(s.timing.agents).toEqual([
-      { role: 'builder', key: null, round: null, name: 'builder-019', startedAt: tsAt(3), finishedAt: at, ms: 60_000, verdict: null },
+      { role: 'builder', key: null, round: null, name: 'builder-019', startedAt: tsAt(3), finishedAt: at, ms: 60_000, verdict: null, agentId: null, usage: null },
     ]);
     const spans = s.timing.stages;
     expect(spans.map((x) => x.stage).slice(-2)).toEqual(['build', 'abandoned']);
@@ -504,5 +506,75 @@ describe('merge.conflicted and conflicts (job 051)', () => {
     ];
     expect(project(log(again))).toMatchObject({ stage: 'build', round: 3, maxRound: 5, conflicts: 2, note: 'two' });
     expect(project(log([...again, { type: 'job.escalated', reason: 'r' }, { type: 'job.reworked', k: 1, maxRound: 6 }]))).toMatchObject({ conflicts: 2, reworks: 1 });
+  });
+});
+
+describe('usage (job 093)', () => {
+  const c = (n: number) => ({ model: 'm', input: n, output: 0, cacheWrite: 0, cacheRead: 0 });
+  const toBuild: EventInput[] = [claimed, { type: 'stage.entered', stage: 'spec' }, { type: 'stage.entered', stage: 'build' }];
+
+  test('spans carry agentId and usage; rollups per stage (by role), per round, and for the job', () => {
+    const s = project(log([
+      claimed, { type: 'stage.entered', stage: 'spec' },
+      { type: 'agent.started', role: 'spec-writer' }, { type: 'agent.finished', role: 'spec-writer', agentId: 'sp', usage: c(1) },
+      { type: 'stage.entered', stage: 'build' },
+      { type: 'agent.started', role: 'builder', name: 'b' }, { type: 'agent.finished', role: 'builder', name: 'b', agentId: 'bb', usage: c(10) },
+      { type: 'round.started', round: 1, reviewers: ['code'] },
+      { type: 'agent.started', role: 'reviewer', key: 'code', round: 1 },
+      { type: 'agent.finished', role: 'reviewer', key: 'code', round: 1, verdict: 'PASS', agentId: 'rv', usage: c(100) },
+      { type: 'stage.entered', stage: 'approve' },
+      { type: 'agent.started', role: 'approver' }, { type: 'agent.finished', role: 'approver', verdict: 'APPROVE', usage: { unavailable: 'no agentId on agent.finished' } },
+    ]));
+    expect(s.timing.agents.map((a) => [a.role, a.agentId, a.usage])).toEqual([
+      ['spec-writer', 'sp', c(1)], ['builder', 'bb', c(10)], ['reviewer', 'rv', c(100)], ['approver', null, { unavailable: 'no agentId on agent.finished' }],
+    ]);
+    const total = (status: UsageTotal['status'], input: number, spans: number, unknown: number): UsageTotal => ({ status, input, output: 0, cacheWrite: 0, cacheRead: 0, spans, unknown });
+    expect(s.usage).toEqual({
+      stages: [
+        { stage: 'spec', total: total('exact', 1, 1, 0) },
+        { stage: 'build', total: total('exact', 10, 1, 0) },
+        { stage: 'review', total: total('exact', 100, 1, 0) },
+        { stage: 'approve', total: total('unavailable', 0, 1, 1) },
+      ],
+      // The approver has no round of its own: it rolls up to the job's round when it started.
+      rounds: [{ round: 0, total: total('exact', 11, 2, 0) }, { round: 1, total: total('partial', 100, 2, 1) }],
+      job: total('partial', 111, 4, 1),
+      orchestrator: total('exact', 0, 0, 0),
+    });
+  });
+
+  test('an open span is not counted yet; a malformed usage or an unsafe agentId reads as not recorded', () => {
+    // A hand-edited line: the reader is tolerant, never fatal.
+    const bad = parseLog(`${JSON.stringify({ type: 'agent.finished', role: 'builder', name: 'b', ts: tsAt(9), agentId: '../x', usage: { input: -1 } })}\n`);
+    const s = project([...log([...toBuild, { type: 'agent.started', role: 'builder', name: 'b' }]), ...bad, { type: 'agent.started', role: 'approver', ts: tsAt(10) }]);
+    expect(s.timing.agents.map((a) => [a.agentId, a.usage])).toEqual([[null, null], [null, null]]);
+    expect(s.usage.job).toMatchObject({ status: 'not recorded', spans: 1, unknown: 1 });
+  });
+
+  test('spans closed by an escalation or abandon are unavailable in a log that records usage, else not recorded', () => {
+    const open: EventInput[] = [...toBuild, { type: 'agent.started', role: 'builder', name: 'b' }];
+    const recorded = project(log([...open, { type: 'job.escalated', reason: 'stuck', orchestrator: c(5) }]));
+    expect(recorded.timing.agents[0]?.usage).toEqual({ unavailable: 'closed by escalation' });
+    expect(recorded.usage.job).toMatchObject({ status: 'partial', input: 5, spans: 2, unknown: 1 });
+    const abandoned = project(log([...open, { type: 'job.abandoned', reason: 'x', orchestrator: c(5) }]));
+    expect(abandoned.timing.agents[0]?.usage).toEqual({ unavailable: 'closed by abandon' });
+    const legacy = project(log([...open, { type: 'job.escalated', reason: 'stuck' }]));
+    expect(legacy.timing.agents[0]?.usage).toBeNull();
+    expect(legacy.usage.job.status).toBe('not recorded');
+  });
+
+  test('the orchestrator slice sums the stretch-ending events; a job in an epic has none', () => {
+    const events: EventInput[] = [
+      claimed, { type: 'job.escalated', reason: 'q', orchestrator: c(1) },
+      { type: 'job.reworked', k: 1, maxRound: 2 }, { type: 'job.escalated', reason: 'q2', orchestrator: { unavailable: 'x' } },
+      { type: 'job.human-approved' }, { type: 'merge.failed', reason: 'm', orchestrator: c(2) },
+      { type: 'job.abandoned', reason: 'no open stretch, nothing recorded' },
+    ];
+    expect(project(log(events)).usage.orchestrator).toEqual({ status: 'partial', input: 3, output: 0, cacheWrite: 0, cacheRead: 0, spans: 3, unknown: 1 });
+    const legacy = project(log([claimed, { type: 'job.escalated', reason: 'q' }]));
+    expect(legacy.usage.orchestrator).toMatchObject({ status: 'not recorded', spans: 1, unknown: 1 });
+    const inEpic = project(log([{ ...claimed, epic: 'auth', kind: 'member' }, { type: 'job.escalated', reason: 'q' }]));
+    expect(inEpic.usage.orchestrator).toBeNull();
+    expect(inEpic.usage.job).toMatchObject({ status: 'exact', spans: 0 });
   });
 });

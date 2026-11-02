@@ -19,6 +19,7 @@ import { doctor } from './doctor';
 import { EPIC_USAGE, runEpic } from './epic';
 import { branchExists, resolveTarget } from './git';
 import { pruneAll } from './prune';
+import { claudeUsageReader } from './usage-claude';
 
 export interface Io {
   root: string; // the factory/ directory
@@ -26,7 +27,12 @@ export interface Io {
   stderr: (line: string) => void;
   registry?: string; // the Andon registry file `init` registers in and `projects` lists and prunes (source CLI only); absent: none
   now?: () => Date; // drives `show`'s open spans and `prune`'s settle check; event timestamps always come from the store's clock
+  env?: Readonly<Record<string, string | undefined>>; // where the usage reader finds Claude Code's transcripts (`CLAUDE_CONFIG_DIR`, `HOME`); absent: process.env
 }
+
+/** The usage reader `event`, `abandon`, and `epic` record spend with: Claude Code's, for the repo root. */
+export const usageReader = (io: { root: string; env?: Readonly<Record<string, string | undefined>> }) =>
+  claudeUsageReader({ repo: dirname(resolve(io.root)), env: io.env ?? process.env });
 
 export const USAGE = {
   claim: 'usage: claim <slug> [brief=…] [issue=…] [maxRound=…] [session=t3code:<environmentId>/<threadId>] [epic=<slug> [kind=member|sync|fix]]',
@@ -72,7 +78,7 @@ export async function dispatchCore(argv: readonly string[], io: Io, usage: strin
       if (!id || !type) throw new Error(USAGE.event);
       if (type === 'job.claimed') throw new Error(`job.claimed is written only by claim: run ${USAGE.claim.replace('usage: ', '')}`);
       const fields = parseFields(kv);
-      io.stdout((await appendEvent(io.root, id, parseEventInput(type, fields, { id, config }))).stage);
+      io.stdout((await appendEvent(io.root, id, parseEventInput(type, fields, { id, config }), undefined, { usage: usageReader(io) })).stage);
       return 0;
     }
     case 'rebuild': {
@@ -139,7 +145,7 @@ function parseAbandon(rest: readonly string[]): AbandonArgs {
 // Closes a job for good (`abandon.ts`); a cleanup that left something behind exits 1 naming it.
 async function abandon(rest: readonly string[], io: Io): Promise<number> {
   const args = parseAbandon(rest);
-  const { snap, left } = await abandonJob(io.root, args);
+  const { snap, left } = await abandonJob(io.root, { ...args, usage: usageReader(io) });
   if (left.length > 0) throw new Error(`${args.id} is abandoned, but cleanup left behind: ${left.join('; ')}`);
   io.stdout(snap.stage);
   return 0;

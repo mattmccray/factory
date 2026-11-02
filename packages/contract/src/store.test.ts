@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import { parseEventInput, parseConfig } from './contract';
 import type { EventInput } from './contract';
 import { project } from './project';
-import { appendEvent, claimJob, parseLog, readLog, readVerdict, rebuild } from './store';
+import { agentIdsOf, appendEvent, claimJob, parseLog, readLog, readVerdict, rebuild } from './store';
+import type { Usage, UsageReader, UsageWindow } from './usage';
+import { formatShow } from './show';
 
 let root: string;
 const ID = '019-example';
@@ -387,16 +389,108 @@ describe('parseLog', () => {
 });
 
 // Copies of this repo's own jobs (a merge conflict, escalations, a rework from approve): the
-// reducer must rebuild each stored job.json exactly (decision 3, job 087 AC2).
+// reducer must rebuild each stored job.json exactly (decision 3, job 087 AC2). They were written
+// before usage was recorded: every stored key keeps its value, and the added usage keys read
+// "not recorded" (093 AC4).
 describe('rebuild over recorded jobs', () => {
   const fixtures = new URL('./fixtures/jobs/', import.meta.url).pathname;
-  test('project(events.jsonl) equals the stored job.json for every fixture job', async () => {
+  test('project(events.jsonl) keeps every key of the stored job.json for every fixture job', async () => {
     const ids = (await readdir(fixtures)).sort();
     expect(ids.length).toBeGreaterThan(0);
     for (const id of ids) {
       const log = parseLog(await readFile(join(fixtures, id, 'events.jsonl'), 'utf8'));
       const stored: unknown = JSON.parse(await readFile(join(fixtures, id, 'job.json'), 'utf8'));
-      expect({ id, snapshot: JSON.parse(JSON.stringify(project(log))) }).toEqual({ id, snapshot: stored });
+      const snap: unknown = JSON.parse(JSON.stringify(project(log)));
+      expect({ id, snapshot: snap }).toMatchObject({ id, snapshot: stored });
+      if (typeof stored !== 'object' || stored === null || typeof snap !== 'object' || snap === null) throw new Error('not an object');
+      expect(Object.keys(snap).filter((k) => !(k in stored))).toEqual(['usage']);
     }
+  });
+
+  test('AC4: spans and totals of a log written before usage read "not recorded", never "unavailable"', async () => {
+    for (const id of (await readdir(fixtures)).sort()) {
+      const snap = project(parseLog(await readFile(join(fixtures, id, 'events.jsonl'), 'utf8')));
+      expect(snap.timing.agents.length).toBeGreaterThan(0);
+      for (const a of snap.timing.agents) expect({ id, usage: a.usage, agentId: a.agentId }).toEqual({ id, usage: null, agentId: null });
+      const totals = [snap.usage.job, ...snap.usage.stages.map((s) => s.total), ...snap.usage.rounds.map((r) => r.total)];
+      if (snap.usage.orchestrator !== null && snap.usage.orchestrator.spans > 0) totals.push(snap.usage.orchestrator);
+      for (const t of totals) expect({ id, status: t.status }).toEqual({ id, status: 'not recorded' });
+      expect(formatShow(snap, new Date()).join('\n')).not.toContain('unavailable');
+    }
+  });
+});
+
+describe('usage on append (job 093)', () => {
+  const c = (n: number) => ({ model: 'm', input: n, output: 0, cacheWrite: 0, cacheRead: 0 });
+  // A fake harness reader: records what it was asked, answers with `answer`.
+  function fake(answer: (what: string) => Promise<Usage>) {
+    const calls: { what: string; ids?: readonly string[]; window: UsageWindow }[] = [];
+    const reader: UsageReader = {
+      agent: (agentId, window) => { calls.push({ what: `agent ${agentId}`, window }); return answer(`agent ${agentId}`); },
+      orchestrator: (ids, window) => { calls.push({ what: 'orchestrator', ids, window }); return answer('orchestrator'); },
+    };
+    return { reader, calls };
+  }
+  const clock = (start: string) => {
+    let t = Date.parse(start);
+    return () => new Date((t += 60_000));
+  };
+
+  test('agent.finished reads the span [its start, its ts]; the stretch end reads [the stretch start, its ts] over the job agent ids', async () => {
+    const now = clock('2026-11-02T10:00:00.000Z');
+    const { reader, calls } = fake(async (what) => (what === 'orchestrator' ? c(7) : c(3)));
+    const config = parseConfig(JSON.parse(await readFile(join(root, 'config.json'), 'utf8')));
+    await appendEvent(root, ID, parseEventInput('job.claimed', {}, { id: ID, config }), now);
+    await appendEvent(root, ID, ev('agent.started', { role: 'spec-writer' }), now, { usage: reader });
+    await appendEvent(root, ID, ev('agent.finished', { role: 'spec-writer', agentId: 'sp-1' }), now, { usage: reader });
+    await appendEvent(root, ID, ev('job.escalated', { reason: 'q' }), now, { usage: reader });
+    const log = await readLog(root, ID);
+    expect(calls).toEqual([
+      { what: 'agent sp-1', window: { from: log[1]?.ts ?? '', to: log[2]?.ts ?? '' } },
+      { what: 'orchestrator', ids: ['sp-1'], window: { from: log[0]?.ts ?? '', to: log[3]?.ts ?? '' } },
+    ]);
+    expect(log[2]).toMatchObject({ agentId: 'sp-1', usage: c(3) });
+    expect(log[3]).toMatchObject({ orchestrator: c(7) });
+    // From needs-human with no open stretch, abandon records no orchestrator spend.
+    await appendEvent(root, ID, ev('job.abandoned', { reason: 'x' }), now, { usage: reader });
+    expect(calls).toHaveLength(2);
+    expect((await readLog(root, ID))[4]).not.toHaveProperty('orchestrator');
+  });
+
+  test('a reader that throws is unavailable with a one-line reason, and the event still lands', async () => {
+    const { reader } = fake(async () => { throw new Error('disk on fire\nsecond line'); });
+    await claim();
+    await appendEvent(root, ID, ev('agent.started', { role: 'builder', name: 'b' }));
+    const snap = await appendEvent(root, ID, ev('agent.finished', { role: 'builder', name: 'b', agentId: 'x' }), undefined, { usage: reader });
+    expect(snap.timing.agents[0]?.usage).toEqual({ unavailable: 'usage reader failed: disk on fire' });
+  });
+
+  test('a rejected event never asks the reader and writes nothing', async () => {
+    const { reader, calls } = fake(async () => c(1));
+    await claim();
+    await expect(appendEvent(root, ID, ev('job.merged', { sha: 'abc' }), undefined, { usage: reader })).rejects.toThrow();
+    expect(calls).toEqual([]);
+    expect((await readLog(root, ID)).length).toBe(1);
+  });
+
+  test('without a reader nothing is recorded; an unsafe agentId is dropped either way', async () => {
+    const { reader, calls } = fake(async () => c(1));
+    await claim();
+    await appendEvent(root, ID, ev('agent.started', { role: 'builder', name: 'b' }));
+    await appendEvent(root, ID, ev('agent.finished', { role: 'builder', name: 'b', agentId: 'ok-1' }));
+    await appendEvent(root, ID, ev('agent.started', { role: 'builder', name: 'b' }));
+    await appendEvent(root, ID, ev('agent.finished', { role: 'builder', name: 'b', agentId: 'a/b' }));
+    await appendEvent(root, ID, ev('agent.finished', { role: 'builder', name: 'c', agentId: 'a b' }), undefined, { usage: reader });
+    await appendEvent(root, ID, ev('agent.finished', { role: 'builder', name: 'orphan', agentId: 'z' }), undefined, { usage: reader });
+    const log = await readLog(root, ID);
+    expect(log[2]).toMatchObject({ agentId: 'ok-1' });
+    expect(log[2]).not.toHaveProperty('usage');
+    expect(log[4]).not.toHaveProperty('agentId');
+    expect(log[4]).not.toHaveProperty('usage');
+    expect(log[5]).toMatchObject({ usage: { unavailable: 'agentId is not a safe id (want ^[A-Za-z0-9_-]+$)' } });
+    expect(log[5]).not.toHaveProperty('agentId');
+    expect(log[6]).toMatchObject({ agentId: 'z', usage: { unavailable: 'no open agent.started for this span' } });
+    expect(calls).toEqual([]);
+    expect(agentIdsOf(log)).toEqual(['ok-1', 'z']);
   });
 });

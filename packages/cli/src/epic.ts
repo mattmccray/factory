@@ -22,11 +22,13 @@ import {
   readEpicJobs,
   rebuildEpic,
   startEpic,
+  usageSummary,
 } from '@factory/contract';
-import type { Config, EpicSnapshot } from '@factory/contract';
+import type { Config, EpicSnapshot, UsageReader } from '@factory/contract';
 import { abandonJob, isDir } from './abandon';
 import { addWorktree, branchExists, deleteBranch, removeWorktree, resolveTarget, runGit } from './git';
 import { isNotFound } from './paths';
+import { claudeUsageReader } from './usage-claude';
 
 export const EPIC_USAGE = {
   epic: 'usage: epic start|event|next|show|abandon <slug> …',
@@ -40,7 +42,11 @@ export const EPIC_USAGE = {
 export interface EpicIo {
   root: string; // the factory/ directory
   stdout: (line: string) => void;
+  env?: Readonly<Record<string, string | undefined>>; // where the usage reader finds transcripts; absent: process.env
 }
+
+// The usage reader epic events record the epic's orchestrator spend with (Claude Code's).
+const usageReader = (io: EpicIo): UsageReader => claudeUsageReader({ repo: dirname(resolve(io.root)), env: io.env ?? process.env });
 
 const WORKING = ['claimed', 'spec', 'build', 'review', 'approve'];
 
@@ -139,7 +145,7 @@ async function event(args: readonly string[], io: EpicIo): Promise<number> {
   if (type === 'epic.started') throw new Error(`epic.started is written only by epic start: run ${EPIC_USAGE.epicStart.replace('usage: ', '')}`);
   if (type === 'epic.abandoned') throw new Error(`epic.abandoned is written only by epic abandon: run ${EPIC_USAGE.epicAbandon.replace('usage: ', '')}`);
   const input = parseEpicEventInput(type, parseFields(kv));
-  io.stdout((await appendEpicEvent(io.root, slug, input)).state);
+  io.stdout((await appendEpicEvent(io.root, slug, input, undefined, { usage: usageReader(io) })).state);
   return 0;
 }
 
@@ -171,6 +177,7 @@ export function formatEpicShow(snap: EpicSnapshot): string[] {
   }
   if (snap.state === 'abandoned' || snap.state === 'landed') out.push(`note: ${snap.note}`);
   if (snap.planError !== null) out.push(`plan: ${snap.planError}`);
+  out.push(epicUsageLine(snap));
   for (const m of snap.members) {
     const parts = [`member ${m.slug}`, m.state];
     if (m.job !== null) parts.push(m.job);
@@ -180,6 +187,16 @@ export function formatEpicShow(snap: EpicSnapshot): string[] {
   }
   for (const g of snap.generated) out.push(`${g.kind} ${g.id}  ${g.stage}`);
   return out;
+}
+
+/** The epic's orchestrator spend in one line (its members' agents are in each job's `show`). */
+function epicUsageLine(snap: EpicSnapshot): string {
+  const o = snap.orchestrator;
+  if (o.spans === 0) return 'orchestrator usage: no stretch ended yet';
+  const summary = usageSummary(o, ['stretch', 'stretches']);
+  if (o.status !== 'exact' && o.status !== 'partial') return `orchestrator usage: ${summary}`;
+  const ge = o.status === 'partial' ? '≥ ' : '';
+  return `orchestrator usage: ${summary}  (input ${ge}${o.input}, output ${ge}${o.output}, cache write ${ge}${o.cacheWrite}, cache read ${ge}${o.cacheRead})`;
 }
 
 interface AbandonArgs {
@@ -206,6 +223,7 @@ async function abandon(args: readonly string[], io: EpicIo): Promise<number> {
   checkEpicSlug(a.slug);
   const input = parseEpicEventInput('epic.abandoned', { reason: a.reason });
   await appendEpicEvent(io.root, a.slug, input, undefined, {
+    usage: usageReader(io),
     check: ({ jobs }) => {
       const working = jobs.filter((j) => WORKING.includes(j.stage));
       if (working.length > 0 && !a.force) {

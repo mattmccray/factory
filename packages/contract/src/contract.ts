@@ -1,5 +1,7 @@
 // The factory/v1 state contract (docs/contract/v1.md): event types, config parsing, and the
-// transition rules the CLI enforces before it appends. Dependency-free on purpose.
+// transition rules the CLI enforces before it appends. Dependency-free on purpose (`usage.ts` is
+// part of the contract, and pure).
+import type { Usage } from './usage';
 
 export type Stage = 'claimed' | 'spec' | 'build' | 'review' | 'approve' | 'needs-human' | 'merged' | 'abandoned';
 /** The stages a job is worked in: everything but `needs-human` and the terminal `merged` and `abandoned`. */
@@ -43,16 +45,20 @@ export type EventInput =
   | { type: 'stage.entered'; stage: EnteredStage }
   | { type: 'round.started'; round: number; reviewers: string[] }
   | ({ type: 'agent.started' } & AgentIdentity)
-  | ({ type: 'agent.finished'; verdict?: Verdict } & AgentIdentity)
+  // `agentId` is the harness's handle for the agent (passed through, never the span's identity);
+  // `usage` is written by the CLI, read from the harness at span close, never by the caller.
+  | ({ type: 'agent.finished'; verdict?: Verdict; agentId?: string; usage?: Usage } & AgentIdentity)
   | { type: 'job.noted'; note: string }
-  | { type: 'job.escalated'; reason: string }
+  // `orchestrator` on the four stretch-ending events is the orchestrating session(s)' spend inside
+  // the stretch that event ends; written by the CLI, only on a standalone job.
+  | { type: 'job.escalated'; reason: string; orchestrator?: Usage }
   | { type: 'job.reworked'; k: number; maxRound: number; session?: Session }
   | { type: 'job.human-approved'; session?: Session }
-  | { type: 'merge.failed'; reason: string }
+  | { type: 'merge.failed'; reason: string; orchestrator?: Usage }
   // A merge into the target conflicted: the job goes back to its builder (see CONFLICT_LIMIT).
   | { type: 'merge.conflicted'; reason: string }
-  | { type: 'job.merged'; sha: string }
-  | { type: 'job.abandoned'; reason: string };
+  | { type: 'job.merged'; sha: string; orchestrator?: Usage }
+  | { type: 'job.abandoned'; reason: string; orchestrator?: Usage };
 
 export type FactoryEvent = EventInput & { ts: string };
 
@@ -400,7 +406,7 @@ function agentIdentity(f: Record<string, unknown>): AgentIdentity {
 // round.started: `reviewers` defaults to config.reviewers.
 // `id`, `schema`, and `target` (the resolved branch) are filled by the CLI via `ctx`, never typed
 // by the caller. `verdict` is never caller-supplied for any event — the CLI reads it from the
-// agent's file.
+// agent's file — and neither are `usage` and `orchestrator`, which the CLI reads from the harness.
 export function parseEventInput(
   type: string,
   fields: Record<string, unknown>,
@@ -449,9 +455,17 @@ export function parseEventInput(
     case 'agent.started':
       allow('role', 'key', 'round', 'name');
       return { type, ...agentIdentity(fields) };
-    case 'agent.finished':
-      allow('role', 'key', 'round', 'name');
-      return { type, ...agentIdentity(fields) };
+    case 'agent.finished': {
+      // `agentId` is only checked to be a string here: one the CLI won't build a path from is
+      // dropped by the store, and the span records its usage as unavailable (never a rejection).
+      allow('role', 'key', 'round', 'name', 'agentId');
+      const finished: Extract<EventInput, { type: 'agent.finished' }> = { type, ...agentIdentity(fields) };
+      if (fields.agentId !== undefined) {
+        if (typeof fields.agentId !== 'string') throw new Error(`field 'agentId' must be a string`);
+        finished.agentId = fields.agentId;
+      }
+      return finished;
+    }
     case 'job.noted':
       allow('note');
       return { type, note: str(fields, 'note') };

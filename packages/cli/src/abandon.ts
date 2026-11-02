@@ -5,7 +5,7 @@
 import { stat } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { appendEvent, isJobId, parseEventInput } from '@factory/contract';
-import type { JobSnapshot } from '@factory/contract';
+import type { JobSnapshot, UsageReader } from '@factory/contract';
 import { deleteBranch, removeWorktree } from './git';
 import { isNotFound } from './paths';
 
@@ -23,6 +23,7 @@ export interface AbandonJob {
   reason: string;
   force: boolean;
   deleteBranch: boolean;
+  usage?: UsageReader; // records the orchestrator's spend on job.abandoned; absent: none
 }
 
 /**
@@ -32,7 +33,7 @@ export interface AbandonJob {
 export async function abandonJob(root: string, args: AbandonJob): Promise<{ snap: JobSnapshot; left: string[] }> {
   if (!isJobId(args.id)) throw new Error(`job id '${args.id}' must match ^\\d{3}-[a-z0-9-]+$`);
   const input = parseEventInput('job.abandoned', { reason: args.reason });
-  const snap = await appendEvent(root, args.id, input, undefined, { force: args.force });
+  const snap = await appendEvent(root, args.id, input, undefined, args.usage === undefined ? { force: args.force } : { force: args.force, usage: args.usage });
 
   const repo = dirname(resolve(root));
   const branch = `factory/${args.id}`;

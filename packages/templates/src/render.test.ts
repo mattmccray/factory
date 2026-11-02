@@ -1952,3 +1952,25 @@ describe('open questions escalate at the spec step (job 087)', () => {
     expect(s).toContain('Each open item is one bullet: the question, its assumed answer, and the alternatives');
   });
 });
+
+describe('agentId on agent.finished in SKILL.md (job 093)', () => {
+  const flat = (s: string): string => s.replace(/\s+/g, ' ');
+  const configs = [config(), config({ reviewers: ['q'] }), config({ reviewers: ['zeta', 'eta-1', 'theta'], gate: ['x'] })];
+
+  test('AC8: every spelled-out agent.finished command passes agentId=, and the span rule requires it on every one', () => {
+    for (const c of configs) {
+      const text = at(renderClaudeCode({ config: c }).files, SKILL);
+      const commands = [...text.matchAll(/`(agent\.finished [^`]*)`/g)].map((m) => m[1] ?? '');
+      expect(commands.length).toBeGreaterThan(0);
+      for (const cmd of commands) expect({ cmd, agentId: cmd.includes(' agentId=') }).toEqual({ cmd, agentId: true });
+      expect(flat(text)).toContain('Every `agent.finished` also passes `agentId=<agent id>`: the id the Agent tool returned for that agent');
+      expect(flat(text)).toContain('Never make one up');
+    }
+  });
+
+  test("AC8: the session-id rule allows the Agent tool's agent id on agent.finished only", () => {
+    const text = flat(at(renderClaudeCode({ config: config() }).files, SKILL));
+    expect(text).toContain("never record any other id, such as Claude Code's own session id. The one exception is the Agent tool's agent id, passed as `agentId=` on `agent.finished` and nowhere else.");
+    expect(text).toContain('it is the `agentId=` on each builder `agent.finished`');
+  });
+});

@@ -2,6 +2,8 @@
 // Pure — no clock reads. Viewers compute live elapsed time from the open timestamps.
 import { JOB_KINDS, isSession, reworkStage, workingStage } from './contract';
 import type { FactoryEvent, JobKind, Role, Session, Stage, Verdict, WorkingStage } from './contract';
+import { JOB_STRETCH_ENDS, JOB_STRETCH_STARTS, isAgentId, readUsage, stretchUsages, totalOf } from './usage';
+import type { Usage, UsageTotal } from './usage';
 
 export type ReviewState = 'PASS' | 'CHANGES' | 'pending';
 export type Decision = 'APPROVE' | 'ESCALATE' | 'APPROVE (human)';
@@ -25,6 +27,26 @@ export interface AgentSpan {
   finishedAt: string | null;
   ms: number | null;
   verdict: Verdict | null;
+  agentId: string | null; // the harness's agent id from agent.finished; data, never the span's identity
+  usage: Usage | null; // null: not recorded (still open, or finished before usage was recorded)
+}
+
+/** The stage an agent role's spend rolls up to. */
+export type UsageStage = 'spec' | 'build' | 'review' | 'approve';
+const ROLE_STAGE: Record<Role, UsageStage> = { 'spec-writer': 'spec', builder: 'build', reviewer: 'review', approver: 'approve' };
+const USAGE_STAGES: readonly UsageStage[] = ['spec', 'build', 'review', 'approve'];
+
+/**
+ * The job's token spend, rolled up from its closed agent spans (open ones aren't counted yet):
+ * per stage (by role), per round (the span's `round`, else the job's round when it started), the
+ * job (every closed span plus the orchestrator's stretches), and the orchestrator slice (`null`
+ * for a job in an epic, whose orchestrator spend is the epic's).
+ */
+export interface JobUsage {
+  stages: { stage: UsageStage; total: UsageTotal }[];
+  rounds: { round: number; total: UsageTotal }[];
+  job: UsageTotal;
+  orchestrator: UsageTotal | null;
 }
 
 export interface JobSnapshot {
@@ -55,6 +77,7 @@ export interface JobSnapshot {
   endedAt: string | null;
   updated: string;
   timing: { stages: StageSpan[]; agents: AgentSpan[] };
+  usage: JobUsage; // readers treat a missing key (a snapshot written before it) as not recorded
 }
 
 const ms = (from: string, to: string): number => Date.parse(to) - Date.parse(from);
@@ -76,20 +99,44 @@ function sameAgent(a: AgentSpan, role: Role, key: string | null, round: number |
 }
 
 // An event that ends a stage from the outside (an agent never wrote its file, or the job was
-// abandoned) leaves no agent span open: each closes at `ts` with its verdict still null.
-function closeOpenAgents(s: JobSnapshot, ts: string): void {
+// abandoned) leaves no agent span open: each closes at `ts` with its verdict still null. No
+// agent.finished read its usage: `rollUp` marks it unavailable, in a log that records usage.
+function closeOpenAgents(s: JobSnapshot, ts: string, by: string, ctx: Ctx): void {
   for (const a of s.timing.agents) {
     if (a.finishedAt === null) {
       a.finishedAt = ts;
       a.ms = ms(a.startedAt, ts);
+      ctx.closedBy.set(a, by);
     }
   }
+}
+
+/**
+ * The start of the open span `agent.finished` with this identity would close (the latest unmatched
+ * start), or null when there is none. The store reads the span's usage over [start, finish].
+ */
+export function openAgentStart(snap: JobSnapshot, id: { role: Role; key?: string; round?: number; name?: string }): string | null {
+  const key = id.key ?? null;
+  const round = id.round ?? null;
+  const name = id.name ?? null;
+  for (let i = snap.timing.agents.length - 1; i >= 0; i--) {
+    const a = snap.timing.agents[i];
+    if (a && a.finishedAt === null && sameAgent(a, id.role, key, round, name)) return a.startedAt;
+  }
+  return null;
 }
 
 // Readers are tolerant: a stored session that isn't well-formed is ignored, never fatal.
 const storedSession = (v: unknown): Session | null => (isSession(v) ? { app: v.app, environment: v.environment, thread: v.thread } : null);
 
-function apply(s: JobSnapshot, e: FactoryEvent): void {
+// What the projection keeps beside the snapshot: the job's round when each span started (a span
+// without its own `round` rolls up to it), and the spans an escalation or abandon closed.
+interface Ctx {
+  rounds: Map<AgentSpan, number>;
+  closedBy: Map<AgentSpan, string>;
+}
+
+function apply(s: JobSnapshot, e: FactoryEvent, ctx: Ctx): void {
   s.updated = e.ts;
   switch (e.type) {
     case 'job.claimed':
@@ -110,10 +157,12 @@ function apply(s: JobSnapshot, e: FactoryEvent): void {
     case 'agent.started': {
       const name = e.name ?? null;
       if (e.role === 'builder' && name !== null) s.builder = name;
-      s.timing.agents.push({
+      const started: AgentSpan = {
         role: e.role, key: e.key ?? null, round: e.round ?? null, name,
-        startedAt: e.ts, finishedAt: null, ms: null, verdict: null,
-      });
+        startedAt: e.ts, finishedAt: null, ms: null, verdict: null, agentId: null, usage: null,
+      };
+      s.timing.agents.push(started);
+      ctx.rounds.set(started, s.round);
       return;
     }
     case 'agent.finished': {
@@ -129,12 +178,16 @@ function apply(s: JobSnapshot, e: FactoryEvent): void {
         if (a && a.finishedAt === null && sameAgent(a, e.role, key, round, name)) { span = a; break; }
       }
       if (!span) {
-        span = { role: e.role, key, round, name, startedAt: e.ts, finishedAt: null, ms: null, verdict: null };
+        span = { role: e.role, key, round, name, startedAt: e.ts, finishedAt: null, ms: null, verdict: null, agentId: null, usage: null };
         s.timing.agents.push(span);
+        ctx.rounds.set(span, s.round);
       }
       span.finishedAt = e.ts;
       span.ms = ms(span.startedAt, e.ts);
       span.verdict = verdict;
+      // Readers are tolerant: an agentId the CLI wouldn't use, or a malformed usage, is ignored.
+      span.agentId = typeof e.agentId === 'string' && isAgentId(e.agentId) ? e.agentId : null;
+      span.usage = readUsage(e.usage);
       // A chip belongs to the current round: a stale (or future) round's finish, or a key the
       // round never listed, closes its span but leaves the chips alone.
       if (e.role === 'reviewer' && key !== null && (verdict === 'PASS' || verdict === 'CHANGES')) {
@@ -149,7 +202,7 @@ function apply(s: JobSnapshot, e: FactoryEvent): void {
       return;
     case 'job.escalated':
       // An escalation can come mid-stage (an agent never wrote its file): no span stays open.
-      closeOpenAgents(s, e.ts);
+      closeOpenAgents(s, e.ts, 'escalation', ctx);
       s.note = e.reason;
       s.stoppedBy = 'escalated';
       s.stoppedFrom = workingStage(s.stage);
@@ -197,7 +250,7 @@ function apply(s: JobSnapshot, e: FactoryEvent): void {
       return;
     case 'job.abandoned':
       // Terminal like merged; stoppedBy/stoppedFrom keep why it last stopped, if it did.
-      closeOpenAgents(s, e.ts);
+      closeOpenAgents(s, e.ts, 'abandon', ctx);
       s.endedAt = e.ts;
       s.note = e.reason;
       enterStage(s, 'abandoned', e.ts);
@@ -236,7 +289,35 @@ export function project(events: FactoryEvent[]): JobSnapshot {
     endedAt: null,
     updated: first.ts,
     timing: { stages: [{ stage: 'claimed', round: 0, enteredAt: first.ts, exitedAt: null, ms: null }], agents: [] },
+    usage: { stages: [], rounds: [], job: totalOf([]), orchestrator: null },
   };
-  for (const e of events.slice(1)) apply(snapshot, e);
+  const ctx: Ctx = { rounds: new Map(), closedBy: new Map() };
+  for (const e of events.slice(1)) apply(snapshot, e, ctx);
+  snapshot.usage = rollUp(snapshot, events, ctx);
   return snapshot;
+}
+
+// A log records usage once the CLI wrote any usage on it (an agent.finished's `usage` or a
+// stretch's `orchestrator`); in a log written before that, nothing reads as unavailable.
+const recordsUsage = (events: readonly FactoryEvent[]): boolean =>
+  events.some((e) => (e.type === 'agent.finished' && e.usage !== undefined) || ('orchestrator' in e && e.orchestrator !== undefined));
+
+// The usage rollups over the closed spans, in the timing's shape, plus the orchestrator slice.
+// A span an escalation or abandon closed is unavailable ("closed by escalation") in a log that
+// records usage, and not recorded in one written before it.
+function rollUp(s: JobSnapshot, events: readonly FactoryEvent[], ctx: Ctx): JobUsage {
+  if (recordsUsage(events)) for (const [a, by] of ctx.closedBy) a.usage = { unavailable: `closed by ${by}` };
+  const rounds = ctx.rounds;
+  const closed = s.timing.agents.filter((a) => a.finishedAt !== null);
+  const stages = USAGE_STAGES.flatMap((stage) => {
+    const spans = closed.filter((a) => ROLE_STAGE[a.role] === stage);
+    return spans.length === 0 ? [] : [{ stage, total: totalOf(spans.map((a) => a.usage)) }];
+  });
+  const roundOf = (a: AgentSpan): number => a.round ?? rounds.get(a) ?? 0;
+  const roundNumbers = [...new Set(closed.map(roundOf))].sort((a, b) => a - b);
+  const byRound = roundNumbers.map((round) => ({ round, total: totalOf(closed.filter((a) => roundOf(a) === round).map((a) => a.usage)) }));
+  const stretches = s.epic === null ? stretchUsages(events, JOB_STRETCH_STARTS, JOB_STRETCH_ENDS) : null;
+  const orchestrator = stretches === null ? null : totalOf(stretches);
+  const job = totalOf([...closed.map((a) => a.usage), ...(stretches ?? [])]);
+  return { stages, rounds: byRound, job, orchestrator };
 }
