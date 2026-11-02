@@ -32,7 +32,8 @@ interface Result {
 async function cli(...argv: string[]): Promise<Result> {
   const out: string[] = [];
   const err: string[] = [];
-  const code = await run(argv, { root, stdout: (l) => out.push(l), stderr: (l) => err.push(l) });
+  // Transcripts are read only from a temp CLAUDE_CONFIG_DIR, never the real ~/.claude.
+  const code = await run(argv, { root, env: { CLAUDE_CONFIG_DIR: join(repo, '.claude-config') }, stdout: (l) => out.push(l), stderr: (l) => err.push(l) });
   return { code, out, err };
 }
 

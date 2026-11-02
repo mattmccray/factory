@@ -102,6 +102,20 @@ export function reviewerSpan(key: string, round: number, startedAgo: number, fin
   };
 }
 
+// ---- token spend (docs/contract/v1.md "Usage"), as job.json and epic.json carry it ----
+
+/** A span's usage counts. */
+export const counts = (input: number, output: number, cacheWrite: number, cacheRead: number, model: string | null = 'claude-opus-5-5'): Record<string, unknown> => ({ model, input, output, cacheWrite, cacheRead });
+
+/** A rollup total; `unknown` spans without counts. The status follows the contract's `totalOf`, or `status` when given. */
+export function usageTotal(input: number, output: number, cacheWrite: number, cacheRead: number, spans: number, unknown = 0, status?: string): Record<string, unknown> {
+  const derived = unknown === 0 ? 'exact' : unknown < spans ? 'partial' : 'unavailable';
+  return { status: status ?? derived, input, output, cacheWrite, cacheRead, spans, unknown };
+}
+
+/** A total with no span yet. */
+export const noSpans = (): Record<string, unknown> => usageTotal(0, 0, 0, 0, 0);
+
 // ---- the fleet: 12 projects, 30 jobs, one frozen moment (the design's mockups/data.js) ----
 
 export interface FleetProject {

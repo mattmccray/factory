@@ -7,8 +7,10 @@ import { JOB_NUMBER_MAX, checkSlug, checkTransition, epicMaxParallel, parseEvent
 import type { Config, EventInput, FactoryEvent, TransitionOptions, Verdict } from './contract';
 import { claimIntoEpic, epicSlugs, rebuildEpic } from './epicstore';
 import { acquire, exists, isNotFound, release } from './lock';
-import { project } from './project';
+import { openAgentStart, project } from './project';
 import type { JobSnapshot } from './project';
+import { JOB_STRETCH_ENDS, JOB_STRETCH_STARTS, isAgentId, openStretch, unavailable } from './usage';
+import type { Usage, UsageReader } from './usage';
 
 const JOB_ID = /^\d{3}-[a-z0-9-]+$/;
 
@@ -122,14 +124,74 @@ async function writeSnapshot(root: string, id: string, snap: JobSnapshot): Promi
   await rename(tmp, file);
 }
 
+/**
+ * Options for `appendEvent`: `force` for the transition check, and `usage`, the harness's usage
+ * reader. Without a reader no usage is recorded (the span reads as not recorded).
+ */
+export interface AppendOptions extends TransitionOptions {
+  usage?: UsageReader;
+}
+
+// Asks the reader, turning a throw into an unavailable usage: accounting never fails an event.
+async function safely(read: () => Promise<Usage>): Promise<Usage> {
+  try {
+    return await read();
+  } catch (e) {
+    return unavailable(`usage reader failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * Writes the harness's usage onto the event the CLI is about to append at `ts` (as `withVerdict`
+ * writes the verdict): on `agent.finished`, the span's usage over [its start, `ts`]; on an event
+ * that ends an orchestrator stretch of a standalone job, the orchestrating session(s)' spend over
+ * [the stretch's start, `ts`], found from the job's agent ids. An `agentId` the CLI won't build a
+ * path from is dropped and the span is unavailable. Never throws.
+ */
+async function withUsage(prior: FactoryEvent[], input: EventInput, ts: string, reader: UsageReader | undefined): Promise<EventInput> {
+  if (input.type === 'agent.finished') {
+    const { agentId, ...rest } = input;
+    if (agentId !== undefined && !isAgentId(agentId)) {
+      return reader === undefined ? rest : { ...rest, usage: { unavailable: 'agentId is not a safe id (want ^[A-Za-z0-9_-]+$)' } };
+    }
+    if (reader === undefined) return input;
+    if (agentId === undefined) return { ...input, usage: { unavailable: 'no agentId on agent.finished' } };
+    const from = prior.length === 0 ? null : openAgentStart(project(prior), input);
+    if (from === null) return { ...input, usage: { unavailable: 'no open agent.started for this span' } };
+    return { ...input, usage: await safely(() => reader.agent(agentId, { from, to: ts })) };
+  }
+  if (reader === undefined || !JOB_STRETCH_ENDS.includes(input.type)) return input;
+  const first = prior[0];
+  if (first === undefined || first.type !== 'job.claimed' || first.epic !== undefined) return input; // an epic's job: the epic records it
+  const from = openStretch(prior, JOB_STRETCH_STARTS, JOB_STRETCH_ENDS);
+  if (from === null) return input;
+  const orchestrator = await safely(() => reader.orchestrator(agentIdsOf(prior), { from, to: ts }));
+  switch (input.type) {
+    case 'job.escalated':
+    case 'merge.failed':
+    case 'job.merged':
+    case 'job.abandoned':
+      return { ...input, orchestrator };
+    default:
+      return input;
+  }
+}
+
+/** The distinct agent ids a log's `agent.finished` events recorded, in log order. */
+export function agentIdsOf(events: readonly FactoryEvent[]): string[] {
+  const ids: string[] = [];
+  for (const e of events) if (e.type === 'agent.finished' && typeof e.agentId === 'string' && isAgentId(e.agentId) && !ids.includes(e.agentId)) ids.push(e.agentId);
+  return ids;
+}
+
 // `opts.force` is passed to the transition check only (it lets `job.abandoned` leave a working
-// stage); it is never recorded on the event.
+// stage); it is never recorded on the event. `opts.usage` reads the spend the event records.
 export async function appendEvent(
   root: string,
   id: string,
   input: EventInput,
   now: () => Date = () => new Date(),
-  opts: TransitionOptions = {},
+  opts: AppendOptions = {},
 ): Promise<JobSnapshot> {
   const snap = await appendJobEvent(root, id, input, now, opts);
   if (snap.epic !== null) await refreshEpic(root, snap.epic);
@@ -144,7 +206,7 @@ async function refreshEpic(root: string, epic: string): Promise<void> {
   await rebuildEpic(root, epic).catch(() => undefined);
 }
 
-function appendJobEvent(root: string, id: string, input: EventInput, now: () => Date, opts: TransitionOptions): Promise<JobSnapshot> {
+function appendJobEvent(root: string, id: string, input: EventInput, now: () => Date, opts: AppendOptions): Promise<JobSnapshot> {
   return withLock(jobDir(root, id), input.type === 'job.claimed', async () => {
     const prior = await readLog(root, id);
     if (prior.length === 0 && (await exists(join(jobDir(root, id), 'job.json')))) {
@@ -154,7 +216,9 @@ function appendJobEvent(root: string, id: string, input: EventInput, now: () => 
     if (raw !== '' && !raw.endsWith('\n')) throw new Error(`${id}: events.jsonl does not end with a newline (corrupt tail); refusing to append`);
     const checked = await withVerdict(root, id, input);
     checkTransition(prior, checked, opts);
-    const event: FactoryEvent = { ts: now().toISOString(), ...checked };
+    // Usage is read only once the event is accepted, and never rejects it.
+    const ts = now().toISOString();
+    const event: FactoryEvent = { ts, ...(await withUsage(prior, checked, ts, opts.usage)) };
     await appendFile(logPath(root, id), `${JSON.stringify(event)}\n`);
     const snap = project(await readLog(root, id));
     await writeSnapshot(root, id, snap);

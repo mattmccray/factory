@@ -318,6 +318,7 @@ describe('epic.json, epic next, epic show (AC4)', () => {
     expect(await f.ok('epic', 'show', 'auth')).toEqual([
       'epic auth  waiting  factory/epic/auth -> main',
       `waiting on members: nothing else can run; needs-human: a (${a})`,
+      'orchestrator usage: no stretch ended yet',
       `member a  needs-human  ${a}`,
       `member b  blocked  blocked on a (${a})`,
     ]);
@@ -345,7 +346,7 @@ describe('epic.json, epic next, epic show (AC4)', () => {
     expect(await f.ok('epic', 'next', 'auth')).toEqual(['land']);
     await f.ok('epic', 'event', 'auth', 'epic.waiting', 'reason=checkout is on dev');
     expect(await f.ok('epic', 'next', 'auth')).toEqual([]);
-    expect(await f.ok('epic', 'show', 'auth')).toEqual(['epic auth  waiting  factory/epic/auth -> main', 'waiting on you: checkout is on dev', 'member a  merged  001-a', `fix ${fix}  abandoned`]);
+    expect(await f.ok('epic', 'show', 'auth')).toEqual(['epic auth  waiting  factory/epic/auth -> main', 'waiting on you: checkout is on dev', 'orchestrator usage: unavailable (1 stretch)', 'member a  merged  001-a', `fix ${fix}  abandoned`]);
     expect((await f.cli('epic', 'next', 'nope')).err).toEqual(['epic nope has not started']);
   });
 

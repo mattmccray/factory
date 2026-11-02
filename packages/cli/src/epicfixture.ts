@@ -22,10 +22,12 @@ export const brief = (status: string): string => `# A brief\n\n- Status: ${statu
 export class Fixture {
   repo = '';
   root = '';
+  claudeDir = ''; // a temp CLAUDE_CONFIG_DIR, outside the repo
   now: (() => Date) | undefined;
 
   async setUp(config: Record<string, unknown> = CONFIG): Promise<void> {
     this.repo = await realpath(await mkdtemp(join(tmpdir(), 'factory-epic-')));
+    this.claudeDir = await realpath(await mkdtemp(join(tmpdir(), 'factory-claude-')));
     initRepo(this.repo, 'main');
     this.root = join(this.repo, 'factory');
     await mkdir(join(this.root, 'epics'), { recursive: true });
@@ -35,6 +37,7 @@ export class Fixture {
 
   async tearDown(): Promise<void> {
     await rm(this.repo, { recursive: true, force: true });
+    await rm(this.claudeDir, { recursive: true, force: true });
   }
 
   config(config: Record<string, unknown>): Promise<void> {
@@ -52,7 +55,9 @@ export class Fixture {
   async cli(...argv: string[]): Promise<Result> {
     const out: string[] = [];
     const err: string[] = [];
-    const io = { root: this.root, stdout: (l: string) => out.push(l), stderr: (l: string) => err.push(l), ...(this.now === undefined ? {} : { now: this.now }) };
+    // Transcripts are read only from a temp CLAUDE_CONFIG_DIR inside the repo, never the real ~/.claude.
+    const env = { CLAUDE_CONFIG_DIR: this.claudeDir };
+    const io = { root: this.root, env, stdout: (l: string) => out.push(l), stderr: (l: string) => err.push(l), ...(this.now === undefined ? {} : { now: this.now }) };
     const code = await run(argv, io);
     return { code, out, err };
   }

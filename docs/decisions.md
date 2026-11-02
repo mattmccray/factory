@@ -259,5 +259,11 @@ Deliberately unfixed, but real:
 - Reviewers that run only when certain files change.
 - Distribution for publishing: name collision checks, a package registry, docs site.
 - Reconstructing timing for legacy jobs (001–018) from git history; they show no timing.
+- Backfilling token usage for jobs that ran, or spans and stretches that closed, before usage was
+  recorded: they read "not recorded" (brief `token-spend-record`, decision 7). A backfill would
+  append events to merged jobs, which reject every event.
+- A token cost estimate: dollar figures or a price table over the recorded counts (for example in
+  Andon). The factory records only the model and the four raw token counts (brief
+  `token-spend-record`, decision 3).
 - A friendlier changelog line per job (an approver template change) or a model-written rewrite;
   today the entry is the job's merge subject (decision 14).
