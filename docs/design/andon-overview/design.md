@@ -263,7 +263,12 @@ It replaces the drawer. From top to bottom:
 1. **Bar** (52px): "minerva / 040-tag-migration" and a close button.
 2. **Header**: project · id with a stage pill ("NEEDS A HUMAN" in red, etc.); the title (17px
    semibold); `branch → target` in mono; and the timing summary line ("6:06:06 in needs-human ·
-   claimed 8h 40m ago · round 1/2", today's `summary()`).
+   claimed 8h 40m ago · round 1/2", today's `summary()`). The line ends with the job's token total
+   from `job.json`'s `usage.job` (`… · 64.0M tokens`, or `… · ≥ 64.0M tokens` when the total is
+   partial), in the contract's compact form (`compactTokens`: `950`, `12.3k`, `1.2M`), the same
+   figure `factory show` prints. Its tooltip lists the four counts. A job with nothing counted (one
+   from before token tracking, one whose spans are all not recorded, or one with no closed span
+   yet) has no tokens part, never `0`.
 3. **Needs-human box** (only for needs-human jobs): a red-tinted rounded box with the note, then
    **Approve** (accent button) and **Rework…** (plain button), then the command in mono with a
    copy button.
@@ -305,6 +310,26 @@ It replaces the drawer. From top to bottom:
 5. **Document**: the markdown, rendered with today's `markdown()`, in system type. The first line
    (`VERDICT: …`, `APPROVE`, or `ESCALATE`) renders as a colored pill. **Timing** is today's
    `TimingView`, restyled: the stage bar, its legend, the Stages table, and the Agents table.
+   **Token spend** (brief `token-spend-andon`), read-only from `job.json`, with no price:
+   - Both tables gain a **Tokens** column. An agent row shows its span's compact sum, with a
+     tooltip listing input, output, cache write, and cache read in full, then the model ("model
+     not recorded" when there is none). A stage row (one per stage and round) totals the closed
+     agent spans that started inside its window, with the four counts as the tooltip.
+   - The Agents table ends with an **orchestrator** row: the job's `usage.orchestrator` total,
+     blank until a stretch has ended. A job in an epic reads a muted "in epic" there instead
+     (tooltip "Counted once for epic <slug> (epic page)"), never `—`.
+   - A **Usage** summary under the tables lists the job's input, output, cache write, and cache
+     read totals in full, each prefixed `≥` when the total is partial, with "<n> spans
+     unavailable" under it.
+   - **Gap states**, never shown as more exact than they are: `—` (muted) not recorded, tooltip
+     "Not recorded (before token tracking)"; `?` (muted) unavailable, its tooltip the CLI's reason
+     on an agent row or "<n> spans unavailable" on a total; `≥ <sum>` partial, a lower bound, its
+     tooltip adding "<n> spans unavailable"; blank while running (an open span, or a row with no
+     closed span yet).
+   - A job with nothing recorded (before tracking) has no orchestrator row and no Usage summary,
+     so it looks as it did except for `—` in the Tokens column.
+   - The board's tokens and their hover popover (section 6), the desk widget, and the Settled
+     sheet don't change: token spend shows only in the inspector.
 
 The docs reload when the job's `updated` changes (as today). ↑ and ↓ move between files.
 

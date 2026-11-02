@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TIMING, groupsOf, pickFile } from './docs';
-import { HOUR, NOW, before, epic, inEpic, job, specQuestion, stopped, tag, tagEpic } from './fixtures';
+import { compactTokens as contractCompact } from '@factory/contract';
+import { HOUR, NOW, before, epic, inEpic, job, noSpans, specQuestion, stopped, tag, tagEpic, usageTotal } from './fixtures';
 import { HUB, LOCAL_FACTORY, STUDIO_FACTORY, localAt, machineEntry, machinesBody } from './fixtures';
 import { jobHeader } from './inspector';
 import type { HumanActions } from './inspector';
@@ -418,5 +419,70 @@ describe('machines in the inspector (brief andon-machines-ui)', () => {
   test('AC1: with only the hub listed, the header carries no machine', () => {
     const s = applyEvent(twoFactories(), 'machines', machinesBody(machineEntry(HUB)));
     for (const b of boardJobs(s, ALL)) expect(jobHeader(b).project).toBe('factory');
+  });
+});
+
+describe('token spend on the epic page (094 AC6)', () => {
+  const P = { id: 'p1', name: 'one' };
+  const members = [
+    { slug: 'a', after: [], state: 'merged', job: '051-a', stage: 'merged', blockedOn: [] },
+    { slug: 'b', after: ['a'], state: 'running', job: '052-b', stage: 'review', blockedOn: [] },
+    { slug: 'c', after: ['b'], state: 'blocked', job: null, stage: null, blockedOn: [{ member: 'b', job: '052-b' }] },
+    { slug: 'd', after: [], state: 'queued', job: null, stage: null, blockedOn: [] },
+    { slug: 'e', after: ['a', 'd'], state: 'needs-human', job: '053-e', stage: 'needs-human', blockedOn: [] },
+  ];
+  const generated = [{ id: '054-sync-main', kind: 'sync', stage: 'merged' }, { id: '055-fix-gate', kind: 'fix', stage: 'build' }];
+  const auth = (fields: Record<string, unknown> = {}) => tagEpic(epic({ slug: 'auth', members, generated, orchestrator: usageTotal(100_000, 20_000, 0, 0, 2), ...fields }), P);
+  const u = (job: Record<string, unknown>) => ({ stages: [], rounds: [], job, orchestrator: null });
+  const a = inEpic({ id: '051-a', stage: 'merged', usage: u(usageTotal(1_000_000, 100_000, 0, 900_000, 4)) }, epic({ slug: 'auth' }), P);
+  const b = inEpic({ id: '052-b', stage: 'review', round: 1, usage: u(usageTotal(50_000, 5_000, 0, 0, 3, 1)) }, epic({ slug: 'auth' }), P);
+  const e = inEpic({ id: '053-e', stage: 'needs-human', usage: u(usageTotal(0, 0, 0, 0, 2, 2, 'unavailable')) }, epic({ slug: 'auth' }), P);
+  const sync = inEpic({ id: '054-sync-main', stage: 'merged', kind: 'sync', usage: u(usageTotal(10_000, 1_000, 0, 0, 1)) }, epic({ slug: 'auth' }), P);
+  const fix = inEpic({ id: '055-fix-gate', stage: 'build', kind: 'fix', round: 1, usage: u(noSpans()) }, epic({ slug: 'auth' }), P);
+  // orchestrator 120k + a 2.0M + b 55k + e 0 + sync 11k + fix 0
+  const sum = 120_000 + 2_000_000 + 55_000 + 11_000;
+
+  test('each member and generated row carries its own total, with the —, ?, ≥, and blank rules', () => {
+    const page = epicPage(auth(), [a, b, e, sync, fix], NOW);
+    expect(page.members.map((m) => [m.slug, m.tokens.text, m.tokens.muted])).toEqual([
+      ['a', '2.0M', false],
+      ['b', '≥ 55.0k', false],
+      ['c', '', false],
+      ['d', '', false],
+      ['e', '?', true],
+    ]);
+    expect(page.members[1]?.tokens.title).toEndWith('\n1 span unavailable');
+    expect(page.members[4]?.tokens.title).toBe('2 spans unavailable');
+    expect(page.generated.map((g) => [g.job.id, g.tokens.text])).toEqual([
+      ['054-sync-main', '11.0k'],
+      ['055-fix-gate', ''],
+    ]);
+    const legacy = epicPage(auth(), [inEpic({ id: '051-a', stage: 'merged' }, epic({ slug: 'auth' }), P)], NOW);
+    expect(legacy.members[0]?.tokens).toEqual({ text: '—', muted: true, title: 'Not recorded (before token tracking)' });
+    expect(legacy.members[1]?.tokens).toEqual({ text: '?', muted: true, title: 'Job not loaded in Andon' }); // a job Andon doesn't hold
+  });
+
+  test('the timing line carries the epic total: orchestrator plus every member and generated job', () => {
+    const page = epicPage(auth(), [a, b, e, sync, fix], NOW);
+    expect(page.tokens?.text).toBe(`≥ ${contractCompact(sum)} tokens`); // b and e are partial and unavailable
+    expect(page.tokens?.title).toEndWith('\n3 spans unavailable');
+    const svelte = readFileSync(join(import.meta.dir, 'Inspector.svelte'), 'utf8');
+    expect(svelte).toContain('{page.timing} · {page.merged}{#if page.tokens !== null} · <span class="ttok" title={page.tokens.title}>{page.tokens.text}</span>{/if}');
+  });
+
+  test('exact only when every part is known; a member Andon does not hold makes it partial', () => {
+    const exactMembers = [{ slug: 'a', after: [], state: 'merged', job: '051-a', stage: 'merged', blockedOn: [] }, { slug: 'd', after: [], state: 'queued', job: null, stage: null, blockedOn: [] }];
+    const exact = epicPage(auth({ members: exactMembers, generated: [generated[0]] }), [a, sync], NOW);
+    expect(exact.tokens?.text).toBe(`${contractCompact(120_000 + 2_000_000 + 11_000)} tokens`);
+    const missing = epicPage(auth({ members: exactMembers, generated: [generated[0]] }), [a], NOW);
+    expect(missing.tokens?.text).toBe(`≥ ${contractCompact(120_000 + 2_000_000)} tokens`);
+    expect(missing.tokens?.title).toEndWith('\n1 span unavailable');
+  });
+
+  test('an epic with nothing recorded shows no tokens on its line', () => {
+    const legacyJobs = [inEpic({ id: '051-a', stage: 'merged' }, epic({ slug: 'auth' }), P), inEpic({ id: '052-b', stage: 'review' }, epic({ slug: 'auth' }), P)];
+    expect(epicPage(auth({ orchestrator: undefined }), legacyJobs, NOW).tokens).toBeNull();
+    expect(epicPage(auth({ orchestrator: undefined, members: [], generated: [] }), [], NOW).tokens).toBeNull();
+    expect(epicPage(auth({ orchestrator: noSpans(), members: [], generated: [] }), [], NOW).tokens).toBeNull();
   });
 });

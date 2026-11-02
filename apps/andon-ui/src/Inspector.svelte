@@ -1,15 +1,15 @@
 <script lang="ts">
   // The inspector (design §8): a push panel at the window's right, resizable from its left edge.
   // Top to bottom: the bar (project / id, close), the header (project · id, a stage pill, the
-  // title, branch → target, the timing summary), the needs-human box with its commands,
+  // title, branch → target, the timing summary with the job's token total), the needs-human box with its commands,
   // the Files list, and the selected document or the timing view. Docs are re-read when the job's
   // `updated` changes; a failed read keeps what is shown. ↑ and ↓ move between files while focus
   // is in the inspector. The chosen file is the caller's (`file`, from the URL), reported by `onfile`. Andon never runs a command itself: Approve copies it and, in the Mac app,
   // hands it to T3 Code as Settings say (`onhandoff`, see handoff.ts); the copy icon only copies.
   // A job in an epic links back to its epic. The epic page (docs/design/epics/design.md decision 9;
-  // `epic` instead of `item`) shows its state pill, `factory/epic/<slug> → <target>`, timing, a
+  // `epic` instead of `item`) shows its state pill, `factory/epic/<slug> → <target>`, timing and token total, a
   // progress bar by member state, the Members in plan order and the Generated sync and fix jobs
-  // (each linking to its job), the red box with `/factory epic <slug>` to copy when it waits on you,
+  // (each with its token total, linking to its job), the red box with `/factory epic <slug>` to copy when it waits on you,
   // an Abandon… sheet, and the plan and member briefs as documents (the epic docs endpoint).
   // A brief's or plan's page (brief andon-backlog-ui; `page` instead of `item` and `epic`) shows its
   // text from `GET …/briefs/<slug>` or `GET …/plans/<slug>`, rendered as job files are; a plan's
@@ -295,7 +295,7 @@
           <div class="crumbs"><span>{page.project}</span><span aria-hidden="true">·</span><span class="stage-pill sp-epic">Epic</span><span class="stage-pill sp-e-{page.state}">{page.stateLabel}</span></div>
           <h2 id="ins-title">{page.name}</h2>
           <div class="branch" title="epic branch → target">{page.lands}</div>
-          <div class="tsum">{page.timing} · {page.merged}{#if asOf !== null} · <span class="asof">{asOf}</span>{/if}</div>
+          <div class="tsum">{page.timing} · {page.merged}{#if page.tokens !== null} · <span class="ttok" title={page.tokens.title}>{page.tokens.text}</span>{/if}{#if asOf !== null} · <span class="asof">{asOf}</span>{/if}</div>
           <div class="eprog" role="img" aria-label="Members by state: {page.progress.map((s) => s.title).join(', ')}">
             {#each page.progress as seg, i (i)}<i class={seg.cls} title={seg.title}></i>{/each}
           </div>
@@ -336,6 +336,7 @@
                 <span></span>
                 <span class="ms"><b>{m.slug}</b> · {m.after}</span>
                 <span class="mr">
+                  {#if m.tokens.text !== ''}<span class="mtok" class:na={m.tokens.muted} title={m.tokens.title}>{m.tokens.text}</span>{/if}
                   {#if m.job !== null}
                     <button class="jid" type="button" title="Open {m.job.id}" onclick={() => onopenjob(m.job?.key ?? '')}>job <b>{m.job.num}</b></button>
                   {:else}
@@ -355,7 +356,7 @@
                   <span class="mr"><span class="mst {g.tone}">{g.text}</span></span>
                   <span></span>
                   <span class="ms">{g.job.id}</span>
-                  <span class="mr"><button class="jid" type="button" title="Open {g.job.id}" onclick={() => onopenjob(g.job.key)}>job <b>{g.job.num}</b></button></span>
+                  <span class="mr">{#if g.tokens.text !== ''}<span class="mtok" class:na={g.tokens.muted} title={g.tokens.title}>{g.tokens.text}</span>{/if}<button class="jid" type="button" title="Open {g.job.id}" onclick={() => onopenjob(g.job.key)}>job <b>{g.job.num}</b></button></span>
                 </li>
               {/each}
             </ul>
@@ -418,7 +419,7 @@
         <div class="crumbs"><span>{jobHeader(item).project}</span><span aria-hidden="true">·</span><span>{job.id}</span>{#if kind !== null}<span class="stage-pill sp-{kind}">{KIND_LABELS[kind]}</span>{/if}</div>
         <h2 id="ins-title">{job.title}</h2>
         {#if lands !== null}<div class="branch" title="branch → target">{lands}</div>{/if}
-        {#if sum !== null}<div class="tsum" class:na={!sum.recorded}>{sum.text}{#if asOf !== null} · <span class="asof">{asOf}</span>{/if}</div>{/if}
+        {#if sum !== null}<div class="tsum" class:na={!sum.recorded} title={sum.title}>{sum.text}{#if asOf !== null} · <span class="asof">{asOf}</span>{/if}</div>{/if}
         {#if link !== null}
           <button class="elink" type="button" aria-haspopup="dialog" onclick={() => onopenepic(link.key)}>
             <svg class="i" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="3" r="1.5" /><circle cx="4" cy="13" r="1.5" /><circle cx="12" cy="8" r="1.5" /><path d="M4 4.5v7M5.3 3.8C8.5 5 10.6 5.6 11 6.6M5.3 12.2C8.5 11 10.6 10.4 11 9.4" /></svg>
