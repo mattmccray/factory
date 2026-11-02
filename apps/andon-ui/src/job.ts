@@ -4,7 +4,7 @@
 // It imports `@factory/contract` with `import type` only (erased under `verbatimModuleSyntax`), to
 // check its shapes against the contract's at compile time; it never runs contract code, so it
 // runs in a browser (and later under txiki.js).
-import type { AgentSpan as ContractAgentSpan, Config, EpicSnapshot, JobSnapshot, StageSpan as ContractStageSpan } from '@factory/contract';
+import type { AgentSpan as ContractAgentSpan, Config, EpicSnapshot, JobSnapshot, StageSpan as ContractStageSpan, Usage as ContractUsage, UsageTotal as ContractUsageTotal } from '@factory/contract';
 import { toProjectRelease } from './release';
 import type { ProjectRelease } from './release';
 
@@ -18,6 +18,38 @@ export interface StageSpan {
   ms: number | null;
 }
 
+/** One span's spend (docs/contract/v1.md "Usage"): the model and the four raw token counts. */
+export interface UsageCounts {
+  model: string | null; // null: no message in the span named a model
+  input: number;
+  output: number;
+  cacheWrite: number;
+  cacheRead: number;
+}
+
+/** A span's recorded spend: its counts, or why the CLI couldn't read them. */
+export type Usage = UsageCounts | { unavailable: string };
+
+/** The four usage statuses of a rollup (`partial` is a lower bound). */
+export type UsageStatus = 'exact' | 'partial' | 'unavailable' | 'not recorded';
+
+/** A rollup over spans (or stretches), as `job.json`'s `usage` and `epic.json`'s `orchestrator` carry it. */
+export interface UsageTotal {
+  status: UsageStatus;
+  input: number;
+  output: number;
+  cacheWrite: number;
+  cacheRead: number;
+  spans: number;
+  unknown: number; // spans without counts
+}
+
+/** The `job.json` rollups the UI reads: the job's total, and the orchestrator's slice (null for a job in an epic, or one not recorded). */
+export interface JobUsage {
+  job: UsageTotal;
+  orchestrator: UsageTotal | null;
+}
+
 export interface AgentSpan {
   role: string;
   key: string | null;
@@ -26,6 +58,7 @@ export interface AgentSpan {
   finishedAt: string | null;
   ms: number | null;
   verdict: string | null;
+  usage: Usage | null; // null: not recorded (still open, before tracking, or a malformed value)
 }
 
 /** Why a job is (or was last) in `needs-human` (docs/contract/v1.md "`job.json`"). */
@@ -56,6 +89,7 @@ export interface Job {
   timing: { stages: StageSpan[]; agents: AgentSpan[] } | null;
   epic: string | null; // the slug of the epic the job was claimed into; null: a standalone job (or a snapshot from before epics)
   kind: EpicJobKind | null; // what the job is to its epic; null exactly when `epic` is
+  usage: JobUsage | null; // null: not recorded (a snapshot from before token tracking, or a malformed value)
 }
 
 /** One plan member of an epic, as `epic.json` lists it. */
@@ -85,6 +119,7 @@ export interface EpicCore {
   startedAt: string | null;
   endedAt: string | null;
   updated: string | null;
+  orchestrator: UsageTotal | null; // the epic's orchestrator spend; null: not recorded (a missing or malformed value)
 }
 
 /**
@@ -115,6 +150,11 @@ export type ContractShapesChecked = [
   Expect<Assignable<JobSnapshot['epic'], Job['epic']>>,
   Expect<Assignable<JobSnapshot['kind'], Job['kind']>>,
   Expect<Assignable<EpicSnapshot, EpicCore>>,
+  Expect<Assignable<ContractUsage, Usage>>,
+  Expect<Assignable<ContractUsageTotal, UsageTotal>>,
+  Expect<Assignable<ContractAgentSpan['usage'], AgentSpan['usage']>>,
+  Expect<Assignable<JobSnapshot['usage'], Job['usage']>>,
+  Expect<Assignable<EpicSnapshot['orchestrator'], EpicCore['orchestrator']>>,
   Expect<Assignable<Config['reviewers'], BoardConfig['reviewers']>>,
   Expect<Assignable<Config['dashboard']['settleAfterHours'], BoardConfig['settleAfterHours']>>,
 ];
@@ -165,12 +205,53 @@ function stageSpan(v: unknown): StageSpan | null {
   return { stage, round: num(v.round) ?? 0, enteredAt, exitedAt: str(v.exitedAt), ms: num(v.ms) };
 }
 
+// ---- usage (docs/contract/v1.md "Usage"): readers treat a missing key, or a value that isn't
+// exactly the usage shape (a malformed field, a missing or an extra key), as not recorded ----
+
+const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0;
+/** True when `v`'s keys are exactly `keys`. */
+const exactKeys = (v: Record<string, unknown>, keys: readonly string[]): boolean => {
+  const own = Object.keys(v);
+  return own.length === keys.length && keys.every((k) => own.includes(k));
+};
+const COUNT_KEYS = ['model', 'input', 'output', 'cacheWrite', 'cacheRead'];
+const TOTAL_KEYS = ['status', 'input', 'output', 'cacheWrite', 'cacheRead', 'spans', 'unknown'];
+const STATUSES: readonly UsageStatus[] = ['exact', 'partial', 'unavailable', 'not recorded'];
+
+/** A span's usage: its counts, `{ unavailable: "<reason>" }`, or null (not recorded). */
+export function toUsage(v: unknown): Usage | null {
+  if (!isRecord(v)) return null;
+  if (exactKeys(v, ['unavailable'])) return typeof v.unavailable === 'string' && v.unavailable !== '' ? { unavailable: v.unavailable } : null;
+  if (!exactKeys(v, COUNT_KEYS)) return null;
+  const { model, input, output, cacheWrite, cacheRead } = v;
+  if (model !== null && typeof model !== 'string') return null;
+  if (!isCount(input) || !isCount(output) || !isCount(cacheWrite) || !isCount(cacheRead)) return null;
+  return { model, input, output, cacheWrite, cacheRead };
+}
+
+/** A rollup total, or null (not recorded) for anything that isn't exactly its shape. */
+export function toUsageTotal(v: unknown): UsageTotal | null {
+  if (!isRecord(v) || !exactKeys(v, TOTAL_KEYS)) return null;
+  const status = oneOf(STATUSES, v.status);
+  const { input, output, cacheWrite, cacheRead, spans, unknown } = v;
+  if (status === null || !isCount(input) || !isCount(output) || !isCount(cacheWrite) || !isCount(cacheRead) || !isCount(spans) || !isCount(unknown)) return null;
+  if (unknown > spans) return null;
+  return { status, input, output, cacheWrite, cacheRead, spans, unknown };
+}
+
+/** `job.json`'s `usage`: its `job` total and its `orchestrator` slice; null when the job total isn't readable. */
+function jobUsage(v: unknown): JobUsage | null {
+  if (!isRecord(v)) return null;
+  const job = toUsageTotal(v.job);
+  return job === null ? null : { job, orchestrator: toUsageTotal(v.orchestrator) };
+}
+
 function agentSpan(v: unknown): AgentSpan | null {
   if (!isRecord(v)) return null;
   const role = str(v.role);
   const startedAt = str(v.startedAt);
   if (role === null || startedAt === null) return null;
-  return { role, key: str(v.key), round: num(v.round), startedAt, finishedAt: str(v.finishedAt), ms: num(v.ms), verdict: str(v.verdict) };
+  return { role, key: str(v.key), round: num(v.round), startedAt, finishedAt: str(v.finishedAt), ms: num(v.ms), verdict: str(v.verdict), usage: toUsage(v.usage) };
 }
 
 const STOPPED_BY: readonly StoppedBy[] = ['escalated', 'merge-failed'];
@@ -212,6 +293,7 @@ export function toJob(v: unknown): Job | null {
     epic,
     // a job in an epic with no readable kind is a member, as the contract reads one
     kind: epic === null ? null : (oneOf(EPIC_KINDS, v.kind) ?? 'member'),
+    usage: jobUsage(v.usage),
   };
 }
 
@@ -277,6 +359,7 @@ export function toEpic(v: unknown): Epic | null {
     startedAt: str(v.startedAt),
     endedAt: str(v.endedAt),
     updated: str(v.updated),
+    orchestrator: toUsageTotal(v.orchestrator),
   };
 }
 

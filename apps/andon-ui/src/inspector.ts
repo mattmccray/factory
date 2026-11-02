@@ -15,6 +15,9 @@ import { age, epicStateLabel, helperOf, isQuestion, kindOf, numOf } from './lane
 import { projectLabel } from './machines';
 import type { Kind } from './lanes';
 import { fmt, time, when } from './time';
+import { BLANK, NOT_RECORDED, combine, tokensPart, totalCell } from './usage';
+import type { TokenCell } from './usage';
+import type { UsageTotal } from './job';
 
 // ---- the commands ----
 
@@ -249,6 +252,7 @@ export interface EpicMemberRow {
   kind: Kind | null; // a running member's job kind, for its color
   text: string; // "merged in epic", "running · Review R1", "needs you", "blocked on 054", "queued", "abandoned"
   job: EpicJobLink | null;
+  tokens: TokenCell; // its job's `usage.job` total; blank with no job
 }
 
 export interface EpicGeneratedRow {
@@ -257,6 +261,7 @@ export interface EpicGeneratedRow {
   tone: MemberTone;
   text: string;
   job: EpicJobLink;
+  tokens: TokenCell;
 }
 
 export interface EpicPage {
@@ -268,6 +273,7 @@ export interface EpicPage {
   stateLabel: string;
   lands: string; // "factory/epic/<slug> → <target>"
   timing: string;
+  tokens: { text: string; title: string } | null; // the epic's total, "1.2M tokens", at the end of its timing line; null: nothing counted
   merged: string; // "3/6 merged"
   progress: Array<{ cls: string; title: string }>; // one segment per member, then per generated job: its state, or `p-<kind>` while running
   members: EpicMemberRow[];
@@ -280,6 +286,14 @@ export interface EpicPage {
 const STAGE_NAMES: Record<string, string> = { claimed: 'Claimed', spec: 'Spec', build: 'Build', review: 'Review', approve: 'Approve' };
 
 const linkOf = (pid: string, id: string): EpicJobLink => ({ key: `${pid}/${id}`, id, num: numOf(id) });
+
+/** A job Andon doesn't hold: its spend is unknown, so it reads `?` and makes the epic's total partial. */
+export const NOT_HELD_TITLE = 'Job not loaded in Andon';
+
+/** A member or generated job's spend: its `usage.job` (not recorded for a snapshot without one), or unknown when Andon doesn't hold the job. */
+const jobTotal = (job: BoardJob | undefined): UsageTotal => (job === undefined ? NOT_RECORDED : (job.job.usage?.job ?? NOT_RECORDED));
+const jobCell = (id: string | null, job: BoardJob | undefined): TokenCell =>
+  id === null ? BLANK : job === undefined ? { text: '?', muted: true, title: NOT_HELD_TITLE } : totalCell(jobTotal(job));
 
 function runningText(stage: string | null, job: BoardJob | undefined, now: number): { text: string; kind: Kind | null } {
   const kind = job === undefined ? null : kindOf(job, now);
@@ -301,7 +315,7 @@ export function epicPage(b: BoardEpic, jobs: readonly BoardJob[], now: number): 
   const members = e.members.map((m, i): EpicMemberRow => {
     const job = m.job === null ? undefined : byId.get(m.job);
     const title = job !== undefined && job.job.title !== job.job.id ? job.job.title : m.slug;
-    const row = { n: i + 1, slug: m.slug, title, after: `after: ${m.after.length > 0 ? m.after.join(', ') : 'none'}`, job: m.job === null ? null : linkOf(b.project.id, m.job), kind: null };
+    const row = { n: i + 1, slug: m.slug, title, after: `after: ${m.after.length > 0 ? m.after.join(', ') : 'none'}`, job: m.job === null ? null : linkOf(b.project.id, m.job), kind: null, tokens: jobCell(m.job, job) };
     switch (m.state) {
       case 'merged':
         return { ...row, tone: 'merged', text: terminal ? 'merged' : 'merged in epic' };
@@ -325,7 +339,7 @@ export function epicPage(b: BoardEpic, jobs: readonly BoardJob[], now: number): 
     const job = byId.get(g.id);
     const tone: MemberTone = g.stage === 'merged' ? 'merged' : g.stage === 'needs-human' ? 'needs-human' : g.stage === 'abandoned' ? 'abandoned' : 'running';
     const text = tone === 'merged' ? (terminal ? 'merged' : 'merged in epic') : tone === 'needs-human' ? 'needs you' : tone === 'abandoned' ? 'abandoned' : runningText(g.stage, job, now).text;
-    return { kind: g.kind, title: job?.job.title ?? g.id, tone, text, job: linkOf(b.project.id, g.id) };
+    return { kind: g.kind, title: job?.job.title ?? g.id, tone, text, job: linkOf(b.project.id, g.id), tokens: jobCell(g.id, job) };
   });
   // a running segment takes its job's kind color (`p-<kind>`); the rest their member state
   const segment = (tone: MemberTone, kind: Kind | null): string => (tone === 'running' ? `p-${kind ?? 'build'}` : tone);
@@ -346,6 +360,13 @@ export function epicPage(b: BoardEpic, jobs: readonly BoardJob[], now: number): 
   ]
     .filter((x) => x !== null)
     .join(' · ');
+  // The epic's total: its orchestrator plus every member's and generated job's `usage.job`. A queued
+  // member with no job adds nothing; one Andon doesn't hold counts as an unknown span.
+  const total = combine([
+    e.orchestrator ?? NOT_RECORDED,
+    ...e.members.filter((m) => m.job !== null).map((m) => jobTotal(m.job === null ? undefined : byId.get(m.job))),
+    ...e.generated.map((g) => jobTotal(byId.get(g.id))),
+  ]);
   return {
     key: b.key,
     slug: e.slug,
@@ -355,6 +376,7 @@ export function epicPage(b: BoardEpic, jobs: readonly BoardJob[], now: number): 
     stateLabel: epicStateLabel(e),
     lands: `${e.branch} → ${e.target}`,
     timing,
+    tokens: tokensPart(total),
     merged: `${merged}/${e.members.length} merged`,
     progress,
     members,

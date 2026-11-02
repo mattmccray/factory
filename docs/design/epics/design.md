@@ -147,7 +147,15 @@ These bind every brief below. Each brief cites them by number and records only i
    with its `after:` edges, state, and job link), a **Generated** group for sync and fix jobs, the
    plan file and member briefs as documents, and, when the epic is waiting on Matt, a red box with
    the note and the `/factory epic resume <slug>` command to copy; a member job's page links back
-   to its epic. **Trouble first:** an escalated member is an ordinary needs-human token and
+   to its epic. **Token spend** (brief `token-spend-andon`): the epic page's timing line ends with
+   the epic's total (`… · 3.1M tokens`), the epic's `orchestrator` plus the `usage.job` total of
+   every member and generated (sync, fix) job, its status taken the way the contract's `totalOf`
+   takes it; a member job Andon doesn't hold counts as one unknown span, so the total reads `≥`,
+   and an epic with nothing recorded shows no tokens. Each member and generated row carries its
+   own job's total, with the inspector's gap states (`—` not recorded, `?` unavailable or not
+   loaded, `≥` partial, blank for a member with no job or no closed span). The orchestrator's
+   spend is counted once, here; a member's own Timing reads "in epic" for it. The board's tokens
+   don't change. **Trouble first:** an escalated member is an ordinary needs-human token and
    counts once; an epic waiting on Matt for an epic-level reason (landing blocked) counts as one
    more needs-human item and turns its gutter red. Andon stays read-only. Why: Matt sees members
    move through the stations instead of one stuck card, and the gutter carries the epic's state.
