@@ -1,6 +1,6 @@
 # Token spend per job and phase
 
-- Status: draft
+- Status: ready
 - Sources: `/factory explore` on token visibility (2026-11-02); Claude Code transcripts
 - Date: 2026-11-02
 
