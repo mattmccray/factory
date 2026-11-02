@@ -24,7 +24,7 @@
     <thead><tr><th>Stage</th><th>Round</th><th>Entered</th><th class="n">Duration</th><th class="n">Tokens</th></tr></thead>
     <tbody>
       {#each view.stages as s, i (i)}
-        <tr><td>{s.stage}</td><td>{s.round}</td><td>{s.entered}</td><td class="n">{s.duration}</td><td class="n tok" class:na={s.tokens.muted} title={s.tokens.title}>{s.tokens.text}</td></tr>
+        <tr><td>{s.stage}</td><td>{s.round}</td><td>{s.entered}</td><td class="n">{s.duration}</td><td class="n tcount" class:na={s.tokens.muted} title={s.tokens.title}>{s.tokens.text}</td></tr>
       {/each}
     </tbody>
   </table>
@@ -43,7 +43,7 @@
           <td class:na={a.muted}>{#if a.verdict !== null}<span class="v {a.verdict}" aria-hidden="true"></span>{/if}{a.result}</td>
           <td>{a.started}</td>
           <td class="n">{a.duration}</td>
-          <td class="n tok" class:na={a.tokens.muted} title={a.tokens.title}>{a.tokens.text}</td>
+          <td class="n tcount" class:na={a.tokens.muted} title={a.tokens.title}>{a.tokens.text}</td>
         </tr>
       {/each}
       {#if view.orchestrator !== null}
@@ -53,7 +53,7 @@
           <td></td>
           <td></td>
           <td></td>
-          <td class="n tok" class:na={view.orchestrator.muted} title={view.orchestrator.title}>{view.orchestrator.text}</td>
+          <td class="n tcount" class:na={view.orchestrator.muted} title={view.orchestrator.title}>{view.orchestrator.text}</td>
         </tr>
       {/if}
     </tbody>

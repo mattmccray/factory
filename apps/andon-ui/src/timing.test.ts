@@ -246,3 +246,11 @@ describe('token spend in the timing view (094)', () => {
     expect(summary(job({ id: '094-d', stage: 'merged', usage: { job: jobTotal, orchestrator } }), NOW)).toEqual({ recorded: false, text: NO_TIMING, title: null });
   });
 });
+
+describe('the Tokens cells keep their table layout (094 round 1)', () => {
+  test('TimingView.svelte never reuses the board token card class `tok`', () => {
+    const svelte = readFileSync(join(import.meta.dir, 'TimingView.svelte'), 'utf8');
+    expect(svelte).not.toMatch(/class="[^"]*\btok\b/);
+    expect(svelte.match(/class="n tcount"/g)?.length).toBe(3);
+  });
+});

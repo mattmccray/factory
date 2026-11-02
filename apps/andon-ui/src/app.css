@@ -406,6 +406,7 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; background
 .doc { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px 40px; -webkit-user-select: text; user-select: text; }
 
 /* the timing view, restyled: a rounded stage bar, a legend, and compact tables */
+.md .timing { overflow-x: auto; } /* the six-column tables scroll sideways at the inspector's narrowest */
 .md .timing > h1 + p { font-size: 12px; color: var(--label2); margin-bottom: 10px; }
 .tbar { display: flex; gap: 1px; height: 14px; margin: 4px 0 7px; border-radius: 4px; overflow: hidden; background: var(--ctl); }
 .seg { min-width: 2px; background: var(--gray); }
@@ -422,8 +423,8 @@ main { flex: 1; min-height: 0; display: flex; flex-direction: column; background
 .md table.tt tbody tr:nth-child(even) td { background: var(--ctl); }
 .md table.tt .n { text-align: right; font: 11px var(--mono); }
 /* token spend: a muted `?`, `—`, or "in epic" cell; the orchestrator row; the usage summary by kind */
-.md table.tt td.tok[title] { cursor: default; }
-.md table.tt td.tok.na { color: var(--label3); }
+.md table.tt td.tcount[title] { cursor: default; }
+.md table.tt td.tcount.na { color: var(--label3); }
 .md table.tt tr.orch td { border-top: .5px solid var(--sep2); color: var(--label2); }
 .md dl.tusage { display: grid; grid-template-columns: max-content max-content; gap: 3px 18px; margin: 0; font-size: 11.5px; }
 .md dl.tusage dt { color: var(--label2); }
