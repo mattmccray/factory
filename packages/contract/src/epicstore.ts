@@ -9,6 +9,8 @@ import type { EventInput } from './contract';
 import { briefPath, checkEpicTransition, isEpicEvent, loggedEpicState, memberClaimRefusal, parsePlan, planPath, planStartProblem, projectEpic, viewEpic } from './epic';
 import type { EpicEvent, EpicEventInput, EpicJob, EpicSnapshot, EpicView, PlanMember } from './epic';
 import { acquire, exists, isExists, isNotFound, release } from './lock';
+import { EPIC_STRETCH_ENDS, EPIC_STRETCH_STARTS, isAgentId, openStretch, unavailable } from './usage';
+import type { Usage, UsageReader } from './usage';
 
 /** The epic's runtime dir, `jobs/epics/<slug>/`; the slug is checked before the path is built. */
 export function epicDir(root: string, slug: string): string {
@@ -88,6 +90,16 @@ export async function epicPlanProblem(root: string, slug: string): Promise<strin
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
+// The distinct agent ids on a job.json's `timing.agents` (tolerant: anything malformed is skipped).
+function agentIdsIn(timing: unknown): string[] {
+  const ids: string[] = [];
+  if (!isRecord(timing) || !Array.isArray(timing.agents)) return ids;
+  for (const a of timing.agents) {
+    if (isRecord(a) && typeof a.agentId === 'string' && isAgentId(a.agentId) && !ids.includes(a.agentId)) ids.push(a.agentId);
+  }
+  return ids;
+}
+
 /**
  * Every job whose `job.json` names `slug` as its epic, in id order. Readers are tolerant: a job
  * dir with no readable `job.json`, or one without a string `stage`, is skipped.
@@ -116,6 +128,7 @@ export async function readEpicJobs(root: string, slug: string): Promise<EpicJob[
       kind,
       brief: typeof raw.brief === 'string' ? raw.brief : null,
       updated: typeof raw.updated === 'string' ? raw.updated : null,
+      agentIds: agentIdsIn(raw.timing),
     });
   }
   return out;
@@ -238,6 +251,27 @@ async function removeEmpty(dir: string, made: string): Promise<void> {
 export interface EpicAppendOptions {
   /** Runs after the transition check, under the lock, before the append; throws to refuse. */
   check?: (inputs: EpicInputs) => void;
+  /** The harness's usage reader; without one, no orchestrator spend is recorded. */
+  usage?: UsageReader;
+}
+
+/**
+ * On an event that ends one of the epic's orchestrator stretches, the orchestrating session(s)'
+ * spend over [the stretch's start, `ts`], found from the agent ids of the epic's jobs. Never throws.
+ */
+async function withEpicUsage(prior: EpicEvent[], input: EpicEventInput, ts: string, jobs: readonly EpicJob[], reader: UsageReader | undefined): Promise<EpicEventInput> {
+  if (reader === undefined) return input;
+  if (input.type !== 'epic.waiting' && input.type !== 'epic.landed' && input.type !== 'epic.abandoned') return input;
+  const from = openStretch(prior, EPIC_STRETCH_STARTS, EPIC_STRETCH_ENDS);
+  if (from === null) return input;
+  const ids = [...new Set(jobs.flatMap((j) => j.agentIds ?? []))];
+  let orchestrator: Usage;
+  try {
+    orchestrator = await reader.orchestrator(ids, { from, to: ts });
+  } catch (e) {
+    orchestrator = unavailable(`usage reader failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return { ...input, orchestrator };
 }
 
 /**
@@ -252,7 +286,8 @@ export async function appendEpicEvent(root: string, slug: string, input: EpicEve
     const inputs = await loadEpic(root, slug, prior);
     checkEpicTransition(prior, input, inputs.view.landBlock);
     opts.check?.(inputs);
-    const event: EpicEvent = { ts: now().toISOString(), ...input };
+    const ts = now().toISOString();
+    const event: EpicEvent = { ts, ...(await withEpicUsage(prior, input, ts, inputs.jobs, opts.usage)) };
     await appendFile(epicLogPath(root, slug), `${JSON.stringify(event)}\n`);
     const snap = project(await loadEpic(root, slug));
     await writeEpicSnapshot(root, slug, snap);

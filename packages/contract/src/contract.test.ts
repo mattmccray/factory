@@ -678,3 +678,17 @@ describe('epics (job 052)', () => {
     expect(project(sync)).toMatchObject({ epic: 'e', kind: 'sync' });
   });
 });
+
+describe('agentId on agent.finished (job 093)', () => {
+  test('any string is kept (the store checks it before a path); a non-string is refused; usage is never a caller field', () => {
+    expect(parseEventInput('agent.finished', { role: 'builder', name: 'b', agentId: 'a1b2' })).toEqual({ type: 'agent.finished', role: 'builder', name: 'b', agentId: 'a1b2' });
+    expect(parseEventInput('agent.finished', { role: 'builder', agentId: '../x' })).toEqual({ type: 'agent.finished', role: 'builder', agentId: '../x' });
+    expect(() => parseEventInput('agent.finished', { role: 'builder', agentId: null })).toThrow("field 'agentId' must be a string");
+    expect(() => parseEventInput('agent.finished', { role: 'builder', usage: 'x' })).toThrow(/unknown key 'usage'/);
+    expect(() => parseEventInput('agent.started', { role: 'builder', agentId: 'a' })).toThrow(/unknown key 'agentId'/);
+    const ends: [string, Record<string, unknown>][] = [['job.escalated', { reason: 'r' }], ['merge.failed', { reason: 'r' }], ['job.merged', { sha: 'a' }], ['job.abandoned', { reason: 'r' }]];
+    for (const [type, fields] of ends) {
+      expect(() => parseEventInput(type, { ...fields, orchestrator: 'x' })).toThrow(/unknown key 'orchestrator'/);
+    }
+  });
+});
