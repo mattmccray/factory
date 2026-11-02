@@ -187,6 +187,71 @@ function parseGate(gate) {
   }
   return commands;
 }
+// packages/contract/src/usage.ts
+var AGENT_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+var isAgentId = (id) => AGENT_ID_PATTERN.test(id);
+var isRecord2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isCount = (v) => typeof v === "number" && Number.isInteger(v) && v >= 0;
+var COUNT_KEYS = ["model", "input", "output", "cacheWrite", "cacheRead"];
+function readUsage(v) {
+  if (!isRecord2(v))
+    return null;
+  const keys = Object.keys(v);
+  if (keys.length === 1 && typeof v.unavailable === "string" && v.unavailable !== "")
+    return { unavailable: v.unavailable };
+  if (keys.length !== COUNT_KEYS.length || !COUNT_KEYS.every((k) => keys.includes(k)))
+    return null;
+  const { model, input, output, cacheWrite, cacheRead } = v;
+  if (model !== null && typeof model !== "string")
+    return null;
+  if (!isCount(input) || !isCount(output) || !isCount(cacheWrite) || !isCount(cacheRead))
+    return null;
+  return { model, input, output, cacheWrite, cacheRead };
+}
+var JOB_STRETCH_STARTS = ["job.claimed", "job.reworked", "job.human-approved"];
+var JOB_STRETCH_ENDS = ["job.escalated", "merge.failed", "job.merged", "job.abandoned"];
+var EPIC_STRETCH_STARTS = ["epic.started", "epic.resumed"];
+var EPIC_STRETCH_ENDS = ["epic.waiting", "epic.landed", "epic.abandoned"];
+function totalOf(usages) {
+  const t = { status: "exact", input: 0, output: 0, cacheWrite: 0, cacheRead: 0, spans: usages.length, unknown: 0 };
+  let counted = 0;
+  let unavailableSpans = 0;
+  for (const u of usages) {
+    if (u === null)
+      t.unknown += 1;
+    else if ("unavailable" in u) {
+      t.unknown += 1;
+      unavailableSpans += 1;
+    } else {
+      counted += 1;
+      t.input += u.input;
+      t.output += u.output;
+      t.cacheWrite += u.cacheWrite;
+      t.cacheRead += u.cacheRead;
+    }
+  }
+  if (t.unknown === 0)
+    t.status = "exact";
+  else if (counted > 0)
+    t.status = "partial";
+  else
+    t.status = unavailableSpans > 0 ? "unavailable" : "not recorded";
+  return t;
+}
+function stretchUsages(events, starts, ends) {
+  const out = [];
+  let open = false;
+  for (const e of events) {
+    if (ends.includes(e.type)) {
+      if (open || e.orchestrator !== undefined)
+        out.push(readUsage(e.orchestrator));
+      open = false;
+    } else if (starts.includes(e.type))
+      open = true;
+  }
+  return out;
+}
+
 // packages/contract/src/epic.ts
 var PLAN_STATUSES = ["draft", "ready", "done", "abandoned"];
 var isSlug = (s) => s.length <= SLUG_MAX && SLUG_PATTERN.test(s);
@@ -399,7 +464,8 @@ function projectEpic(log, members, jobs, planError = null) {
     counts: { queued: 0, blocked: 0, running: 0, merged: 0, "needs-human": 0, abandoned: 0 },
     startedAt: first.ts,
     endedAt: null,
-    updated: first.ts
+    updated: first.ts,
+    orchestrator: totalOf(stretchUsages(log, EPIC_STRETCH_STARTS, EPIC_STRETCH_ENDS))
   };
   for (const e of log.slice(1)) {
     snap.updated = e.ts;
@@ -490,6 +556,8 @@ function parseEpicLog(text) {
   });
 }
 // packages/contract/src/project.ts
+var ROLE_STAGE = { "spec-writer": "spec", builder: "build", reviewer: "review", approver: "approve" };
+var USAGE_STAGES = ["spec", "build", "review", "approve"];
 var ms = (from, to) => Date.parse(to) - Date.parse(from);
 function enterStage(s, stage, ts) {
   if (s.stage === stage && s.timing.stages.length > 0)
@@ -506,16 +574,17 @@ function enterStage(s, stage, ts) {
 function sameAgent(a, role, key, round, name) {
   return a.role === role && a.key === key && a.round === round && a.name === name;
 }
-function closeOpenAgents(s, ts) {
+function closeOpenAgents(s, ts, by, ctx) {
   for (const a of s.timing.agents) {
     if (a.finishedAt === null) {
       a.finishedAt = ts;
       a.ms = ms(a.startedAt, ts);
+      ctx.closedBy.set(a, by);
     }
   }
 }
 var storedSession = (v) => isSession(v) ? { app: v.app, environment: v.environment, thread: v.thread } : null;
-function apply(s, e) {
+function apply(s, e, ctx) {
   s.updated = e.ts;
   switch (e.type) {
     case "job.claimed":
@@ -538,7 +607,7 @@ function apply(s, e) {
       const name = e.name ?? null;
       if (e.role === "builder" && name !== null)
         s.builder = name;
-      s.timing.agents.push({
+      const started = {
         role: e.role,
         key: e.key ?? null,
         round: e.round ?? null,
@@ -546,8 +615,12 @@ function apply(s, e) {
         startedAt: e.ts,
         finishedAt: null,
         ms: null,
-        verdict: null
-      });
+        verdict: null,
+        agentId: null,
+        usage: null
+      };
+      s.timing.agents.push(started);
+      ctx.rounds.set(started, s.round);
       return;
     }
     case "agent.finished": {
@@ -564,12 +637,15 @@ function apply(s, e) {
         }
       }
       if (!span) {
-        span = { role: e.role, key, round, name, startedAt: e.ts, finishedAt: null, ms: null, verdict: null };
+        span = { role: e.role, key, round, name, startedAt: e.ts, finishedAt: null, ms: null, verdict: null, agentId: null, usage: null };
         s.timing.agents.push(span);
+        ctx.rounds.set(span, s.round);
       }
       span.finishedAt = e.ts;
       span.ms = ms(span.startedAt, e.ts);
       span.verdict = verdict;
+      span.agentId = typeof e.agentId === "string" && isAgentId(e.agentId) ? e.agentId : null;
+      span.usage = readUsage(e.usage);
       if (e.role === "reviewer" && key !== null && (verdict === "PASS" || verdict === "CHANGES")) {
         if (round === s.round && Object.hasOwn(s.reviews, key))
           s.reviews[key] = verdict;
@@ -582,7 +658,7 @@ function apply(s, e) {
       s.note = e.note;
       return;
     case "job.escalated":
-      closeOpenAgents(s, e.ts);
+      closeOpenAgents(s, e.ts, "escalation", ctx);
       s.note = e.reason;
       s.stoppedBy = "escalated";
       s.stoppedFrom = workingStage(s.stage);
@@ -624,7 +700,7 @@ function apply(s, e) {
       enterStage(s, "merged", e.ts);
       return;
     case "job.abandoned":
-      closeOpenAgents(s, e.ts);
+      closeOpenAgents(s, e.ts, "abandon", ctx);
       s.endedAt = e.ts;
       s.note = e.reason;
       enterStage(s, "abandoned", e.ts);
@@ -662,11 +738,33 @@ function project(events) {
     stageEnteredAt: first.ts,
     endedAt: null,
     updated: first.ts,
-    timing: { stages: [{ stage: "claimed", round: 0, enteredAt: first.ts, exitedAt: null, ms: null }], agents: [] }
+    timing: { stages: [{ stage: "claimed", round: 0, enteredAt: first.ts, exitedAt: null, ms: null }], agents: [] },
+    usage: { stages: [], rounds: [], job: totalOf([]), orchestrator: null }
   };
+  const ctx = { rounds: new Map, closedBy: new Map };
   for (const e of events.slice(1))
-    apply(snapshot, e);
+    apply(snapshot, e, ctx);
+  snapshot.usage = rollUp(snapshot, events, ctx);
   return snapshot;
+}
+var recordsUsage = (events) => events.some((e) => e.type === "agent.finished" && e.usage !== undefined || ("orchestrator" in e) && e.orchestrator !== undefined);
+function rollUp(s, events, ctx) {
+  if (recordsUsage(events))
+    for (const [a, by] of ctx.closedBy)
+      a.usage = { unavailable: `closed by ${by}` };
+  const rounds = ctx.rounds;
+  const closed = s.timing.agents.filter((a) => a.finishedAt !== null);
+  const stages = USAGE_STAGES.flatMap((stage) => {
+    const spans = closed.filter((a) => ROLE_STAGE[a.role] === stage);
+    return spans.length === 0 ? [] : [{ stage, total: totalOf(spans.map((a) => a.usage)) }];
+  });
+  const roundOf = (a) => a.round ?? rounds.get(a) ?? 0;
+  const roundNumbers = [...new Set(closed.map(roundOf))].sort((a, b) => a - b);
+  const byRound = roundNumbers.map((round) => ({ round, total: totalOf(closed.filter((a) => roundOf(a) === round).map((a) => a.usage)) }));
+  const stretches = s.epic === null ? stretchUsages(events, JOB_STRETCH_STARTS, JOB_STRETCH_ENDS) : null;
+  const orchestrator = stretches === null ? null : totalOf(stretches);
+  const job = totalOf([...closed.map((a) => a.usage), ...stretches ?? []]);
+  return { stages, rounds: byRound, job, orchestrator };
 }
 // packages/contract/src/store.ts
 function parseLine(line, n) {
@@ -693,7 +791,7 @@ function parseLog(text) {
 // packages/contract/src/manifest.ts
 var SCHEMA2 = "factory/v1";
 var SHA256_HEX = /^[0-9a-f]{64}$/;
-var isRecord2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 function checkManifestPath(p) {
   if (p === "")
     return "empty path";
@@ -708,7 +806,7 @@ function checkManifestPath(p) {
   return null;
 }
 function parseManifest(raw) {
-  if (!isRecord2(raw))
+  if (!isRecord3(raw))
     throw new Error("must be a JSON object");
   const extra = Object.keys(raw).filter((k) => !["schema", "version", "files"].includes(k));
   if (extra.length)
@@ -717,7 +815,7 @@ function parseManifest(raw) {
     throw new Error(`schema must be "${SCHEMA2}"`);
   if (typeof raw.version !== "string" || raw.version === "")
     throw new Error("version must be a non-empty string");
-  if (!isRecord2(raw.files))
+  if (!isRecord3(raw.files))
     throw new Error("files must be an object");
   const files = {};
   for (const [path, hash] of Object.entries(raw.files)) {
@@ -735,7 +833,7 @@ import { mkdir, open, readFile, rename, rm } from "fs/promises";
 import { homedir } from "os";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
 var SCHEMA3 = "factory/v1";
-var isRecord3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var isNotFound2 = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "ENOENT";
 function registryPath(andonHome) {
   return join(andonHome !== undefined && andonHome !== "" ? andonHome : join(homedir(), ".andon"), "projects.json");
@@ -750,7 +848,7 @@ function checkRoot(root) {
   return null;
 }
 function parseRegistry(raw) {
-  if (!isRecord3(raw))
+  if (!isRecord4(raw))
     throw new Error("registry: must be a JSON object");
   const extra = Object.keys(raw).filter((k) => k !== "schema" && k !== "projects");
   if (extra.length)
@@ -762,7 +860,7 @@ function parseRegistry(raw) {
   const projects = [];
   const seen = new Set;
   for (const [i, p] of raw.projects.entries()) {
-    if (!isRecord3(p))
+    if (!isRecord4(p))
       throw new Error(`registry: projects[${i}] must be an object`);
     const pExtra = Object.keys(p).filter((k) => k !== "root");
     if (pExtra.length)
@@ -803,7 +901,7 @@ import { mkdir as mkdir2, open as open2, readFile as readFile2, rename as rename
 import { homedir as homedir2 } from "os";
 import { basename as basename2, dirname as dirname2, join as join2 } from "path";
 var SCHEMA4 = "factory/v1";
-var isRecord4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var isNotFound3 = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "ENOENT";
 function peersPath(andonHome) {
   return join2(andonHome !== undefined && andonHome !== "" ? andonHome : join2(homedir2(), ".andon"), "peers.json");
@@ -846,7 +944,7 @@ function peerLabel(url) {
   }
 }
 function parsePeers(raw) {
-  if (!isRecord4(raw))
+  if (!isRecord5(raw))
     throw new Error("peers: must be a JSON object");
   const extra = Object.keys(raw).filter((k) => k !== "schema" && k !== "peers");
   if (extra.length)
@@ -858,7 +956,7 @@ function parsePeers(raw) {
   const peers = [];
   const seen = new Set;
   for (const [i, p] of raw.peers.entries()) {
-    if (!isRecord4(p))
+    if (!isRecord5(p))
       throw new Error(`peers: peers[${i}] must be an object`);
     const pExtra = Object.keys(p).filter((k) => k !== "url");
     if (pExtra.length)
@@ -935,7 +1033,7 @@ var TOP_MD = /^(feature|spec|build|decision|rework-\d+|conflict-\d+)\.md$/;
 var ROUND_MD = /^round-\d+\/[^/]+\.md$/;
 var REGULAR = /^100(644|755)$/;
 var decoder = new TextDecoder("utf-8", { ignoreBOM: true });
-var isRecord5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord6 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var message = (e) => (e instanceof Error ? e.message : String(e)).split(`
 `)[0] ?? "";
 var wanted = (rel) => rel === "events.jsonl" || rel === "job.json" || TOP_MD.test(rel) || ROUND_MD.test(rel);
@@ -1020,7 +1118,7 @@ function snapshot(id, files) {
   const log = files.get("events.jsonl");
   if (log !== undefined) {
     const snap = JSON.parse(JSON.stringify(project(parseLog(log))));
-    if (!isRecord5(snap))
+    if (!isRecord6(snap))
       throw new Error("projection is not an object");
     if (snap.id !== id)
       throw new Error(`events.jsonl claims ${JSON.stringify(snap.id)}`);
@@ -1030,7 +1128,7 @@ function snapshot(id, files) {
   if (legacy === undefined)
     throw new Error("no events.jsonl and no job.json");
   const job = JSON.parse(legacy);
-  if (!isRecord5(job))
+  if (!isRecord6(job))
     throw new Error("job.json is not a JSON object");
   return job;
 }
@@ -1129,7 +1227,7 @@ function epicJob(job, slug) {
 function projectArchivedEpic(epic, jobs) {
   const mine = jobs.map((j) => epicJob(j, epic.slug)).filter((j) => j !== null).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const snap = JSON.parse(JSON.stringify(projectEpic(epic.log, epic.members, mine, epic.planError)));
-  if (!isRecord5(snap))
+  if (!isRecord6(snap))
     throw new Error("projection is not an object");
   return snap;
 }
@@ -1515,7 +1613,7 @@ var backoff = (n) => Math.min(FIRST_BACKOFF_MS * 2 ** Math.min(n, 30), MAX_BACKO
 var PID = /^[0-9a-f]{12}$/;
 var isPid = (s) => PID.test(s);
 var UPGRADE = "run factory upgrade and factory service restart on that machine";
-var isRecord6 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord7 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var message2 = (e) => (e instanceof Error ? e.message : String(e)).split(`
 `)[0] ?? "";
 
@@ -1703,11 +1801,11 @@ function createFollower(opts) {
     }
   }
   function readProjects(data) {
-    if (!isRecord6(data) || !Array.isArray(data.projects))
+    if (!isRecord7(data) || !Array.isArray(data.projects))
       throw new PeerFailure("error", "not an Andon service (its projects event is not { projects: [...] })");
     const out = [];
     for (const p of data.projects) {
-      if (!isRecord6(p) || typeof p.id !== "string")
+      if (!isRecord7(p) || typeof p.id !== "string")
         throw new PeerFailure("error", "not an Andon service (a project with no id)");
       if (p.id.includes("@") || typeof p.machine !== "string")
         throw new PeerFailure("error", `its Andon service is from before peers (its projects ${p.id.includes("@") ? "are not scope=local" : "carry no machine"}); ${UPGRADE}`);
@@ -1718,7 +1816,7 @@ function createFollower(opts) {
     return out;
   }
   function rewrite(data) {
-    if (!isRecord6(data) || typeof data.project !== "string")
+    if (!isRecord7(data) || typeof data.project !== "string")
       return null;
     const pid = data.project;
     if (!list.some((p) => p.id === pid))
@@ -1821,7 +1919,7 @@ function createFollower(opts) {
         if (!res.ok)
           return;
         const board = JSON.parse(await textOf(res, path));
-        if (gen !== generation || stopped || !isRecord6(board) || !list.some((q) => q.id === pid))
+        if (gen !== generation || stopped || !isRecord7(board) || !list.some((q) => q.id === pid))
           return;
         const data = { project: `${pid}@${name()}`, ...board };
         keepBoard(pid, form, data);
@@ -1839,8 +1937,8 @@ function createFollower(opts) {
     ctl = c;
     try {
       const machines = await getJson("/machines", c.signal);
-      const first = isRecord6(machines) && Array.isArray(machines.machines) ? machines.machines[0] : undefined;
-      if (!isRecord6(first) || typeof first.name !== "string" || !isMachineName(first.name))
+      const first = isRecord7(machines) && Array.isArray(machines.machines) ? machines.machines[0] : undefined;
+      if (!isRecord7(first) || typeof first.name !== "string" || !isMachineName(first.name))
         throw new PeerFailure("error", "not an Andon service (GET /machines is not { machines: [{ name, \u2026 }] })");
       if (gen !== generation || stopped)
         return;
@@ -1903,7 +2001,7 @@ function createFollower(opts) {
           try {
             const parsed = JSON.parse(new TextDecoder().decode(read));
             const pid = path.split("/")[2] ?? "";
-            if (isRecord6(parsed))
+            if (isRecord7(parsed))
               keepBoard(pid, form, parsed);
           } catch {}
         }
@@ -1948,14 +2046,14 @@ var BRIEF = /^factory\/briefs\/[\w.-]+\.md$/;
 var projectId = (root) => createHash("sha256").update(root).digest("hex").slice(0, 12);
 var message3 = (e) => (e instanceof Error ? e.message : String(e)).split(`
 `)[0] ?? "";
-var isRecord7 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord8 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 async function entries(dir) {
   return readdir(dir, { withFileTypes: true }).catch(() => []);
 }
 async function readJob(p, id) {
   try {
     const job = JSON.parse(await readFile4(join4(p.factory, "jobs", id, "job.json"), "utf8"));
-    if (isRecord7(job))
+    if (isRecord8(job))
       p.lastGood.set(id, { ...job });
   } catch {}
   return p.lastGood.get(id);
@@ -1963,7 +2061,7 @@ async function readJob(p, id) {
 async function readEpic(p, slug) {
   try {
     const epic = JSON.parse(await readFile4(join4(p.factory, "jobs", "epics", slug, "epic.json"), "utf8"));
-    if (isRecord7(epic))
+    if (isRecord8(epic))
       p.lastGoodEpic.set(slug, { ...epic });
   } catch {}
   return p.lastGoodEpic.get(slug);

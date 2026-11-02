@@ -1,3 +1,11 @@
+## v0.6.0 (2026-11-02)
+
+### Added
+
+- Andon: add initial draft for mouse input handling in desk widget
+- Contract: record token spend per agent span, job, and epic (093-token-spend-record)
+- Andon: show token spend in the inspector and epic page (094-token-spend-andon)
+
 ## v0.5.0 (2026-11-01)
 
 ### Added

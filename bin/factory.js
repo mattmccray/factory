@@ -2,7 +2,7 @@
 // @bun
 
 // packages/cli/src/release-main.ts
-import { join as join20 } from "path";
+import { join as join21 } from "path";
 
 // packages/contract/src/contract.ts
 var WORKING_STAGES = ["claimed", "spec", "build", "review", "approve"];
@@ -323,9 +323,16 @@ function parseEventInput(type, fields, ctx) {
     case "agent.started":
       allow("role", "key", "round", "name");
       return { type, ...agentIdentity(fields) };
-    case "agent.finished":
-      allow("role", "key", "round", "name");
-      return { type, ...agentIdentity(fields) };
+    case "agent.finished": {
+      allow("role", "key", "round", "name", "agentId");
+      const finished = { type, ...agentIdentity(fields) };
+      if (fields.agentId !== undefined) {
+        if (typeof fields.agentId !== "string")
+          throw new Error(`field 'agentId' must be a string`);
+        finished.agentId = fields.agentId;
+      }
+      return finished;
+    }
     case "job.noted":
       allow("note");
       return { type, note: str(fields, "note") };
@@ -510,6 +517,87 @@ function requireComplete(s) {
   if (waiting.length)
     fail(`round ${s.round} is not complete, waiting on: ${waiting.join(", ")}`);
 }
+// packages/contract/src/usage.ts
+var AGENT_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+var isAgentId = (id) => AGENT_ID_PATTERN.test(id);
+var isRecord2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isCount = (v) => typeof v === "number" && Number.isInteger(v) && v >= 0;
+var COUNT_KEYS = ["model", "input", "output", "cacheWrite", "cacheRead"];
+function readUsage(v) {
+  if (!isRecord2(v))
+    return null;
+  const keys = Object.keys(v);
+  if (keys.length === 1 && typeof v.unavailable === "string" && v.unavailable !== "")
+    return { unavailable: v.unavailable };
+  if (keys.length !== COUNT_KEYS.length || !COUNT_KEYS.every((k) => keys.includes(k)))
+    return null;
+  const { model, input, output, cacheWrite, cacheRead } = v;
+  if (model !== null && typeof model !== "string")
+    return null;
+  if (!isCount(input) || !isCount(output) || !isCount(cacheWrite) || !isCount(cacheRead))
+    return null;
+  return { model, input, output, cacheWrite, cacheRead };
+}
+function unavailable(text) {
+  const line = (text.split(`
+`)[0] ?? "").trim();
+  return { unavailable: line === "" ? "unknown reason" : line };
+}
+var JOB_STRETCH_STARTS = ["job.claimed", "job.reworked", "job.human-approved"];
+var JOB_STRETCH_ENDS = ["job.escalated", "merge.failed", "job.merged", "job.abandoned"];
+var EPIC_STRETCH_STARTS = ["epic.started", "epic.resumed"];
+var EPIC_STRETCH_ENDS = ["epic.waiting", "epic.landed", "epic.abandoned"];
+function openStretch(events, starts, ends) {
+  let from = null;
+  for (const e of events) {
+    if (ends.includes(e.type))
+      from = null;
+    else if (from === null && starts.includes(e.type))
+      from = e.ts;
+  }
+  return from;
+}
+function totalOf(usages) {
+  const t = { status: "exact", input: 0, output: 0, cacheWrite: 0, cacheRead: 0, spans: usages.length, unknown: 0 };
+  let counted = 0;
+  let unavailableSpans = 0;
+  for (const u of usages) {
+    if (u === null)
+      t.unknown += 1;
+    else if ("unavailable" in u) {
+      t.unknown += 1;
+      unavailableSpans += 1;
+    } else {
+      counted += 1;
+      t.input += u.input;
+      t.output += u.output;
+      t.cacheWrite += u.cacheWrite;
+      t.cacheRead += u.cacheRead;
+    }
+  }
+  if (t.unknown === 0)
+    t.status = "exact";
+  else if (counted > 0)
+    t.status = "partial";
+  else
+    t.status = unavailableSpans > 0 ? "unavailable" : "not recorded";
+  return t;
+}
+var tokensOf = (t) => t.input + t.output + t.cacheWrite + t.cacheRead;
+function stretchUsages(events, starts, ends) {
+  const out = [];
+  let open = false;
+  for (const e of events) {
+    if (ends.includes(e.type)) {
+      if (open || e.orchestrator !== undefined)
+        out.push(readUsage(e.orchestrator));
+      open = false;
+    } else if (starts.includes(e.type))
+      open = true;
+  }
+  return out;
+}
+
 // packages/contract/src/epic.ts
 var PLAN_STATUSES = ["draft", "ready", "done", "abandoned"];
 var isSlug = (s) => s.length <= SLUG_MAX && SLUG_PATTERN.test(s);
@@ -850,7 +938,8 @@ function projectEpic(log, members, jobs, planError = null) {
     counts: { queued: 0, blocked: 0, running: 0, merged: 0, "needs-human": 0, abandoned: 0 },
     startedAt: first.ts,
     endedAt: null,
-    updated: first.ts
+    updated: first.ts,
+    orchestrator: totalOf(stretchUsages(log, EPIC_STRETCH_STARTS, EPIC_STRETCH_ENDS))
   };
   for (const e of log.slice(1)) {
     snap.updated = e.ts;
@@ -1062,7 +1151,17 @@ function readBrief(root, member) {
 async function epicPlanProblem(root, slug) {
   return planStartProblem(slug, await readPlan(root, slug), (m) => readBrief(root, m));
 }
-var isRecord2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function agentIdsIn(timing) {
+  const ids = [];
+  if (!isRecord3(timing) || !Array.isArray(timing.agents))
+    return ids;
+  for (const a of timing.agents) {
+    if (isRecord3(a) && typeof a.agentId === "string" && isAgentId(a.agentId) && !ids.includes(a.agentId))
+      ids.push(a.agentId);
+  }
+  return ids;
+}
 async function readEpicJobs(root, slug) {
   let names;
   try {
@@ -1080,7 +1179,7 @@ async function readEpicJobs(root, slug) {
     } catch {
       continue;
     }
-    if (!isRecord2(raw) || raw.epic !== slug || typeof raw.stage !== "string")
+    if (!isRecord3(raw) || raw.epic !== slug || typeof raw.stage !== "string")
       continue;
     const kind = JOB_KINDS.find((k) => k === raw.kind) ?? "member";
     out.push({
@@ -1088,7 +1187,8 @@ async function readEpicJobs(root, slug) {
       stage: raw.stage,
       kind,
       brief: typeof raw.brief === "string" ? raw.brief : null,
-      updated: typeof raw.updated === "string" ? raw.updated : null
+      updated: typeof raw.updated === "string" ? raw.updated : null,
+      agentIds: agentIdsIn(raw.timing)
     });
   }
   return out;
@@ -1182,6 +1282,23 @@ async function removeEmpty(dir, made) {
       return;
   }
 }
+async function withEpicUsage(prior, input, ts, jobs, reader) {
+  if (reader === undefined)
+    return input;
+  if (input.type !== "epic.waiting" && input.type !== "epic.landed" && input.type !== "epic.abandoned")
+    return input;
+  const from = openStretch(prior, EPIC_STRETCH_STARTS, EPIC_STRETCH_ENDS);
+  if (from === null)
+    return input;
+  const ids = [...new Set(jobs.flatMap((j) => j.agentIds ?? []))];
+  let orchestrator;
+  try {
+    orchestrator = await reader.orchestrator(ids, { from, to: ts });
+  } catch (e) {
+    orchestrator = unavailable(`usage reader failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return { ...input, orchestrator };
+}
 async function appendEpicEvent(root, slug, input, now = () => new Date, opts = {}) {
   return withEpicLock(root, slug, async () => {
     const prior = await readForAppend(root, slug);
@@ -1190,7 +1307,8 @@ async function appendEpicEvent(root, slug, input, now = () => new Date, opts = {
     const inputs = await loadEpic(root, slug, prior);
     checkEpicTransition(prior, input, inputs.view.landBlock);
     opts.check?.(inputs);
-    const event = { ts: now().toISOString(), ...input };
+    const ts = now().toISOString();
+    const event = { ts, ...await withEpicUsage(prior, input, ts, inputs.jobs, opts.usage) };
     await appendFile(epicLogPath(root, slug), `${JSON.stringify(event)}
 `);
     const snap = project(await loadEpic(root, slug));
@@ -1253,6 +1371,8 @@ async function claimIntoEpic(root, claimed, maxParallel, maxRoundGiven, append) 
   });
 }
 // packages/contract/src/project.ts
+var ROLE_STAGE = { "spec-writer": "spec", builder: "build", reviewer: "review", approver: "approve" };
+var USAGE_STAGES = ["spec", "build", "review", "approve"];
 var ms = (from, to) => Date.parse(to) - Date.parse(from);
 function enterStage(s, stage, ts) {
   if (s.stage === stage && s.timing.stages.length > 0)
@@ -1269,16 +1389,28 @@ function enterStage(s, stage, ts) {
 function sameAgent(a, role, key, round, name) {
   return a.role === role && a.key === key && a.round === round && a.name === name;
 }
-function closeOpenAgents(s, ts) {
+function closeOpenAgents(s, ts, by, ctx) {
   for (const a of s.timing.agents) {
     if (a.finishedAt === null) {
       a.finishedAt = ts;
       a.ms = ms(a.startedAt, ts);
+      ctx.closedBy.set(a, by);
     }
   }
 }
+function openAgentStart(snap, id) {
+  const key = id.key ?? null;
+  const round = id.round ?? null;
+  const name = id.name ?? null;
+  for (let i = snap.timing.agents.length - 1;i >= 0; i--) {
+    const a = snap.timing.agents[i];
+    if (a && a.finishedAt === null && sameAgent(a, id.role, key, round, name))
+      return a.startedAt;
+  }
+  return null;
+}
 var storedSession = (v) => isSession(v) ? { app: v.app, environment: v.environment, thread: v.thread } : null;
-function apply(s, e) {
+function apply(s, e, ctx) {
   s.updated = e.ts;
   switch (e.type) {
     case "job.claimed":
@@ -1301,7 +1433,7 @@ function apply(s, e) {
       const name = e.name ?? null;
       if (e.role === "builder" && name !== null)
         s.builder = name;
-      s.timing.agents.push({
+      const started = {
         role: e.role,
         key: e.key ?? null,
         round: e.round ?? null,
@@ -1309,8 +1441,12 @@ function apply(s, e) {
         startedAt: e.ts,
         finishedAt: null,
         ms: null,
-        verdict: null
-      });
+        verdict: null,
+        agentId: null,
+        usage: null
+      };
+      s.timing.agents.push(started);
+      ctx.rounds.set(started, s.round);
       return;
     }
     case "agent.finished": {
@@ -1327,12 +1463,15 @@ function apply(s, e) {
         }
       }
       if (!span) {
-        span = { role: e.role, key, round, name, startedAt: e.ts, finishedAt: null, ms: null, verdict: null };
+        span = { role: e.role, key, round, name, startedAt: e.ts, finishedAt: null, ms: null, verdict: null, agentId: null, usage: null };
         s.timing.agents.push(span);
+        ctx.rounds.set(span, s.round);
       }
       span.finishedAt = e.ts;
       span.ms = ms(span.startedAt, e.ts);
       span.verdict = verdict;
+      span.agentId = typeof e.agentId === "string" && isAgentId(e.agentId) ? e.agentId : null;
+      span.usage = readUsage(e.usage);
       if (e.role === "reviewer" && key !== null && (verdict === "PASS" || verdict === "CHANGES")) {
         if (round === s.round && Object.hasOwn(s.reviews, key))
           s.reviews[key] = verdict;
@@ -1345,7 +1484,7 @@ function apply(s, e) {
       s.note = e.note;
       return;
     case "job.escalated":
-      closeOpenAgents(s, e.ts);
+      closeOpenAgents(s, e.ts, "escalation", ctx);
       s.note = e.reason;
       s.stoppedBy = "escalated";
       s.stoppedFrom = workingStage(s.stage);
@@ -1387,7 +1526,7 @@ function apply(s, e) {
       enterStage(s, "merged", e.ts);
       return;
     case "job.abandoned":
-      closeOpenAgents(s, e.ts);
+      closeOpenAgents(s, e.ts, "abandon", ctx);
       s.endedAt = e.ts;
       s.note = e.reason;
       enterStage(s, "abandoned", e.ts);
@@ -1425,11 +1564,33 @@ function project2(events) {
     stageEnteredAt: first.ts,
     endedAt: null,
     updated: first.ts,
-    timing: { stages: [{ stage: "claimed", round: 0, enteredAt: first.ts, exitedAt: null, ms: null }], agents: [] }
+    timing: { stages: [{ stage: "claimed", round: 0, enteredAt: first.ts, exitedAt: null, ms: null }], agents: [] },
+    usage: { stages: [], rounds: [], job: totalOf([]), orchestrator: null }
   };
+  const ctx = { rounds: new Map, closedBy: new Map };
   for (const e of events.slice(1))
-    apply(snapshot, e);
+    apply(snapshot, e, ctx);
+  snapshot.usage = rollUp(snapshot, events, ctx);
   return snapshot;
+}
+var recordsUsage = (events) => events.some((e) => e.type === "agent.finished" && e.usage !== undefined || ("orchestrator" in e) && e.orchestrator !== undefined);
+function rollUp(s, events, ctx) {
+  if (recordsUsage(events))
+    for (const [a, by] of ctx.closedBy)
+      a.usage = { unavailable: `closed by ${by}` };
+  const rounds = ctx.rounds;
+  const closed = s.timing.agents.filter((a) => a.finishedAt !== null);
+  const stages = USAGE_STAGES.flatMap((stage) => {
+    const spans = closed.filter((a) => ROLE_STAGE[a.role] === stage);
+    return spans.length === 0 ? [] : [{ stage, total: totalOf(spans.map((a) => a.usage)) }];
+  });
+  const roundOf = (a) => a.round ?? rounds.get(a) ?? 0;
+  const roundNumbers = [...new Set(closed.map(roundOf))].sort((a, b) => a - b);
+  const byRound = roundNumbers.map((round) => ({ round, total: totalOf(closed.filter((a) => roundOf(a) === round).map((a) => a.usage)) }));
+  const stretches = s.epic === null ? stretchUsages(events, JOB_STRETCH_STARTS, JOB_STRETCH_ENDS) : null;
+  const orchestrator = stretches === null ? null : totalOf(stretches);
+  const job = totalOf([...closed.map((a) => a.usage), ...stretches ?? []]);
+  return { stages, rounds: byRound, job, orchestrator };
 }
 // packages/contract/src/store.ts
 import { appendFile as appendFile2, mkdir as mkdir3, readFile as readFile2, readdir as readdir2, rename as rename2, rmdir as rmdir2, stat as stat2, writeFile as writeFile2 } from "fs/promises";
@@ -1541,6 +1702,54 @@ async function writeSnapshot(root, id, snap) {
 `);
   await rename2(tmp, file);
 }
+async function safely(read) {
+  try {
+    return await read();
+  } catch (e) {
+    return unavailable(`usage reader failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+async function withUsage(prior, input, ts, reader) {
+  if (input.type === "agent.finished") {
+    const { agentId, ...rest } = input;
+    if (agentId !== undefined && !isAgentId(agentId)) {
+      return reader === undefined ? rest : { ...rest, usage: { unavailable: "agentId is not a safe id (want ^[A-Za-z0-9_-]+$)" } };
+    }
+    if (reader === undefined)
+      return input;
+    if (agentId === undefined)
+      return { ...input, usage: { unavailable: "no agentId on agent.finished" } };
+    const from = prior.length === 0 ? null : openAgentStart(project2(prior), input);
+    if (from === null)
+      return { ...input, usage: { unavailable: "no open agent.started for this span" } };
+    return { ...input, usage: await safely(() => reader.agent(agentId, { from, to: ts })) };
+  }
+  if (reader === undefined || !JOB_STRETCH_ENDS.includes(input.type))
+    return input;
+  const first = prior[0];
+  if (first === undefined || first.type !== "job.claimed" || first.epic !== undefined)
+    return input;
+  const from = openStretch(prior, JOB_STRETCH_STARTS, JOB_STRETCH_ENDS);
+  if (from === null)
+    return input;
+  const orchestrator = await safely(() => reader.orchestrator(agentIdsOf(prior), { from, to: ts }));
+  switch (input.type) {
+    case "job.escalated":
+    case "merge.failed":
+    case "job.merged":
+    case "job.abandoned":
+      return { ...input, orchestrator };
+    default:
+      return input;
+  }
+}
+function agentIdsOf(events) {
+  const ids = [];
+  for (const e of events)
+    if (e.type === "agent.finished" && typeof e.agentId === "string" && isAgentId(e.agentId) && !ids.includes(e.agentId))
+      ids.push(e.agentId);
+  return ids;
+}
 async function appendEvent(root, id, input, now = () => new Date, opts = {}) {
   const snap = await appendJobEvent(root, id, input, now, opts);
   if (snap.epic !== null)
@@ -1564,7 +1773,8 @@ function appendJobEvent(root, id, input, now, opts) {
       throw new Error(`${id}: events.jsonl does not end with a newline (corrupt tail); refusing to append`);
     const checked = await withVerdict(root, id, input);
     checkTransition(prior, checked, opts);
-    const event = { ts: now().toISOString(), ...checked };
+    const ts = now().toISOString();
+    const event = { ts, ...await withUsage(prior, checked, ts, opts.usage) };
     await appendFile2(logPath(root, id), `${JSON.stringify(event)}
 `);
     const snap = project2(await readLog(root, id));
@@ -1725,12 +1935,70 @@ function formatShow(snap, now) {
     const who = [a.role, a.key, a.round !== null ? `r${a.round}` : null, a.name].filter((x) => x !== null).join(" ");
     out.push(`agent  ${who}  ${span(a.ms, a.startedAt, now)}${a.verdict ? `  ${a.verdict}` : ""}`);
   }
-  return out;
+  return [...out, ...formatUsage(snap)];
+}
+function compactTokens(n) {
+  if (n < 1000)
+    return String(n);
+  if (n < 999950)
+    return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1e6).toFixed(1)}M`;
+}
+var plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+function usageSummary(t, unit = ["span", "spans"]) {
+  const sum = compactTokens(tokensOf(t));
+  switch (t.status) {
+    case "exact":
+      return `= ${sum}`;
+    case "partial":
+      return `\u2265 ${sum}, ${plural(t.unknown, `${unit[0]} unknown`, `${unit[1]} unknown`)}`;
+    case "unavailable":
+      return `unavailable (${plural(t.unknown, unit[0], unit[1])})`;
+    case "not recorded":
+      return "not recorded";
+  }
+}
+var NONE = "-";
+function spanRow(a) {
+  const id = [a.role, a.key ?? NONE, a.round === null ? NONE : String(a.round)];
+  const u = a.usage;
+  if (u === null)
+    return [...id, a.finishedAt === null ? "running" : "not recorded", NONE, NONE, NONE, NONE];
+  if ("unavailable" in u)
+    return [...id, `unavailable: ${u.unavailable}`, NONE, NONE, NONE, NONE];
+  return [...id, u.model ?? NONE, String(u.input), String(u.output), String(u.cacheWrite), String(u.cacheRead)];
+}
+function totalRow(label, t, summary) {
+  const counted = t.status === "exact" || t.status === "partial";
+  const n = (v) => !counted ? NONE : t.status === "partial" ? `\u2265 ${v}` : String(v);
+  return [label, "", "", summary, n(t.input), n(t.output), n(t.cacheWrite), n(t.cacheRead)];
+}
+function formatUsage(snap) {
+  const u = snap.usage;
+  const orchestrator = u.orchestrator;
+  if (snap.timing.agents.length === 0 && (orchestrator === null || orchestrator.spans === 0))
+    return [];
+  const rows = [["role", "key", "round", "model", "input", "output", "cache write", "cache read"]];
+  for (const a of snap.timing.agents)
+    rows.push(spanRow(a));
+  for (const s of u.stages)
+    rows.push(totalRow(`stage ${s.stage}`, s.total, usageSummary(s.total)));
+  for (const r of u.rounds)
+    rows.push(totalRow(`round ${r.round}`, r.total, usageSummary(r.total)));
+  if (orchestrator === null)
+    rows.push(["orchestrator", "", "", `in epic ${snap.epic ?? ""} (epic show)`, "", "", "", ""]);
+  else if (orchestrator.spans === 0)
+    rows.push(["orchestrator", "", "", "no stretch ended yet", "", "", "", ""]);
+  else
+    rows.push(totalRow("orchestrator", orchestrator, usageSummary(orchestrator, ["stretch", "stretches"])));
+  rows.push(totalRow("job", u.job, usageSummary(u.job)));
+  const widths = rows[0]?.map((_, i) => Math.max(...rows.map((r) => (r[i] ?? "").length))) ?? [];
+  return ["usage", ...rows.map((r) => `  ${r.map((c, i) => c.padEnd(widths[i] ?? 0)).join("  ")}`.trimEnd())];
 }
 // packages/contract/src/manifest.ts
 var SCHEMA2 = "factory/v1";
 var SHA256_HEX = /^[0-9a-f]{64}$/;
-var isRecord3 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 function checkManifestPath(p) {
   if (p === "")
     return "empty path";
@@ -1745,7 +2013,7 @@ function checkManifestPath(p) {
   return null;
 }
 function parseManifest(raw) {
-  if (!isRecord3(raw))
+  if (!isRecord4(raw))
     throw new Error("must be a JSON object");
   const extra = Object.keys(raw).filter((k) => !["schema", "version", "files"].includes(k));
   if (extra.length)
@@ -1754,7 +2022,7 @@ function parseManifest(raw) {
     throw new Error(`schema must be "${SCHEMA2}"`);
   if (typeof raw.version !== "string" || raw.version === "")
     throw new Error("version must be a non-empty string");
-  if (!isRecord3(raw.files))
+  if (!isRecord4(raw.files))
     throw new Error("files must be an object");
   const files = {};
   for (const [path, hash] of Object.entries(raw.files)) {
@@ -1772,7 +2040,7 @@ import { mkdir as mkdir4, open, readFile as readFile3, rename as rename3, rm as 
 import { homedir } from "os";
 import { basename, dirname as dirname2, isAbsolute, join as join3, resolve } from "path";
 var SCHEMA3 = "factory/v1";
-var isRecord4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var isNotFound2 = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "ENOENT";
 function registryPath(andonHome) {
   return join3(andonHome !== undefined && andonHome !== "" ? andonHome : join3(homedir(), ".andon"), "projects.json");
@@ -1787,7 +2055,7 @@ function checkRoot(root) {
   return null;
 }
 function parseRegistry(raw) {
-  if (!isRecord4(raw))
+  if (!isRecord5(raw))
     throw new Error("registry: must be a JSON object");
   const extra = Object.keys(raw).filter((k) => k !== "schema" && k !== "projects");
   if (extra.length)
@@ -1799,7 +2067,7 @@ function parseRegistry(raw) {
   const projects = [];
   const seen = new Set;
   for (const [i, p] of raw.projects.entries()) {
-    if (!isRecord4(p))
+    if (!isRecord5(p))
       throw new Error(`registry: projects[${i}] must be an object`);
     const pExtra = Object.keys(p).filter((k) => k !== "root");
     if (pExtra.length)
@@ -1883,7 +2151,7 @@ import { mkdir as mkdir5, open as open2, readFile as readFile4, rename as rename
 import { homedir as homedir2 } from "os";
 import { basename as basename2, dirname as dirname3, join as join4 } from "path";
 var SCHEMA4 = "factory/v1";
-var isRecord5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord6 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var isNotFound3 = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "ENOENT";
 function peersPath(andonHome) {
   return join4(andonHome !== undefined && andonHome !== "" ? andonHome : join4(homedir2(), ".andon"), "peers.json");
@@ -1926,7 +2194,7 @@ function peerLabel(url) {
   }
 }
 function parsePeers(raw) {
-  if (!isRecord5(raw))
+  if (!isRecord6(raw))
     throw new Error("peers: must be a JSON object");
   const extra = Object.keys(raw).filter((k) => k !== "schema" && k !== "peers");
   if (extra.length)
@@ -1938,7 +2206,7 @@ function parsePeers(raw) {
   const peers = [];
   const seen = new Set;
   for (const [i, p] of raw.peers.entries()) {
-    if (!isRecord5(p))
+    if (!isRecord6(p))
       throw new Error(`peers: peers[${i}] must be an object`);
     const pExtra = Object.keys(p).filter((k) => k !== "url");
     if (pExtra.length)
@@ -2024,7 +2292,7 @@ import { createHash } from "crypto";
 // packages/templates/package.json
 var package_default = {
   name: "@factory/templates",
-  version: "0.5.0",
+  version: "0.6.0",
   private: true,
   type: "module",
   main: "src/index.ts",
@@ -2436,7 +2704,7 @@ marked "approved in brief" does not.
 `;
 
 // packages/templates/assets/skill/SKILL.md
-var SKILL_default = '---\nname: factory\ndescription: Run the factory \u2014 a feature goes spec \u2192 build \u2192 parallel reviews \u2192 approve \u2192 merge, driven by subagents that talk only through markdown files; `queue` and `explore` feed its backlog, and `customize` (alias `init`) tailors the project\'s overlay. Use when the user invokes /factory with a feature, `next [words]`, `queue <text>`, `explore <idea|brief>`, `customize`, `init`, `approve <job-id>`, `rework <job-id> <note>`, `abandon <job-id> <reason>`, `epic <slug>` (start or resume an epic: several briefs run as member jobs into one branch, then land as one merge), or `epic abandon <slug> <reason>`.\nargument-hint: "<feature> | next [words] | queue <text> | explore <idea|brief> | customize | init | approve <job-id> | rework <job-id> <note> | abandon <job-id> <reason> | epic <slug> | epic abandon <slug> <reason>"\n---\n\n# /factory \u2014 the orchestrator\n\nThe session running this skill **is the orchestrator** of one job, or of one epic (several\nmember jobs driven together; see **Epics**). You run its loop, spawn every agent, and record\nevery state change through the **factory CLI**. You never write code, specs, reviews, or\ndecisions yourself; agents do, one file each. Other sessions may be running other jobs at the\nsame time; see **Running jobs side by side**.\n\n```\nclear work \u2500\u2500 queue \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\nfuzzy idea \u2500\u2500 explore \u2500\u2500 brief \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u25BA backlog.md \u2500\u2500 next \u2500\u2510\n                                                                \u25BC\nfeature \u2192 spec-writer \u2192 builder \u21C4 [configured reviewers] \u2192 approver \u2192 merge | needs-human\n```\n\n## Files (R = `git rev-parse --show-toplevel`; always pass agents absolute paths)\n\n| Path | Written by |\n|---|---|\n| `factory/jobs/<id>/events.jsonl` \u2014 the job\'s append-only event log, the truth | the factory CLI, when you run it |\n| `factory/jobs/<id>/job.json` \u2014 derived from the log; the dashboard polls it | the factory CLI (never by hand) |\n| `factory/config.json` \u2014 reviewer keys, the default `maxRound`, the gate, per-role runners, and the merge target | human (or `customize`, with the human) |\n| `factory/roles/<role>.md` \u2014 the project\'s rules for one role (optional) | human (or `customize`, with the human) |\n| `factory/.lock/` \u2014 a short mutex for claiming work and merging | you, briefly |\n| `factory/jobs/.claim.lock/` \u2014 the CLI\'s mutex for handing out job ids | the factory CLI (never by hand) |\n| `factory/backlog.md` \u2014 open and running work only, the queue for `/factory next` | human (adds and edits lines); you, at claim, merge, abandon, `queue`, and `explore`, each edit committed at once |\n| `factory/briefs/<slug>.md` \u2014 decisions from an `explore` interview (tracked in git) | you, with the human |\n| `factory/epics/<slug>.md` \u2014 an epic\'s plan: its member briefs and their `after:` edges (tracked in git) | you, with the human (`explore`); you, for its bookkeeping lines (`Status:`, `- Landed:`, `- Abandoned:`) and dependent drops |\n| `factory/jobs/epics/<slug>/events.jsonl` and `epic.json` \u2014 an epic\'s log and its derived snapshot | the factory CLI (never by hand) |\n| `factory/jobs/<id>/feature.md` \u2014 the request, verbatim (generated, for an epic\'s sync and fix jobs) | you |\n| `factory/jobs/<id>/rework-<k>.md` \u2014 a human\'s rework note, verbatim | you |\n| `factory/jobs/<id>/conflict-<c>.md` \u2014 the facts of a merge conflict with `<target>` | you |\n| `factory/jobs/<id>/spec.md` | `factory-spec-writer` |\n| `factory/jobs/<id>/build.md` | `factory-builder` |\n| `factory/jobs/<id>/round-<N>/review-<key>.md` | the reviewer for each key in `factory/config.json` `reviewers` |\n| `factory/jobs/<id>/round-<N>/<key>/*` \u2014 supporting files such as screenshots, when its rules ask for them | that reviewer |\n| `factory/jobs/<id>/decision.md` | `factory-approver` |\n| `factory/.worktrees/<id>/` \u2014 the job\'s checkout, branch `factory/<id>` | builder (code) |\n| `factory/.worktrees/epic-<slug>/` \u2014 an epic\'s checkout, branch `factory/epic/<slug>` | the factory CLI creates and removes it; you merge into it |\n\n`jobs/`, `.lock/`, and `.worktrees/` are gitignored runtime state. Code lives on the\nbranch; the main checkout stays on the job\'s target branch so your files never move under you.\nDashboard: Andon, one service per machine. Run `factory service install` once per machine (not per project) to keep it running, or `factory service run` in the foreground, then open http://127.0.0.1:8766/; when Andon says a restart is needed, run `factory service restart`. `factory init` registers the project with Andon.\n\n**The target branch.** Every job is based on and merges into its **target**: `target` in its\n`job.json`. The CLI resolves it once, at `claim`, from `merge.target` in\n`<R>/factory/config.json`: `current` (the default when `merge` or `merge.target` is absent) is\nthe branch the main checkout is on at that moment, and any other value names a branch that\nmust exist. The CLI accepts only a plain branch name (letters, digits, `.`, `_`, `/`, `-`), so a\ntarget never carries quotes or shell metacharacters. A detached HEAD, a missing branch, or a\ndisallowed name refuses the claim, writing nothing; tell the user the CLI\'s one-line reason and\nstop. Read `target` from `job.json` after the claim and use\nit as `<target>` everywhere below, even if the checkout or the config changes mid-job.\nIf `target` is `null` (a job claimed before the CLI recorded it), resolve it whenever you need\nit from the current config: `merge.target` if it names a branch, else (`current`, or no key)\n`git symbolic-ref --short HEAD` in `<R>`.\n\n**Reviewers come from config.** The reviewer keys are `reviewers` in `<R>/factory/config.json`,\nin order. Read them when a round starts; never assume a list. Each key `<key>` is the agent\n`factory-<key>`, which writes `round-<N>/review-<key>.md`.\n\n## The board \u2014 events through the CLI\n\nA job\'s state is its `factory/jobs/<id>/events.jsonl`; the CLI derives `job.json` from it after\nevery event, and the dashboard assembles the board from those. You **never write `job.json` or\nthe log** yourself. "Board: `<type> k=v \u2026`" below means: run\n\n```bash\nbun factory/cli.ts event <id> <type> [k=v \u2026]    # from <R>\n```\n\nfor **your job** only, right when the change happens. It prints the new stage. A job starts\nwith **`claim`**, never with `event`:\n\n```bash\nbun factory/cli.ts claim <slug> [brief=\u2026] [issue=\u2026] [maxRound=\u2026] [session=\u2026]    # from <R>\n```\n\n`<slug>` is a 2\u20134 word kebab name for the work (lowercase letters and digits joined by single\n`-`, at most 40 characters), e.g. `export-csv-report`. The CLI picks the job number, creates\n`factory/jobs/<id>/`, logs `job.claimed`, and prints the full id (e.g. `004-export-csv-report`)\nas its only output. That printed id is `<id>` everywhere from then on; never compute, guess, or\npick an id yourself. A non-zero exit means nothing was claimed: read the one-line reason (a bad\nslug, `slug <slug> is live as <id>` when a live job already has that slug, a refused\n`merge.target`), fix it or tell the user, and stop. A non-zero exit\nmeans the event was rejected and nothing was written: read the one-line reason and fix the\ncause (usually WAIT FOR ALL, or an agent\'s file that\'s missing or malformed). Never hand-edit\nstate to get around it. If the reason is a corrupt (torn) tail, stop and tell the user: a human\ntruncates the partial last line, then runs `bun factory/cli.ts rebuild <id>`; you never edit the\nlog. The schema, the event types, and the allowed transitions are in\n[factory/CONTRACT.md](../../../factory/CONTRACT.md); `bun factory/cli.ts show <id>` prints a job\'s\nstage and timing. Jobs claimed before the CLI (no `events.jsonl`) reject every event, so\n`approve`/`rework`/`abandon` can\'t drive them; say so in one line and stop.\n\nPut free-text values (`title`, `note`, `reason`) in **single quotes** \u2014 double quotes expand\n`$` and backticks \u2014 and write an apostrophe as `\'\\\'\'`: `reason=\'it\'\\\'\'s blocked\'`.\n\n**Agent spans.** Every spawn or resume is bracketed: `agent.started` right before it and\n`agent.finished` once it returns **and its file exists**, with the same identity fields \u2014\n`role` (`spec-writer` | `builder` | `reviewer` | `approver`), plus `key=<reviewer key>` and\n`round=<N>` for reviewers, `name=builder-<id>` for the builder, and `round=<N>` for a builder\nresumed after round N (omit `round` when N is 0). Never pass a verdict: the CLI reads it from\nthe reviewer\'s or approver\'s file.\n\n## The thread lookup (T3 Code)\n\nA job records which T3 Code thread is orchestrating it, so the dashboard can open that thread.\nRun this **thread lookup** right before `claim` (before taking `factory/.lock`), before\n`job.reworked` (`/factory rework`), and before `job.human-approved` (`/factory approve`), and\nonly when T3 Code\'s tools `t3_environment_read` and `t3_thread_search` are both present in this\nsession. Without them, skip it and run the command without `session`.\n\n**In an epic** the lookup runs **once**, when `/factory epic <slug>` starts or resumes the epic,\nright before `epic start` or `epic event <slug> epic.resumed`. The `session=` it gives goes on\nthat command and on every claim this session makes for the epic (members, sync, and fix jobs);\nnever run it again per claim.\n\n1. Write a unique phrase in your reply to the user: `factory session <random>`, where\n   `<random>` is 12 random letters and digits you make up now (never reuse one).\n2. Call `t3_environment_read` for the environment id, then `t3_thread_search` for the phrase.\n   If no thread comes back, wait a couple of seconds (`sleep 2`) and search once more.\n3. Only if exactly one thread matches, add `session=t3code:<environmentId>/<threadId>` to the\n   command (`claim`, `job.reworked`, `job.human-approved`, `epic start`, or `epic.resumed`).\n4. Otherwise (no match after the retry, several matches, or a tool error), run the command\n   without `session` and tell the user in one line: "couldn\'t find this T3 Code thread; the job\n   won\'t link to it".\n\nIt is best effort: never stop the job, wait on the user, or ask them about it. If the CLI\nrefuses the `session=` value, run the same command again without it and say that one line.\nPass `session=` on nothing else (the CLI refuses it on every other event and epic event), and\nnever record any other id, such as Claude Code\'s own session id.\n\n## Running jobs side by side\n\nAny number of sessions can run `/factory` at once, one job, or one epic, each. Each job has its own worktree,\nbranch, job dir, and `job.json`, so they don\'t touch each other\'s files. The job-id sequence is\nthe CLI\'s: `claim` hands out each number under its own lock, so two sessions never get the same\nid. Two more things are shared: the backlog and the main checkout that merges land in. Those\nsteps happen under `factory/.lock`, which is a directory because `mkdir` is atomic:\n\n```bash\ncd <R>; until mkdir factory/.lock 2>/dev/null; do\n  [ -n "$(find factory/.lock -maxdepth 0 -mmin +15)" ] && rmdir factory/.lock  # stale: holder died\n  sleep 2; done\n```\n\nRelease it with `rmdir factory/.lock` as soon as the step is done, and never hold it while you\nwait on the user or an agent. These steps take the lock:\n- **Claim:** run **the backlog check**, pick the work, run the overlap check, run\n  `bun factory/cli.ts claim <slug> \u2026` (it picks the number, creates the job dir, and prints the\n  id), then, with that printed id, write `feature.md`, tick the backlog line as\n  `- [x] \u2026 \u2192 <id>`, and commit the tick at once by pathspec, still under the lock:\n  `git commit -m "chore(factory): claim job <id>" -m "Co-Authored-By: Claude\n  <noreply@anthropic.com>" -- factory/backlog.md`. Release the lock only\n  after that commit; the job\'s branch is created later (step 2 of the loop). The ticked line\n  stays in the backlog while the job runs, so other sessions see it and never pick it. Work\n  claimed from free text with no backlog line has nothing to tick: no backlog commit. Run\n  **the thread lookup** before taking the lock.\n- **Merge:** everything in **Merge** below, bookkeeping included.\n- **Abandon bookkeeping:** removing the job\'s backlog line and noting the attempt in its brief\n  (`/factory abandon`).\n- **Queue:** appending lines with `/factory queue`, and its commit.\n- **Explore\'s Finish:** marking a brief ready, appending its backlog line, and their commit.\n- **Epic start:** the backlog check, `epic start`, and the tick of the epic\'s backlog line as\n  `- [x] \u2026 \u2192 epic <slug>`, with its commit (**Epics**, "Start or resume").\n- **Landing:** everything in **Epics**, "Landing", from the checkout check to the\n  `land epic <slug>` commit.\n- **Epic bookkeeping:** a member brief\'s `- Abandoned:` line, dropping members from a plan, and\n  `/factory epic abandon`\'s bookkeeping, each with its commit.\n\nMember, sync, and fix claims don\'t take the lock: they touch no backlog line, and the CLI checks\nthe epic\'s plan and cap under the epic\'s own lock. A member\'s merge into the epic branch doesn\'t\ntake it either: it happens in the epic\'s worktree, never the main checkout, and only the session\ndriving the epic merges there.\n\n**The backlog holds only open and running work, and every edit to it is committed at once** by\nthe step that makes it, by pathspec, under `factory/.lock`. A pathspec commit takes the whole\nfile, so nothing may be left uncommitted between steps, or one job\'s edit lands in another\'s\ncommit. A line is `- [ ]` while open, `- [x] \u2026 \u2192 <id>` while its job runs, and removed when the\njob merges or is abandoned. An epic\'s line (ending `\u2014 epic: factory/epics/<slug>.md`) is\n`- [x] \u2026 \u2192 epic <slug>` while the epic runs, and removed when it lands or is abandoned; its\nmember jobs never get lines of their own.\n\n**The backlog check** (the first thing each of those steps does). Run\n`git status --porcelain -- factory/backlog.md` from `<R>`. If it prints anything,\n`factory/backlog.md` already has uncommitted changes (someone\'s hand edits): never sweep them\ninto your commit. Release the lock, stop with the one line "commit or discard your backlog\nedits first", and leave the backlog as it is. Each step below says what that stop means for it.\n\n**Live jobs** are the jobs whose `job.json` (read-only to you) has a stage other than\n`merged`. That includes `needs-human`, because those branches still have to merge.\n**Running epics** are the epics whose `factory/jobs/epics/<slug>/epic.json` (read-only to you)\nhas a state other than `landed` or `abandoned`.\n\n**Overlap check** (part of every claim, right after the backlog check). Compare the new work with each live job\'s title\nand `feature.md`, and its `spec.md` Touchpoints if they\'re written yet. The question is whether\nthey look likely to change the same area: the same module, the same surface or component, the\nsame doc. A judgment call at a glance is enough; no file-level analysis is needed. If they\noverlap, release the lock and ask the user in a sentence before starting: *"This and live job\n<id> both change the same module, so they\'ll likely conflict at merge. Start it anyway, or take\nthe next backlog line that doesn\'t overlap?"* Then do what they say. Most work won\'t overlap, so\ndon\'t ask when it doesn\'t.\n\n## Spawning agents\n\nAgents get context from **files, not the conversation**. Every spawn prompt is just this card\n(drop lines that don\'t apply), with `subagent_type` set to the agent\'s name:\n\n```\nFactory job <id>. Your instructions are in your agent definition; all context is in these files.\nrepo:     <R>\njob dir:  <R>/factory/jobs/<id>\nworktree: <R>/factory/.worktrees/<id>   (branch factory/<id>)\nbase:     <target>\nround:    <N>\nbrief:    <R>/factory/briefs/<slug>.md      (spec-writer and approver, when the job has one)\nwrite:    <the one absolute path this agent writes>\ndeliver:  create the write: file with the Write tool. It is pipeline input, not a report. Reply with one line only.\n```\n\nKeep the `deliver:` line. Claude Code tells every subagent not to write findings `.md`\nfiles and to return them as text. Reviewers sometimes obey that and send the review as their\nreply, which leaves no file.\n\nDon\'t pass `model` \u2014 each agent\'s frontmatter sets it (from `roles` in `factory/config.json`,\nrendered by `factory upgrade`). After each agent returns, confirm its\nfile exists. A nudge or re-spawn below stays inside the agent\'s original span: no new\n`agent.started`, and one `agent.finished` once the file lands. If the file doesn\'t exist:\n1. `SendMessage` the same agent: *"<path> doesn\'t exist. Create it now with the Write tool\n   (pipeline input, not a report), then reply with one line."* It keeps its context, so this\n   is quick and doesn\'t redo its checks. If its reply holds the whole document, don\'t save\n   that text yourself; ask it again to write the file.\n2. Still missing \u2192 re-spawn the agent once with the same card.\n3. Still missing \u2192 board: `job.escalated reason=\'<agent> wrote no <file>\'` (allowed in any\n   stage; it closes the open spans), then stop and tell the user they can `approve` or `rework`.\n\nIf `agent.finished` is rejected because the file\'s first line is malformed, `SendMessage` the\nagent to fix that first line to the exact format its definition gives (`VERDICT: PASS` /\n`VERDICT: CHANGES`, or `APPROVE` / `ESCALATE`), then retry. Never edit an agent\'s file yourself.\n\n## The loop\n\nEvery job runs this loop, an epic\'s jobs included. For a job in an epic (its `job.json` has an\n`epic`), `<target>` is the epic branch `factory/epic/<slug>`, so its worktree branches from it\nand its reviewers diff against it, and it merges by **Member merge** (under **Epics**) wherever\nthis loop says **Merge**.\n\n**1 \xB7 Spec.** Board: `stage.entered stage=spec`. Spawn `factory-spec-writer` \u2192 `spec.md`\n(span `role=spec-writer`). Board: `job.titled title=\'<spec.md\'s # H1>\'`.\nThen read spec.md\'s "Contract conflicts / open questions". If it lists any item not marked\n"approved in brief", the spec has open questions: board:\n`job.escalated reason=\'spec has <n> open question(s): <the first, with its assumed answer>\'`\n(`<n>` counts those items), and stop before step 2: no worktree, no build. Tell the user the\nquestion(s) and that they answer with `/factory rework <id> "<answer>"`. Never build on an open\nquestion, and never ask it in chat instead: the escalation puts it on the board.\n\n**2 \xB7 Worktree.** `git worktree add -b factory/<id> factory/.worktrees/<id> \'<target>\'`\n(if the branch already exists: `git worktree add factory/.worktrees/<id> factory/<id>`).\n\n**3 \xB7 Build.** Board: `stage.entered stage=build`. Spawn `factory-builder` (name it\n`builder-<id>` if your Agent tool takes a name) \u2192 `build.md`, commits on the branch. The span is\nalways `role=builder name=builder-<id>`, literally, never the agent id: `agent.started` runs\nbefore the spawn, so no id exists yet. Keep the agent id the Agent tool returns in your own\ncontext; it is only the `SendMessage` target when you resume the builder (wherever this skill\nsays "`SendMessage` to `builder-<id>`", send to that id when the tool gave you one). Wait for it\nto return.\n\n**4 \xB7 Review round N** (N = previous round + 1, starting at 1). `mkdir jobs/<id>/round-<N>/`,\nboard: `round.started round=<N>` (the CLI fills in the reviewers from `factory/config.json`).\nThen one `agent.started role=reviewer key=<key> round=<N>` per configured reviewer, and spawn\n**all of them in one message**, in the background: `factory-<key>` writing\n`round-<N>/review-<key>.md`. As each one returns and its file exists, board:\n`agent.finished role=reviewer key=<key> round=<N>` (that sets its chip).\n\n**WAIT FOR ALL.** The round is done only when every reviewer\'s file exists and has its\n`agent.finished`. Never resume the builder, start the approver, or decide anything mid-round\n(the CLI refuses to leave review early).\n\n**5 \xB7 Gate.**\n- All `PASS` \u2192 step 6.\n- Any `CHANGES` and `round < maxRound` \u2192 board: `stage.entered stage=build`, then resume the\n  **same** builder (span `role=builder name=builder-<id> round=<N>`): `SendMessage` to\n  `builder-<id>` \u2014 *"Round <N> reviews are in <R>/factory/jobs/<id>/round-<N>/. Address every\n  [blocking] finding, update build.md, commit."* When it returns, go to step 4.\n- Any `CHANGES` and `round == maxRound` (default `maxRound` 2) \u2192 step 6; the approver will\n  escalate.\n\n**6 \xB7 Approve.** Board: `stage.entered stage=approve`. Spawn `factory-approver` \u2192\n`decision.md` (span `role=approver`; its `agent.finished` records the decision). Read the first\nline:\n- `APPROVE` \u2192 **Merge** (below).\n- `ESCALATE` \u2192 board: `job.escalated reason=\'<one-line reason>\'`. Tell the user why, and that\n  they can `/factory approve <id>` or `/factory rework <id> "<note>"`.\n\n## Merge\n\nThis is a standalone job\'s merge into its target from the main checkout. A job in an epic merges\ninto the epic branch instead, by **Member merge** under **Epics**.\n\nTake `factory/.lock` first. Another session may be merging. Everything below runs from the\nmain checkout, which must be on the job\'s `<target>`. Check it first with\n`git symbolic-ref --short HEAD`. If it is on another branch `<x>` (or detached: `<x>` is\n`detached HEAD`), release the lock, board:\n`merge.failed reason=\'checkout is on <x>, job targets <target>\'` (the job goes to\n`needs-human`; `<x>` is whatever the checkout\'s branch is called, so write any apostrophe\nin it as `\'\\\'\'`, as for every board value), and stop: tell the user to switch the main\ncheckout to `<target>` themselves and retry with `/factory approve <id>`. Never run `git checkout` or `git switch` here. The main\ncheckout is the user\'s working tree, maybe with uncommitted work.\n\n```bash\ngit merge --no-ff factory/<id> -m \'<Merge message: line from decision.md>\' \\\n  -m \'Factory job <id>.\' -m \'Co-Authored-By: Claude <noreply@anthropic.com>\'\n```\n\nThe merge message is the approver\'s text: keep it in single quotes and write any apostrophe in it\nas `\'\\\'\'` (as for board values), so `$` and backticks in it are never expanded.\n\n- **Conflict** (after the failed `git merge`, `git diff --name-only --diff-filter=U` lists at\n  least one path) \u2192 the job goes back to its own builder, in order:\n  1. Before anything else, list the conflicting paths (`git diff --name-only --diff-filter=U`)\n     and the sha of `<target>` (`git rev-parse --short <target>`), and keep `git merge`\'s\n     one-line summary. Then `git merge --abort`.\n  2. Then release the lock (`rmdir factory/.lock`).\n  3. If `conflicts` in job.json is already 2 (a missing key counts as 0), the job has had its\n     two tries: board: `merge.failed reason=\'merge conflict with <target> after 2 resolved\n     conflicts\'` (the job goes to `needs-human`), and stop: tell the user they can\n     `/factory rework <id> "<note>"` or resolve it themselves.\n  4. Otherwise write `jobs/<id>/conflict-<c>.md` (`c` = `conflicts` + 1). The note holds facts\n     only: the target branch and its sha, the conflicting paths, and `git merge`\'s one-line\n     summary. No advice on how to resolve it; the builder\'s definition has that.\n\n     ```\n     # Conflict <c> \u2014 <id>\n     Target: <target> @ <sha>\n     Merge: <git merge\'s one-line summary>\n     Conflicting paths:\n     - <path>\n     ```\n  5. Board: `merge.conflicted reason=\'merge conflict with <target>: <n> path(s), back to the\n     builder\'`. The CLI moves the job to `build` with a fresh budget (`maxRound` = round + 2) and\n     counts the conflict. If the CLI refuses `merge.conflicted`, board: `merge.failed\n     reason=\'merge conflict with <target>, merge.conflicted refused: <its one-line reason>\'` and\n     stop as in 3.\n  6. Resume `builder-<id>` (span `role=builder name=builder-<id> round=<round>`) with\n     `SendMessage` \u2014 *"Merge conflict note: <R>/factory/jobs/<id>/conflict-<c>.md. Merge\n     `<target>` into the branch, resolve it, run the gate, add a `## Conflict <c>` section to\n     build.md, commit."* If that builder isn\'t alive in this session, spawn a fresh\n     `factory-builder` named `builder-<id>` with the card plus the note path (everything it needs\n     is in files).\n  7. Continue at step 4 with round `<round> + 1`, then the approver (step 6), then **Merge**\n     again. The reviewers\' diff includes the builder\'s merge commit.\n- **Refusal** (any other failure: a stray `.git/index.lock`, uncommitted changes in the way, or\n  anything else, with no conflicting paths) \u2192 `git merge --abort` (if a merge is in progress),\n  release the lock, board: `merge.failed reason=\'git merge into <target> refused: <its one-line\n  error>\'`, and stop: tell the user what blocked it and that they can retry with\n  `/factory approve <id>`. (A stray `.git/index.lock` means something else is mid-commit; wait\n  a few seconds and retry once before giving up.)\n- Success \u2192 board: `job.merged sha=<short sha>` **immediately**, before any cleanup, so git and\n  the board never disagree. Then `git worktree remove factory/.worktrees/<id>` and\n  `git branch -d factory/<id>`; if cleanup fails, report it and carry on (the merge stands).\n- **Post-merge check.** If `<target>` had moved past the branch\'s base, run the gate on `<target>` and\n  report the result (don\'t auto-revert). The gate is `gate` in `<R>/factory/config.json`: its\n  shell commands run in order from the repo root, and it is green only when every command\n  exits 0. If `config.json` has no `gate`, no gate is configured: tell the user so instead of\n  running anything, and never invent a command.\n- Then **archive** the job, before bookkeeping: run `bun factory/cli.ts archive <id>` from `<R>`.\n  It copies the job\'s record to the `factory/archive` branch with git plumbing and never touches\n  the checkout. If it fails, or says archiving is disabled, report its line to the user in one\n  line and carry on: a failed or disabled archive never fails or undoes the merge (the local\n  job dir stays, and `archive --all` catches it up later). Never push `factory/archive`.\n- Then **bookkeeping**, so every job leaves `<target>` clean. First run **the backlog check**.\n  If `factory/backlog.md` already has uncommitted changes, the merge stands (`job.merged` is\n  logged) and only the bookkeeping waits: release the lock and tell the user "commit or discard\n  your backlog edits first", that the merge landed, and which bookkeeping you skipped (removing\n  the job\'s backlog line, marking the brief `done` with its `- Job:` line, and the\n  `record job <id>` commit), for them to do once their edits are committed or discarded.\n  Otherwise, remove the job\'s line (`- [x] \u2026 \u2192 <id>`) from `factory/backlog.md`; don\'t tick it,\n  the line goes. When `job.json` has a non-null\n  `brief`, mark that brief done: set that brief\'s `Status:` line to `done` and add\n  `- Job: <id> (merged <short sha>, <YYYY-MM-DD>)` right below it (the `<short sha>` you passed\n  to `job.merged`, and today\'s date). Then commit by pathspec, so nothing else of the user\'s\n  gets swept in, the brief together with the backlog line\'s removal: `git commit -m\n  "chore(factory): record job <id>" -m "Co-Authored-By: Claude <noreply@anthropic.com>" --\n  factory/backlog.md factory/briefs/<slug>.md`. With no brief, commit the backlog only, ending\n  the same command with `-- factory/backlog.md` (nothing changed \u2192 skip).\n- Release the lock (`rmdir factory/.lock`).\n- Never push. Pushing stays a human decision.\n\n## Epics\n\nAn **epic** runs several briefs as ordinary jobs, its **members**, in the order its plan\n`factory/epics/<slug>.md` gives (each `## Members` item names a brief, with optional `after:`\nmembers it waits on). Members branch from, are reviewed against, and merge into the epic\'s own\nbranch, `factory/epic/<slug>`, checked out at `<R>/factory/.worktrees/epic-<slug>`; when every\nmember has merged, the epic **lands** on its target with one merge. Below, `<slug>` is the epic\'s\nslug and `<target>` is the epic\'s target (`target` in `epic show`), never the epic branch. Besides\nmembers, an epic may claim two kinds of **generated** jobs inside itself: a **sync** job (brings\n`<target>` into the epic branch after a catch-up conflict) and a **fix** job (makes a red gate\ngreen before landing). Every epic job runs **The loop**.\n\nThe CLI owns the epic\'s setup, teardown, log, and scheduling; you own every merge (members,\ncatch-ups, landing) and record each outcome as an event. You never write `epic.json` or the\nepic\'s log. Run, from `<R>`:\n\n```bash\nbun factory/cli.ts epic start <slug> [session=\u2026]          # set up the branch and worktree; logs epic.started\nbun factory/cli.ts epic event <slug> <type> [k=v \u2026]       # epic.waiting | epic.resumed | epic.landing | epic.landed\nbun factory/cli.ts epic next <slug>                       # what to do now: claim <member> lines, or land\nbun factory/cli.ts epic show <slug>                       # state, members, generated jobs, why it waits\nbun factory/cli.ts epic abandon <slug> \'<reason>\' [--force] [--delete-branch]\n```\n\nA non-zero exit wrote nothing (or, for `epic abandon`, names what it left behind): read its one\nline and fix the cause or tell the user. Free-text values are single-quoted, as on the board.\n\n### Start or resume\n\n`/factory epic <slug>`, and `/factory next` on an epic\'s backlog line, first read the epic\'s\nstate with `bun factory/cli.ts epic show <slug>`.\n\n**Not started** (`epic show` says it has not started):\n1. Read the plan. Its `Status:` must be `ready`. A `draft` plan\'s interview isn\'t done: say so\n   (`/factory explore <slug>` finishes it). A `done` plan has landed: say `epic <slug> landed\n   (<sha>)` from its `- Landed:` line. An `abandoned` plan has had its one run: say so. Each of\n   these stops before starting anything.\n2. **The abandoned-brief question, once.** List every member brief that has `- Abandoned:`\n   lines, each with its latest attempt (job id and reason), and ask once, before taking the\n   lock: *"These member briefs were abandoned before: <slug> as <id>: \'<reason>\'; \u2026 Start the\n   epic anyway, or revise them first with `/factory explore`?"* Start anyway \u2192 go on; revise (or\n   anything unclear) \u2192 stop, starting nothing. No such brief \u2192 don\'t ask.\n3. **The overlap question, once.** Compare the epic as a whole (every member brief\'s Intent and\n   Scope) with each live job that has no `epic` and each other running epic (its plan), at a\n   glance, as the overlap check does. If they overlap, ask once: *"This epic and <id or epic\n   slug> both change the same module, so they\'ll likely conflict at landing. Start it anyway?"*\n   and do what the user says. Never compare members with each other: the `after:` edges already\n   decided what runs in parallel, and conflicts between members are handled at **Member merge**.\n4. Run **the thread lookup** (once for the whole run).\n5. Take `factory/.lock`. When the backlog has an open line for this plan\n   (`- [ ] \u2026 \u2014 epic: factory/epics/<slug>.md`), run **the backlog check** first (if it stops you,\n   nothing is started). Run `bun factory/cli.ts epic start <slug> [session=\u2026]`: it checks the\n   plan, creates `factory/epic/<slug>` from the target and its worktree, logs `epic.started`, and\n   prints `running`. A non-zero exit started nothing: release the lock, leave the line unticked,\n   and report its one line. Then tick the line as `- [x] \u2026 \u2192 epic <slug>` and commit it at once\n   by pathspec, still under the lock: `git commit -m "chore(factory): start epic <slug>" -m\n   "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md` (no line \u2192 no commit).\n   Release the lock.\n6. Run **The epic loop**.\n\n**`running` or `waiting`:** resume and take over driving. Ask neither start question (both were\nasked when it began). Run **the thread lookup**, then `bun factory/cli.ts epic event\n<slug> epic.resumed [session=\u2026]`: it records this session as the driver and, from a logged\n`waiting`, puts the epic back where it was, and prints the state. Taking over assumes any\nearlier driving session has stopped. If it prints `landing` (a `waiting` logged during landing,\nsuch as a wrong checkout or a refused landing merge), or the CLI refuses `epic.resumed` because\nthe epic is `landing`, go on as for `landing`. Otherwise run **The epic loop** from the files.\n\n**`landing`** (a driver stopped partway through landing; the CLI refuses `epic.resumed` there),\nor an `epic.resumed` that printed `landing`: run **the thread lookup** if you haven\'t yet, for\nany claim this session makes, and continue at **Landing**, "Resuming a landing".\n\n**`landed` or `abandoned`:** say so, with its note, and stop.\n\n### The epic loop\n\nYou drive every epic job yourself, interleaved. Each runs **The loop**, and **every agent is\nspawned in the background**, so several jobs move at once; as each agent returns (and its file\nexists), take that job\'s next step, then go back to waiting. Never block on one job while\nanother could move. **WAIT FOR ALL** still holds within each job\'s review round.\n\n**Schedule.** When the epic starts or resumes, and whenever an epic job merges, leaves a working\nstage, or is abandoned, first read the epic\'s state (`epic show <slug>`). **While it is\n`landing`**, `epic next` prints nothing, so don\'t run it: drive any live sync or fix job, and\nonce none is live, go back to **Landing** from step 1, skipping `epic.landing` (already logged).\nOtherwise run `bun factory/cli.ts epic next <slug>` and do exactly what it prints, nothing more:\n- `claim <member>` \u2192 run **Catch-up** first; if it claimed a sync job, claim no member now. Then\n  `bun factory/cli.ts claim <member> epic=<slug> brief=factory/briefs/<member>.md session=\u2026`\n  (the `session=` from the start or resume lookup, left off when it found none; no `maxRound=`:\n  the plan\'s, else the config\'s, applies). Use the printed id, write its `feature.md`\n  (`<the brief\'s # title> \u2014 brief: factory/briefs/<member>.md (member of epic <slug>)`), and run\n  its loop from step 1. A refused claim claimed nothing: report its one line.\n- `land` \u2192 **Landing**.\n- nothing \u2192 read `epic show <slug>`. While an epic job is still in a working stage, keep waiting on\n  its agents. Otherwise the epic is waiting on you: tell the user which jobs are in\n  `needs-human` (each id and why), that they can `/factory approve`, `rework`, or `abandon` each\n  in this session, and stop.\n\n**State lives in files, never in your memory.** After a compaction, on a resume, or whenever\nunsure, re-read `epic show <slug>` (members, their jobs and stages, generated jobs) and each epic\njob\'s `job.json` (`stage`, `round`, `maxRound`, `decision`, `conflicts`, and its open spans:\n`timing.agents` entries with `finishedAt` null), and look at which of its files exist. Continue\neach job from what they say: an open span whose file exists \u2192 `agent.finished`, then the next\nstep; an open span whose agent isn\'t alive in this session \u2192 re-spawn it once with the same\ncard, inside that span (**Spawning agents**). When the old builder isn\'t alive, spawn a fresh\n`factory-builder` named `builder-<id>` with the card plus the newest review round, rework note,\nor conflict note it must address: everything it needs is in files (the rework path).\n\n**Status lines name the epic**: `<epic> \xB7 <id> review round <N>: <k>/<n> in` (e.g.\n`checkout-flow \xB7 027 review round 1: 3/4 in`).\n\n**A member escalates** (approver `ESCALATE`, budget spent, no file, a merge conflict past its two\ntries, or open questions in its spec at step 1): it goes to `needs-human` exactly as a standalone job does. Log it as **The loop** says,\ntell the user in one line, and keep driving: independent members keep running, and its dependents\nstay unclaimed (`epic next` won\'t offer them). Never retry, rework, or approve it on your own;\nthat is the user\'s call, in this session.\n\n**A member is abandoned.** The epic can\'t land while an abandoned member is in its plan, and its\ndependents (members whose `after:` reaches it, directly or through others; `epic show` lists them\nas blocked on it) can never run. Ask the user once: *"Member `<m>` (<id>) is abandoned, and\n<dependents, or no member> depend(s) on it. Drop it and its dependents from the plan, or abandon\nthe epic?"* Then do what they say:\n- **Drop** \u2192 take `factory/.lock`, remove those members\' items from the plan\'s `## Members` (and\n  any `after:` entry naming them), and commit the plan at once by pathspec: `git commit -m\n  "chore(factory): drop <members> from epic <slug>" -m "Co-Authored-By: Claude\n  <noreply@anthropic.com>" -- factory/epics/<slug>.md`. Release the lock, then **Schedule**. This\n  removal is the only edit you ever make to a running epic\'s members.\n- **Abandon the epic** \u2192 `/factory epic abandon <slug> <reason>`.\n- Anything unclear \u2192 change nothing; the epic waits on you.\n\nAn abandoned sync or fix job isn\'t a plan member: nothing to drop. The next catch-up or landing\ntries again.\n\n### Catch-up\n\nBefore each member claim and before landing, the epic brings in its target, **only when the\ntarget has moved**. In the epic worktree (`cd <R>/factory/.worktrees/epic-<slug>`):\n\n```bash\ngit merge-base --is-ancestor <target> factory/epic/<slug>\n```\n\nExit 0 \u2192 up to date, nothing to do. Otherwise merge the target into the epic branch there, as a\nmerge commit, never a rebase:\n\n```bash\ngit merge --no-ff <target> -m \'Merge <target> into factory/epic/<slug>\' \\\n  -m \'Co-Authored-By: Claude <noreply@anthropic.com>\'\n```\n\n- Clean \u2192 go on.\n- **Conflict** (`git diff --name-only --diff-filter=U` lists at least one path) \u2192 record the\n  conflicting paths and the target\'s sha (`git rev-parse --short <target>`), then\n  `git merge --abort`. Claim a **sync job**: `bun factory/cli.ts claim sync-<sha> epic=<slug>\n  kind=sync session=\u2026` (no `brief=`; the CLI refuses one). Write its `feature.md`, generated:\n\n  ```\n  Sync epic <slug> with <target>\n  Merge <target> @ <sha> into factory/epic/<slug> and resolve the conflicts, keeping both sides\'\n  intent. The gate stays green.\n  Conflicting paths:\n  - <path>\n  ```\n\n  and run its loop. **While a sync job is live, no member is claimed** (`epic next` offers none,\n  and the CLI refuses), and running members keep going. Claiming resumes once the sync job merges\n  (**Member merge**, then **Schedule**).\n- Any other failure \u2192 `git merge --abort` (if a merge is in progress), board the epic:\n  `epic event <slug> epic.waiting reason=\'catch-up merge of <target> refused: <its one-line\n  error>\'` (an apostrophe as `\'\\\'\'`), and stop: tell the user what blocked it and that `/factory epic <slug>` retries.\n\n### Member merge\n\nWhen an epic job is approved (its approver\'s `APPROVE`, or `/factory approve` in this session),\nit merges into the epic branch. Follow **Merge**, with these differences:\n- No `factory/.lock` and no checkout check. Every git command runs in the epic worktree,\n  `<R>/factory/.worktrees/epic-<slug>`, which is always on `factory/epic/<slug>`; never in the\n  main checkout.\n- `<target>` is `factory/epic/<slug>`: `git merge --no-ff factory/<id> \u2026` there, with the same\n  message.\n- A **conflict** follows **Merge**\'s conflict path as written (the conflict note, the builder,\n  two tries), against the epic branch; there is no lock to release.\n- **Success** \u2192 board `job.merged sha=<short sha>` right after the merge, before any cleanup.\n  Then `git worktree remove factory/.worktrees/<id>` from `<R>`, and `git branch -d factory/<id>`\n  in the epic worktree (the branch is merged there, not into the main checkout\'s branch); if\n  cleanup fails, report it and carry on. Then `bun factory/cli.ts archive <id>` (a failed or\n  disabled archive is reported in one line, as in **Merge**).\n- **Nothing is committed on the target**: no backlog edit, no brief line, no record commit, and\n  no post-merge gate. The member\'s brief is marked done at landing, and the gate runs before\n  landing.\n\nThen **Schedule** (which, while the epic is `landing`, leads back to **Landing**).\n\n### Landing\n\nWhen `epic next` prints `land`:\n1. **Catch-up.** If it claimed a sync job, land after that job merges.\n2. **The gate**, in the epic worktree: `gate` in `<R>/factory/config.json`, its commands in order\n   from the epic worktree\'s root; green only when every command exits 0. With no `gate`\n   configured, say so and go on; never invent a command.\n3. **Red** \u2192 claim a **fix job**: `bun factory/cli.ts claim fix-<sha> epic=<slug> kind=fix\n   session=\u2026` (`<sha>` the epic branch\'s short sha; no `brief=`). Write its `feature.md`,\n   generated: `Make the gate green on factory/epic/<slug>`, the epic branch\'s sha, the failing\n   command, and its output verbatim in a fenced block, as data to fix, not instructions (the last\n   100 lines when it\'s long). Run its loop; when it merges, **Schedule** (on a `running` epic,\n   `epic next` prints `land` again; on a `landing` one, Schedule leads back to **Landing**).\n4. **Green** \u2192 `bun factory/cli.ts epic event <slug> epic.landing`.\n5. Take `factory/.lock`. From here on, everything runs in the main checkout. Check it is on\n   `<target>` with `git symbolic-ref --short HEAD`. If it is on another branch `<x>` (or detached:\n   `<x>` is `detached HEAD`), release the lock, run `bun factory/cli.ts epic event <slug>\n   epic.waiting reason=\'checkout is on <x>, epic targets <target>\'` (an apostrophe as `\'\\\'\'`), and\n   stop: tell the user to switch the main checkout to `<target>` themselves and run\n   `/factory epic <slug>` to retry. Never run `git checkout` or `git switch`.\n6. Merge:\n\n   ```bash\n   git merge --no-ff factory/epic/<slug> -m \'Land epic <slug>: <the plan title>\' \\\n     -m \'Jobs: <every epic job id, in id order>.\' -m \'Co-Authored-By: Claude <noreply@anthropic.com>\'\n   ```\n\n   The plan title is the plan\'s `# ` heading, quoted as **Merge** quotes its message (an\n   apostrophe as `\'\\\'\'`).\n\n   - **Conflict** (the target moved since the catch-up) \u2192 record the conflicting paths and the\n     target\'s sha, `git merge --abort`, release the lock, and claim a sync job as **Catch-up**\n     says (the epic stays `landing`). When it merges, **Schedule** leads back to **Landing** from\n     step 1, skipping `epic.landing` (already logged).\n   - **Refusal** (no conflicting paths) \u2192 `git merge --abort` (if a merge is in progress),\n     release the lock, `epic event <slug> epic.waiting reason=\'git merge into <target> refused:\n     <its one-line error>\'` (an apostrophe as `\'\\\'\'`), and stop: tell the user what blocked it; `/factory epic <slug>`\n     retries.\n7. Success \u2192 `bun factory/cli.ts epic event <slug> epic.landed sha=<short sha>` **at once**,\n   before any cleanup, so git and the board never disagree.\n8. `git worktree remove factory/.worktrees/epic-<slug>` and `git branch -d factory/epic/<slug>`;\n   if cleanup fails, report it and carry on (the landing stands).\n9. `bun factory/cli.ts archive <slug>`; a failed or disabled archive is reported in one line and\n   never undoes the landing.\n10. **Bookkeeping.** First run **the backlog check**. If it stops you, the landing stands and\n    only the bookkeeping waits: release the lock and tell the user "commit or discard your\n    backlog edits first", that the epic landed, and which bookkeeping you skipped (below).\n    Otherwise:\n    - remove the epic\'s line (`- [x] \u2026 \u2192 epic <slug>`) from `factory/backlog.md`;\n    - give each member brief `Status: done` and, right below it, `- Job: <id> (merged <member\n      sha> via epic <slug>, <YYYY-MM-DD>)`: the member\'s newest job, and the sha its `job.merged`\n      logged (its `job.json` `note` reads `merged <sha>`);\n    - give the plan `Status: done` and, right below it, `- Landed: <short sha> (<YYYY-MM-DD>)`\n      (the sha you passed to `epic.landed`);\n    - make one pathspec commit: `git commit -m "chore(factory): land epic <slug>" -m\n      "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md\n      factory/epics/<slug>.md factory/briefs/<member>.md \u2026` (every member brief).\n11. Release the lock (`rmdir factory/.lock`), and tell the user the epic landed. Never push.\n\n**Resuming a landing.** First re-read state from the files, as **The epic loop** says ("State\nlives in files"), and drive any live sync or fix job until it merges; never claim a second sync\njob while one is live. Once no epic job is live, check in the main checkout whether the epic\nbranch is already in `<target>` (`git merge-base --is-ancestor factory/epic/<slug> <target>`).\nIf not, run **Landing** from step 1, skipping `epic.landing`. If it is, step 6 happened: take the\nlock, log `epic.landed` with the short sha of that `Land epic <slug>` merge commit, and go on\nfrom step 8.\n\n### Member commands\n\n`/factory approve`, `rework`, and `abandon <id>` on a job whose `job.json` has an `epic` run only\nin the session driving that epic (the one that started or last resumed it with\n`/factory epic <slug>`). Any other session refuses, changing nothing, with the one line:\n"<id> is in epic <slug>; run it in the epic\'s session, or `/factory epic <slug>` to take it\nover". In the driving session:\n- **approve** runs as the command says, recreating the worktree from `factory/epic/<slug>` when\n  it\'s gone, and merges by **Member merge**: into the epic branch, never the target.\n- **rework** runs as the command says; the job then goes on in **The epic loop**.\n- **abandon** runs as the command says, with its two questions and the CLI call, but the job has\n  no backlog line: skip the backlog check and the line. For a member, take `factory/.lock`, add\n  its brief\'s `- Abandoned:` line as the command says, and commit just the brief:\n  `git commit -m "chore(factory): abandon job <id>" -m "Co-Authored-By: Claude\n  <noreply@anthropic.com>" -- factory/briefs/<member>.md`, then release the lock (a sync or fix\n  job has no brief: nothing to commit). Then **A member is abandoned**.\n\n## Commands\n\n**`/factory <feature>`** \u2014 New job. If the text names a brief (`brief: factory/briefs/<slug>.md`),\nits `Status:` must be `ready`. If it is `done`, a job already carried it out: stop before claiming\nand say `brief <slug> is done (job <id>)`, with the job from its `- Job:` line. Separately, a draft\nbrief means the interview isn\'t done, so stop before claiming and say so. If the brief has\n`- Abandoned:` lines, a job already tried it and was closed: ask once, before claiming and\nbefore taking the lock, quoting its latest attempt: *"Brief `<slug>` was abandoned as job\n`<id>`: \'<reason>\'. Start it again, or revise it first with `/factory explore <slug>`?"* Start\nagain \u2192 go on; revise (or anything unclear) \u2192 stop, claiming nothing. Otherwise **claim** it\nunder the lock (backlog check and overlap check first): pick a 2\u20134 word kebab slug for the work and run\n`bun factory/cli.ts claim <slug>` with `brief=factory/briefs/<slug>.md` when it applies (add\n`maxRound=<n>` only to override the config default, and `session=\u2026` from **the thread lookup**,\nrun first). The CLI picks the number and prints the\njob\'s id, e.g. `004-export-csv-report`; use that id from then on. Write `feature.md` verbatim.\nIf the work has a backlog line, tick and commit it as **Claim** under **Running jobs side by\nside** says; free text with no backlog line makes no backlog commit. Then release the lock and\nrun the loop. If **the backlog check** stops the claim, nothing is claimed: no `claim`, no job.\n\n**`/factory queue <text>`** \u2014 Add ready work to the backlog without running it. Work arrives\nas text. It is **ready** if it isn\'t blocked by unmerged work and you can say in one line what\n"done" looks like.\n- Ready \u2192 distill it into `- [ ] <one line>`. The line carries what defines done \u2014 behaviors,\n  limits, must-nots (e.g. *no new runtime dependency*) \u2014 and none of the history or rationale.\n- Not ready \u2192 don\'t queue it; say why in a sentence and suggest `/factory explore <idea>`.\n\nThen take `factory/.lock` and run **the backlog check** (if it stops you, nothing is queued).\nAppend the lines and commit just the backlog by pathspec, still under the lock:\n`chore(factory): queue <title>` (+ the Co-Authored-By trailer) `-- factory/backlog.md`. Release\nthe lock, then show the user the lines you added; never hold the lock while you ask the user\nanything. `queue` never starts a job.\n\n**`/factory explore <idea | brief slug>`** \u2014 An interactive interview that turns a fuzzy\nidea into a brief, then queues it. Read [explore.md](explore.md) in this skill\'s folder and\nfollow it. It runs entirely in this session with the user; it spawns no agents.\n\n**`/factory customize`** (alias **`/factory init`**) \u2014 An interactive interview that tailors\nthe project\'s overlay (`factory/config.json` and `factory/roles/<role>.md`), then runs doctor\nand commits it. Follow **Customize** below. It runs entirely in this session with the user; it\nspawns no agents, claims no job, and never runs the `factory init` or `factory upgrade` installer.\n\n**`/factory next [words]`** \u2014 Under the lock, run **the backlog check** (if it stops you,\nnothing is claimed), re-read `factory/backlog.md` (another session may have just ticked a line)\nand pick a `- [ ]` item:\n- no argument \u2192 the first one;\n- words \u2192 the line they clearly describe, matched by meaning, not exact text.\n\nA ticked `- [x] \u2026 \u2192 <id>` line is a running job: never pick it; if the words describe it,\nreport it as running job `<id>`. A ticked `- [x] \u2026 \u2192 epic <slug>` line is a running epic: never pick\nit; report it as running epic `<slug>`. A picked line ending `\u2014 epic: factory/epics/<slug>.md` is\nan epic: release the lock and start it as `/factory epic <slug>` does (its start-time questions\nfirst, then `epic start` and the tick as `- [x] \u2026 \u2192 epic <slug>`, committed by pathspec under the\nlock), then drive it. Claim the line as `/factory <item text>` does, and tick it as\n`- [x] \u2026 \u2192 <id>` and commit it (`chore(factory): claim job <id>`) in the same step, as **Claim**\nsays. If its brief has `- Abandoned:` lines, release the lock and ask the abandoned-brief\nquestion from `/factory <feature>` first; on start again, take the lock and re-read. If the\noverlap check or that question stops you, leave the line unticked. Then run the loop.\n\nDon\'t guess. If there\'s nothing unchecked, or nothing matches, release the lock and stop. When\nthe words match no open line but describe finished work, say it already ran and which job: find\nit by the done briefs\' `- Job:` lines (`factory/briefs/*.md` with `Status: done`), never by\nticked lines, since a merged job\'s line is gone from the backlog. If the words fit more than one\nline, release the lock and ask which one.\n\n**`/factory approve <id>`** \u2014 Human override for a `needs-human` job. A job in an epic: see\n**Member commands** under **Epics** first. Refuse any other stage:\na job in flight belongs to the session running it.\nIf the job stopped before anything was built (job.json\'s `stoppedFrom` is `spec` or `claimed`:\nan open question at the spec step, or a spec writer that wrote no spec.md), refuse, changing\nnothing, with the one line: "<id>: nothing built; answer with rework" (`/factory rework <id>\n"<answer>"`).\nIf the approver never ran on this work (no `APPROVE`/`ESCALATE` from it, so job.json\'s `decision`\nis null: an escalation before or during review, or after a rework before the approver), say so and\nask before merging work the approver never checked. (A retry after a failed merge already shows\n`APPROVE (human)`; the human answered that the first time.)\nRecreate the worktree if it\'s gone (step 2, from the job\'s `<target>`), run **the thread lookup**,\nboard: `job.human-approved [session=\u2026]` (every time, also when\nretrying after a failed merge; leave decision.md alone, it\'s the approver\'s), and **Merge**.\nIf **Merge** finds a conflict, the job enters the same loop as any conflict: the builder\nresolves it, a review round runs, then the approver, then **Merge** again, and this session\ndrives it on. `merge.conflicted` clears the human approval (the human approved the work before\nthe resolution existed), so an approver `ESCALATE` there comes back to the human, as any\nescalation does.\n\n**`/factory rework <id> <note>`** \u2014 Send a `needs-human` job back with human feedback. A job in\nan epic: see **Member commands** under **Epics** first. Write\nthe note verbatim to `rework-<k>.md` (`k` = `reworks` + 1, from job.json), recreate the worktree\nif needed (step 2, from the job\'s `<target>`; not for a job that stopped before anything was\nbuilt, below), run **the thread lookup**, board:\n`job.reworked k=<k> maxRound=<round + 2> [session=\u2026]` (a fresh review budget; it clears\nthe decision).\nIf the job stopped before anything was built (job.json\'s `stoppedFrom`, read before\n`job.reworked`, is `spec` or `claimed`), `job.reworked` puts it back in stage `spec`: spawn `factory-spec-writer` again with the card plus the rework path (span\n`role=spec-writer`), also when `spec.md` already exists: the note answers its open questions.\nBoard: `job.titled title=\'<spec.md\'s # H1>\'`, then run step 1\'s open-question check on the new\nspec.md (an item the note didn\'t settle escalates again) and continue at step 2 of **The loop**\n(a fresh builder; round 1 follows). Otherwise, resume\n`builder-<id>` with SendMessage (span `role=builder name=builder-<id> round=<round>`) \u2014\n*"Human rework note: <R>/factory/jobs/<id>/rework-<k>.md. Address it, update build.md,\ncommit."* If that builder isn\'t alive in this session, spawn a fresh `factory-builder` named\n`builder-<id>` with the card plus the rework path (everything it needs is in files). Then\ncontinue at step 4 with round `<round> + 1` (round 1 if the job escalated before any review).\n\n**`/factory abandon <id> <reason>`** \u2014 Close a job for good, without merging: it leaves the\nboard, its worktree is removed, and it can never take another event. A job in an epic: see **Member\ncommands** under **Epics** first. Read the job\'s `stage` from\njob.json. Refuse `merged` and `abandoned` (both are terminal). Otherwise ask the user two\nquestions, one at a time, and wait for each answer:\n1. **Confirm.** *"Abandon <id> (<stage>): \'<reason>\'? This can\'t be undone."* From a working\n   stage (`claimed`, `spec`, `build`, `review`, `approve`), also ask them to confirm that the\n   session driving the job is stopped: abandon never stops agents, and a session still running\n   would keep working on a closed job. Anything but a clear yes: stop and change nothing.\n2. **The branch.** *"Keep the branch `factory/<id>`, or delete it?"* The default is **keep** (an\n   unclear answer keeps it).\n\nThen, from `<R>`, run\n\n```bash\nbun factory/cli.ts abandon <id> \'<reason>\'\n```\n\nadding `--force` only when the job is in a working stage (never from `needs-human`), and\n`--delete-branch` only when the user chose delete. Quote the reason as for any free-text value.\nIt logs `job.abandoned`, then removes `factory/.worktrees/<id>` (and the branch, if asked), and\nprints `abandoned`. A non-zero exit before the event is logged (a wrong stage without\n`--force`, a bad id or reason) changed nothing: report the one-line reason. A non-zero exit\nnaming what was left behind means the job **is** abandoned but cleanup failed: tell the user\nwhat to remove by hand. Never write the event yourself to get around a refusal.\n\nBefore running the CLI (after both answers), run **the backlog check**: if\n`factory/backlog.md` already has uncommitted changes, stop with "commit or discard your backlog\nedits first"; nothing is abandoned and nothing changes. Once the job is abandoned (the CLI\nprinted `abandoned`, or named what it left behind), run `bun factory/cli.ts archive <id>` from\n`<R>` to copy its record to the `factory/archive` branch. If it fails, or says archiving is\ndisabled, report its line in one line and carry on: a failed or disabled archive never fails the\nabandon. Never push `factory/archive`. Then take `factory/.lock`, run the backlog check\nagain (if it stops you now, the job stays abandoned and only this bookkeeping waits: name it to\nthe user), and then:\n- Remove the job\'s line (`- [x] \u2026 \u2192 <id>`) from `factory/backlog.md`, so a later\n  `/factory next` never picks up abandoned work.\n- When `job.json` has a non-null `brief`, add `- Abandoned: <id> (<YYYY-MM-DD>): <reason>`\n  right below that brief\'s `Status:` line (today\'s date and the reason given; one line per\n  attempt, below any earlier `- Abandoned:` lines). `Status:` stays `ready`.\n- Commit both by pathspec: `git commit -m "chore(factory): abandon job <id>" -m\n  "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md\n  factory/briefs/<slug>.md`. With no brief, commit the backlog only, ending the same command\n  with `-- factory/backlog.md` (nothing changed \u2192 skip).\n- Release the lock (`rmdir factory/.lock`).\n\n**`/factory epic <slug>`** \u2014 Start or resume an epic, idempotently: `epic start` when it hasn\'t\nstarted, and on a `running` or `waiting` epic `epic.resumed`, taking over driving. Follow\n**Epics**, "Start or resume", then **The epic loop**.\n\n**`/factory epic abandon <slug> <reason>`** \u2014 Close an epic for good, without landing. Read its\nstate with `bun factory/cli.ts epic show <slug>`. Refuse one that hasn\'t started, `landed`, or\n`abandoned`. Otherwise ask the user two questions, one at a time, and wait for each answer:\n1. **Confirm.** *"Abandon epic <slug> (<state>): \'<reason>\'? This can\'t be undone."* When any\n   epic job is in a working stage (`claimed`, `spec`, `build`, `review`, `approve`), name them and\n   also ask the user to confirm that members are still working and should be abandoned with it,\n   and that no other session is driving the epic. Anything but a clear yes: stop and change\n   nothing.\n2. **The branch.** *"Keep the branch `factory/epic/<slug>`, or delete it?"* The default is\n   **keep** (an unclear answer keeps it).\n\nBefore running the CLI (after both answers), run **the backlog check**: if it stops you, nothing\nis abandoned and nothing changes. Then, from `<R>`, run\n\n```bash\nbun factory/cli.ts epic abandon <slug> \'<reason>\'\n```\n\nadding `--force` only after the user confirmed that members are still working, and\n`--delete-branch` only when the user chose delete. It logs `epic.abandoned`, abandons every epic\njob that isn\'t `merged` or `abandoned` (keeping their branches), removes the epic worktree (and\nthe branch, if asked), and prints `abandoned`. A non-zero exit before that changed nothing: report\nits one line. One naming what was left behind means the epic **is** abandoned: tell the user what\nto remove by hand. Then run `bun factory/cli.ts archive <slug>` (a failure, or archiving\ndisabled, is one line and never fails the abandon; never push `factory/archive`). Then take\n`factory/.lock`, run the backlog check again (if it stops you now, the epic stays abandoned and\nonly this bookkeeping waits: name it to the user), and:\n- remove the epic\'s line (`- [x] \u2026 \u2192 epic <slug>`) from `factory/backlog.md`;\n- give the plan `Status: abandoned` and, right below it, `- Abandoned: <YYYY-MM-DD>: <reason>`;\n- for each member brief that had a job, add `- Abandoned: <id> (<YYYY-MM-DD>): epic <slug>\n  abandoned: <reason>` below its `Status:` line and any earlier `- Abandoned:` lines (`<id>` its\n  newest job). Its `Status` stays `ready`, so a new plan can reuse it;\n- commit it all in one pathspec commit: `git commit -m "chore(factory): abandon epic <slug>" -m\n  "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md factory/epics/<slug>.md\n  factory/briefs/<member>.md \u2026` (each brief you changed);\n- release the lock (`rmdir factory/.lock`).\n\n## Customize \u2014 the overlay interview\n\n`/factory customize` (or `/factory init`) writes only `factory/config.json` and\n`factory/roles/<role>.md`, the overlay. It never edits managed files (`.claude/**`,\n`factory/cli.ts`, `factory/CONTRACT.md`, `factory/managed.json`) or runtime state\n(`factory/jobs/`, `factory/.lock/`, `factory/.worktrees/`), and it writes no events.\n\n**Do your homework first.** Read `factory/config.json` and save its exact bytes (you may need to put\nthem back), every `factory/roles/*.md`, the contract (`factory/CONTRACT.md`, "`config.json`"\nand "Role overlays"), the project\'s instructions (`CLAUDE.md` or its equivalent), and how the\nproject builds, tests, and checks itself. Run `bun factory/cli.ts doctor` once to see where the\ninstall stands. List the live jobs (every `factory/jobs/*/job.json` with a stage other than\n`merged`; read-only).\n\n**Interview.** Use the same discipline as `explore`: ask **one question at a time**, in prose,\neach with your **recommended answer** and the reason for it. Facts are yours to find; decisions\nare the user\'s. Never ask what the code or docs can answer (the project\'s test and check commands\nare facts; which of them gate a merge is a decision). Cover only the v1 overlay, in this order:\n1. `name` \u2014 the project\'s display name on the dashboard. Show the current resolved name: `config.json`\'s\n   `name` when set, else the repo root\'s folder name (`basename R`). Recommend leaving it unset\n   when the folder name is right; no `name` key means the folder name.\n2. `reviewers` \u2014 the ordered reviewer keys, one per review concern (e.g. correctness and test\n   coverage, security, contract).\n3. `maxRound` \u2014 the default review budget for a new job.\n4. `dashboard.settleAfterHours` \u2014 how long a merged job stays in the Merged column.\n5. `gate` \u2014 the shell commands, in order, that must all exit 0; or no gate.\n6. `merge.target` \u2014 the branch jobs are based on and merge into: `current` (the default: the\n   branch the main checkout is on when a job is claimed) or a branch name such as `develop`.\n   No `merge` key keeps `current`.\n7. `archive.enabled` \u2014 whether a finished job (`merged` or `abandoned`) is copied to the\n   `factory/archive` branch by `factory archive`, so its record travels with `git clone` and\n   `git fetch`. Recommend off unless the user wants the history kept in the repo: job files can\n   hold paths, notes, and pasted material, and pushing the branch publishes them (archiving never\n   pushes). No `archive` key keeps it off.\n8. `epic.maxParallel` \u2014 the most members of one epic in a working stage at once (a member in\n   `needs-human` holds no slot; sync and fix jobs don\'t count). Recommend 3, the default; no\n   `epic` key keeps it.\n9. `roles` \u2014 for any role that should not run on the default model (`opus`): its runner\n   (`claude`, the only runner in v1) and, optionally, the harness model name (e.g. a cheaper\n   model for a narrow reviewer). No entry, or no `roles` key at all, keeps the default.\n10. `factory/roles/<role>.md` \u2014 for `spec-writer`, `builder`, `approver`, and each configured\n   reviewer key: the project\'s own rules for that role, or no file (the managed defaults apply).\n\nAnything else (a runner other than `claude`, per-role tools or effort, a tracker, any merge policy\nbeyond `merge.target` such as squashing, PRs, or pushing, conditional reviewers) is not in v1. Say so in a sentence and move on; never write it into the overlay.\n\n**Refusal rules.** Check every change against these before anything is written. A change that\nbreaks one is refused: tell the user which rule and why, and ask again. Nothing is written for it.\n- No key outside v1. `config.json` holds only `schema` (`"factory/v1"`), `name`, `reviewers`,\n  `maxRound`, `dashboard` (only `settleAfterHours`), `gate`, `merge` (only `target`), `archive`\n  (only `enabled`), `epic` (only `maxParallel`), and `roles`.\n- `name`, when present, is a string of 1\u201364 characters (Unicode code points) with no leading or\n  trailing whitespace and no control characters; spaces, punctuation, and non-ASCII are fine.\n  No name means leaving the key out, never an empty string.\n- Each reviewer key matches `^[a-z][a-z0-9-]*$`, is unique, and is never a fixed role name\n  (`spec-writer`, `builder`, `approver`). There is at least one reviewer.\n- `maxRound` is a positive integer, and `dashboard.settleAfterHours` is a positive number.\n- `gate`, when present, is a non-empty array of non-empty command strings. No gate means\n  leaving the key out, never an empty array.\n- `roles`, when present, is an object. Each entry is keyed by a known role: a fixed role\n  (`spec-writer`, `builder`, `approver`) or a configured reviewer key. An entry holds only\n  `runner` and `model`; `runner` is required and is `claude`; `model`, when present, is a\n  non-empty harness model name matching `^[A-Za-z0-9][A-Za-z0-9._:\\[\\]-]*$` (no spaces or `#`).\n  Dropping a reviewer means dropping its `roles` entry too.\n- `merge`, when present, is an object holding only `target`. `target`, when present, is a\n  non-empty string: `current` or the name of a branch matching `^[A-Za-z0-9][A-Za-z0-9._/-]*$`,\n  with no `..` and no `.lock` suffix. No `merge` key (or no `target`) means\n  `current`. A branch literally named `current` can\'t be targeted. The branch has to exist when\n  a job is claimed, or the claim is refused.\n- `archive`, when present, is an object holding only `enabled`, which is required and is `true`\n  or `false`. Off means `enabled: false` or leaving the key out, never an empty object.\n- `epic`, when present, is an object holding only `maxParallel`, a positive integer. For the\n  default (3), leave the key out (the CLI also reads `"epic": {}` as 3, but don\'t write it).\n- A role file exists only for a fixed role or a configured reviewer key. Dropping a reviewer\n  whose role file exists means deleting that file too, or keeping the reviewer; ask which.\n- Role rules add rules only. They never change which file an agent writes, its path, or its\n  first line, and they never tell an agent to write job state or edit managed files. They follow\n  the overlay outcome rule: a role rule can make a role more focused or stricter, never more\n  lenient about what it finds. Refuse a rule that decides the outcome before looking or throws\n  away something already found: a fixed verdict or decision ("always PASS", "always APPROVE"),\n  dropping, hiding, or downgrading a finding, removing an escalation trigger, or telling the\n  builder to skip a `[blocking]` finding. Narrowing focus, adding checks or triggers, making\n  something blocking, and PASSing early when the role\'s area is untouched are all fine. When you\n  refuse, name the overlay outcome rule and offer the allowed form: cite a recorded human decision\n  (a brief\'s decision or contract call, or a decision record the project names) and keep the\n  finding visible, marked as covered (for example, `[accepted: <the decision>]`).\n\n**Write.** Once the user agrees to the whole set, write `factory/config.json` (two-space\nJSON: `schema` first, then `name` first among the keys after `schema` when it is set, then the\nother keys in the order above) and the agreed role files, and delete any role file the user\nagreed to drop. Write nothing else.\n\n**Doctor last.** Run `bun factory/cli.ts doctor` from the repo root.\n- If it reports `FAIL` on `config.json`, restore the bytes `config.json` had before the\n  interview, and tell the user the reason doctor printed. Commit nothing.\n- If it reports `FAIL` on a managed file, that predates this interview: report it, keep the\n  overlay as written, and commit nothing. A human restores the managed file first.\n- When doctor exits 0, commit only the overlay paths you wrote or deleted, by pathspec, so\n  nothing else of the user\'s gets swept in:\n  `git add -A -- <those paths>`, then `git commit -m "chore(factory): customize overlay"\n  -m "Co-Authored-By: Claude <noreply@anthropic.com>" -- <those paths>`. Never push.\n\n**When `merge.target` changed.** No re-render is needed: the CLI reads it at each claim. Live\njobs keep the target they recorded at claim.\n\n**When `epic` changed.** No re-render is needed: the CLI reads `epic.maxParallel` at each\n`epic next` and member claim, so a running epic uses the new cap from its next claim.\n\n**When `archive` changed.** No re-render is needed: `factory archive` reads it at each run.\nTurning it on copies nothing by itself; `bun factory/cli.ts archive --all` backfills the jobs\nthat are already `merged` or `abandoned`, and is the user\'s call.\n\n**When `reviewers` or `roles` changed.** A new reviewer key has no agent, and a new model\ntakes no effect, until the managed files are re-rendered. Tell the user to run `factory upgrade` before the next job; never run it yourself,\nbecause upgrade writes managed files. If live jobs exist, warn that a later `round.started` in\nthose jobs reads the new `reviewers`.\n\nFinish with what changed, doctor\'s result, the commit (or why there is none), and whether\n`factory upgrade` is needed.\n\n## Ground rules\n\n- One job, or one epic, per session; as many sessions as the user likes. A job is driven only by\n  the session that claimed it, or, once it\'s `needs-human`, by whoever runs\n  `approve`/`rework`/`abandon` on it (`abandon` from a working stage needs the user to confirm the\n  driving session is stopped). A job in an epic is driven only by the session driving its epic\n  (**Member commands**); `/factory epic <slug>` takes an epic over.\n  Finding another job in flight is never a reason to stop; it\'s only a reason for the overlap check.\n- Never wait off the board. Never stop mid-job to wait on the human without logging\n  `job.escalated reason=\'\u2026\'` first: a question for the human is an escalation (the job goes to\n  `needs-human`, and the board shows it), never a question asked only in chat. Any session can then\n  answer it with `/factory rework` or `/factory approve`.\n- Agents write only their own file (a reviewer also its `round-<N>/<key>/` supporting files);\n  you write only your job\'s feature.md, rework notes, and conflict notes (in an epic, every epic\n  job\'s, including the generated sync and fix `feature.md`), backlog edits (each committed at once),\n  briefs\' bookkeeping lines (`- Job:`, `- Abandoned:`), an epic plan\'s bookkeeping (`Status:`,\n  `- Landed:`, `- Abandoned:`) and dependent drops, and events and epic events through the\n  factory CLI (and, in `customize`, the overlay). If an agent wrote somewhere else, note it and tell the user.\n- The managed files (this skill and the `factory-*` agents) are never edited by hand. A\n  project\'s own rules for a role live in its overlay, `factory/roles/<role>.md`, which each\n  agent reads at run time.\n- Keep the user posted with one short line per transition (`003 \xB7 review round 1: 3/4 in`); in\n  an epic, name the epic first (`<epic> \xB7 <id> review round <N>: <k>/<n> in`).\n- Finish every command with the job\'s stage, decision, and where to read the files (for an epic,\n  its state from `epic show <slug>` and its plan\'s path).\n';
+var SKILL_default = '---\nname: factory\ndescription: Run the factory \u2014 a feature goes spec \u2192 build \u2192 parallel reviews \u2192 approve \u2192 merge, driven by subagents that talk only through markdown files; `queue` and `explore` feed its backlog, and `customize` (alias `init`) tailors the project\'s overlay. Use when the user invokes /factory with a feature, `next [words]`, `queue <text>`, `explore <idea|brief>`, `customize`, `init`, `approve <job-id>`, `rework <job-id> <note>`, `abandon <job-id> <reason>`, `epic <slug>` (start or resume an epic: several briefs run as member jobs into one branch, then land as one merge), or `epic abandon <slug> <reason>`.\nargument-hint: "<feature> | next [words] | queue <text> | explore <idea|brief> | customize | init | approve <job-id> | rework <job-id> <note> | abandon <job-id> <reason> | epic <slug> | epic abandon <slug> <reason>"\n---\n\n# /factory \u2014 the orchestrator\n\nThe session running this skill **is the orchestrator** of one job, or of one epic (several\nmember jobs driven together; see **Epics**). You run its loop, spawn every agent, and record\nevery state change through the **factory CLI**. You never write code, specs, reviews, or\ndecisions yourself; agents do, one file each. Other sessions may be running other jobs at the\nsame time; see **Running jobs side by side**.\n\n```\nclear work \u2500\u2500 queue \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510\nfuzzy idea \u2500\u2500 explore \u2500\u2500 brief \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2534\u2500\u25BA backlog.md \u2500\u2500 next \u2500\u2510\n                                                                \u25BC\nfeature \u2192 spec-writer \u2192 builder \u21C4 [configured reviewers] \u2192 approver \u2192 merge | needs-human\n```\n\n## Files (R = `git rev-parse --show-toplevel`; always pass agents absolute paths)\n\n| Path | Written by |\n|---|---|\n| `factory/jobs/<id>/events.jsonl` \u2014 the job\'s append-only event log, the truth | the factory CLI, when you run it |\n| `factory/jobs/<id>/job.json` \u2014 derived from the log; the dashboard polls it | the factory CLI (never by hand) |\n| `factory/config.json` \u2014 reviewer keys, the default `maxRound`, the gate, per-role runners, and the merge target | human (or `customize`, with the human) |\n| `factory/roles/<role>.md` \u2014 the project\'s rules for one role (optional) | human (or `customize`, with the human) |\n| `factory/.lock/` \u2014 a short mutex for claiming work and merging | you, briefly |\n| `factory/jobs/.claim.lock/` \u2014 the CLI\'s mutex for handing out job ids | the factory CLI (never by hand) |\n| `factory/backlog.md` \u2014 open and running work only, the queue for `/factory next` | human (adds and edits lines); you, at claim, merge, abandon, `queue`, and `explore`, each edit committed at once |\n| `factory/briefs/<slug>.md` \u2014 decisions from an `explore` interview (tracked in git) | you, with the human |\n| `factory/epics/<slug>.md` \u2014 an epic\'s plan: its member briefs and their `after:` edges (tracked in git) | you, with the human (`explore`); you, for its bookkeeping lines (`Status:`, `- Landed:`, `- Abandoned:`) and dependent drops |\n| `factory/jobs/epics/<slug>/events.jsonl` and `epic.json` \u2014 an epic\'s log and its derived snapshot | the factory CLI (never by hand) |\n| `factory/jobs/<id>/feature.md` \u2014 the request, verbatim (generated, for an epic\'s sync and fix jobs) | you |\n| `factory/jobs/<id>/rework-<k>.md` \u2014 a human\'s rework note, verbatim | you |\n| `factory/jobs/<id>/conflict-<c>.md` \u2014 the facts of a merge conflict with `<target>` | you |\n| `factory/jobs/<id>/spec.md` | `factory-spec-writer` |\n| `factory/jobs/<id>/build.md` | `factory-builder` |\n| `factory/jobs/<id>/round-<N>/review-<key>.md` | the reviewer for each key in `factory/config.json` `reviewers` |\n| `factory/jobs/<id>/round-<N>/<key>/*` \u2014 supporting files such as screenshots, when its rules ask for them | that reviewer |\n| `factory/jobs/<id>/decision.md` | `factory-approver` |\n| `factory/.worktrees/<id>/` \u2014 the job\'s checkout, branch `factory/<id>` | builder (code) |\n| `factory/.worktrees/epic-<slug>/` \u2014 an epic\'s checkout, branch `factory/epic/<slug>` | the factory CLI creates and removes it; you merge into it |\n\n`jobs/`, `.lock/`, and `.worktrees/` are gitignored runtime state. Code lives on the\nbranch; the main checkout stays on the job\'s target branch so your files never move under you.\nDashboard: Andon, one service per machine. Run `factory service install` once per machine (not per project) to keep it running, or `factory service run` in the foreground, then open http://127.0.0.1:8766/; when Andon says a restart is needed, run `factory service restart`. `factory init` registers the project with Andon.\n\n**The target branch.** Every job is based on and merges into its **target**: `target` in its\n`job.json`. The CLI resolves it once, at `claim`, from `merge.target` in\n`<R>/factory/config.json`: `current` (the default when `merge` or `merge.target` is absent) is\nthe branch the main checkout is on at that moment, and any other value names a branch that\nmust exist. The CLI accepts only a plain branch name (letters, digits, `.`, `_`, `/`, `-`), so a\ntarget never carries quotes or shell metacharacters. A detached HEAD, a missing branch, or a\ndisallowed name refuses the claim, writing nothing; tell the user the CLI\'s one-line reason and\nstop. Read `target` from `job.json` after the claim and use\nit as `<target>` everywhere below, even if the checkout or the config changes mid-job.\nIf `target` is `null` (a job claimed before the CLI recorded it), resolve it whenever you need\nit from the current config: `merge.target` if it names a branch, else (`current`, or no key)\n`git symbolic-ref --short HEAD` in `<R>`.\n\n**Reviewers come from config.** The reviewer keys are `reviewers` in `<R>/factory/config.json`,\nin order. Read them when a round starts; never assume a list. Each key `<key>` is the agent\n`factory-<key>`, which writes `round-<N>/review-<key>.md`.\n\n## The board \u2014 events through the CLI\n\nA job\'s state is its `factory/jobs/<id>/events.jsonl`; the CLI derives `job.json` from it after\nevery event, and the dashboard assembles the board from those. You **never write `job.json` or\nthe log** yourself. "Board: `<type> k=v \u2026`" below means: run\n\n```bash\nbun factory/cli.ts event <id> <type> [k=v \u2026]    # from <R>\n```\n\nfor **your job** only, right when the change happens. It prints the new stage. A job starts\nwith **`claim`**, never with `event`:\n\n```bash\nbun factory/cli.ts claim <slug> [brief=\u2026] [issue=\u2026] [maxRound=\u2026] [session=\u2026]    # from <R>\n```\n\n`<slug>` is a 2\u20134 word kebab name for the work (lowercase letters and digits joined by single\n`-`, at most 40 characters), e.g. `export-csv-report`. The CLI picks the job number, creates\n`factory/jobs/<id>/`, logs `job.claimed`, and prints the full id (e.g. `004-export-csv-report`)\nas its only output. That printed id is `<id>` everywhere from then on; never compute, guess, or\npick an id yourself. A non-zero exit means nothing was claimed: read the one-line reason (a bad\nslug, `slug <slug> is live as <id>` when a live job already has that slug, a refused\n`merge.target`), fix it or tell the user, and stop. A non-zero exit\nmeans the event was rejected and nothing was written: read the one-line reason and fix the\ncause (usually WAIT FOR ALL, or an agent\'s file that\'s missing or malformed). Never hand-edit\nstate to get around it. If the reason is a corrupt (torn) tail, stop and tell the user: a human\ntruncates the partial last line, then runs `bun factory/cli.ts rebuild <id>`; you never edit the\nlog. The schema, the event types, and the allowed transitions are in\n[factory/CONTRACT.md](../../../factory/CONTRACT.md); `bun factory/cli.ts show <id>` prints a job\'s\nstage and timing. Jobs claimed before the CLI (no `events.jsonl`) reject every event, so\n`approve`/`rework`/`abandon` can\'t drive them; say so in one line and stop.\n\nPut free-text values (`title`, `note`, `reason`) in **single quotes** \u2014 double quotes expand\n`$` and backticks \u2014 and write an apostrophe as `\'\\\'\'`: `reason=\'it\'\\\'\'s blocked\'`.\n\n**Agent spans.** Every spawn or resume is bracketed: `agent.started` right before it and\n`agent.finished` once it returns **and its file exists**, with the same identity fields \u2014\n`role` (`spec-writer` | `builder` | `reviewer` | `approver`), plus `key=<reviewer key>` and\n`round=<N>` for reviewers, `name=builder-<id>` for the builder, and `round=<N>` for a builder\nresumed after round N (omit `round` when N is 0). Never pass a verdict: the CLI reads it from\nthe reviewer\'s or approver\'s file. Every `agent.finished` also passes `agentId=<agent id>`: the\nid the Agent tool returned for that agent (a resumed builder keeps its id). The CLI reads that\nagent\'s token spend from it; it is data on the span, never its `name`. Never make one up: if the\ntool gave no id, leave `agentId` off (the span\'s spend then reads as unavailable).\n\n## The thread lookup (T3 Code)\n\nA job records which T3 Code thread is orchestrating it, so the dashboard can open that thread.\nRun this **thread lookup** right before `claim` (before taking `factory/.lock`), before\n`job.reworked` (`/factory rework`), and before `job.human-approved` (`/factory approve`), and\nonly when T3 Code\'s tools `t3_environment_read` and `t3_thread_search` are both present in this\nsession. Without them, skip it and run the command without `session`.\n\n**In an epic** the lookup runs **once**, when `/factory epic <slug>` starts or resumes the epic,\nright before `epic start` or `epic event <slug> epic.resumed`. The `session=` it gives goes on\nthat command and on every claim this session makes for the epic (members, sync, and fix jobs);\nnever run it again per claim.\n\n1. Write a unique phrase in your reply to the user: `factory session <random>`, where\n   `<random>` is 12 random letters and digits you make up now (never reuse one).\n2. Call `t3_environment_read` for the environment id, then `t3_thread_search` for the phrase.\n   If no thread comes back, wait a couple of seconds (`sleep 2`) and search once more.\n3. Only if exactly one thread matches, add `session=t3code:<environmentId>/<threadId>` to the\n   command (`claim`, `job.reworked`, `job.human-approved`, `epic start`, or `epic.resumed`).\n4. Otherwise (no match after the retry, several matches, or a tool error), run the command\n   without `session` and tell the user in one line: "couldn\'t find this T3 Code thread; the job\n   won\'t link to it".\n\nIt is best effort: never stop the job, wait on the user, or ask them about it. If the CLI\nrefuses the `session=` value, run the same command again without it and say that one line.\nPass `session=` on nothing else (the CLI refuses it on every other event and epic event), and\nnever record any other id, such as Claude Code\'s own session id. The one exception is the Agent\ntool\'s agent id, passed as `agentId=` on `agent.finished` and nowhere else.\n\n## Running jobs side by side\n\nAny number of sessions can run `/factory` at once, one job, or one epic, each. Each job has its own worktree,\nbranch, job dir, and `job.json`, so they don\'t touch each other\'s files. The job-id sequence is\nthe CLI\'s: `claim` hands out each number under its own lock, so two sessions never get the same\nid. Two more things are shared: the backlog and the main checkout that merges land in. Those\nsteps happen under `factory/.lock`, which is a directory because `mkdir` is atomic:\n\n```bash\ncd <R>; until mkdir factory/.lock 2>/dev/null; do\n  [ -n "$(find factory/.lock -maxdepth 0 -mmin +15)" ] && rmdir factory/.lock  # stale: holder died\n  sleep 2; done\n```\n\nRelease it with `rmdir factory/.lock` as soon as the step is done, and never hold it while you\nwait on the user or an agent. These steps take the lock:\n- **Claim:** run **the backlog check**, pick the work, run the overlap check, run\n  `bun factory/cli.ts claim <slug> \u2026` (it picks the number, creates the job dir, and prints the\n  id), then, with that printed id, write `feature.md`, tick the backlog line as\n  `- [x] \u2026 \u2192 <id>`, and commit the tick at once by pathspec, still under the lock:\n  `git commit -m "chore(factory): claim job <id>" -m "Co-Authored-By: Claude\n  <noreply@anthropic.com>" -- factory/backlog.md`. Release the lock only\n  after that commit; the job\'s branch is created later (step 2 of the loop). The ticked line\n  stays in the backlog while the job runs, so other sessions see it and never pick it. Work\n  claimed from free text with no backlog line has nothing to tick: no backlog commit. Run\n  **the thread lookup** before taking the lock.\n- **Merge:** everything in **Merge** below, bookkeeping included.\n- **Abandon bookkeeping:** removing the job\'s backlog line and noting the attempt in its brief\n  (`/factory abandon`).\n- **Queue:** appending lines with `/factory queue`, and its commit.\n- **Explore\'s Finish:** marking a brief ready, appending its backlog line, and their commit.\n- **Epic start:** the backlog check, `epic start`, and the tick of the epic\'s backlog line as\n  `- [x] \u2026 \u2192 epic <slug>`, with its commit (**Epics**, "Start or resume").\n- **Landing:** everything in **Epics**, "Landing", from the checkout check to the\n  `land epic <slug>` commit.\n- **Epic bookkeeping:** a member brief\'s `- Abandoned:` line, dropping members from a plan, and\n  `/factory epic abandon`\'s bookkeeping, each with its commit.\n\nMember, sync, and fix claims don\'t take the lock: they touch no backlog line, and the CLI checks\nthe epic\'s plan and cap under the epic\'s own lock. A member\'s merge into the epic branch doesn\'t\ntake it either: it happens in the epic\'s worktree, never the main checkout, and only the session\ndriving the epic merges there.\n\n**The backlog holds only open and running work, and every edit to it is committed at once** by\nthe step that makes it, by pathspec, under `factory/.lock`. A pathspec commit takes the whole\nfile, so nothing may be left uncommitted between steps, or one job\'s edit lands in another\'s\ncommit. A line is `- [ ]` while open, `- [x] \u2026 \u2192 <id>` while its job runs, and removed when the\njob merges or is abandoned. An epic\'s line (ending `\u2014 epic: factory/epics/<slug>.md`) is\n`- [x] \u2026 \u2192 epic <slug>` while the epic runs, and removed when it lands or is abandoned; its\nmember jobs never get lines of their own.\n\n**The backlog check** (the first thing each of those steps does). Run\n`git status --porcelain -- factory/backlog.md` from `<R>`. If it prints anything,\n`factory/backlog.md` already has uncommitted changes (someone\'s hand edits): never sweep them\ninto your commit. Release the lock, stop with the one line "commit or discard your backlog\nedits first", and leave the backlog as it is. Each step below says what that stop means for it.\n\n**Live jobs** are the jobs whose `job.json` (read-only to you) has a stage other than\n`merged`. That includes `needs-human`, because those branches still have to merge.\n**Running epics** are the epics whose `factory/jobs/epics/<slug>/epic.json` (read-only to you)\nhas a state other than `landed` or `abandoned`.\n\n**Overlap check** (part of every claim, right after the backlog check). Compare the new work with each live job\'s title\nand `feature.md`, and its `spec.md` Touchpoints if they\'re written yet. The question is whether\nthey look likely to change the same area: the same module, the same surface or component, the\nsame doc. A judgment call at a glance is enough; no file-level analysis is needed. If they\noverlap, release the lock and ask the user in a sentence before starting: *"This and live job\n<id> both change the same module, so they\'ll likely conflict at merge. Start it anyway, or take\nthe next backlog line that doesn\'t overlap?"* Then do what they say. Most work won\'t overlap, so\ndon\'t ask when it doesn\'t.\n\n## Spawning agents\n\nAgents get context from **files, not the conversation**. Every spawn prompt is just this card\n(drop lines that don\'t apply), with `subagent_type` set to the agent\'s name:\n\n```\nFactory job <id>. Your instructions are in your agent definition; all context is in these files.\nrepo:     <R>\njob dir:  <R>/factory/jobs/<id>\nworktree: <R>/factory/.worktrees/<id>   (branch factory/<id>)\nbase:     <target>\nround:    <N>\nbrief:    <R>/factory/briefs/<slug>.md      (spec-writer and approver, when the job has one)\nwrite:    <the one absolute path this agent writes>\ndeliver:  create the write: file with the Write tool. It is pipeline input, not a report. Reply with one line only.\n```\n\nKeep the `deliver:` line. Claude Code tells every subagent not to write findings `.md`\nfiles and to return them as text. Reviewers sometimes obey that and send the review as their\nreply, which leaves no file.\n\nDon\'t pass `model` \u2014 each agent\'s frontmatter sets it (from `roles` in `factory/config.json`,\nrendered by `factory upgrade`). After each agent returns, confirm its\nfile exists. A nudge or re-spawn below stays inside the agent\'s original span: no new\n`agent.started`, and one `agent.finished` once the file lands. If the file doesn\'t exist:\n1. `SendMessage` the same agent: *"<path> doesn\'t exist. Create it now with the Write tool\n   (pipeline input, not a report), then reply with one line."* It keeps its context, so this\n   is quick and doesn\'t redo its checks. If its reply holds the whole document, don\'t save\n   that text yourself; ask it again to write the file.\n2. Still missing \u2192 re-spawn the agent once with the same card.\n3. Still missing \u2192 board: `job.escalated reason=\'<agent> wrote no <file>\'` (allowed in any\n   stage; it closes the open spans), then stop and tell the user they can `approve` or `rework`.\n\nIf `agent.finished` is rejected because the file\'s first line is malformed, `SendMessage` the\nagent to fix that first line to the exact format its definition gives (`VERDICT: PASS` /\n`VERDICT: CHANGES`, or `APPROVE` / `ESCALATE`), then retry. Never edit an agent\'s file yourself.\n\n## The loop\n\nEvery job runs this loop, an epic\'s jobs included. For a job in an epic (its `job.json` has an\n`epic`), `<target>` is the epic branch `factory/epic/<slug>`, so its worktree branches from it\nand its reviewers diff against it, and it merges by **Member merge** (under **Epics**) wherever\nthis loop says **Merge**.\n\n**1 \xB7 Spec.** Board: `stage.entered stage=spec`. Spawn `factory-spec-writer` \u2192 `spec.md`\n(span `role=spec-writer`). Board: `job.titled title=\'<spec.md\'s # H1>\'`.\nThen read spec.md\'s "Contract conflicts / open questions". If it lists any item not marked\n"approved in brief", the spec has open questions: board:\n`job.escalated reason=\'spec has <n> open question(s): <the first, with its assumed answer>\'`\n(`<n>` counts those items), and stop before step 2: no worktree, no build. Tell the user the\nquestion(s) and that they answer with `/factory rework <id> "<answer>"`. Never build on an open\nquestion, and never ask it in chat instead: the escalation puts it on the board.\n\n**2 \xB7 Worktree.** `git worktree add -b factory/<id> factory/.worktrees/<id> \'<target>\'`\n(if the branch already exists: `git worktree add factory/.worktrees/<id> factory/<id>`).\n\n**3 \xB7 Build.** Board: `stage.entered stage=build`. Spawn `factory-builder` (name it\n`builder-<id>` if your Agent tool takes a name) \u2192 `build.md`, commits on the branch. The span is\nalways `role=builder name=builder-<id>`, literally, never the agent id: `agent.started` runs\nbefore the spawn, so no id exists yet. Keep the agent id the Agent tool returns in your own\ncontext; it is the `agentId=` on each builder `agent.finished` and the `SendMessage` target when\nyou resume the builder (wherever this skill says "`SendMessage` to `builder-<id>`", send to that\nid when the tool gave you one). Wait for it to return.\n\n**4 \xB7 Review round N** (N = previous round + 1, starting at 1). `mkdir jobs/<id>/round-<N>/`,\nboard: `round.started round=<N>` (the CLI fills in the reviewers from `factory/config.json`).\nThen one `agent.started role=reviewer key=<key> round=<N>` per configured reviewer, and spawn\n**all of them in one message**, in the background: `factory-<key>` writing\n`round-<N>/review-<key>.md`. As each one returns and its file exists, board:\n`agent.finished role=reviewer key=<key> round=<N> agentId=<its agent id>` (that sets its chip).\n\n**WAIT FOR ALL.** The round is done only when every reviewer\'s file exists and has its\n`agent.finished`. Never resume the builder, start the approver, or decide anything mid-round\n(the CLI refuses to leave review early).\n\n**5 \xB7 Gate.**\n- All `PASS` \u2192 step 6.\n- Any `CHANGES` and `round < maxRound` \u2192 board: `stage.entered stage=build`, then resume the\n  **same** builder (span `role=builder name=builder-<id> round=<N>`): `SendMessage` to\n  `builder-<id>` \u2014 *"Round <N> reviews are in <R>/factory/jobs/<id>/round-<N>/. Address every\n  [blocking] finding, update build.md, commit."* When it returns, go to step 4.\n- Any `CHANGES` and `round == maxRound` (default `maxRound` 2) \u2192 step 6; the approver will\n  escalate.\n\n**6 \xB7 Approve.** Board: `stage.entered stage=approve`. Spawn `factory-approver` \u2192\n`decision.md` (span `role=approver`; its `agent.finished` records the decision). Read the first\nline:\n- `APPROVE` \u2192 **Merge** (below).\n- `ESCALATE` \u2192 board: `job.escalated reason=\'<one-line reason>\'`. Tell the user why, and that\n  they can `/factory approve <id>` or `/factory rework <id> "<note>"`.\n\n## Merge\n\nThis is a standalone job\'s merge into its target from the main checkout. A job in an epic merges\ninto the epic branch instead, by **Member merge** under **Epics**.\n\nTake `factory/.lock` first. Another session may be merging. Everything below runs from the\nmain checkout, which must be on the job\'s `<target>`. Check it first with\n`git symbolic-ref --short HEAD`. If it is on another branch `<x>` (or detached: `<x>` is\n`detached HEAD`), release the lock, board:\n`merge.failed reason=\'checkout is on <x>, job targets <target>\'` (the job goes to\n`needs-human`; `<x>` is whatever the checkout\'s branch is called, so write any apostrophe\nin it as `\'\\\'\'`, as for every board value), and stop: tell the user to switch the main\ncheckout to `<target>` themselves and retry with `/factory approve <id>`. Never run `git checkout` or `git switch` here. The main\ncheckout is the user\'s working tree, maybe with uncommitted work.\n\n```bash\ngit merge --no-ff factory/<id> -m \'<Merge message: line from decision.md>\' \\\n  -m \'Factory job <id>.\' -m \'Co-Authored-By: Claude <noreply@anthropic.com>\'\n```\n\nThe merge message is the approver\'s text: keep it in single quotes and write any apostrophe in it\nas `\'\\\'\'` (as for board values), so `$` and backticks in it are never expanded.\n\n- **Conflict** (after the failed `git merge`, `git diff --name-only --diff-filter=U` lists at\n  least one path) \u2192 the job goes back to its own builder, in order:\n  1. Before anything else, list the conflicting paths (`git diff --name-only --diff-filter=U`)\n     and the sha of `<target>` (`git rev-parse --short <target>`), and keep `git merge`\'s\n     one-line summary. Then `git merge --abort`.\n  2. Then release the lock (`rmdir factory/.lock`).\n  3. If `conflicts` in job.json is already 2 (a missing key counts as 0), the job has had its\n     two tries: board: `merge.failed reason=\'merge conflict with <target> after 2 resolved\n     conflicts\'` (the job goes to `needs-human`), and stop: tell the user they can\n     `/factory rework <id> "<note>"` or resolve it themselves.\n  4. Otherwise write `jobs/<id>/conflict-<c>.md` (`c` = `conflicts` + 1). The note holds facts\n     only: the target branch and its sha, the conflicting paths, and `git merge`\'s one-line\n     summary. No advice on how to resolve it; the builder\'s definition has that.\n\n     ```\n     # Conflict <c> \u2014 <id>\n     Target: <target> @ <sha>\n     Merge: <git merge\'s one-line summary>\n     Conflicting paths:\n     - <path>\n     ```\n  5. Board: `merge.conflicted reason=\'merge conflict with <target>: <n> path(s), back to the\n     builder\'`. The CLI moves the job to `build` with a fresh budget (`maxRound` = round + 2) and\n     counts the conflict. If the CLI refuses `merge.conflicted`, board: `merge.failed\n     reason=\'merge conflict with <target>, merge.conflicted refused: <its one-line reason>\'` and\n     stop as in 3.\n  6. Resume `builder-<id>` (span `role=builder name=builder-<id> round=<round>`) with\n     `SendMessage` \u2014 *"Merge conflict note: <R>/factory/jobs/<id>/conflict-<c>.md. Merge\n     `<target>` into the branch, resolve it, run the gate, add a `## Conflict <c>` section to\n     build.md, commit."* If that builder isn\'t alive in this session, spawn a fresh\n     `factory-builder` named `builder-<id>` with the card plus the note path (everything it needs\n     is in files).\n  7. Continue at step 4 with round `<round> + 1`, then the approver (step 6), then **Merge**\n     again. The reviewers\' diff includes the builder\'s merge commit.\n- **Refusal** (any other failure: a stray `.git/index.lock`, uncommitted changes in the way, or\n  anything else, with no conflicting paths) \u2192 `git merge --abort` (if a merge is in progress),\n  release the lock, board: `merge.failed reason=\'git merge into <target> refused: <its one-line\n  error>\'`, and stop: tell the user what blocked it and that they can retry with\n  `/factory approve <id>`. (A stray `.git/index.lock` means something else is mid-commit; wait\n  a few seconds and retry once before giving up.)\n- Success \u2192 board: `job.merged sha=<short sha>` **immediately**, before any cleanup, so git and\n  the board never disagree. Then `git worktree remove factory/.worktrees/<id>` and\n  `git branch -d factory/<id>`; if cleanup fails, report it and carry on (the merge stands).\n- **Post-merge check.** If `<target>` had moved past the branch\'s base, run the gate on `<target>` and\n  report the result (don\'t auto-revert). The gate is `gate` in `<R>/factory/config.json`: its\n  shell commands run in order from the repo root, and it is green only when every command\n  exits 0. If `config.json` has no `gate`, no gate is configured: tell the user so instead of\n  running anything, and never invent a command.\n- Then **archive** the job, before bookkeeping: run `bun factory/cli.ts archive <id>` from `<R>`.\n  It copies the job\'s record to the `factory/archive` branch with git plumbing and never touches\n  the checkout. If it fails, or says archiving is disabled, report its line to the user in one\n  line and carry on: a failed or disabled archive never fails or undoes the merge (the local\n  job dir stays, and `archive --all` catches it up later). Never push `factory/archive`.\n- Then **bookkeeping**, so every job leaves `<target>` clean. First run **the backlog check**.\n  If `factory/backlog.md` already has uncommitted changes, the merge stands (`job.merged` is\n  logged) and only the bookkeeping waits: release the lock and tell the user "commit or discard\n  your backlog edits first", that the merge landed, and which bookkeeping you skipped (removing\n  the job\'s backlog line, marking the brief `done` with its `- Job:` line, and the\n  `record job <id>` commit), for them to do once their edits are committed or discarded.\n  Otherwise, remove the job\'s line (`- [x] \u2026 \u2192 <id>`) from `factory/backlog.md`; don\'t tick it,\n  the line goes. When `job.json` has a non-null\n  `brief`, mark that brief done: set that brief\'s `Status:` line to `done` and add\n  `- Job: <id> (merged <short sha>, <YYYY-MM-DD>)` right below it (the `<short sha>` you passed\n  to `job.merged`, and today\'s date). Then commit by pathspec, so nothing else of the user\'s\n  gets swept in, the brief together with the backlog line\'s removal: `git commit -m\n  "chore(factory): record job <id>" -m "Co-Authored-By: Claude <noreply@anthropic.com>" --\n  factory/backlog.md factory/briefs/<slug>.md`. With no brief, commit the backlog only, ending\n  the same command with `-- factory/backlog.md` (nothing changed \u2192 skip).\n- Release the lock (`rmdir factory/.lock`).\n- Never push. Pushing stays a human decision.\n\n## Epics\n\nAn **epic** runs several briefs as ordinary jobs, its **members**, in the order its plan\n`factory/epics/<slug>.md` gives (each `## Members` item names a brief, with optional `after:`\nmembers it waits on). Members branch from, are reviewed against, and merge into the epic\'s own\nbranch, `factory/epic/<slug>`, checked out at `<R>/factory/.worktrees/epic-<slug>`; when every\nmember has merged, the epic **lands** on its target with one merge. Below, `<slug>` is the epic\'s\nslug and `<target>` is the epic\'s target (`target` in `epic show`), never the epic branch. Besides\nmembers, an epic may claim two kinds of **generated** jobs inside itself: a **sync** job (brings\n`<target>` into the epic branch after a catch-up conflict) and a **fix** job (makes a red gate\ngreen before landing). Every epic job runs **The loop**.\n\nThe CLI owns the epic\'s setup, teardown, log, and scheduling; you own every merge (members,\ncatch-ups, landing) and record each outcome as an event. You never write `epic.json` or the\nepic\'s log. Run, from `<R>`:\n\n```bash\nbun factory/cli.ts epic start <slug> [session=\u2026]          # set up the branch and worktree; logs epic.started\nbun factory/cli.ts epic event <slug> <type> [k=v \u2026]       # epic.waiting | epic.resumed | epic.landing | epic.landed\nbun factory/cli.ts epic next <slug>                       # what to do now: claim <member> lines, or land\nbun factory/cli.ts epic show <slug>                       # state, members, generated jobs, why it waits\nbun factory/cli.ts epic abandon <slug> \'<reason>\' [--force] [--delete-branch]\n```\n\nA non-zero exit wrote nothing (or, for `epic abandon`, names what it left behind): read its one\nline and fix the cause or tell the user. Free-text values are single-quoted, as on the board.\n\n### Start or resume\n\n`/factory epic <slug>`, and `/factory next` on an epic\'s backlog line, first read the epic\'s\nstate with `bun factory/cli.ts epic show <slug>`.\n\n**Not started** (`epic show` says it has not started):\n1. Read the plan. Its `Status:` must be `ready`. A `draft` plan\'s interview isn\'t done: say so\n   (`/factory explore <slug>` finishes it). A `done` plan has landed: say `epic <slug> landed\n   (<sha>)` from its `- Landed:` line. An `abandoned` plan has had its one run: say so. Each of\n   these stops before starting anything.\n2. **The abandoned-brief question, once.** List every member brief that has `- Abandoned:`\n   lines, each with its latest attempt (job id and reason), and ask once, before taking the\n   lock: *"These member briefs were abandoned before: <slug> as <id>: \'<reason>\'; \u2026 Start the\n   epic anyway, or revise them first with `/factory explore`?"* Start anyway \u2192 go on; revise (or\n   anything unclear) \u2192 stop, starting nothing. No such brief \u2192 don\'t ask.\n3. **The overlap question, once.** Compare the epic as a whole (every member brief\'s Intent and\n   Scope) with each live job that has no `epic` and each other running epic (its plan), at a\n   glance, as the overlap check does. If they overlap, ask once: *"This epic and <id or epic\n   slug> both change the same module, so they\'ll likely conflict at landing. Start it anyway?"*\n   and do what the user says. Never compare members with each other: the `after:` edges already\n   decided what runs in parallel, and conflicts between members are handled at **Member merge**.\n4. Run **the thread lookup** (once for the whole run).\n5. Take `factory/.lock`. When the backlog has an open line for this plan\n   (`- [ ] \u2026 \u2014 epic: factory/epics/<slug>.md`), run **the backlog check** first (if it stops you,\n   nothing is started). Run `bun factory/cli.ts epic start <slug> [session=\u2026]`: it checks the\n   plan, creates `factory/epic/<slug>` from the target and its worktree, logs `epic.started`, and\n   prints `running`. A non-zero exit started nothing: release the lock, leave the line unticked,\n   and report its one line. Then tick the line as `- [x] \u2026 \u2192 epic <slug>` and commit it at once\n   by pathspec, still under the lock: `git commit -m "chore(factory): start epic <slug>" -m\n   "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md` (no line \u2192 no commit).\n   Release the lock.\n6. Run **The epic loop**.\n\n**`running` or `waiting`:** resume and take over driving. Ask neither start question (both were\nasked when it began). Run **the thread lookup**, then `bun factory/cli.ts epic event\n<slug> epic.resumed [session=\u2026]`: it records this session as the driver and, from a logged\n`waiting`, puts the epic back where it was, and prints the state. Taking over assumes any\nearlier driving session has stopped. If it prints `landing` (a `waiting` logged during landing,\nsuch as a wrong checkout or a refused landing merge), or the CLI refuses `epic.resumed` because\nthe epic is `landing`, go on as for `landing`. Otherwise run **The epic loop** from the files.\n\n**`landing`** (a driver stopped partway through landing; the CLI refuses `epic.resumed` there),\nor an `epic.resumed` that printed `landing`: run **the thread lookup** if you haven\'t yet, for\nany claim this session makes, and continue at **Landing**, "Resuming a landing".\n\n**`landed` or `abandoned`:** say so, with its note, and stop.\n\n### The epic loop\n\nYou drive every epic job yourself, interleaved. Each runs **The loop**, and **every agent is\nspawned in the background**, so several jobs move at once; as each agent returns (and its file\nexists), take that job\'s next step, then go back to waiting. Never block on one job while\nanother could move. **WAIT FOR ALL** still holds within each job\'s review round.\n\n**Schedule.** When the epic starts or resumes, and whenever an epic job merges, leaves a working\nstage, or is abandoned, first read the epic\'s state (`epic show <slug>`). **While it is\n`landing`**, `epic next` prints nothing, so don\'t run it: drive any live sync or fix job, and\nonce none is live, go back to **Landing** from step 1, skipping `epic.landing` (already logged).\nOtherwise run `bun factory/cli.ts epic next <slug>` and do exactly what it prints, nothing more:\n- `claim <member>` \u2192 run **Catch-up** first; if it claimed a sync job, claim no member now. Then\n  `bun factory/cli.ts claim <member> epic=<slug> brief=factory/briefs/<member>.md session=\u2026`\n  (the `session=` from the start or resume lookup, left off when it found none; no `maxRound=`:\n  the plan\'s, else the config\'s, applies). Use the printed id, write its `feature.md`\n  (`<the brief\'s # title> \u2014 brief: factory/briefs/<member>.md (member of epic <slug>)`), and run\n  its loop from step 1. A refused claim claimed nothing: report its one line.\n- `land` \u2192 **Landing**.\n- nothing \u2192 read `epic show <slug>`. While an epic job is still in a working stage, keep waiting on\n  its agents. Otherwise the epic is waiting on you: tell the user which jobs are in\n  `needs-human` (each id and why), that they can `/factory approve`, `rework`, or `abandon` each\n  in this session, and stop.\n\n**State lives in files, never in your memory.** After a compaction, on a resume, or whenever\nunsure, re-read `epic show <slug>` (members, their jobs and stages, generated jobs) and each epic\njob\'s `job.json` (`stage`, `round`, `maxRound`, `decision`, `conflicts`, and its open spans:\n`timing.agents` entries with `finishedAt` null), and look at which of its files exist. Continue\neach job from what they say: an open span whose file exists \u2192 `agent.finished`, then the next\nstep; an open span whose agent isn\'t alive in this session \u2192 re-spawn it once with the same\ncard, inside that span (**Spawning agents**). When the old builder isn\'t alive, spawn a fresh\n`factory-builder` named `builder-<id>` with the card plus the newest review round, rework note,\nor conflict note it must address: everything it needs is in files (the rework path).\n\n**Status lines name the epic**: `<epic> \xB7 <id> review round <N>: <k>/<n> in` (e.g.\n`checkout-flow \xB7 027 review round 1: 3/4 in`).\n\n**A member escalates** (approver `ESCALATE`, budget spent, no file, a merge conflict past its two\ntries, or open questions in its spec at step 1): it goes to `needs-human` exactly as a standalone job does. Log it as **The loop** says,\ntell the user in one line, and keep driving: independent members keep running, and its dependents\nstay unclaimed (`epic next` won\'t offer them). Never retry, rework, or approve it on your own;\nthat is the user\'s call, in this session.\n\n**A member is abandoned.** The epic can\'t land while an abandoned member is in its plan, and its\ndependents (members whose `after:` reaches it, directly or through others; `epic show` lists them\nas blocked on it) can never run. Ask the user once: *"Member `<m>` (<id>) is abandoned, and\n<dependents, or no member> depend(s) on it. Drop it and its dependents from the plan, or abandon\nthe epic?"* Then do what they say:\n- **Drop** \u2192 take `factory/.lock`, remove those members\' items from the plan\'s `## Members` (and\n  any `after:` entry naming them), and commit the plan at once by pathspec: `git commit -m\n  "chore(factory): drop <members> from epic <slug>" -m "Co-Authored-By: Claude\n  <noreply@anthropic.com>" -- factory/epics/<slug>.md`. Release the lock, then **Schedule**. This\n  removal is the only edit you ever make to a running epic\'s members.\n- **Abandon the epic** \u2192 `/factory epic abandon <slug> <reason>`.\n- Anything unclear \u2192 change nothing; the epic waits on you.\n\nAn abandoned sync or fix job isn\'t a plan member: nothing to drop. The next catch-up or landing\ntries again.\n\n### Catch-up\n\nBefore each member claim and before landing, the epic brings in its target, **only when the\ntarget has moved**. In the epic worktree (`cd <R>/factory/.worktrees/epic-<slug>`):\n\n```bash\ngit merge-base --is-ancestor <target> factory/epic/<slug>\n```\n\nExit 0 \u2192 up to date, nothing to do. Otherwise merge the target into the epic branch there, as a\nmerge commit, never a rebase:\n\n```bash\ngit merge --no-ff <target> -m \'Merge <target> into factory/epic/<slug>\' \\\n  -m \'Co-Authored-By: Claude <noreply@anthropic.com>\'\n```\n\n- Clean \u2192 go on.\n- **Conflict** (`git diff --name-only --diff-filter=U` lists at least one path) \u2192 record the\n  conflicting paths and the target\'s sha (`git rev-parse --short <target>`), then\n  `git merge --abort`. Claim a **sync job**: `bun factory/cli.ts claim sync-<sha> epic=<slug>\n  kind=sync session=\u2026` (no `brief=`; the CLI refuses one). Write its `feature.md`, generated:\n\n  ```\n  Sync epic <slug> with <target>\n  Merge <target> @ <sha> into factory/epic/<slug> and resolve the conflicts, keeping both sides\'\n  intent. The gate stays green.\n  Conflicting paths:\n  - <path>\n  ```\n\n  and run its loop. **While a sync job is live, no member is claimed** (`epic next` offers none,\n  and the CLI refuses), and running members keep going. Claiming resumes once the sync job merges\n  (**Member merge**, then **Schedule**).\n- Any other failure \u2192 `git merge --abort` (if a merge is in progress), board the epic:\n  `epic event <slug> epic.waiting reason=\'catch-up merge of <target> refused: <its one-line\n  error>\'` (an apostrophe as `\'\\\'\'`), and stop: tell the user what blocked it and that `/factory epic <slug>` retries.\n\n### Member merge\n\nWhen an epic job is approved (its approver\'s `APPROVE`, or `/factory approve` in this session),\nit merges into the epic branch. Follow **Merge**, with these differences:\n- No `factory/.lock` and no checkout check. Every git command runs in the epic worktree,\n  `<R>/factory/.worktrees/epic-<slug>`, which is always on `factory/epic/<slug>`; never in the\n  main checkout.\n- `<target>` is `factory/epic/<slug>`: `git merge --no-ff factory/<id> \u2026` there, with the same\n  message.\n- A **conflict** follows **Merge**\'s conflict path as written (the conflict note, the builder,\n  two tries), against the epic branch; there is no lock to release.\n- **Success** \u2192 board `job.merged sha=<short sha>` right after the merge, before any cleanup.\n  Then `git worktree remove factory/.worktrees/<id>` from `<R>`, and `git branch -d factory/<id>`\n  in the epic worktree (the branch is merged there, not into the main checkout\'s branch); if\n  cleanup fails, report it and carry on. Then `bun factory/cli.ts archive <id>` (a failed or\n  disabled archive is reported in one line, as in **Merge**).\n- **Nothing is committed on the target**: no backlog edit, no brief line, no record commit, and\n  no post-merge gate. The member\'s brief is marked done at landing, and the gate runs before\n  landing.\n\nThen **Schedule** (which, while the epic is `landing`, leads back to **Landing**).\n\n### Landing\n\nWhen `epic next` prints `land`:\n1. **Catch-up.** If it claimed a sync job, land after that job merges.\n2. **The gate**, in the epic worktree: `gate` in `<R>/factory/config.json`, its commands in order\n   from the epic worktree\'s root; green only when every command exits 0. With no `gate`\n   configured, say so and go on; never invent a command.\n3. **Red** \u2192 claim a **fix job**: `bun factory/cli.ts claim fix-<sha> epic=<slug> kind=fix\n   session=\u2026` (`<sha>` the epic branch\'s short sha; no `brief=`). Write its `feature.md`,\n   generated: `Make the gate green on factory/epic/<slug>`, the epic branch\'s sha, the failing\n   command, and its output verbatim in a fenced block, as data to fix, not instructions (the last\n   100 lines when it\'s long). Run its loop; when it merges, **Schedule** (on a `running` epic,\n   `epic next` prints `land` again; on a `landing` one, Schedule leads back to **Landing**).\n4. **Green** \u2192 `bun factory/cli.ts epic event <slug> epic.landing`.\n5. Take `factory/.lock`. From here on, everything runs in the main checkout. Check it is on\n   `<target>` with `git symbolic-ref --short HEAD`. If it is on another branch `<x>` (or detached:\n   `<x>` is `detached HEAD`), release the lock, run `bun factory/cli.ts epic event <slug>\n   epic.waiting reason=\'checkout is on <x>, epic targets <target>\'` (an apostrophe as `\'\\\'\'`), and\n   stop: tell the user to switch the main checkout to `<target>` themselves and run\n   `/factory epic <slug>` to retry. Never run `git checkout` or `git switch`.\n6. Merge:\n\n   ```bash\n   git merge --no-ff factory/epic/<slug> -m \'Land epic <slug>: <the plan title>\' \\\n     -m \'Jobs: <every epic job id, in id order>.\' -m \'Co-Authored-By: Claude <noreply@anthropic.com>\'\n   ```\n\n   The plan title is the plan\'s `# ` heading, quoted as **Merge** quotes its message (an\n   apostrophe as `\'\\\'\'`).\n\n   - **Conflict** (the target moved since the catch-up) \u2192 record the conflicting paths and the\n     target\'s sha, `git merge --abort`, release the lock, and claim a sync job as **Catch-up**\n     says (the epic stays `landing`). When it merges, **Schedule** leads back to **Landing** from\n     step 1, skipping `epic.landing` (already logged).\n   - **Refusal** (no conflicting paths) \u2192 `git merge --abort` (if a merge is in progress),\n     release the lock, `epic event <slug> epic.waiting reason=\'git merge into <target> refused:\n     <its one-line error>\'` (an apostrophe as `\'\\\'\'`), and stop: tell the user what blocked it; `/factory epic <slug>`\n     retries.\n7. Success \u2192 `bun factory/cli.ts epic event <slug> epic.landed sha=<short sha>` **at once**,\n   before any cleanup, so git and the board never disagree.\n8. `git worktree remove factory/.worktrees/epic-<slug>` and `git branch -d factory/epic/<slug>`;\n   if cleanup fails, report it and carry on (the landing stands).\n9. `bun factory/cli.ts archive <slug>`; a failed or disabled archive is reported in one line and\n   never undoes the landing.\n10. **Bookkeeping.** First run **the backlog check**. If it stops you, the landing stands and\n    only the bookkeeping waits: release the lock and tell the user "commit or discard your\n    backlog edits first", that the epic landed, and which bookkeeping you skipped (below).\n    Otherwise:\n    - remove the epic\'s line (`- [x] \u2026 \u2192 epic <slug>`) from `factory/backlog.md`;\n    - give each member brief `Status: done` and, right below it, `- Job: <id> (merged <member\n      sha> via epic <slug>, <YYYY-MM-DD>)`: the member\'s newest job, and the sha its `job.merged`\n      logged (its `job.json` `note` reads `merged <sha>`);\n    - give the plan `Status: done` and, right below it, `- Landed: <short sha> (<YYYY-MM-DD>)`\n      (the sha you passed to `epic.landed`);\n    - make one pathspec commit: `git commit -m "chore(factory): land epic <slug>" -m\n      "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md\n      factory/epics/<slug>.md factory/briefs/<member>.md \u2026` (every member brief).\n11. Release the lock (`rmdir factory/.lock`), and tell the user the epic landed. Never push.\n\n**Resuming a landing.** First re-read state from the files, as **The epic loop** says ("State\nlives in files"), and drive any live sync or fix job until it merges; never claim a second sync\njob while one is live. Once no epic job is live, check in the main checkout whether the epic\nbranch is already in `<target>` (`git merge-base --is-ancestor factory/epic/<slug> <target>`).\nIf not, run **Landing** from step 1, skipping `epic.landing`. If it is, step 6 happened: take the\nlock, log `epic.landed` with the short sha of that `Land epic <slug>` merge commit, and go on\nfrom step 8.\n\n### Member commands\n\n`/factory approve`, `rework`, and `abandon <id>` on a job whose `job.json` has an `epic` run only\nin the session driving that epic (the one that started or last resumed it with\n`/factory epic <slug>`). Any other session refuses, changing nothing, with the one line:\n"<id> is in epic <slug>; run it in the epic\'s session, or `/factory epic <slug>` to take it\nover". In the driving session:\n- **approve** runs as the command says, recreating the worktree from `factory/epic/<slug>` when\n  it\'s gone, and merges by **Member merge**: into the epic branch, never the target.\n- **rework** runs as the command says; the job then goes on in **The epic loop**.\n- **abandon** runs as the command says, with its two questions and the CLI call, but the job has\n  no backlog line: skip the backlog check and the line. For a member, take `factory/.lock`, add\n  its brief\'s `- Abandoned:` line as the command says, and commit just the brief:\n  `git commit -m "chore(factory): abandon job <id>" -m "Co-Authored-By: Claude\n  <noreply@anthropic.com>" -- factory/briefs/<member>.md`, then release the lock (a sync or fix\n  job has no brief: nothing to commit). Then **A member is abandoned**.\n\n## Commands\n\n**`/factory <feature>`** \u2014 New job. If the text names a brief (`brief: factory/briefs/<slug>.md`),\nits `Status:` must be `ready`. If it is `done`, a job already carried it out: stop before claiming\nand say `brief <slug> is done (job <id>)`, with the job from its `- Job:` line. Separately, a draft\nbrief means the interview isn\'t done, so stop before claiming and say so. If the brief has\n`- Abandoned:` lines, a job already tried it and was closed: ask once, before claiming and\nbefore taking the lock, quoting its latest attempt: *"Brief `<slug>` was abandoned as job\n`<id>`: \'<reason>\'. Start it again, or revise it first with `/factory explore <slug>`?"* Start\nagain \u2192 go on; revise (or anything unclear) \u2192 stop, claiming nothing. Otherwise **claim** it\nunder the lock (backlog check and overlap check first): pick a 2\u20134 word kebab slug for the work and run\n`bun factory/cli.ts claim <slug>` with `brief=factory/briefs/<slug>.md` when it applies (add\n`maxRound=<n>` only to override the config default, and `session=\u2026` from **the thread lookup**,\nrun first). The CLI picks the number and prints the\njob\'s id, e.g. `004-export-csv-report`; use that id from then on. Write `feature.md` verbatim.\nIf the work has a backlog line, tick and commit it as **Claim** under **Running jobs side by\nside** says; free text with no backlog line makes no backlog commit. Then release the lock and\nrun the loop. If **the backlog check** stops the claim, nothing is claimed: no `claim`, no job.\n\n**`/factory queue <text>`** \u2014 Add ready work to the backlog without running it. Work arrives\nas text. It is **ready** if it isn\'t blocked by unmerged work and you can say in one line what\n"done" looks like.\n- Ready \u2192 distill it into `- [ ] <one line>`. The line carries what defines done \u2014 behaviors,\n  limits, must-nots (e.g. *no new runtime dependency*) \u2014 and none of the history or rationale.\n- Not ready \u2192 don\'t queue it; say why in a sentence and suggest `/factory explore <idea>`.\n\nThen take `factory/.lock` and run **the backlog check** (if it stops you, nothing is queued).\nAppend the lines and commit just the backlog by pathspec, still under the lock:\n`chore(factory): queue <title>` (+ the Co-Authored-By trailer) `-- factory/backlog.md`. Release\nthe lock, then show the user the lines you added; never hold the lock while you ask the user\nanything. `queue` never starts a job.\n\n**`/factory explore <idea | brief slug>`** \u2014 An interactive interview that turns a fuzzy\nidea into a brief, then queues it. Read [explore.md](explore.md) in this skill\'s folder and\nfollow it. It runs entirely in this session with the user; it spawns no agents.\n\n**`/factory customize`** (alias **`/factory init`**) \u2014 An interactive interview that tailors\nthe project\'s overlay (`factory/config.json` and `factory/roles/<role>.md`), then runs doctor\nand commits it. Follow **Customize** below. It runs entirely in this session with the user; it\nspawns no agents, claims no job, and never runs the `factory init` or `factory upgrade` installer.\n\n**`/factory next [words]`** \u2014 Under the lock, run **the backlog check** (if it stops you,\nnothing is claimed), re-read `factory/backlog.md` (another session may have just ticked a line)\nand pick a `- [ ]` item:\n- no argument \u2192 the first one;\n- words \u2192 the line they clearly describe, matched by meaning, not exact text.\n\nA ticked `- [x] \u2026 \u2192 <id>` line is a running job: never pick it; if the words describe it,\nreport it as running job `<id>`. A ticked `- [x] \u2026 \u2192 epic <slug>` line is a running epic: never pick\nit; report it as running epic `<slug>`. A picked line ending `\u2014 epic: factory/epics/<slug>.md` is\nan epic: release the lock and start it as `/factory epic <slug>` does (its start-time questions\nfirst, then `epic start` and the tick as `- [x] \u2026 \u2192 epic <slug>`, committed by pathspec under the\nlock), then drive it. Claim the line as `/factory <item text>` does, and tick it as\n`- [x] \u2026 \u2192 <id>` and commit it (`chore(factory): claim job <id>`) in the same step, as **Claim**\nsays. If its brief has `- Abandoned:` lines, release the lock and ask the abandoned-brief\nquestion from `/factory <feature>` first; on start again, take the lock and re-read. If the\noverlap check or that question stops you, leave the line unticked. Then run the loop.\n\nDon\'t guess. If there\'s nothing unchecked, or nothing matches, release the lock and stop. When\nthe words match no open line but describe finished work, say it already ran and which job: find\nit by the done briefs\' `- Job:` lines (`factory/briefs/*.md` with `Status: done`), never by\nticked lines, since a merged job\'s line is gone from the backlog. If the words fit more than one\nline, release the lock and ask which one.\n\n**`/factory approve <id>`** \u2014 Human override for a `needs-human` job. A job in an epic: see\n**Member commands** under **Epics** first. Refuse any other stage:\na job in flight belongs to the session running it.\nIf the job stopped before anything was built (job.json\'s `stoppedFrom` is `spec` or `claimed`:\nan open question at the spec step, or a spec writer that wrote no spec.md), refuse, changing\nnothing, with the one line: "<id>: nothing built; answer with rework" (`/factory rework <id>\n"<answer>"`).\nIf the approver never ran on this work (no `APPROVE`/`ESCALATE` from it, so job.json\'s `decision`\nis null: an escalation before or during review, or after a rework before the approver), say so and\nask before merging work the approver never checked. (A retry after a failed merge already shows\n`APPROVE (human)`; the human answered that the first time.)\nRecreate the worktree if it\'s gone (step 2, from the job\'s `<target>`), run **the thread lookup**,\nboard: `job.human-approved [session=\u2026]` (every time, also when\nretrying after a failed merge; leave decision.md alone, it\'s the approver\'s), and **Merge**.\nIf **Merge** finds a conflict, the job enters the same loop as any conflict: the builder\nresolves it, a review round runs, then the approver, then **Merge** again, and this session\ndrives it on. `merge.conflicted` clears the human approval (the human approved the work before\nthe resolution existed), so an approver `ESCALATE` there comes back to the human, as any\nescalation does.\n\n**`/factory rework <id> <note>`** \u2014 Send a `needs-human` job back with human feedback. A job in\nan epic: see **Member commands** under **Epics** first. Write\nthe note verbatim to `rework-<k>.md` (`k` = `reworks` + 1, from job.json), recreate the worktree\nif needed (step 2, from the job\'s `<target>`; not for a job that stopped before anything was\nbuilt, below), run **the thread lookup**, board:\n`job.reworked k=<k> maxRound=<round + 2> [session=\u2026]` (a fresh review budget; it clears\nthe decision).\nIf the job stopped before anything was built (job.json\'s `stoppedFrom`, read before\n`job.reworked`, is `spec` or `claimed`), `job.reworked` puts it back in stage `spec`: spawn `factory-spec-writer` again with the card plus the rework path (span\n`role=spec-writer`), also when `spec.md` already exists: the note answers its open questions.\nBoard: `job.titled title=\'<spec.md\'s # H1>\'`, then run step 1\'s open-question check on the new\nspec.md (an item the note didn\'t settle escalates again) and continue at step 2 of **The loop**\n(a fresh builder; round 1 follows). Otherwise, resume\n`builder-<id>` with SendMessage (span `role=builder name=builder-<id> round=<round>`) \u2014\n*"Human rework note: <R>/factory/jobs/<id>/rework-<k>.md. Address it, update build.md,\ncommit."* If that builder isn\'t alive in this session, spawn a fresh `factory-builder` named\n`builder-<id>` with the card plus the rework path (everything it needs is in files). Then\ncontinue at step 4 with round `<round> + 1` (round 1 if the job escalated before any review).\n\n**`/factory abandon <id> <reason>`** \u2014 Close a job for good, without merging: it leaves the\nboard, its worktree is removed, and it can never take another event. A job in an epic: see **Member\ncommands** under **Epics** first. Read the job\'s `stage` from\njob.json. Refuse `merged` and `abandoned` (both are terminal). Otherwise ask the user two\nquestions, one at a time, and wait for each answer:\n1. **Confirm.** *"Abandon <id> (<stage>): \'<reason>\'? This can\'t be undone."* From a working\n   stage (`claimed`, `spec`, `build`, `review`, `approve`), also ask them to confirm that the\n   session driving the job is stopped: abandon never stops agents, and a session still running\n   would keep working on a closed job. Anything but a clear yes: stop and change nothing.\n2. **The branch.** *"Keep the branch `factory/<id>`, or delete it?"* The default is **keep** (an\n   unclear answer keeps it).\n\nThen, from `<R>`, run\n\n```bash\nbun factory/cli.ts abandon <id> \'<reason>\'\n```\n\nadding `--force` only when the job is in a working stage (never from `needs-human`), and\n`--delete-branch` only when the user chose delete. Quote the reason as for any free-text value.\nIt logs `job.abandoned`, then removes `factory/.worktrees/<id>` (and the branch, if asked), and\nprints `abandoned`. A non-zero exit before the event is logged (a wrong stage without\n`--force`, a bad id or reason) changed nothing: report the one-line reason. A non-zero exit\nnaming what was left behind means the job **is** abandoned but cleanup failed: tell the user\nwhat to remove by hand. Never write the event yourself to get around a refusal.\n\nBefore running the CLI (after both answers), run **the backlog check**: if\n`factory/backlog.md` already has uncommitted changes, stop with "commit or discard your backlog\nedits first"; nothing is abandoned and nothing changes. Once the job is abandoned (the CLI\nprinted `abandoned`, or named what it left behind), run `bun factory/cli.ts archive <id>` from\n`<R>` to copy its record to the `factory/archive` branch. If it fails, or says archiving is\ndisabled, report its line in one line and carry on: a failed or disabled archive never fails the\nabandon. Never push `factory/archive`. Then take `factory/.lock`, run the backlog check\nagain (if it stops you now, the job stays abandoned and only this bookkeeping waits: name it to\nthe user), and then:\n- Remove the job\'s line (`- [x] \u2026 \u2192 <id>`) from `factory/backlog.md`, so a later\n  `/factory next` never picks up abandoned work.\n- When `job.json` has a non-null `brief`, add `- Abandoned: <id> (<YYYY-MM-DD>): <reason>`\n  right below that brief\'s `Status:` line (today\'s date and the reason given; one line per\n  attempt, below any earlier `- Abandoned:` lines). `Status:` stays `ready`.\n- Commit both by pathspec: `git commit -m "chore(factory): abandon job <id>" -m\n  "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md\n  factory/briefs/<slug>.md`. With no brief, commit the backlog only, ending the same command\n  with `-- factory/backlog.md` (nothing changed \u2192 skip).\n- Release the lock (`rmdir factory/.lock`).\n\n**`/factory epic <slug>`** \u2014 Start or resume an epic, idempotently: `epic start` when it hasn\'t\nstarted, and on a `running` or `waiting` epic `epic.resumed`, taking over driving. Follow\n**Epics**, "Start or resume", then **The epic loop**.\n\n**`/factory epic abandon <slug> <reason>`** \u2014 Close an epic for good, without landing. Read its\nstate with `bun factory/cli.ts epic show <slug>`. Refuse one that hasn\'t started, `landed`, or\n`abandoned`. Otherwise ask the user two questions, one at a time, and wait for each answer:\n1. **Confirm.** *"Abandon epic <slug> (<state>): \'<reason>\'? This can\'t be undone."* When any\n   epic job is in a working stage (`claimed`, `spec`, `build`, `review`, `approve`), name them and\n   also ask the user to confirm that members are still working and should be abandoned with it,\n   and that no other session is driving the epic. Anything but a clear yes: stop and change\n   nothing.\n2. **The branch.** *"Keep the branch `factory/epic/<slug>`, or delete it?"* The default is\n   **keep** (an unclear answer keeps it).\n\nBefore running the CLI (after both answers), run **the backlog check**: if it stops you, nothing\nis abandoned and nothing changes. Then, from `<R>`, run\n\n```bash\nbun factory/cli.ts epic abandon <slug> \'<reason>\'\n```\n\nadding `--force` only after the user confirmed that members are still working, and\n`--delete-branch` only when the user chose delete. It logs `epic.abandoned`, abandons every epic\njob that isn\'t `merged` or `abandoned` (keeping their branches), removes the epic worktree (and\nthe branch, if asked), and prints `abandoned`. A non-zero exit before that changed nothing: report\nits one line. One naming what was left behind means the epic **is** abandoned: tell the user what\nto remove by hand. Then run `bun factory/cli.ts archive <slug>` (a failure, or archiving\ndisabled, is one line and never fails the abandon; never push `factory/archive`). Then take\n`factory/.lock`, run the backlog check again (if it stops you now, the epic stays abandoned and\nonly this bookkeeping waits: name it to the user), and:\n- remove the epic\'s line (`- [x] \u2026 \u2192 epic <slug>`) from `factory/backlog.md`;\n- give the plan `Status: abandoned` and, right below it, `- Abandoned: <YYYY-MM-DD>: <reason>`;\n- for each member brief that had a job, add `- Abandoned: <id> (<YYYY-MM-DD>): epic <slug>\n  abandoned: <reason>` below its `Status:` line and any earlier `- Abandoned:` lines (`<id>` its\n  newest job). Its `Status` stays `ready`, so a new plan can reuse it;\n- commit it all in one pathspec commit: `git commit -m "chore(factory): abandon epic <slug>" -m\n  "Co-Authored-By: Claude <noreply@anthropic.com>" -- factory/backlog.md factory/epics/<slug>.md\n  factory/briefs/<member>.md \u2026` (each brief you changed);\n- release the lock (`rmdir factory/.lock`).\n\n## Customize \u2014 the overlay interview\n\n`/factory customize` (or `/factory init`) writes only `factory/config.json` and\n`factory/roles/<role>.md`, the overlay. It never edits managed files (`.claude/**`,\n`factory/cli.ts`, `factory/CONTRACT.md`, `factory/managed.json`) or runtime state\n(`factory/jobs/`, `factory/.lock/`, `factory/.worktrees/`), and it writes no events.\n\n**Do your homework first.** Read `factory/config.json` and save its exact bytes (you may need to put\nthem back), every `factory/roles/*.md`, the contract (`factory/CONTRACT.md`, "`config.json`"\nand "Role overlays"), the project\'s instructions (`CLAUDE.md` or its equivalent), and how the\nproject builds, tests, and checks itself. Run `bun factory/cli.ts doctor` once to see where the\ninstall stands. List the live jobs (every `factory/jobs/*/job.json` with a stage other than\n`merged`; read-only).\n\n**Interview.** Use the same discipline as `explore`: ask **one question at a time**, in prose,\neach with your **recommended answer** and the reason for it. Facts are yours to find; decisions\nare the user\'s. Never ask what the code or docs can answer (the project\'s test and check commands\nare facts; which of them gate a merge is a decision). Cover only the v1 overlay, in this order:\n1. `name` \u2014 the project\'s display name on the dashboard. Show the current resolved name: `config.json`\'s\n   `name` when set, else the repo root\'s folder name (`basename R`). Recommend leaving it unset\n   when the folder name is right; no `name` key means the folder name.\n2. `reviewers` \u2014 the ordered reviewer keys, one per review concern (e.g. correctness and test\n   coverage, security, contract).\n3. `maxRound` \u2014 the default review budget for a new job.\n4. `dashboard.settleAfterHours` \u2014 how long a merged job stays in the Merged column.\n5. `gate` \u2014 the shell commands, in order, that must all exit 0; or no gate.\n6. `merge.target` \u2014 the branch jobs are based on and merge into: `current` (the default: the\n   branch the main checkout is on when a job is claimed) or a branch name such as `develop`.\n   No `merge` key keeps `current`.\n7. `archive.enabled` \u2014 whether a finished job (`merged` or `abandoned`) is copied to the\n   `factory/archive` branch by `factory archive`, so its record travels with `git clone` and\n   `git fetch`. Recommend off unless the user wants the history kept in the repo: job files can\n   hold paths, notes, and pasted material, and pushing the branch publishes them (archiving never\n   pushes). No `archive` key keeps it off.\n8. `epic.maxParallel` \u2014 the most members of one epic in a working stage at once (a member in\n   `needs-human` holds no slot; sync and fix jobs don\'t count). Recommend 3, the default; no\n   `epic` key keeps it.\n9. `roles` \u2014 for any role that should not run on the default model (`opus`): its runner\n   (`claude`, the only runner in v1) and, optionally, the harness model name (e.g. a cheaper\n   model for a narrow reviewer). No entry, or no `roles` key at all, keeps the default.\n10. `factory/roles/<role>.md` \u2014 for `spec-writer`, `builder`, `approver`, and each configured\n   reviewer key: the project\'s own rules for that role, or no file (the managed defaults apply).\n\nAnything else (a runner other than `claude`, per-role tools or effort, a tracker, any merge policy\nbeyond `merge.target` such as squashing, PRs, or pushing, conditional reviewers) is not in v1. Say so in a sentence and move on; never write it into the overlay.\n\n**Refusal rules.** Check every change against these before anything is written. A change that\nbreaks one is refused: tell the user which rule and why, and ask again. Nothing is written for it.\n- No key outside v1. `config.json` holds only `schema` (`"factory/v1"`), `name`, `reviewers`,\n  `maxRound`, `dashboard` (only `settleAfterHours`), `gate`, `merge` (only `target`), `archive`\n  (only `enabled`), `epic` (only `maxParallel`), and `roles`.\n- `name`, when present, is a string of 1\u201364 characters (Unicode code points) with no leading or\n  trailing whitespace and no control characters; spaces, punctuation, and non-ASCII are fine.\n  No name means leaving the key out, never an empty string.\n- Each reviewer key matches `^[a-z][a-z0-9-]*$`, is unique, and is never a fixed role name\n  (`spec-writer`, `builder`, `approver`). There is at least one reviewer.\n- `maxRound` is a positive integer, and `dashboard.settleAfterHours` is a positive number.\n- `gate`, when present, is a non-empty array of non-empty command strings. No gate means\n  leaving the key out, never an empty array.\n- `roles`, when present, is an object. Each entry is keyed by a known role: a fixed role\n  (`spec-writer`, `builder`, `approver`) or a configured reviewer key. An entry holds only\n  `runner` and `model`; `runner` is required and is `claude`; `model`, when present, is a\n  non-empty harness model name matching `^[A-Za-z0-9][A-Za-z0-9._:\\[\\]-]*$` (no spaces or `#`).\n  Dropping a reviewer means dropping its `roles` entry too.\n- `merge`, when present, is an object holding only `target`. `target`, when present, is a\n  non-empty string: `current` or the name of a branch matching `^[A-Za-z0-9][A-Za-z0-9._/-]*$`,\n  with no `..` and no `.lock` suffix. No `merge` key (or no `target`) means\n  `current`. A branch literally named `current` can\'t be targeted. The branch has to exist when\n  a job is claimed, or the claim is refused.\n- `archive`, when present, is an object holding only `enabled`, which is required and is `true`\n  or `false`. Off means `enabled: false` or leaving the key out, never an empty object.\n- `epic`, when present, is an object holding only `maxParallel`, a positive integer. For the\n  default (3), leave the key out (the CLI also reads `"epic": {}` as 3, but don\'t write it).\n- A role file exists only for a fixed role or a configured reviewer key. Dropping a reviewer\n  whose role file exists means deleting that file too, or keeping the reviewer; ask which.\n- Role rules add rules only. They never change which file an agent writes, its path, or its\n  first line, and they never tell an agent to write job state or edit managed files. They follow\n  the overlay outcome rule: a role rule can make a role more focused or stricter, never more\n  lenient about what it finds. Refuse a rule that decides the outcome before looking or throws\n  away something already found: a fixed verdict or decision ("always PASS", "always APPROVE"),\n  dropping, hiding, or downgrading a finding, removing an escalation trigger, or telling the\n  builder to skip a `[blocking]` finding. Narrowing focus, adding checks or triggers, making\n  something blocking, and PASSing early when the role\'s area is untouched are all fine. When you\n  refuse, name the overlay outcome rule and offer the allowed form: cite a recorded human decision\n  (a brief\'s decision or contract call, or a decision record the project names) and keep the\n  finding visible, marked as covered (for example, `[accepted: <the decision>]`).\n\n**Write.** Once the user agrees to the whole set, write `factory/config.json` (two-space\nJSON: `schema` first, then `name` first among the keys after `schema` when it is set, then the\nother keys in the order above) and the agreed role files, and delete any role file the user\nagreed to drop. Write nothing else.\n\n**Doctor last.** Run `bun factory/cli.ts doctor` from the repo root.\n- If it reports `FAIL` on `config.json`, restore the bytes `config.json` had before the\n  interview, and tell the user the reason doctor printed. Commit nothing.\n- If it reports `FAIL` on a managed file, that predates this interview: report it, keep the\n  overlay as written, and commit nothing. A human restores the managed file first.\n- When doctor exits 0, commit only the overlay paths you wrote or deleted, by pathspec, so\n  nothing else of the user\'s gets swept in:\n  `git add -A -- <those paths>`, then `git commit -m "chore(factory): customize overlay"\n  -m "Co-Authored-By: Claude <noreply@anthropic.com>" -- <those paths>`. Never push.\n\n**When `merge.target` changed.** No re-render is needed: the CLI reads it at each claim. Live\njobs keep the target they recorded at claim.\n\n**When `epic` changed.** No re-render is needed: the CLI reads `epic.maxParallel` at each\n`epic next` and member claim, so a running epic uses the new cap from its next claim.\n\n**When `archive` changed.** No re-render is needed: `factory archive` reads it at each run.\nTurning it on copies nothing by itself; `bun factory/cli.ts archive --all` backfills the jobs\nthat are already `merged` or `abandoned`, and is the user\'s call.\n\n**When `reviewers` or `roles` changed.** A new reviewer key has no agent, and a new model\ntakes no effect, until the managed files are re-rendered. Tell the user to run `factory upgrade` before the next job; never run it yourself,\nbecause upgrade writes managed files. If live jobs exist, warn that a later `round.started` in\nthose jobs reads the new `reviewers`.\n\nFinish with what changed, doctor\'s result, the commit (or why there is none), and whether\n`factory upgrade` is needed.\n\n## Ground rules\n\n- One job, or one epic, per session; as many sessions as the user likes. A job is driven only by\n  the session that claimed it, or, once it\'s `needs-human`, by whoever runs\n  `approve`/`rework`/`abandon` on it (`abandon` from a working stage needs the user to confirm the\n  driving session is stopped). A job in an epic is driven only by the session driving its epic\n  (**Member commands**); `/factory epic <slug>` takes an epic over.\n  Finding another job in flight is never a reason to stop; it\'s only a reason for the overlap check.\n- Never wait off the board. Never stop mid-job to wait on the human without logging\n  `job.escalated reason=\'\u2026\'` first: a question for the human is an escalation (the job goes to\n  `needs-human`, and the board shows it), never a question asked only in chat. Any session can then\n  answer it with `/factory rework` or `/factory approve`.\n- Agents write only their own file (a reviewer also its `round-<N>/<key>/` supporting files);\n  you write only your job\'s feature.md, rework notes, and conflict notes (in an epic, every epic\n  job\'s, including the generated sync and fix `feature.md`), backlog edits (each committed at once),\n  briefs\' bookkeeping lines (`- Job:`, `- Abandoned:`), an epic plan\'s bookkeeping (`Status:`,\n  `- Landed:`, `- Abandoned:`) and dependent drops, and events and epic events through the\n  factory CLI (and, in `customize`, the overlay). If an agent wrote somewhere else, note it and tell the user.\n- The managed files (this skill and the `factory-*` agents) are never edited by hand. A\n  project\'s own rules for a role live in its overlay, `factory/roles/<role>.md`, which each\n  agent reads at run time.\n- Keep the user posted with one short line per transition (`003 \xB7 review round 1: 3/4 in`); in\n  an epic, name the epic first (`<epic> \xB7 <id> review round <N>: <k>/<n> in`).\n- Finish every command with the job\'s stage, decision, and where to read the files (for an epic,\n  its state from `epic show <slug>` and its plan\'s path).\n';
 
 // packages/templates/assets/skill/explore.md
 var explore_default = `# /factory explore \u2014 interview an idea into a brief
@@ -2821,7 +3089,7 @@ var TOP_MD = /^(feature|spec|build|decision|rework-\d+|conflict-\d+)\.md$/;
 var ROUND_MD = /^round-\d+\/[^/]+\.md$/;
 var REGULAR = /^100(644|755)$/;
 var decoder = new TextDecoder("utf-8", { ignoreBOM: true });
-var isRecord6 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord7 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var message = (e) => (e instanceof Error ? e.message : String(e)).split(`
 `)[0] ?? "";
 var wanted = (rel) => rel === "events.jsonl" || rel === "job.json" || TOP_MD.test(rel) || ROUND_MD.test(rel);
@@ -2906,7 +3174,7 @@ function snapshot(id, files) {
   const log = files.get("events.jsonl");
   if (log !== undefined) {
     const snap = JSON.parse(JSON.stringify(project2(parseLog(log))));
-    if (!isRecord6(snap))
+    if (!isRecord7(snap))
       throw new Error("projection is not an object");
     if (snap.id !== id)
       throw new Error(`events.jsonl claims ${JSON.stringify(snap.id)}`);
@@ -2916,7 +3184,7 @@ function snapshot(id, files) {
   if (legacy === undefined)
     throw new Error("no events.jsonl and no job.json");
   const job = JSON.parse(legacy);
-  if (!isRecord6(job))
+  if (!isRecord7(job))
     throw new Error("job.json is not a JSON object");
   return job;
 }
@@ -3015,7 +3283,7 @@ function epicJob(job, slug) {
 function projectArchivedEpic(epic, jobs) {
   const mine = jobs.map((j) => epicJob(j, epic.slug)).filter((j) => j !== null).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const snap = JSON.parse(JSON.stringify(projectEpic(epic.log, epic.members, mine, epic.planError)));
-  if (!isRecord6(snap))
+  if (!isRecord7(snap))
     throw new Error("projection is not an object");
   return snap;
 }
@@ -3401,7 +3669,7 @@ var backoff = (n) => Math.min(FIRST_BACKOFF_MS * 2 ** Math.min(n, 30), MAX_BACKO
 var PID = /^[0-9a-f]{12}$/;
 var isPid = (s) => PID.test(s);
 var UPGRADE = "run factory upgrade and factory service restart on that machine";
-var isRecord7 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord8 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var message2 = (e) => (e instanceof Error ? e.message : String(e)).split(`
 `)[0] ?? "";
 
@@ -3589,11 +3857,11 @@ function createFollower(opts) {
     }
   }
   function readProjects(data) {
-    if (!isRecord7(data) || !Array.isArray(data.projects))
+    if (!isRecord8(data) || !Array.isArray(data.projects))
       throw new PeerFailure("error", "not an Andon service (its projects event is not { projects: [...] })");
     const out = [];
     for (const p of data.projects) {
-      if (!isRecord7(p) || typeof p.id !== "string")
+      if (!isRecord8(p) || typeof p.id !== "string")
         throw new PeerFailure("error", "not an Andon service (a project with no id)");
       if (p.id.includes("@") || typeof p.machine !== "string")
         throw new PeerFailure("error", `its Andon service is from before peers (its projects ${p.id.includes("@") ? "are not scope=local" : "carry no machine"}); ${UPGRADE}`);
@@ -3604,7 +3872,7 @@ function createFollower(opts) {
     return out;
   }
   function rewrite(data) {
-    if (!isRecord7(data) || typeof data.project !== "string")
+    if (!isRecord8(data) || typeof data.project !== "string")
       return null;
     const pid = data.project;
     if (!list.some((p) => p.id === pid))
@@ -3707,7 +3975,7 @@ function createFollower(opts) {
         if (!res.ok)
           return;
         const board = JSON.parse(await textOf(res, path));
-        if (gen !== generation || stopped || !isRecord7(board) || !list.some((q) => q.id === pid))
+        if (gen !== generation || stopped || !isRecord8(board) || !list.some((q) => q.id === pid))
           return;
         const data = { project: `${pid}@${name()}`, ...board };
         keepBoard(pid, form, data);
@@ -3725,8 +3993,8 @@ function createFollower(opts) {
     ctl = c;
     try {
       const machines = await getJson("/machines", c.signal);
-      const first = isRecord7(machines) && Array.isArray(machines.machines) ? machines.machines[0] : undefined;
-      if (!isRecord7(first) || typeof first.name !== "string" || !isMachineName(first.name))
+      const first = isRecord8(machines) && Array.isArray(machines.machines) ? machines.machines[0] : undefined;
+      if (!isRecord8(first) || typeof first.name !== "string" || !isMachineName(first.name))
         throw new PeerFailure("error", "not an Andon service (GET /machines is not { machines: [{ name, \u2026 }] })");
       if (gen !== generation || stopped)
         return;
@@ -3789,7 +4057,7 @@ function createFollower(opts) {
           try {
             const parsed = JSON.parse(new TextDecoder().decode(read));
             const pid = path.split("/")[2] ?? "";
-            if (isRecord7(parsed))
+            if (isRecord8(parsed))
               keepBoard(pid, form, parsed);
           } catch {}
         }
@@ -3834,14 +4102,14 @@ var BRIEF = /^factory\/briefs\/[\w.-]+\.md$/;
 var projectId = (root) => createHash2("sha256").update(root).digest("hex").slice(0, 12);
 var message3 = (e) => (e instanceof Error ? e.message : String(e)).split(`
 `)[0] ?? "";
-var isRecord8 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord9 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 async function entries(dir) {
   return readdir3(dir, { withFileTypes: true }).catch(() => []);
 }
 async function readJob(p, id) {
   try {
     const job = JSON.parse(await readFile7(join7(p.factory, "jobs", id, "job.json"), "utf8"));
-    if (isRecord8(job))
+    if (isRecord9(job))
       p.lastGood.set(id, { ...job });
   } catch {}
   return p.lastGood.get(id);
@@ -3849,7 +4117,7 @@ async function readJob(p, id) {
 async function readEpic(p, slug) {
   try {
     const epic = JSON.parse(await readFile7(join7(p.factory, "jobs", "epics", slug, "epic.json"), "utf8"));
-    if (isRecord8(epic))
+    if (isRecord9(epic))
       p.lastGoodEpic.set(slug, { ...epic });
   } catch {}
   return p.lastGoodEpic.get(slug);
@@ -4866,8 +5134,8 @@ async function serve(tree) {
 }
 
 // packages/cli/src/core.ts
-import { readFile as readFile10 } from "fs/promises";
-import { dirname as dirname10, join as join15, resolve as resolve9 } from "path";
+import { readFile as readFile11 } from "fs/promises";
+import { dirname as dirname11, join as join16, resolve as resolve10 } from "path";
 
 // packages/cli/src/abandon.ts
 import { stat as stat4 } from "fs/promises";
@@ -5097,7 +5365,7 @@ async function abandonJob(root, args) {
   if (!isJobId(args.id))
     throw new Error(`job id '${args.id}' must match ^\\d{3}-[a-z0-9-]+$`);
   const input = parseEventInput("job.abandoned", { reason: args.reason });
-  const snap = await appendEvent(root, args.id, input, undefined, { force: args.force });
+  const snap = await appendEvent(root, args.id, input, undefined, args.usage === undefined ? { force: args.force } : { force: args.force, usage: args.usage });
   const repo = dirname6(resolve5(root));
   const branch = `factory/${args.id}`;
   const worktree = relative2(repo, join10(resolve5(root), ".worktrees", args.id));
@@ -5696,7 +5964,191 @@ async function doctor(root) {
 
 // packages/cli/src/epic.ts
 import { lstat as lstat5 } from "fs/promises";
-import { dirname as dirname8, join as join13, relative as relative3, resolve as resolve7 } from "path";
+import { dirname as dirname9, join as join14, relative as relative3, resolve as resolve8 } from "path";
+
+// packages/cli/src/usage-claude.ts
+import { readFile as readFile10, readdir as readdir6, stat as stat5 } from "fs/promises";
+import { homedir as homedir3 } from "os";
+import { basename as basename5, dirname as dirname8, join as join13, resolve as resolve7 } from "path";
+function transcriptRoot(env = process.env) {
+  const config = env.CLAUDE_CONFIG_DIR;
+  const base = config !== undefined && config !== "" ? config : join13(env.HOME !== undefined && env.HOME !== "" ? env.HOME : homedir3(), ".claude");
+  return join13(base, "projects");
+}
+var projectFolder = (dir) => resolve7(dir).replace(/[^A-Za-z0-9]/g, "-");
+var isRecord10 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var count = (v) => typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+
+class Tally {
+  window;
+  messages = new Map;
+  lines = 0;
+  recognized = 0;
+  constructor(window) {
+    this.window = window;
+  }
+  add(text) {
+    const from = Date.parse(this.window.from);
+    const to = Date.parse(this.window.to);
+    for (const line of text.split(`
+`)) {
+      if (line.trim() === "")
+        continue;
+      this.lines += 1;
+      let raw;
+      try {
+        raw = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!isRecord10(raw) || typeof raw.timestamp !== "string")
+        continue;
+      const at = Date.parse(raw.timestamp);
+      if (Number.isNaN(at))
+        continue;
+      this.recognized += 1;
+      if (at < from || at > to)
+        continue;
+      const message = raw.message;
+      if (!isRecord10(message) || typeof message.id !== "string" || !isRecord10(message.usage))
+        continue;
+      const u = message.usage;
+      const seen = this.messages.get(message.id);
+      const model = typeof message.model === "string" && message.model !== "" ? message.model : null;
+      const next = {
+        model: seen?.model ?? model,
+        input: Math.max(seen?.input ?? 0, count(u.input_tokens)),
+        output: Math.max(seen?.output ?? 0, count(u.output_tokens)),
+        cacheWrite: Math.max(seen?.cacheWrite ?? 0, count(u.cache_creation_input_tokens)),
+        cacheRead: Math.max(seen?.cacheRead ?? 0, count(u.cache_read_input_tokens))
+      };
+      this.messages.set(message.id, next);
+    }
+  }
+  get size() {
+    return this.messages.size;
+  }
+  get unrecognized() {
+    return this.lines > 0 && this.recognized === 0;
+  }
+  usage() {
+    const total = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+    const byModel = new Map;
+    for (const m of this.messages.values()) {
+      total.input += m.input;
+      total.output += m.output;
+      total.cacheWrite += m.cacheWrite;
+      total.cacheRead += m.cacheRead;
+      if (m.model !== null && m.model !== "<synthetic>")
+        byModel.set(m.model, (byModel.get(m.model) ?? 0) + m.output);
+    }
+    let model = null;
+    let most = -1;
+    for (const [name, out] of byModel) {
+      if (out > most) {
+        model = name;
+        most = out;
+      }
+    }
+    return { model, ...total };
+  }
+}
+async function isFile(path) {
+  try {
+    return (await stat5(path)).isFile();
+  } catch (e) {
+    if (isNotFound4(e))
+      return false;
+    throw e;
+  }
+}
+async function dirsIn(path) {
+  try {
+    return (await readdir6(path, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name).sort();
+  } catch (e) {
+    if (isNotFound4(e))
+      return [];
+    throw e;
+  }
+}
+async function findAgentTranscript(root, repo, agentId) {
+  if (!isAgentId(agentId))
+    return null;
+  const preferred = projectFolder(repo);
+  const all = await dirsIn(root);
+  const order = [...all.filter((p) => p === preferred), ...all.filter((p) => p !== preferred)];
+  for (const project of order) {
+    for (const session of await dirsIn(join13(root, project))) {
+      const path = join13(root, project, session, "subagents", `agent-${agentId}.jsonl`);
+      if (await isFile(path))
+        return path;
+    }
+  }
+  return null;
+}
+var sessionTranscript = (agentTranscript) => {
+  const sessionDir = dirname8(dirname8(agentTranscript));
+  return join13(dirname8(sessionDir), `${basename5(sessionDir)}.jsonl`);
+};
+async function readText3(path) {
+  try {
+    return await readFile10(path, "utf8");
+  } catch (e) {
+    if (isNotFound4(e))
+      return null;
+    throw e;
+  }
+}
+function claudeUsageReader(opts) {
+  const root = transcriptRoot(opts.env);
+  return {
+    async agent(agentId, window) {
+      if (!isAgentId(agentId))
+        return unavailable("agentId is not a safe id (want ^[A-Za-z0-9_-]+$)");
+      const path = await findAgentTranscript(root, opts.repo, agentId);
+      if (path === null)
+        return unavailable(`no Claude Code transcript for agent ${agentId}`);
+      const text = await readText3(path);
+      if (text === null)
+        return unavailable(`no Claude Code transcript for agent ${agentId}`);
+      const tally = new Tally(window);
+      tally.add(text);
+      if (tally.unrecognized)
+        return unavailable("Claude Code transcript format not recognized");
+      if (tally.size === 0)
+        return unavailable("no assistant messages inside the span");
+      return tally.usage();
+    },
+    async orchestrator(agentIds, window) {
+      const ids = agentIds.filter(isAgentId);
+      if (ids.length === 0)
+        return unavailable("no agent ids recorded to find the orchestrating session");
+      const sessions = [];
+      for (const id of ids) {
+        const path = await findAgentTranscript(root, opts.repo, id);
+        if (path === null)
+          continue;
+        const session = sessionTranscript(path);
+        if (!sessions.includes(session))
+          sessions.push(session);
+      }
+      if (sessions.length === 0)
+        return unavailable("no Claude Code session found from the agent ids");
+      const tally = new Tally(window);
+      for (const session of sessions) {
+        const text = await readText3(session);
+        if (text === null)
+          return unavailable("an orchestrating session transcript is missing");
+        tally.add(text);
+      }
+      if (tally.unrecognized)
+        return unavailable("Claude Code transcript format not recognized");
+      return tally.usage();
+    }
+  };
+}
+
+// packages/cli/src/epic.ts
 var EPIC_USAGE = {
   epic: "usage: epic start|event|next|show|abandon <slug> \u2026",
   epicStart: "usage: epic start <slug> [session=t3code:<environmentId>/<threadId>]",
@@ -5705,6 +6157,7 @@ var EPIC_USAGE = {
   epicShow: "usage: epic show <slug>",
   epicAbandon: 'usage: epic abandon <slug> "<reason>" [--force] [--delete-branch]'
 };
+var usageReader = (io) => claudeUsageReader({ repo: dirname9(resolve8(io.root)), env: io.env ?? process.env });
 var WORKING2 = ["claimed", "spec", "build", "review", "approve"];
 async function pathExists(path) {
   try {
@@ -5720,7 +6173,7 @@ async function sameCommit(repo, a, b) {
   const [x, y] = await Promise.all([a, b].map((r) => runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${r}^{commit}`], { what: "epic start" })));
   return x !== undefined && y !== undefined && x.code === 0 && y.code === 0 && x.out === y.out;
 }
-var worktreeOf = (repo, root, slug) => relative3(repo, join13(resolve7(root), ".worktrees", `epic-${slug}`));
+var worktreeOf = (repo, root, slug) => relative3(repo, join14(resolve8(root), ".worktrees", `epic-${slug}`));
 async function runEpic(rest, io, config) {
   const [sub, ...args] = rest;
   switch (sub) {
@@ -5747,7 +6200,7 @@ async function start(args, io, config) {
   const problem = await epicPlanProblem(io.root, slug);
   if (problem !== null)
     throw new Error(`epic start ${slug}: ${problem}`);
-  const repo = dirname8(resolve7(io.root));
+  const repo = dirname9(resolve8(io.root));
   const target = await resolveTarget(repo, mergeTarget(config));
   const input = parseEpicEventInput("epic.started", fields, { slug, target });
   const branch = epicBranch(slug);
@@ -5755,11 +6208,11 @@ async function start(args, io, config) {
   const setup = async () => {
     if (await branchExists(repo, branch))
       throw new Error(`epic start ${slug}: branch ${branch} already exists`);
-    if (await pathExists(join13(repo, worktree)))
+    if (await pathExists(join14(repo, worktree)))
       throw new Error(`epic start ${slug}: ${worktree} already exists`);
     const cleanup = async (deleteIt) => {
       const left = [];
-      if (await isDir(join13(repo, worktree))) {
+      if (await isDir(join14(repo, worktree))) {
         const w = await removeWorktree(repo, worktree);
         if (w !== null)
           left.push(`worktree ${worktree} (${w})`);
@@ -5798,7 +6251,7 @@ async function event(args, io) {
   if (type === "epic.abandoned")
     throw new Error(`epic.abandoned is written only by epic abandon: run ${EPIC_USAGE.epicAbandon.replace("usage: ", "")}`);
   const input = parseEpicEventInput(type, parseFields(kv));
-  io.stdout((await appendEpicEvent(io.root, slug, input)).state);
+  io.stdout((await appendEpicEvent(io.root, slug, input, undefined, { usage: usageReader(io) })).state);
   return 0;
 }
 async function next(args, io, config) {
@@ -5834,6 +6287,7 @@ function formatEpicShow(snap) {
     out.push(`note: ${snap.note}`);
   if (snap.planError !== null)
     out.push(`plan: ${snap.planError}`);
+  out.push(epicUsageLine(snap));
   for (const m of snap.members) {
     const parts = [`member ${m.slug}`, m.state];
     if (m.job !== null)
@@ -5847,6 +6301,16 @@ function formatEpicShow(snap) {
   for (const g of snap.generated)
     out.push(`${g.kind} ${g.id}  ${g.stage}`);
   return out;
+}
+function epicUsageLine(snap) {
+  const o = snap.orchestrator;
+  if (o.spans === 0)
+    return "orchestrator usage: no stretch ended yet";
+  const summary = usageSummary(o, ["stretch", "stretches"]);
+  if (o.status !== "exact" && o.status !== "partial")
+    return `orchestrator usage: ${summary}`;
+  const ge = o.status === "partial" ? "\u2265 " : "";
+  return `orchestrator usage: ${summary}  (input ${ge}${o.input}, output ${ge}${o.output}, cache write ${ge}${o.cacheWrite}, cache read ${ge}${o.cacheRead})`;
 }
 function parseAbandon(args) {
   const [slug, reason, ...flags] = args;
@@ -5862,6 +6326,7 @@ async function abandon(args, io) {
   checkEpicSlug(a.slug);
   const input = parseEpicEventInput("epic.abandoned", { reason: a.reason });
   await appendEpicEvent(io.root, a.slug, input, undefined, {
+    usage: usageReader(io),
     check: ({ jobs }) => {
       const working = jobs.filter((j) => WORKING2.includes(j.stage));
       if (working.length > 0 && !a.force) {
@@ -5881,11 +6346,11 @@ async function abandon(args, io) {
 `)[0] ?? ""})`);
     }
   }
-  const repo = dirname8(resolve7(io.root));
+  const repo = dirname9(resolve8(io.root));
   const worktree = worktreeOf(repo, io.root, a.slug);
   const branch = epicBranch(a.slug);
   let worktreeLeft = false;
-  if (await isDir(join13(repo, worktree))) {
+  if (await isDir(join14(repo, worktree))) {
     const why = await removeWorktree(repo, worktree);
     if (why !== null) {
       worktreeLeft = true;
@@ -5909,7 +6374,7 @@ async function abandon(args, io) {
 
 // packages/cli/src/prune.ts
 import { lstat as lstat6, mkdir as mkdir7, rm as rm6 } from "fs/promises";
-import { dirname as dirname9, join as join14, resolve as resolve8 } from "path";
+import { dirname as dirname10, join as join15, resolve as resolve9 } from "path";
 var LOCK = ".events.lock";
 var IN_FLIGHT = `an event is in flight (${LOCK})`;
 var isSystemError = (e) => typeof e === "object" && e !== null && ("code" in e);
@@ -5930,7 +6395,7 @@ function epicFacts2(io, repo) {
   const read = async (slug) => {
     if (!isEpicSlug(slug))
       return null;
-    if (await exists3(join14(io.root, "jobs", "epics", slug))) {
+    if (await exists3(join15(io.root, "jobs", "epics", slug))) {
       try {
         const epic = await readLocalEpic(io.root, slug);
         return { state: epic.state, endedAt: epic.endedAt };
@@ -5956,7 +6421,7 @@ function epicFacts2(io, repo) {
   };
 }
 async function check(io, id, trees, hours, now, facts) {
-  if (await exists3(join14(io.root, "jobs", id, LOCK)))
+  if (await exists3(join15(io.root, "jobs", id, LOCK)))
     return { kind: "keep", reason: IN_FLIGHT };
   let job;
   try {
@@ -5985,7 +6450,7 @@ async function check(io, id, trees, hours, now, facts) {
   return { kind: "candidate", job, tree };
 }
 async function compareAndRemove(dir, same) {
-  const lock = join14(dir, LOCK);
+  const lock = join15(dir, LOCK);
   try {
     await mkdir7(lock);
   } catch (e) {
@@ -6008,7 +6473,7 @@ async function compareAndRemove(dir, same) {
   return { kind: "prune" };
 }
 async function checkEpic(io, slug, trees, hours, now) {
-  if (await exists3(join14(io.root, "jobs", "epics", slug, LOCK)))
+  if (await exists3(join15(io.root, "jobs", "epics", slug, LOCK)))
     return { kind: "keep", reason: IN_FLIGHT };
   let epic;
   try {
@@ -6029,7 +6494,7 @@ async function checkEpic(io, slug, trees, hours, now) {
   return { kind: "candidate", epic, tree };
 }
 async function pruneAll(io, settleAfterHours) {
-  const repo = dirname9(resolve8(io.root));
+  const repo = dirname10(resolve9(io.root));
   const now = (io.now ?? (() => new Date))();
   const trees = await archivedTrees(repo);
   const epicTrees = await archivedEpicTrees(repo);
@@ -6077,6 +6542,7 @@ async function pruneAll(io, settleAfterHours) {
 }
 
 // packages/cli/src/core.ts
+var usageReader2 = (io) => claudeUsageReader({ repo: dirname11(resolve10(io.root)), env: io.env ?? process.env });
 var USAGE = {
   claim: "usage: claim <slug> [brief=\u2026] [issue=\u2026] [maxRound=\u2026] [session=t3code:<environmentId>/<threadId>] [epic=<slug> [kind=member|sync|fix]]",
   event: "usage: event <id> <type> [field=value \u2026]",
@@ -6096,7 +6562,7 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       io.stdout(f.line);
     return findings.every((f) => f.ok) ? 0 : 1;
   }
-  const config = parseConfig(JSON.parse(await readFile10(join15(io.root, "config.json"), "utf8")));
+  const config = parseConfig(JSON.parse(await readFile11(join16(io.root, "config.json"), "utf8")));
   switch (cmd) {
     case "claim": {
       const [slug, ...kv] = rest;
@@ -6105,7 +6571,7 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       checkSlug(slug);
       const fields = parseFields(kv);
       checkClaim(slug, { fields, config });
-      const repo = dirname10(resolve9(io.root));
+      const repo = dirname11(resolve10(io.root));
       const epic = typeof fields.epic === "string" ? fields.epic : undefined;
       const target = epic === undefined ? await resolveTarget(repo, mergeTarget(config)) : await epicTarget(io.root, repo, epic);
       io.stdout((await claimJob(io.root, slug, { fields, config, target }, undefined, { archived: () => archivedIds(repo) })).id);
@@ -6118,7 +6584,7 @@ async function dispatchCore(argv, io, usage = USAGE.all) {
       if (type === "job.claimed")
         throw new Error(`job.claimed is written only by claim: run ${USAGE.claim.replace("usage: ", "")}`);
       const fields = parseFields(kv);
-      io.stdout((await appendEvent(io.root, id, parseEventInput(type, fields, { id, config }))).stage);
+      io.stdout((await appendEvent(io.root, id, parseEventInput(type, fields, { id, config }), undefined, { usage: usageReader2(io) })).stage);
       return 0;
     }
     case "rebuild": {
@@ -6182,7 +6648,7 @@ function parseAbandon2(rest) {
 }
 async function abandon2(rest, io) {
   const args = parseAbandon2(rest);
-  const { snap, left } = await abandonJob(io.root, args);
+  const { snap, left } = await abandonJob(io.root, { ...args, usage: usageReader2(io) });
   if (left.length > 0)
     throw new Error(`${args.id} is abandoned, but cleanup left behind: ${left.join("; ")}`);
   io.stdout(snap.stage);
@@ -6201,17 +6667,17 @@ function parseArchive2(rest) {
 async function archiveOne(io, id, force) {
   if (!isJobId(id) && isEpicSlug(id)) {
     const epic = await readLocalEpic(io.root, id);
-    const outcome = await archiveEpic(dirname10(resolve9(io.root)), epic, force);
+    const outcome = await archiveEpic(dirname11(resolve10(io.root)), epic, force);
     io.stdout(outcome.kind === "archived" ? `archived epic ${id} ${outcome.commit.slice(0, 7)}` : `epic ${id}: already archived (unchanged)`);
     return 0;
   }
   const job = await readLocalJob(io.root, id);
-  const outcome = await archiveJob(dirname10(resolve9(io.root)), job, force);
+  const outcome = await archiveJob(dirname11(resolve10(io.root)), job, force);
   io.stdout(outcome.kind === "archived" ? `archived ${id} ${outcome.commit.slice(0, 7)}` : `${id}: already archived (unchanged)`);
   return 0;
 }
 async function archiveAll(io, force) {
-  const repo = dirname10(resolve9(io.root));
+  const repo = dirname11(resolve10(io.root));
   let archived = 0;
   let unchanged = 0;
   let skipped = 0;
@@ -6271,8 +6737,8 @@ async function guarded(io, body) {
 
 // packages/cli/src/install.ts
 import { createHash as createHash4 } from "crypto";
-import { mkdir as mkdir8, open as open3, readFile as readFile11, realpath as realpath3, rename as rename5, rm as rm7, unlink } from "fs/promises";
-import { basename as basename5, dirname as dirname11, join as join16, relative as relative4, resolve as resolve10, sep as sep3 } from "path";
+import { mkdir as mkdir8, open as open3, readFile as readFile12, realpath as realpath3, rename as rename5, rm as rm7, unlink } from "fs/promises";
+import { basename as basename6, dirname as dirname12, join as join17, relative as relative4, resolve as resolve11, sep as sep3 } from "path";
 async function eachLine(stream, line) {
   const decoder = new TextDecoder;
   let buf = "";
@@ -6335,7 +6801,7 @@ var manifestText = (m) => `${JSON.stringify(m, null, 2)}
 `;
 async function readOrNull(at) {
   try {
-    return await readFile11(at);
+    return await readFile12(at);
   } catch (e) {
     if (isNotFound4(e))
       return null;
@@ -6358,8 +6824,8 @@ async function place(repo, rel, cmd, managed) {
   return at;
 }
 async function writeAtomic(at, text) {
-  await mkdir8(dirname11(at), { recursive: true });
-  const tmp = join16(dirname11(at), `.${basename5(at)}.${process.pid}.${Date.now()}.factory-tmp`);
+  await mkdir8(dirname12(at), { recursive: true });
+  const tmp = join17(dirname12(at), `.${basename6(at)}.${process.pid}.${Date.now()}.factory-tmp`);
   const fh = await open3(tmp, "wx");
   try {
     await fh.writeFile(text, "utf8");
@@ -6431,7 +6897,7 @@ async function planWrites(repo, files, cmd) {
   return { writes, existing };
 }
 async function init(root, opts) {
-  const repo = dirname11(resolve10(root));
+  const repo = dirname12(resolve11(root));
   const manifestAt = await place(repo, MANIFEST, "init", false);
   if (await readOrNull(manifestAt) !== null)
     throw new Error(`init: ${MANIFEST} exists: this project is installed, use upgrade`);
@@ -6464,7 +6930,7 @@ async function register(registry, repo, stdout) {
   }
 }
 async function upgrade(root, opts) {
-  const repo = dirname11(resolve10(root));
+  const repo = dirname12(resolve11(root));
   if (opts.commit === true) {
     const blocker = await commitBlocker(repo);
     if (blocker !== null)
@@ -6538,7 +7004,7 @@ async function upgrade(root, opts) {
 }
 
 // packages/cli/src/service.ts
-import { dirname as dirname12, isAbsolute as isAbsolute3, join as join17 } from "path";
+import { dirname as dirname13, isAbsolute as isAbsolute3, join as join18 } from "path";
 var SERVICE_USAGE = "usage: service install [--tailnet]|uninstall|start|stop|restart|status|run";
 var LABEL = "dev.factory.andon";
 var UNIT = "andon.service";
@@ -6556,12 +7022,12 @@ class GetJsonError extends Error {
     this.status = status;
   }
 }
-var launchdPath = (home) => join17(home, "Library", "LaunchAgents", `${LABEL}.plist`);
+var launchdPath = (home) => join18(home, "Library", "LaunchAgents", `${LABEL}.plist`);
 function systemdPath(home, env) {
   const xdg = env.XDG_CONFIG_HOME;
-  return join17(xdg !== undefined && isAbsolute3(xdg) ? xdg : join17(home, ".config"), "systemd", "user", UNIT);
+  return join18(xdg !== undefined && isAbsolute3(xdg) ? xdg : join18(home, ".config"), "systemd", "user", UNIT);
 }
-var logPath2 = (home) => join17(home, ".andon", "service.log");
+var logPath2 = (home) => join18(home, ".andon", "service.log");
 var JOURNAL = `journalctl --user -u ${UNIT}`;
 async function manager(host) {
   if (host.platform === "darwin")
@@ -6601,7 +7067,7 @@ var SYSTEM_PATH = {
   systemd: ["/usr/local/bin", "/usr/bin", "/bin"]
 };
 function unitPathVar(kind, bun) {
-  return [...new Set([dirname12(bun), ...SYSTEM_PATH[kind]])].join(":");
+  return [...new Set([dirname13(bun), ...SYSTEM_PATH[kind]])].join(":");
 }
 function unitEnv(kind, spec) {
   const out = [["PATH", unitPathVar(kind, spec.bun)]];
@@ -6818,7 +7284,7 @@ ${r.stdout}`))
 }
 async function writeAndStart(host, m, spec, existed) {
   if (m.kind === "launchd") {
-    await host.fs.mkdir(dirname12(logPath2(host.home)));
+    await host.fs.mkdir(dirname13(logPath2(host.home)));
     await host.fs.write(m.unitPath, renderPlist(spec));
     if ((await unitState(host, m)).loaded)
       await bootout(host, m.uid);
@@ -7016,7 +7482,7 @@ function parse2(rest) {
   throw new Error(PEERS_USAGE);
 }
 var isUrl = (arg) => arg.includes("://");
-var isRecord9 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isRecord11 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var message5 = (e) => (e instanceof Error ? e.message : String(e)).split(`
 `)[0] ?? "";
 function tailnetPeerNames(stdout) {
@@ -7026,14 +7492,14 @@ function tailnetPeerNames(stdout) {
   } catch {
     return null;
   }
-  if (!isRecord9(v))
+  if (!isRecord11(v))
     return null;
   const peers = v.Peer;
-  if (!isRecord9(peers))
+  if (!isRecord11(peers))
     return [];
   const out = [];
   for (const p of Object.values(peers)) {
-    if (!isRecord9(p) || typeof p.DNSName !== "string")
+    if (!isRecord11(p) || typeof p.DNSName !== "string")
       continue;
     const name = p.DNSName.replace(/\.$/, "").toLowerCase();
     if (name !== "")
@@ -7083,10 +7549,10 @@ async function get2(host, url, path) {
   }
 }
 function reportedName(body) {
-  if (!isRecord9(body) || !Array.isArray(body.machines))
+  if (!isRecord11(body) || !Array.isArray(body.machines))
     return null;
   const first = body.machines[0];
-  if (!isRecord9(first) || typeof first.name !== "string" || !isMachineName(first.name))
+  if (!isRecord11(first) || typeof first.name !== "string" || !isMachineName(first.name))
     return null;
   return first.name;
 }
@@ -7096,10 +7562,10 @@ async function probe(host, url) {
   if (name === null)
     throw new Error(`peers: ${url} is not an Andon service (GET /machines is not { machines: [{ name, \u2026 }] }); nothing written`);
   const projects = await get2(host, url, "/projects?scope=local");
-  if (!isRecord9(projects) || !Array.isArray(projects.projects) || !projects.projects.every((p) => isRecord9(p) && typeof p.id === "string")) {
+  if (!isRecord11(projects) || !Array.isArray(projects.projects) || !projects.projects.every((p) => isRecord11(p) && typeof p.id === "string")) {
     throw new Error(`peers: ${url} is not an Andon service (GET /projects?scope=local is not { projects: [{ id, \u2026 }] }); nothing written`);
   }
-  if (!projects.projects.every((p) => isRecord9(p) && typeof p.machine === "string" && typeof p.id === "string" && !p.id.includes("@"))) {
+  if (!projects.projects.every((p) => isRecord11(p) && typeof p.machine === "string" && typeof p.id === "string" && !p.id.includes("@"))) {
     throw new Error(`peers: ${url} runs an Andon service from before peers (its projects carry no machine); ${UPGRADE2}, then add it again`);
   }
   return name;
@@ -7182,13 +7648,13 @@ async function peers(rest, io) {
 }
 
 // packages/cli/src/projects.ts
-import { stat as stat5 } from "fs/promises";
-import { dirname as dirname13, join as join18, resolve as resolve11, sep as sep4 } from "path";
+import { stat as stat6 } from "fs/promises";
+import { dirname as dirname14, join as join19, resolve as resolve12, sep as sep4 } from "path";
 var PROJECTS_USAGE = "usage: projects [prune [--dry-run] | remove <path>]";
 var code = (e) => typeof e === "object" && e !== null && ("code" in e) ? e.code : undefined;
 var fsProbe = async (path) => {
   try {
-    const s = await stat5(path);
+    const s = await stat6(path);
     return { dev: s.dev, dir: s.isDirectory() };
   } catch (e) {
     const c = code(e);
@@ -7200,27 +7666,27 @@ var fsProbe = async (path) => {
 async function rootState(root, probe) {
   if (await probe(root) === null)
     return "missing";
-  const factory = await probe(join18(root, "factory"));
+  const factory = await probe(join19(root, "factory"));
   return factory !== null && factory.dir ? "ok" : "not a factory project";
 }
 var VOLUME_PREFIXES = ["/Volumes", "/media", "/run/media", "/mnt"];
 function volumePrefix(root) {
-  const norm = resolve11(root);
+  const norm = resolve12(root);
   return VOLUME_PREFIXES.find((p) => norm.startsWith(p + sep4) && norm.length > p.length + 1) ?? null;
 }
 async function volumeUnmounted(root, probe) {
   const prefix = volumePrefix(root);
   if (prefix === null)
     return false;
-  let dir = resolve11(root);
+  let dir = resolve12(root);
   while (dir !== prefix) {
     const here = await probe(dir);
     if (here !== null) {
-      const parent = await probe(dirname13(dir));
+      const parent = await probe(dirname14(dir));
       if (parent !== null && parent.dev !== here.dev)
         return false;
     }
-    dir = dirname13(dir);
+    dir = dirname14(dir);
   }
   return true;
 }
@@ -7238,7 +7704,7 @@ function parse3(rest) {
     return { kind: "remove", path: args[0] };
   throw new Error(PROJECTS_USAGE);
 }
-var NONE = "no projects registered";
+var NONE2 = "no projects registered";
 async function projects(rest, io) {
   const cmd = parse3(rest);
   if (io.registry === undefined)
@@ -7247,7 +7713,7 @@ async function projects(rest, io) {
   const probe = io.probe ?? fsProbe;
   const registry = await readRegistry(file);
   if (cmd.kind === "remove") {
-    const root = resolve11(io.cwd ?? process.cwd(), cmd.path);
+    const root = resolve12(io.cwd ?? process.cwd(), cmd.path);
     if (!registry.projects.some((p) => p.root === root)) {
       io.stdout(`not registered: ${root}`);
       return 0;
@@ -7257,7 +7723,7 @@ async function projects(rest, io) {
     return 0;
   }
   if (registry.projects.length === 0) {
-    io.stdout(NONE);
+    io.stdout(NONE2);
     return 0;
   }
   const checked = [];
@@ -7353,9 +7819,9 @@ function run(argv, io, origin = SOURCE_ORIGIN) {
 // packages/cli/src/servicehost.ts
 import { randomUUID } from "crypto";
 import { existsSync as existsSync2 } from "fs";
-import { mkdir as mkdir9, open as open4, readFile as readFile12, realpath as realpath4, rename as rename6, rm as rm8 } from "fs/promises";
-import { homedir as homedir3, hostname as hostname3 } from "os";
-import { basename as basename6, dirname as dirname14, isAbsolute as isAbsolute4, join as join19 } from "path";
+import { mkdir as mkdir9, open as open4, readFile as readFile13, realpath as realpath4, rename as rename6, rm as rm8 } from "fs/promises";
+import { homedir as homedir4, hostname as hostname3 } from "os";
+import { basename as basename7, dirname as dirname15, isAbsolute as isAbsolute4, join as join20 } from "path";
 var isNotFound5 = (e) => typeof e === "object" && e !== null && ("code" in e) && e.code === "ENOENT";
 async function spawnRun(argv) {
   try {
@@ -7405,10 +7871,10 @@ async function factoryCommand(main, candidates, resolve = realpath4) {
   return main;
 }
 function unitTempPath(unit) {
-  return join19(dirname14(unit), `.${basename6(unit)}.${randomUUID()}.tmp`);
+  return join20(dirname15(unit), `.${basename7(unit)}.${randomUUID()}.tmp`);
 }
 async function writeUnitFile(unit, text, tmp = unitTempPath(unit)) {
-  await mkdir9(dirname14(unit), { recursive: true });
+  await mkdir9(dirname15(unit), { recursive: true });
   const fh = await open4(tmp, "wx", 420);
   try {
     try {
@@ -7439,14 +7905,14 @@ async function getJson(url, timeoutMs = 2000, transport = fetch) {
 }
 function systemdUser(uid, env) {
   const runtime = env.XDG_RUNTIME_DIR ?? `/run/user/${uid}`;
-  return existsSync2("/run/systemd/system") && Bun.which("systemctl") !== null && existsSync2(join19(runtime, "systemd", "private"));
+  return existsSync2("/run/systemd/system") && Bun.which("systemctl") !== null && existsSync2(join20(runtime, "systemd", "private"));
 }
 async function realServiceHost(stdout) {
   const env = process.env;
   const uid = process.getuid?.() ?? -1;
   return {
     platform: process.platform,
-    home: env.HOME !== undefined && isAbsolute4(env.HOME) ? env.HOME : homedir3(),
+    home: env.HOME !== undefined && isAbsolute4(env.HOME) ? env.HOME : homedir4(),
     uid,
     env,
     factory: await factoryCommand(Bun.main, [env._, Bun.which("factory")]),
@@ -7459,7 +7925,7 @@ async function realServiceHost(stdout) {
       exists: async (path) => existsSync2(path),
       read: async (path) => {
         try {
-          return await readFile12(path, "utf8");
+          return await readFile13(path, "utf8");
         } catch (e) {
           if (isNotFound5(e))
             return null;
@@ -7482,10 +7948,10 @@ async function realServiceHost(stdout) {
 
 // packages/cli/src/release-main.ts
 process.exitCode = await run(process.argv.slice(2), {
-  root: join20(process.cwd(), "factory"),
+  root: join21(process.cwd(), "factory"),
   registry: registryPath(process.env.ANDON_HOME),
   peers: peersPath(process.env.ANDON_HOME),
   stdout: (line) => console.log(line),
   stderr: (line) => console.error(line),
   service: () => realServiceHost((line) => console.log(line))
-}, { kind: "release", root: join20(import.meta.dir, ".."), files: bakedRelease(join20(import.meta.dir, "..")) });
+}, { kind: "release", root: join21(import.meta.dir, ".."), files: bakedRelease(join21(import.meta.dir, "..")) });
