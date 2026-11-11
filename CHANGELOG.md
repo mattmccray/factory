@@ -1,3 +1,9 @@
+## v0.6.1 (2026-11-11)
+
+### Fixed
+
+- Skill: quote skill description and add a table of contents
+
 ## v0.6.0 (2026-11-02)
 
 ### Added
