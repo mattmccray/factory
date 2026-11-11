@@ -1,17 +1,17 @@
 {
   "schema": "factory/v1",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "files": {
-    ".claude/agents/factory-approver.md": "58caf43eec956891c8cfa30a54530ac143eb046af058fe67d409dd86d2905128",
-    ".claude/agents/factory-builder.md": "6093bbbcd917c79bdcc811618e160be4b27cbf2a18cb82815877759b1f171a40",
-    ".claude/agents/factory-code.md": "98d91b30836b9952ddce9a3ffc00a4b56f25d6df5fa5c9de4e23a1cd9810a44d",
-    ".claude/agents/factory-contract.md": "6f2563475b85f5151363e9a01251df6b07c10d8a681101e80dda51604862e484",
-    ".claude/agents/factory-security.md": "f6ad146a8be84582c89b90c7619c05684e7b70ffc4ee37864557dfe3a0ffcca9",
-    ".claude/agents/factory-spec-writer.md": "03e2ed0d743073432c133fed7fd301758cab49c4d3c77e7c2aaa6b3ad47a9ea7",
-    ".claude/agents/factory-ui.md": "784ec2cb5e80cb2e606dbdb36578a3b724ce1577ab6dff264645d76ac4524e92",
-    ".claude/skills/factory/SKILL.md": "2773def088ea751c0e3d9f9bb9f3b196c6a4ee4101ac4c7aeb5cdd87ac3ea611",
-    ".claude/skills/factory/explore.md": "ae4be82e5a3070d3c26191c106a96c56ddcf1f2a5095b012d5c9819d7de8c69a",
-    "factory/CONTRACT.md": "3fcf3aac813459e2f9858894b8a05937d006f559d5cd9f1b068f21d037ace166",
-    "factory/cli.ts": "d63be72383a070a0ff69a8cd1ebcd74a9017b42dc3e3e6a372b3cf6a8b38c3d5"
+    ".claude/agents/factory-approver.md": "9d57c9cd83ee00a615a802e90080b3356899dc20fb4bf0200083a36c5c0e743c",
+    ".claude/agents/factory-builder.md": "e1175d65245d069aa29692bc1a50f6bf6d4c48e0b1549d24adbd2c99edd0b341",
+    ".claude/agents/factory-code.md": "bb95eb5f5f4314256995fa9eb438b1dc1ef6a844f63908f48f07eab96b549d0a",
+    ".claude/agents/factory-contract.md": "d2cbbfc4819404b3a1f2eedd8e59694dcf08322644c06b5eac83c3bab5ebc52b",
+    ".claude/agents/factory-security.md": "65fb95d505972a53af9fbf8bd4fcbb071e3e41e0bd6e023969961846cc77269b",
+    ".claude/agents/factory-spec-writer.md": "fab6ccb902069890d9738921ed181d021fcc501a431710ea55ca1b646c91e3ef",
+    ".claude/agents/factory-ui.md": "c717874738f00a07caf8746a37fbd7175d83f03602376eba528d4c1e8dc3f65e",
+    ".claude/skills/factory/SKILL.md": "6cd141625f895f35a66e55062a15848f1b5631573a095dfa142f0ee52845af4a",
+    ".claude/skills/factory/explore.md": "6f9a30c3db7c1dc00d6d2eede20a77ce1c06e16ae6202541502ea244868baef0",
+    "factory/CONTRACT.md": "5e8bc35621e13e85eff69b66b1e36ab35f746841eef87c23ca211817d53f2da3",
+    "factory/cli.ts": "55c3c5e027174deb8807be7139c11217a2cf73cc214e85024e9b891fdfb16f90"
   }
 }

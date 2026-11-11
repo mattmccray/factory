@@ -1,4 +1,4 @@
-// factory 0.6.0 · managed file, do not edit: it is replaced on upgrade. Project settings go in the overlay: factory/config.json
+// factory 0.6.1 · managed file, do not edit: it is replaced on upgrade. Project settings go in the overlay: factory/config.json
 // packages/cli/src/core.ts
 import { readFile as readFile6 } from "fs/promises";
 import { dirname as dirname8, join as join10, resolve as resolve7 } from "path";
