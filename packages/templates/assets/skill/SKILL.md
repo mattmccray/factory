@@ -1,10 +1,30 @@
 ---
 name: factory
-description: Run the factory — a feature goes spec → build → parallel reviews → approve → merge, driven by subagents that talk only through markdown files; `queue` and `explore` feed its backlog, and `customize` (alias `init`) tailors the project's overlay. Use when the user invokes /factory with a feature, `next [words]`, `queue <text>`, `explore <idea|brief>`, `customize`, `init`, `approve <job-id>`, `rework <job-id> <note>`, `abandon <job-id> <reason>`, `epic <slug>` (start or resume an epic: several briefs run as member jobs into one branch, then land as one merge), or `epic abandon <slug> <reason>`.
+description: "Run the factory — a feature goes spec → build → parallel reviews → approve → merge, driven by subagents that talk only through markdown files; `queue` and `explore` feed its backlog, and `customize` (alias `init`) tailors the project's overlay. Use when the user invokes /factory with a feature, `next [words]`, `queue <text>`, `explore <idea|brief>`, `customize`, `init`, `approve <job-id>`, `rework <job-id> <note>`, `abandon <job-id> <reason>`, `epic <slug>` (start or resume an epic: several briefs run as member jobs into one branch, then land as one merge), or `epic abandon <slug> <reason>`."
 argument-hint: "<feature> | next [words] | queue <text> | explore <idea|brief> | customize | init | approve <job-id> | rework <job-id> <note> | abandon <job-id> <reason> | epic <slug> | epic abandon <slug> <reason>"
 ---
 
 # /factory — the orchestrator
+
+**Contents**
+
+- [Files](#files-r--git-rev-parse---show-toplevel-always-pass-agents-absolute-paths)
+- [The board — events through the CLI](#the-board--events-through-the-cli)
+- [The thread lookup (T3 Code)](#the-thread-lookup-t3-code)
+- [Running jobs side by side](#running-jobs-side-by-side)
+- [Spawning agents](#spawning-agents)
+- [The loop](#the-loop)
+- [Merge](#merge)
+- [Epics](#epics)
+  - [Start or resume](#start-or-resume)
+  - [The epic loop](#the-epic-loop)
+  - [Catch-up](#catch-up)
+  - [Member merge](#member-merge)
+  - [Landing](#landing)
+  - [Member commands](#member-commands)
+- [Commands](#commands)
+- [Customize — the overlay interview](#customize--the-overlay-interview)
+- [Ground rules](#ground-rules)
 
 The session running this skill **is the orchestrator** of one job, or of one epic (several
 member jobs driven together; see **Epics**). You run its loop, spawn every agent, and record

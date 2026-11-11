@@ -1974,3 +1974,31 @@ describe('agentId on agent.finished in SKILL.md (job 093)', () => {
     expect(text).toContain('it is the `agentId=` on each builder `agent.finished`');
   });
 });
+
+describe('skill shape', () => {
+  const { files } = renderClaudeCode({ config: config() });
+
+  test('every rendered frontmatter is valid YAML with a string name and description', () => {
+    for (const [path, text] of Object.entries(files)) {
+      const { frontmatter } = splitFrontmatter(text);
+      if (frontmatter === '') continue;
+      const yaml = frontmatter.replace(/^---\n/, '').replace(/---\n$/, '');
+      const parsed: unknown = Bun.YAML.parse(yaml);
+      if (typeof parsed !== 'object' || parsed === null) throw new Error(`${path}: frontmatter is not a mapping`);
+      expect({ path, name: typeof Reflect.get(parsed, 'name') }).toEqual({ path, name: 'string' });
+      expect({ path, description: typeof Reflect.get(parsed, 'description') }).toEqual({ path, description: 'string' });
+    }
+  });
+
+  test("the skill's table of contents links every ## and ### heading, in order", () => {
+    const body = splitFrontmatter(TEMPLATES.skill).body;
+    // GitHub's anchor rule: lowercase, drop punctuation but keep `-` and `_`, spaces become `-`.
+    const slug = (heading: string): string =>
+      heading.toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/ /g, '-');
+    const headings = [...body.matchAll(/^#{2,3} (.+)$/gm)].map((m) => `#${slug(m[1] ?? '')}`);
+    const contents = body.slice(body.indexOf('**Contents**'), body.indexOf('\n## '));
+    const links = [...contents.matchAll(/\]\((#[^)]+)\)/g)].map((m) => m[1]);
+    expect(headings.length).toBeGreaterThan(0);
+    expect(links).toEqual(headings);
+  });
+});
